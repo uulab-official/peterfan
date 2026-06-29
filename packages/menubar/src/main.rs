@@ -27,7 +27,6 @@ use peterfan_core::types::Celsius;
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
-const SPARK_LEN: usize = 7;
 const POPOVER_W: f64 = 360.0;
 const POPOVER_H: f64 = 680.0;
 
@@ -42,7 +41,6 @@ struct App {
     window: Option<Window>,
     webview: Option<WebView>,
     popover_visible: bool,
-    history: Vec<f32>,
 }
 
 fn main() {
@@ -67,7 +65,6 @@ fn main() {
         window: None,
         webview: None,
         popover_visible: false,
-        history: Vec::with_capacity(SPARK_LEN),
     };
 
     event_loop.run(move |event, target, control_flow| {
@@ -197,12 +194,10 @@ fn update(app: &mut App) {
     app.monitor.refresh();
     let cpu = app.monitor.cpu();
 
-    app.history.push(cpu.usage_percent);
-    if app.history.len() > SPARK_LEN {
-        app.history.remove(0);
-    }
+    // Clean, readable menu-bar title — just the CPU percentage. (A block-char
+    // sparkline here smears into a solid bar at high load.)
     if let Some(tray) = &app.tray {
-        set_menubar_text(tray, &format!("{} {:>2.0}%", spark(&app.history), cpu.usage_percent));
+        set_menubar_text(tray, &format!("{:.0}%", cpu.usage_percent));
     }
 
     if !app.popover_visible {
@@ -307,14 +302,6 @@ fn set_menubar_text(tray: &TrayIcon, text: &str) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn spark(values: &[f32]) -> String {
-    const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    values
-        .iter()
-        .map(|&p| BLOCKS[(((p / 100.0).clamp(0.0, 1.0) * 8.0).round() as usize).min(8)])
-        .collect()
-}
 
 fn bytes(n: u64) -> String {
     const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];

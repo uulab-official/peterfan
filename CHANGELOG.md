@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.1] — Clean menu-bar title
+
+### Fixed
+- The menu-bar title showed a block-character CPU sparkline that smeared into a
+  solid white bar at high load. Replaced it with a plain, always-readable CPU
+  percentage (e.g. `42%`) next to the icon.
+
 ## [0.7.0] — Unified popover with temps & fans
 
 ### Changed
@@ -115,7 +122,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.7.1
 [0.7.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.7.0
 [0.6.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.6.0
 [0.5.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.5.0
