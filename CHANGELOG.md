@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] — Professional menu-bar UI
+
+### Changed
+- Polished the menu-bar dropdown to a proper mini-dashboard: each row now has a
+  load-colored status dot, a `▕████░░░░░▏` block-bar gauge, and aligned figures
+  — CPU (with a per-core sparkline row), memory, disk, network, and battery
+  (battery row only shown when present). The header shows the CPU brand.
+- The menu-bar title now shows a tiny CPU-usage sparkline next to the percentage.
+
 ## [0.4.0] — Menu-bar app
 
 ### Added
@@ -63,7 +72,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.4.1
 [0.4.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.4.0
 [0.3.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.3.0
 [0.2.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.2.0
