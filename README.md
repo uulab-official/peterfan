@@ -142,6 +142,8 @@ peterfan/
 │   ├── platform/    peterfan-platform  — mock + macOS backends (Windows/Linux planned)
 │   ├── cli/         peterfan           — the command-line interface
 │   └── tui/         peterfan-tui       — ratatui live dashboard
+├── apps/
+│   └── landing/     static marketing website (open apps/landing/index.html)
 ├── docs/            architecture, roadmap, CLI reference
 └── (planned) packages/daemon, apps/desktop
 ```

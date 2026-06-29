@@ -1,0 +1,448 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PeterFan — Everything about cooling, and your whole machine</title>
+<meta name="description" content="PeterFan is a tiny, fast, cross-platform hardware monitor and fan controller for developers and power users. CLI, TUI, and a planned desktop GUI. MIT licensed." />
+<meta name="color-scheme" content="dark" />
+<link rel="stylesheet" href="styles.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230b0f14'/%3E%3Cg fill='none' stroke='%234fd1c5' stroke-width='8' stroke-linecap='round'%3E%3Cpath d='M50 50 C50 20 78 22 70 42 C62 60 50 50 50 50'/%3E%3Cpath d='M50 50 C80 50 78 78 58 70 C40 62 50 50 50 50'/%3E%3Cpath d='M50 50 C50 80 22 78 30 58 C38 40 50 50 50 50'/%3E%3Cpath d='M50 50 C20 50 22 22 42 30 C60 38 50 50 50 50'/%3E%3C/g%3E%3Ccircle cx='50' cy='50' r='6' fill='%234fd1c5'/%3E%3C/svg%3E" />
+
+<a class="skip-link" href="#main">Skip to content</a>
+
+<!-- ============ NAV ============ -->
+<header class="nav" id="top">
+  <div class="container nav-inner">
+    <a class="brand" href="#top" aria-label="PeterFan home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100" width="28" height="28">
+          <g fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round">
+            <path d="M50 50 C50 20 78 22 70 42 C62 60 50 50 50 50" />
+            <path d="M50 50 C80 50 78 78 58 70 C40 62 50 50 50 50" />
+            <path d="M50 50 C50 80 22 78 30 58 C38 40 50 50 50 50" />
+            <path d="M50 50 C20 50 22 22 42 30 C60 38 50 50 50 50" />
+          </g>
+          <circle cx="50" cy="50" r="6" fill="currentColor" />
+        </svg>
+      </span>
+      <span class="brand-name">PeterFan</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#features">Features</a>
+      <a href="#platforms">Platforms</a>
+      <a href="#cli">CLI</a>
+      <a href="#safety">Safety</a>
+      <a href="#install">Install</a>
+    </nav>
+    <a class="btn btn-ghost nav-gh" href="https://github.com/uulab-official/peterfan" rel="noopener" target="_blank">
+      <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      <span>GitHub</span>
+    </a>
+  </div>
+</header>
+
+<main id="main">
+  <!-- ============ HERO ============ -->
+  <section class="hero">
+    <div class="hero-bg" aria-hidden="true"></div>
+    <div class="container hero-inner">
+      <div class="hero-copy">
+        <span class="pill">
+          <span class="dot"></span> Open source · MIT · Rust
+        </span>
+        <h1>Everything about&nbsp;cooling —<br />and your whole&nbsp;machine.</h1>
+        <p class="lede">
+          PeterFan is a tiny, fast hardware monitor and fan controller for
+          developers and power users. Live CPU, GPU, thermals, and fan curves
+          from a <strong>CLI</strong>, a <strong>terminal dashboard</strong>, and a planned desktop GUI —
+          on <strong>macOS</strong> and <strong>Windows</strong>.
+        </p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#install">Get started</a>
+          <a class="btn btn-ghost" href="https://github.com/uulab-official/peterfan" rel="noopener" target="_blank">Star on GitHub</a>
+        </div>
+        <ul class="hero-bullets">
+          <li><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg> No ads, no bundleware</li>
+          <li><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg> Read-only by default</li>
+          <li><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg> Scriptable <code>--json</code></li>
+        </ul>
+      </div>
+
+      <!-- ===== Terminal / dashboard mockup ===== -->
+      <div class="terminal" role="img" aria-label="PeterFan terminal dashboard showing CPU, GPU, thermals and fan RPM">
+        <div class="term-bar">
+          <span class="tdot tred"></span><span class="tdot tyel"></span><span class="tdot tgrn"></span>
+          <span class="term-title">peterfan — dashboard</span>
+        </div>
+        <div class="term-body">
+          <div class="term-line"><span class="c-dim">$</span> <span class="c-cyan">peterfan</span> dash</div>
+
+          <div class="panel">
+            <div class="panel-head">CPU · Apple M3 Pro · 11 cores</div>
+            <div class="gauge-row">
+              <span class="g-label">load</span>
+              <span class="bar"><i style="width:42%"></i></span>
+              <span class="g-val">42%</span>
+            </div>
+            <div class="gauge-row">
+              <span class="g-label">freq</span>
+              <span class="bar"><i style="width:71%" class="b-blue"></i></span>
+              <span class="g-val">3.9 GHz</span>
+            </div>
+            <div class="gauge-row">
+              <span class="g-label">temp</span>
+              <span class="bar"><i style="width:58%" class="b-temp"></i></span>
+              <span class="g-val">61&deg;C</span>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">CORES</div>
+            <div class="cores">
+              <span class="core" style="--h:35%"></span>
+              <span class="core" style="--h:72%"></span>
+              <span class="core" style="--h:48%"></span>
+              <span class="core" style="--h:91%"></span>
+              <span class="core" style="--h:22%"></span>
+              <span class="core" style="--h:64%"></span>
+              <span class="core" style="--h:55%"></span>
+              <span class="core" style="--h:38%"></span>
+              <span class="core" style="--h:80%"></span>
+              <span class="core" style="--h:29%"></span>
+              <span class="core" style="--h:60%"></span>
+            </div>
+          </div>
+
+          <div class="panel two-col">
+            <div>
+              <div class="panel-head">GPU</div>
+              <div class="gauge-row"><span class="g-label">util</span><span class="bar"><i style="width:33%"></i></span><span class="g-val">33%</span></div>
+              <div class="gauge-row"><span class="g-label">temp</span><span class="bar"><i style="width:46%" class="b-temp"></i></span><span class="g-val">54&deg;C</span></div>
+            </div>
+            <div>
+              <div class="panel-head">FANS</div>
+              <div class="gauge-row"><span class="g-label">fan 1</span><span class="bar"><i style="width:48%" class="b-blue"></i></span><span class="g-val">2410 rpm</span></div>
+              <div class="gauge-row"><span class="g-label">fan 2</span><span class="bar"><i style="width:52%" class="b-blue"></i></span><span class="g-val">2580 rpm</span></div>
+            </div>
+          </div>
+
+          <div class="term-foot">
+            <span class="tag tag-ok">profile: balanced</span>
+            <span class="tag">mem 14.2/36 GB</span>
+            <span class="tag">net &uarr; 1.1 &darr; 8.4 MB/s</span>
+            <span class="blink">_</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="container marquee" aria-hidden="true">
+      <span>Sits alongside the tools you already love:</span>
+      <code>lazygit</code><code>btop</code><code>mise</code><code>htop</code><code>zellij</code>
+    </div>
+  </section>
+
+  <!-- ============ FEATURES ============ -->
+  <section class="section" id="features">
+    <div class="container">
+      <div class="section-head">
+        <h2>One tool. Every metric.</h2>
+        <p>From per-core load to SMART health, PeterFan reads the sensors your machine already exposes — and presents them cleanly.</p>
+      </div>
+
+      <div class="grid features">
+        <article class="card">
+          <span class="ic-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg>
+          </span>
+          <h3>CPU</h3>
+          <p>Total &amp; per-core load, live frequency, package temperature.</p>
+        </article>
+
+        <article class="card">
+          <span class="ic-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 18v2M17 18v2M9 10h6M9 14h6"/></svg>
+          </span>
+          <h3>GPU</h3>
+          <p>Utilization, VRAM usage, and core temperature.</p>
+        </article>
+
+        <article class="card">
+          <span class="ic-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M11 5v14M15 5v14"/></svg>
+          </span>
+          <h3>Memory</h3>
+          <p>Used / free, memory pressure, swap, and the top apps eating RAM.</p>
+        </article>
+
+        <article class="card">
+          <span class="ic-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+          </span>
+          <h3>Disk</h3>
+          <p>Free / used capacity, read &amp; write throughput, SMART health.</p>
+        </article>
+
+        <article class="card">
+          <span class="ic-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h4l3-8 4 16 3-8h6"/></svg>
+          </span>
+          <h3>Network</h3>
+          <p>Up / down speed, total transferred, local &amp; public IP.</p>
+        </article>
+
+        <article class="card">
+          <span class="ic-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4v9.5a4 4 0 11-4 0V4a2 2 0 014 0z"/><circle cx="12" cy="17" r="1.5"/></svg>
+          </span>
+          <h3>Sensors</h3>
+          <p>Temperatures, voltages, power draw, and fan speeds.</p>
+        </article>
+
+        <article class="card">
+          <span class="ic-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="3" width="12" height="18" rx="2"/><path d="M10 6h4M11 18h2"/></svg>
+          </span>
+          <h3>Battery</h3>
+          <p>Charge, health, cycle count, and time remaining.</p>
+        </article>
+
+        <article class="card">
+          <span class="ic-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/><circle cx="20" cy="18" r="1.5"/></svg>
+          </span>
+          <h3>Processes</h3>
+          <p>The top CPU and memory consumers, ranked live.</p>
+        </article>
+
+        <article class="card card-accent">
+          <span class="ic-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9c0-5 6-4 4-1"/><path d="M15 12c5 0 4 6 1 4"/><path d="M12 15c0 5-6 4-4 1"/><path d="M9 12c-5 0-4-6-1-4"/></g>
+            </svg>
+          </span>
+          <h3>Fan control</h3>
+          <p>Manual override, a visual curve editor, and profiles: <em>Silent, Balanced, Gaming, Performance, Maximum</em>.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ INTERFACES / STATS ============ -->
+  <section class="section section-alt">
+    <div class="container stats-row">
+      <div class="stat">
+        <div class="stat-num" data-count="3">3</div>
+        <div class="stat-cap">interfaces — CLI, TUI &amp; planned GUI</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num" data-count="2">2</div>
+        <div class="stat-cap">platforms — macOS &amp; Windows</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num"><span data-count="0">0</span></div>
+        <div class="stat-cap">ads, trackers &amp; bundleware</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num"><span data-count="1">1</span><span class="stat-suffix">-cmd</span></div>
+        <div class="stat-cap">install with cargo</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PLATFORMS ============ -->
+  <section class="section" id="platforms">
+    <div class="container">
+      <div class="section-head">
+        <h2>Built once. Native on both.</h2>
+        <p>The same single Rust binary speaks to platform sensor APIs directly — no Electron, no daemons you didn't ask for.</p>
+      </div>
+      <div class="grid platforms">
+        <article class="platform-card">
+          <span class="plat-ic" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9-.7 0-1.8-.8-3-.8-1.5 0-2.9.9-3.7 2.3-1.6 2.7-.4 6.8 1.1 9 .7 1.1 1.6 2.3 2.8 2.2 1.1 0 1.5-.7 2.9-.7 1.3 0 1.7.7 2.9.7 1.2 0 2-1.1 2.7-2.1.8-1.2 1.2-2.4 1.2-2.4-.1 0-2.3-.9-2.3-3.5z"/><path d="M14.2 5.5c.6-.8 1-1.8.9-2.9-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.7-.9 2.8 1 .1 2-.5 2.6-1.3z"/></svg>
+          </span>
+          <h3>macOS</h3>
+          <p>Apple Silicon &amp; Intel. SMC thermals, fan RPM, battery health, and IOKit sensors.</p>
+        </article>
+        <article class="platform-card">
+          <span class="plat-ic" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M3 5.5l8-1.1v7.2H3zM12 4.3L21 3v8.6h-9zM3 12.4h8v7.2l-8-1.1zM12 12.4h9V21l-9-1.3z"/></svg>
+          </span>
+          <h3>Windows</h3>
+          <p>WMI &amp; LibreHardwareMonitor-style sensor access for CPU, GPU, drives and fans.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CLI ============ -->
+  <section class="section section-alt" id="cli">
+    <div class="container cli-grid">
+      <div class="cli-copy">
+        <h2>A CLI you'll actually keep open.</h2>
+        <p>Every command is fast, scriptable, and pipeable. Add <code>--json</code> to anything and pipe it into <code>jq</code>, a status bar, or your own dashboard.</p>
+        <ul class="check-list">
+          <li><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg> Human-readable tables by default</li>
+          <li><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg> <code>--json</code> on every subcommand</li>
+          <li><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg> Live TUI dashboard with <code>peterfan dash</code></li>
+          <li><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg> Local HTTP API <span class="badge">planned</span> for Stream Deck, Raycast &amp; Home Assistant</li>
+        </ul>
+      </div>
+
+      <div class="code-block">
+        <div class="code-bar">
+          <span class="code-file">~ zsh</span>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            <span class="copy-label">Copy</span>
+          </button>
+        </div>
+        <pre><code><span class="c-dim"># live status overview</span>
+<span class="c-cyan">peterfan</span> status
+
+<span class="c-dim"># machine-readable temps for scripting</span>
+<span class="c-cyan">peterfan</span> --json temps <span class="c-dim">| jq '.cpu.package'</span>
+
+<span class="c-dim"># switch the fan profile</span>
+<span class="c-cyan">peterfan</span> profile gaming
+
+<span class="c-dim"># open the live terminal dashboard</span>
+<span class="c-cyan">peterfan</span> dash</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SAFETY ============ -->
+  <section class="section" id="safety">
+    <div class="container">
+      <div class="section-head">
+        <h2>Safe by design.</h2>
+        <p>Touching fan controllers means touching hardware. PeterFan treats that with respect.</p>
+      </div>
+      <div class="grid safety">
+        <article class="card safe-card">
+          <span class="ic-box ic-safe">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l8 4v6c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6z"/><path d="M9 12l2 2 4-4" fill="none" stroke="var(--bg)" stroke-width="2"/></svg>
+          </span>
+          <h3>Capabilities up front</h3>
+          <p>PeterFan tells you exactly what it will read and write before it does anything privileged.</p>
+        </article>
+        <article class="card safe-card">
+          <span class="ic-box ic-safe">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2" fill="none" stroke="var(--bg)" stroke-width="2"/></svg>
+          </span>
+          <h3>Read-only first</h3>
+          <p>Monitoring needs no elevated rights. Fan control is strictly opt-in, and never the default.</p>
+        </article>
+        <article class="card safe-card">
+          <span class="ic-box ic-safe">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 109-9 9 9 0 00-7 3.3"/><path d="M5 3v4h4"/></svg>
+          </span>
+          <h3>Restore on exit</h3>
+          <p>Hand control back to firmware automatically when PeterFan quits — your machine is never left stranded.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ INSTALL ============ -->
+  <section class="section section-alt" id="install">
+    <div class="container">
+      <div class="section-head">
+        <h2>Get started in one command.</h2>
+        <p>PeterFan ships as a single self-contained binary. Build from source today; package managers are on the way.</p>
+      </div>
+
+      <div class="grid install">
+        <div class="install-card">
+          <div class="install-head">
+            <span class="install-num">Available now</span>
+            <h3>Build with Cargo</h3>
+          </div>
+          <div class="code-block">
+            <div class="code-bar">
+              <span class="code-file">~ shell</span>
+              <button class="copy-btn" type="button" data-copy>
+                <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                <span class="copy-label">Copy</span>
+              </button>
+            </div>
+            <pre><code><span class="c-dim"># clone &amp; build a release binary</span>
+git clone https://github.com/uulab-official/peterfan
+cd peterfan
+<span class="c-cyan">cargo</span> build --release
+
+<span class="c-dim"># run it</span>
+./target/release/peterfan status</code></pre>
+          </div>
+        </div>
+
+        <div class="install-card">
+          <div class="install-head">
+            <span class="install-num install-soon">Coming soon</span>
+            <h3>Package managers</h3>
+          </div>
+          <div class="code-block">
+            <div class="code-bar"><span class="code-file">~ planned</span></div>
+            <pre><code><span class="c-dim"># macOS — Homebrew</span>
+brew install peterfan
+
+<span class="c-dim"># Windows — winget</span>
+winget install peterfan
+
+<span class="c-dim"># anywhere — cargo</span>
+cargo install peterfan</code></pre>
+          </div>
+          <p class="install-note">Tracking <a href="https://github.com/uulab-official/peterfan" rel="noopener" target="_blank">the roadmap on GitHub</a>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CTA ============ -->
+  <section class="section cta">
+    <div class="container cta-inner">
+      <h2>Keep an eye on everything.</h2>
+      <p>Free, open source, and MIT licensed. No accounts, no telemetry.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="https://github.com/uulab-official/peterfan" rel="noopener" target="_blank">View on GitHub</a>
+        <a class="btn btn-ghost" href="#install">Install now</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ============ FOOTER ============ -->
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100" width="24" height="24">
+          <g fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round">
+            <path d="M50 50 C50 20 78 22 70 42 C62 60 50 50 50 50" />
+            <path d="M50 50 C80 50 78 78 58 70 C40 62 50 50 50 50" />
+            <path d="M50 50 C50 80 22 78 30 58 C38 40 50 50 50 50" />
+            <path d="M50 50 C20 50 22 22 42 30 C60 38 50 50 50 50" />
+          </g>
+          <circle cx="50" cy="50" r="6" fill="currentColor" />
+        </svg>
+      </span>
+      <div>
+        <strong>PeterFan</strong>
+        <span class="footer-tag">Everything about cooling — and your whole machine.</span>
+      </div>
+    </div>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="#features">Features</a>
+      <a href="#cli">CLI</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/uulab-official/peterfan" rel="noopener" target="_blank">GitHub</a>
+    </nav>
+  </div>
+  <div class="container footer-legal">
+    <span>MIT Licensed · &copy; 2026 PeterFan contributors</span>
+    <span>Made for developers &amp; power users.</span>
+  </div>
+</footer>
+
+<script src="script.js"></script>
