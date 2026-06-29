@@ -34,7 +34,10 @@ python3 -m http.server 8080
 
 ## Notes
 
-- Dark-themed, fully responsive (mobile + desktop), no horizontal scroll.
+- Light theme modeled on [mac-stats.com](https://mac-stats.com) (Stats):
+  Tailwind-style neutral grays, a blue→violet accent, and system fonts. The
+  terminal/code mockups stay dark on the light page. Fully responsive (mobile +
+  desktop), no horizontal scroll.
 - Color palette and spacing are defined as CSS custom properties at the top of
   `styles.css` — adjust there to retheme.
 - MIT licensed, same as the project.
