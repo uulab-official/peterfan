@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] — System dashboard TUI
+
+### Changed
+- **`peterfan-tui` is now a full system dashboard.** It polls the
+  `SystemMonitor` once a second and renders CPU (global gauge + per-core
+  sparkline + frequency/load), memory, disk(s), aggregate network throughput,
+  a live CPU-usage history sparkline, battery, and a top-process table. Quit
+  with `q`/`Esc`/`Ctrl-C`; `--mock` drives it from the simulated machine.
+
 ## [0.2.0] — System metrics
 
 ### Added
@@ -44,6 +53,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.3.0
 [0.2.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.2.0
 [0.1.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.1.0

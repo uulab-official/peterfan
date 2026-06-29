@@ -526,7 +526,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "peterfan-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -539,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "thiserror",
@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-platform"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "battery",
  "libc",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-tui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "peterfan-core",

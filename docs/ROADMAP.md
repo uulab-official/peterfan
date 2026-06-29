@@ -19,6 +19,11 @@ then richer surfaces. Versions are goals, not promises.
 - [x] Battery via the `battery` crate
 - [x] CLI: `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `system`; full `status` dashboard
 - [x] Mock metrics monitor for `--mock`
+
+## v0.3 — System dashboard TUI (current)
+
+- [x] TUI rebuilt on `SystemMonitor`: CPU (global + per-core), memory, disk,
+      network, CPU history, battery, top-process table
 - [ ] Config file (TOML): default profile, startup, notifications
 - [ ] `--watch` live refresh for CLI metric commands
 

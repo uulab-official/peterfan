@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.2.0.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.3.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
@@ -36,7 +36,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 | GPU utilization | 🚧 planned |
 | Fan **control** | 🚧 planned |
 | CLI — `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `system`, `temps`, `fans`, `profile`, `curve`, `hardware`, `doctor` | ✅ runnable |
-| TUI dashboard (ratatui) | ✅ runnable |
+| TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes | ✅ runnable |
 | Desktop GUI (Tauri), daemon, plugins, HTTP API | 🗺️ roadmap |
 
 When a backend can't read real sensors yet, the CLI/TUI **transparently fall
