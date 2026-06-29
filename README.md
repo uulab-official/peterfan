@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.5.0.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.6.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
@@ -32,9 +32,10 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 | Core model (types, metrics, curves, profiles, traits) | ✅ implemented & tested |
 | Mock backends (fully simulated machine + metrics) | ✅ implemented |
 | macOS hardware info (CPU/RAM/OS via `sysctl`) | ✅ real, read-only |
-| Temperature / fan reading (SMC on macOS, EC on Windows) | 🚧 not yet — falls back to simulated, clearly labeled |
+| **macOS temperatures & fan RPM** (SMC via `macsmc`) | ✅ real (Apple Silicon: airflow/palm-rest/etc.; CPU/GPU die temps need IOHID — planned) |
+| Windows temperature / fan reading (EC) | 🚧 planned |
 | GPU utilization | 🚧 planned |
-| Fan **control** | 🚧 planned |
+| Fan **control** (SMC writes) | 🚧 planned (reading works; control is next) |
 | CLI — `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `system`, `temps`, `fans`, `profile`, `curve`, `hardware`, `doctor` | ✅ runnable |
 | TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes | ✅ runnable |
 | **Menu-bar app** — live CPU in the menu bar + a left-click popover dashboard (WebView) and right-click menu | ✅ runnable |

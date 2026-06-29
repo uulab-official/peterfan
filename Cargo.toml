@@ -12,7 +12,7 @@ members = [
 # (see docs/ROADMAP.md): packages/daemon, apps/desktop.
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
 authors = ["PeterFan contributors"]
@@ -36,6 +36,7 @@ sysinfo = "0.36"
 battery = "0.7"
 tray-icon = "0.24"
 tao = "0.35"
+macsmc = "0.1"
 
 [profile.release]
 lto = "thin"

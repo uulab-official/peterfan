@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] — Real macOS temperatures & fans
+
+### Added
+- **Real temperature and fan readings on macOS via the SMC** (`macsmc`/IOKit),
+  no privileges required. `peterfan temps` / `fans` / `status` now show genuine
+  data instead of the simulated fallback. Fans report actual/min/max RPM.
+
+### Notes
+- Only sensors that return a plausible value are shown. On Apple Silicon the SMC
+  doesn't expose CPU/GPU **die** temps (they read 0 and are filtered); sensors
+  the chip does expose (airflow/airport, palm rest, memory) are reported.
+  CPU/GPU die temps need the IOHID thermal API — a future milestone.
+- Fan **control** (SMC writes) is not yet implemented; fans are read-only
+  (`controllable: false`).
+
 ## [0.5.0] — Popover dashboard
 
 ### Added
@@ -89,7 +104,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.6.0
 [0.5.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.5.0
 [0.4.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.4.2
 [0.4.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.4.1

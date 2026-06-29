@@ -39,12 +39,18 @@ then richer surfaces. Versions are goals, not promises.
 - [ ] Bundle as a signed `.app` + Homebrew cask / `winget` for one-click install
 - [ ] Configurable menu-bar metric (CPU / temp / net) and refresh interval
 
-## v1.0 — Real monitoring & control
+## v0.6 — Real macOS sensors (current)
 
-- [ ] **macOS sensors** — real CPU/GPU temps, fan RPM, and power via IOKit
-      (SMC on Intel; IOHID thermal sensors on Apple Silicon)
-- [ ] **Fan control** (auto / manual / fixed RPM) behind the safety model —
-      confirmed possible on this hardware (cf. Macs Fan Control)
+- [x] **macOS temperatures & fan RPM via SMC** (`macsmc`/IOKit) — real `temps`,
+      `fans`, `status`; non-zero sensors only
+- [ ] CPU/GPU **die** temps on Apple Silicon via the IOHID thermal API
+- [ ] Surface SMC **power** (system total W) in the metrics model
+
+## v1.0 — Control & Windows
+
+- [ ] **Fan control** (auto / manual / fixed RPM) via SMC writes, behind the
+      safety model (restore-on-exit, critical-temp ramp) — confirmed possible
+      on this hardware (cf. Macs Fan Control)
 - [ ] **Windows backend** — temps/fans via EC / LibreHardwareMonitor-style access
 - [ ] `--watch` live refresh + TOML config (default profile, startup, alerts)
 - [ ] `peterfan-daemon` — privileged control service + safety watchdog
