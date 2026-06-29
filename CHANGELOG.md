@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] — Popover dashboard
+
+### Added
+- **Left-click the menu-bar icon for a clean popover dashboard** — a borderless
+  WebView window (wry) rendering an HTML/CSS panel à la RunCat/Stats: CPU (with
+  a live per-core bar chart), memory, storage, battery, and network, each with
+  an icon, sub-stats, and a load-colored progress bar. It positions itself under
+  the icon, refreshes once a second, and closes when it loses focus.
+- Right-click still opens the native menu (same figures + Quit) as a fallback.
+
 ## [0.4.2] — Readable menu-bar rows
 
 ### Fixed
@@ -79,7 +89,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.5.0
 [0.4.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.4.2
 [0.4.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.4.1
 [0.4.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.4.0

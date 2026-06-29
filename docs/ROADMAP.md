@@ -12,7 +12,7 @@ then richer surfaces. Versions are goals, not promises.
 - [x] CLI: `status`, `temps`, `fans`, `profile`, `curve`, `hardware`, `doctor`, `--json`
 - [x] TUI dashboard (ratatui)
 
-## v0.2 — System metrics (current)
+## v0.2 — System metrics
 
 - [x] `SystemMonitor` trait + `metrics` types
 - [x] Real cross-platform metrics via `sysinfo` (CPU, memory, disk, network, processes)
@@ -25,21 +25,28 @@ then richer surfaces. Versions are goals, not promises.
 - [x] TUI rebuilt on `SystemMonitor`: CPU (global + per-core), memory, disk,
       network, CPU history, battery, top-process table
 
-## v0.4 — Menu-bar app (current)
+## v0.4 — Menu-bar app
 
 - [x] `peterfan-menubar`: live CPU in the macOS menu bar + CPU/mem/net dropdown
       (tray-icon + tao; accessory app, Windows tray fallback)
+
+## v0.5 — Popover dashboard (current)
+
+- [x] Left-click popover: a WebView (wry) HTML/CSS dashboard — CPU (per-core),
+      memory, storage, battery, network — refreshed live, RunCat/Stats-like
+- [x] Release binaries per tag (macOS arm64/Intel, Windows) via CI + downloads
+- [ ] Action buttons in the popover (settings, quit) via WebView IPC
 - [ ] Bundle as a signed `.app` + Homebrew cask / `winget` for one-click install
 - [ ] Configurable menu-bar metric (CPU / temp / net) and refresh interval
-- [ ] Config file (TOML): default profile, startup, notifications
-- [ ] `--watch` live refresh for CLI metric commands
 
 ## v1.0 — Real monitoring & control
 
-- [ ] **macOS SMC reading** — real CPU/GPU temps and fan RPM via IOKit/`AppleSMC`
-      (Apple Silicon + Intel key sets)
+- [ ] **macOS sensors** — real CPU/GPU temps, fan RPM, and power via IOKit
+      (SMC on Intel; IOHID thermal sensors on Apple Silicon)
+- [ ] **Fan control** (auto / manual / fixed RPM) behind the safety model —
+      confirmed possible on this hardware (cf. Macs Fan Control)
 - [ ] **Windows backend** — temps/fans via EC / LibreHardwareMonitor-style access
-- [ ] Fan **control** on at least one platform, behind the safety model
+- [ ] `--watch` live refresh + TOML config (default profile, startup, alerts)
 - [ ] `peterfan-daemon` — privileged control service + safety watchdog
       (restore-on-exit, critical-temp force ramp)
 - [ ] Curve editor in the TUI
