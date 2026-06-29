@@ -1,0 +1,9 @@
+[package]
+name = "peterfan-icongen"
+version = "0.1.0"
+edition = "2021"
+description = "Generates the PeterFan app icon PNG (tiny-skia). Excluded from the workspace."
+publish = false
+
+[dependencies]
+tiny-skia = "0.12"

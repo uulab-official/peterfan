@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.1] — App icon
+
+### Added
+- A proper **app icon** for `PeterFan.app` — a white four-blade fan on a
+  teal→sky→blue gradient squircle. Generated from `tools/icongen` (tiny-skia)
+  into `assets/icon-1024.png`, turned into `assets/AppIcon.icns` by
+  `scripts/make-icns.sh`, and bundled by `scripts/bundle-macos.sh`.
+
 ## [0.8.0] — Double-clickable .app + consistent precision
 
 ### Added
@@ -134,7 +142,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.8.1
 [0.8.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.8.0
 [0.7.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.7.1
 [0.7.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.7.0

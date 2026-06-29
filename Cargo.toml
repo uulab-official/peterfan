@@ -7,12 +7,14 @@ members = [
     "packages/tui",
     "packages/menubar",
 ]
+# Icon generator is a standalone dev tool, not part of the product build.
+exclude = ["tools/icongen"]
 
 # Crates that are part of the long-term layout but not yet scaffolded
 # (see docs/ROADMAP.md): packages/daemon, apps/desktop.
 
 [workspace.package]
-version = "0.8.0"
+version = "0.8.1"
 edition = "2021"
 license = "MIT"
 authors = ["PeterFan contributors"]
