@@ -32,10 +32,10 @@ then richer surfaces. Versions are goals, not promises.
 
 ## v0.5 — Popover dashboard (current)
 
-- [x] Left-click popover: a WebView (wry) HTML/CSS dashboard — CPU (per-core),
-      memory, storage, battery, network — refreshed live, RunCat/Stats-like
+- [x] Click-to-open popover: a WebView (wry) HTML/CSS dashboard — CPU (per-core),
+      memory, storage, temperatures, fans, battery, network — refreshed live
+- [x] Popover is the sole UI (left/right click); Quit via WebView IPC
 - [x] Release binaries per tag (macOS arm64/Intel, Windows) via CI + downloads
-- [ ] Action buttons in the popover (settings, quit) via WebView IPC
 - [ ] Bundle as a signed `.app` + Homebrew cask / `winget` for one-click install
 - [ ] Configurable menu-bar metric (CPU / temp / net) and refresh interval
 

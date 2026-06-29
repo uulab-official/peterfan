@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] — Unified popover with temps & fans
+
+### Changed
+- **The popover is now the whole menu-bar UI** — both left- and right-click
+  (two-finger) open it, so there's no more inconsistent native menu. Quit moved
+  into the popover (a button, via WebView IPC).
+- **Added Temperature and Fans sections** to the popover (real SMC data on
+  macOS): hottest temperature with the rest in the sub-line, and per-fan RPM.
+- Refined spacing, alignment, and typography (consistent padding, uppercase
+  section labels, aligned values and bars).
+
 ## [0.6.0] — Real macOS temperatures & fans
 
 ### Added
@@ -104,7 +115,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.7.0
 [0.6.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.6.0
 [0.5.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.5.0
 [0.4.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.4.2

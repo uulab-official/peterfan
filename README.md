@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.6.0.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.7.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
@@ -38,7 +38,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 | Fan **control** (SMC writes) | 🚧 planned (reading works; control is next) |
 | CLI — `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `system`, `temps`, `fans`, `profile`, `curve`, `hardware`, `doctor` | ✅ runnable |
 | TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes | ✅ runnable |
-| **Menu-bar app** — live CPU in the menu bar + a left-click popover dashboard (WebView) and right-click menu | ✅ runnable |
+| **Menu-bar app** — live CPU in the menu bar + a click-to-open popover dashboard (WebView): CPU/memory/storage/temps/fans/battery/network | ✅ runnable |
 | Desktop GUI (Tauri), daemon, plugins, HTTP API | 🗺️ roadmap |
 
 When a backend can't read real sensors yet, the CLI/TUI **transparently fall

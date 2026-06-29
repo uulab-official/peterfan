@@ -1,15 +1,13 @@
 //! `peterfan-menubar` — live system metrics in the macOS menu bar.
 //!
-//! - **Menu-bar title**: a tiny CPU-usage sparkline + percentage.
-//! - **Left-click** the icon: a clean popover dashboard (a borderless WebView
-//!   window rendering an HTML/CSS panel — CPU with per-core bars, memory, disk,
-//!   battery, network), refreshed once a second. Closes when it loses focus.
-//! - **Right-click** the icon: a native menu with the same figures as a
-//!   fallback, plus Quit.
-//!
-//! Runs as an accessory app (no Dock icon). On Windows the same binary shows a
-//! tray icon + tooltip and the popover. Pass `--mock` for the simulated machine.
+//! The menu-bar title shows a tiny CPU sparkline + percentage. Clicking the
+//! icon (left **or** right / two-finger) toggles a clean popover dashboard — a
+//! borderless WebView rendering an HTML/CSS panel with CPU (per-core), memory,
+//! storage, temperatures, fans, battery, and network. Quit from the button in
+//! the popover. Runs as an accessory app (no Dock icon). `--mock` uses the
+//! simulated machine.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tao::dpi::{LogicalSize, PhysicalPosition};
@@ -20,44 +18,39 @@ use tao::window::{Window, WindowBuilder};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 
-use tray_icon::menu::{
-    Icon as MenuIcon, IconMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem,
+use tray_icon::{
+    Icon, MouseButtonState, Rect, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
-use tray_icon::{Icon, MouseButton, MouseButtonState, Rect, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use wry::{WebView, WebViewBuilder};
 
-use peterfan_core::SystemMonitor;
+use peterfan_core::types::Celsius;
+use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
 const SPARK_LEN: usize = 7;
-const BAR_WIDTH: usize = 9;
 const POPOVER_W: f64 = 360.0;
-const POPOVER_H: f64 = 560.0;
+const POPOVER_H: f64 = 680.0;
+
+/// Set by the popover's Quit button (via WebView IPC), polled by the loop.
+static QUIT: AtomicBool = AtomicBool::new(false);
 
 struct App {
     monitor: Box<dyn SystemMonitor>,
+    provider: Box<dyn HardwareProvider>,
     has_battery: bool,
     tray: Option<TrayIcon>,
-    header: Option<MenuItem>,
-    cpu_item: Option<IconMenuItem>,
-    cores_item: Option<MenuItem>,
-    mem_item: Option<IconMenuItem>,
-    disk_item: Option<IconMenuItem>,
-    net_item: Option<MenuItem>,
-    batt_item: Option<IconMenuItem>,
-    quit_id: Option<MenuId>,
-    history: Vec<f32>,
     window: Option<Window>,
     webview: Option<WebView>,
     popover_visible: bool,
+    history: Vec<f32>,
 }
 
 fn main() {
     let use_mock = std::env::args().any(|a| a == "--mock");
-    let monitor: Box<dyn SystemMonitor> = if use_mock {
-        peterfan_platform::mock_monitor()
+    let (monitor, provider): (Box<dyn SystemMonitor>, Box<dyn HardwareProvider>) = if use_mock {
+        (peterfan_platform::mock_monitor(), peterfan_platform::mock())
     } else {
-        peterfan_platform::system_monitor()
+        (peterfan_platform::system_monitor(), peterfan_platform::detect())
     };
     let has_battery = monitor.capabilities().battery;
 
@@ -68,24 +61,22 @@ fn main() {
 
     let mut app = App {
         monitor,
+        provider,
         has_battery,
         tray: None,
-        header: None,
-        cpu_item: None,
-        cores_item: None,
-        mem_item: None,
-        disk_item: None,
-        net_item: None,
-        batt_item: None,
-        quit_id: None,
-        history: Vec::with_capacity(SPARK_LEN),
         window: None,
         webview: None,
         popover_visible: false,
+        history: Vec::with_capacity(SPARK_LEN),
     };
 
     event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::WaitUntil(Instant::now() + REFRESH);
+
+        if QUIT.load(Ordering::Relaxed) {
+            *control_flow = ControlFlow::Exit;
+            return;
+        }
 
         match event {
             Event::NewEvents(StartCause::Init) => {
@@ -96,28 +87,20 @@ fn main() {
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
                 update(&mut app);
             }
-            // Close the popover when the user clicks away.
             Event::WindowEvent {
                 event: WindowEvent::Focused(false),
                 ..
-            } => {
-                hide_popover(&mut app);
-            }
+            } => hide_popover(&mut app),
             _ => {}
         }
 
-        while let Ok(menu_event) = MenuEvent::receiver().try_recv() {
-            if app.quit_id.as_ref() == Some(&menu_event.id) {
-                *control_flow = ControlFlow::Exit;
-            }
-        }
-        while let Ok(tray_event) = TrayIconEvent::receiver().try_recv() {
+        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+            // Left or right (two-finger) click both toggle the popover.
             if let TrayIconEvent::Click {
-                button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 rect,
                 ..
-            } = tray_event
+            } = ev
             {
                 toggle_popover(&mut app, rect);
             }
@@ -126,7 +109,24 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// Popover (WebView dashboard)
+// Tray icon (no native menu — the popover is the whole UI)
+// ---------------------------------------------------------------------------
+
+fn build_tray(app: &mut App) {
+    #[allow(unused_mut)]
+    let mut builder = TrayIconBuilder::new().with_icon(make_ring_icon());
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.with_icon_as_template(true);
+    }
+    match builder.build() {
+        Ok(tray) => app.tray = Some(tray),
+        Err(e) => eprintln!("failed to create menu-bar item: {e}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Popover
 // ---------------------------------------------------------------------------
 
 fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
@@ -149,6 +149,11 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
     match WebViewBuilder::new()
         .with_html(DASHBOARD_HTML)
         .with_transparent(true)
+        .with_ipc_handler(|req| {
+            if req.body() == "quit" {
+                QUIT.store(true, Ordering::Relaxed);
+            }
+        })
         .build(&window)
     {
         Ok(webview) => {
@@ -165,7 +170,6 @@ fn toggle_popover(app: &mut App, rect: Rect) {
         return;
     }
     if let Some(w) = &app.window {
-        // Right-align the popover under the menu-bar icon.
         let scale = w.scale_factor();
         let win_w = POPOVER_W * scale;
         let x = (rect.position.x + rect.size.width as f64 - win_w).max(8.0);
@@ -186,83 +190,13 @@ fn hide_popover(app: &mut App) {
 }
 
 // ---------------------------------------------------------------------------
-// Tray + native menu (fallback)
-// ---------------------------------------------------------------------------
-
-fn build_tray(app: &mut App) {
-    let menu = Menu::new();
-    let header = MenuItem::new("PeterFan", false, None);
-    let cpu_item = IconMenuItem::new("CPU", true, None, None);
-    let cores_item = MenuItem::new("Cores", true, None);
-    let mem_item = IconMenuItem::new("Memory", true, None, None);
-    let disk_item = IconMenuItem::new("Disk", true, None, None);
-    let net_item = MenuItem::new("Network", true, None);
-    let batt_item = IconMenuItem::new("Battery", true, None, None);
-    let quit = MenuItem::new("Quit PeterFan", true, None);
-    let sep = PredefinedMenuItem::separator();
-    let sep2 = PredefinedMenuItem::separator();
-
-    let mut items: Vec<&dyn tray_icon::menu::IsMenuItem> = vec![
-        &header,
-        &sep,
-        &cpu_item,
-        &cores_item,
-        &mem_item,
-        &disk_item,
-        &net_item,
-    ];
-    if app.has_battery {
-        items.push(&batt_item);
-    }
-    items.push(&sep2);
-    items.push(&quit);
-    let _ = menu.append_items(&items);
-
-    let mut builder = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        // Left-click opens the popover (we handle the event); right-click the menu.
-        .with_menu_on_left_click(false)
-        .with_icon(make_ring_icon());
-    #[cfg(target_os = "macos")]
-    {
-        builder = builder.with_icon_as_template(true);
-    }
-
-    match builder.build() {
-        Ok(tray) => {
-            app.quit_id = Some(quit.id().clone());
-            app.header = Some(header);
-            app.cpu_item = Some(cpu_item);
-            app.cores_item = Some(cores_item);
-            app.mem_item = Some(mem_item);
-            app.disk_item = Some(disk_item);
-            app.net_item = Some(net_item);
-            app.batt_item = Some(batt_item);
-            app.tray = Some(tray);
-        }
-        Err(e) => eprintln!("failed to create menu-bar item: {e}"),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Update: sample once, push to the menu bar, the native menu, and the popover.
+// Update: sample once, refresh the menu-bar title and (if open) the popover.
 // ---------------------------------------------------------------------------
 
 fn update(app: &mut App) {
     app.monitor.refresh();
     let cpu = app.monitor.cpu();
-    let mem = app.monitor.memory();
-    let disks = app.monitor.disks();
-    let nets = app.monitor.networks();
-    let battery = if app.has_battery {
-        app.monitor.battery()
-    } else {
-        None
-    };
-    let rx: f64 = nets.iter().map(|n| n.rx_rate).sum();
-    let tx: f64 = nets.iter().map(|n| n.tx_rate).sum();
 
-    // Menu-bar title sparkline + percentage.
     app.history.push(cpu.usage_percent);
     if app.history.len() > SPARK_LEN {
         app.history.remove(0);
@@ -271,82 +205,94 @@ fn update(app: &mut App) {
         set_menubar_text(tray, &format!("{} {:>2.0}%", spark(&app.history), cpu.usage_percent));
     }
 
+    if !app.popover_visible {
+        return;
+    }
+    let Some(wv) = &app.webview else { return };
+
+    let mem = app.monitor.memory();
+    let disks = app.monitor.disks();
+    let nets = app.monitor.networks();
+    let battery = if app.has_battery {
+        app.monitor.battery()
+    } else {
+        None
+    };
+    let temps = app.provider.temperatures().unwrap_or_default();
+    let fans = app.provider.fans().unwrap_or_default();
+
+    let rx: f64 = nets.iter().map(|n| n.rx_rate).sum();
+    let tx: f64 = nets.iter().map(|n| n.tx_rate).sum();
+    let ghz = cpu.frequency_mhz as f64 / 1000.0;
     let load_str = cpu
         .load_avg
-        .map(|l| format!("   load {:.2} {:.2} {:.2}", l.one, l.five, l.fifteen))
+        .map(|l| format!("load {:.2} {:.2} {:.2}", l.one, l.five, l.fifteen))
         .unwrap_or_default();
-    let ghz = cpu.frequency_mhz as f64 / 1000.0;
+    let disk = disks.first();
 
-    // Native menu rows (fallback).
-    if let Some(h) = &app.header {
-        h.set_text(format!("PeterFan  ·  {}", cpu.brand));
-    }
-    if let Some(i) = &app.cpu_item {
-        i.set_icon(Some(dot(load_color(cpu.usage_percent))));
-        i.set_text(format!("CPU      {}  {:>3.0}%   {:.1} GHz", bar(cpu.usage_percent), cpu.usage_percent, ghz));
-    }
-    if let Some(i) = &app.cores_item {
-        i.set_text(format!("Cores    {}", spark(&cpu.per_core)));
-    }
-    if let Some(i) = &app.mem_item {
-        i.set_icon(Some(dot(load_color(mem.used_percent))));
-        i.set_text(format!(
-            "Memory   {}  {:>3.0}%   {} / {}",
-            bar(mem.used_percent),
-            mem.used_percent,
-            bytes(mem.used),
-            bytes(mem.total)
-        ));
-    }
-    if let Some(i) = &app.disk_item {
-        if let Some(d) = disks.first() {
-            i.set_icon(Some(dot(load_color(d.used_percent))));
-            i.set_text(format!("Disk     {}  {:>3.0}%   {}", bar(d.used_percent), d.used_percent, d.mount));
-        }
-    }
-    if let Some(i) = &app.net_item {
-        i.set_text(format!("Network      ↓ {}/s    ↑ {}/s", bytes(rx as u64), bytes(tx as u64)));
-    }
-    if let (Some(i), Some(b)) = (&app.batt_item, &battery) {
-        i.set_icon(Some(dot(charge_color(b.charge_percent))));
-        i.set_text(format!("Battery  {}  {:>3.0}%   {}", bar(b.charge_percent), b.charge_percent, b.state));
-    }
+    // Temperatures: hottest as the headline, the rest in the sub-line.
+    let hottest = temps
+        .iter()
+        .max_by(|a, b| a.value.0.partial_cmp(&b.value.0).unwrap_or(std::cmp::Ordering::Equal));
+    let temp_sub = temps
+        .iter()
+        .map(|t| format!("{} {:.0}°", t.label, t.value.0))
+        .collect::<Vec<_>>()
+        .join("   ");
 
-    // Popover (only when visible).
-    if app.popover_visible {
-        if let Some(wv) = &app.webview {
-            let disk = disks.first();
-            let payload = serde_json::json!({
-                "cpu_pct": cpu.usage_percent,
-                "cpu_text": format!("{:.1}%", cpu.usage_percent),
-                "cpu_sub": format!("{:.1} GHz{}", ghz, load_str),
-                "cores": &cpu.per_core,
-                "mem_pct": mem.used_percent,
-                "mem_text": format!("{:.1}%", mem.used_percent),
-                "mem_sub": format!(
-                    "{} / {}    swap {} / {}",
-                    bytes(mem.used), bytes(mem.total), bytes(mem.swap_used), bytes(mem.swap_total)
-                ),
-                "disk_pct": disk.map(|d| d.used_percent).unwrap_or(0.0),
-                "disk_text": disk.map(|d| format!("{:.1}%", d.used_percent)).unwrap_or_default(),
-                "disk_sub": disk.map(|d| format!("{} / {}    {}", bytes(d.used), bytes(d.total), d.mount)).unwrap_or_default(),
-                "batt_present": battery.is_some(),
-                "batt_pct": battery.as_ref().map(|b| b.charge_percent).unwrap_or(0.0),
-                "batt_text": battery.as_ref().map(|b| format!("{:.0}%", b.charge_percent)).unwrap_or_default(),
-                "batt_sub": battery.as_ref().map(|b| {
-                    let mut s = b.state.clone();
-                    if let Some(c) = b.cycle_count { s.push_str(&format!("    {c} cycles")); }
-                    if let Some(h) = b.health_percent { s.push_str(&format!("    health {h:.0}%")); }
-                    s
-                }).unwrap_or_default(),
-                "net_sub": format!("↓ {}/s     ↑ {}/s", bytes(rx as u64), bytes(tx as u64)),
-            });
-            let _ = wv.evaluate_script(&format!(
-                "window.__pf&&window.__pf.update({})",
-                payload
-            ));
-        }
-    }
+    // Fans: average load for the bar, per-fan RPM in the sub-line.
+    let fan_avg = if fans.is_empty() {
+        0.0
+    } else {
+        fans.iter()
+            .map(|f| match f.max_rpm {
+                Some(m) if m > 0 => f.rpm as f32 / m as f32 * 100.0,
+                _ => 0.0,
+            })
+            .sum::<f32>()
+            / fans.len() as f32
+    };
+    let fan_sub = fans
+        .iter()
+        .map(|f| format!("{} {} rpm", f.label, f.rpm))
+        .collect::<Vec<_>>()
+        .join("   ");
+
+    let payload = serde_json::json!({
+        "cpu_pct": cpu.usage_percent,
+        "cpu_text": format!("{:.1}%", cpu.usage_percent),
+        "cpu_sub": format!("{:.1} GHz   {}", ghz, load_str),
+        "cores": &cpu.per_core,
+        "mem_pct": mem.used_percent,
+        "mem_text": format!("{:.1}%", mem.used_percent),
+        "mem_sub": format!(
+            "{} / {}   swap {} / {}",
+            bytes(mem.used), bytes(mem.total), bytes(mem.swap_used), bytes(mem.swap_total)
+        ),
+        "disk_pct": disk.map(|d| d.used_percent).unwrap_or(0.0),
+        "disk_text": disk.map(|d| format!("{:.1}%", d.used_percent)).unwrap_or_default(),
+        "disk_sub": disk.map(|d| format!("{} / {}   {}", bytes(d.used), bytes(d.total), d.mount)).unwrap_or_default(),
+        "temp_present": hottest.is_some(),
+        "temp_pct": hottest.map(|t| t.value.0).unwrap_or(0.0),
+        "temp_text": hottest.map(|t| format!("{:.0}°C", t.value.0)).unwrap_or_default(),
+        "temp_cls": hottest.map(|t| temp_cls(t.value)).unwrap_or("g"),
+        "temp_sub": temp_sub,
+        "fans_present": !fans.is_empty(),
+        "fans_pct": fan_avg,
+        "fans_text": fans.first().map(|f| format!("{} rpm", f.rpm)).unwrap_or_default(),
+        "fans_sub": fan_sub,
+        "batt_present": battery.is_some(),
+        "batt_pct": battery.as_ref().map(|b| b.charge_percent).unwrap_or(0.0),
+        "batt_text": battery.as_ref().map(|b| format!("{:.0}%", b.charge_percent)).unwrap_or_default(),
+        "batt_sub": battery.as_ref().map(|b| {
+            let mut s = b.state.clone();
+            if let Some(c) = b.cycle_count { s.push_str(&format!("   {c} cycles")); }
+            if let Some(h) = b.health_percent { s.push_str(&format!("   health {h:.0}%")); }
+            s
+        }).unwrap_or_default(),
+        "net_sub": format!("↓ {}/s     ↑ {}/s", bytes(rx as u64), bytes(tx as u64)),
+    });
+    let _ = wv.evaluate_script(&format!("window.__pf&&window.__pf.update({})", payload));
 }
 
 #[cfg(target_os = "macos")]
@@ -359,19 +305,8 @@ fn set_menubar_text(tray: &TrayIcon, text: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Formatting helpers
+// Helpers
 // ---------------------------------------------------------------------------
-
-fn bar(pct: f32) -> String {
-    let filled = ((pct / 100.0).clamp(0.0, 1.0) * BAR_WIDTH as f32).round() as usize;
-    let mut s = String::with_capacity(BAR_WIDTH + 2);
-    s.push('▕');
-    for i in 0..BAR_WIDTH {
-        s.push(if i < filled { '█' } else { '░' });
-    }
-    s.push('▏');
-    s
-}
 
 fn spark(values: &[f32]) -> String {
     const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -396,38 +331,12 @@ fn bytes(n: u64) -> String {
     }
 }
 
-fn load_color(pct: f32) -> (u8, u8, u8) {
-    match pct {
-        x if x < 50.0 => (52, 199, 89),
-        x if x < 80.0 => (255, 204, 0),
-        _ => (255, 59, 48),
+fn temp_cls(c: Celsius) -> &'static str {
+    match c.0 {
+        x if x < 50.0 => "g",
+        x if x < 70.0 => "y",
+        _ => "r",
     }
-}
-fn charge_color(pct: f32) -> (u8, u8, u8) {
-    match pct {
-        x if x > 50.0 => (52, 199, 89),
-        x if x > 20.0 => (255, 204, 0),
-        _ => (255, 59, 48),
-    }
-}
-
-fn dot(color: (u8, u8, u8)) -> MenuIcon {
-    const S: u32 = 18;
-    let c = (S as f32 - 1.0) / 2.0;
-    let r = 6.5_f32;
-    let mut rgba = vec![0u8; (S * S * 4) as usize];
-    for y in 0..S {
-        for x in 0..S {
-            let d = (((x as f32 - c).powi(2)) + ((y as f32 - c).powi(2))).sqrt();
-            let a = (r + 0.5 - d).clamp(0.0, 1.0);
-            let idx = ((y * S + x) * 4) as usize;
-            rgba[idx] = color.0;
-            rgba[idx + 1] = color.1;
-            rgba[idx + 2] = color.2;
-            rgba[idx + 3] = (a * 255.0) as u8;
-        }
-    }
-    MenuIcon::from_rgba(rgba, S, S).expect("valid dot icon")
 }
 
 fn make_ring_icon() -> Icon {
@@ -458,65 +367,78 @@ fn make_ring_icon() -> Icon {
 }
 
 // ---------------------------------------------------------------------------
-// The popover dashboard (self-contained HTML/CSS/JS).
+// Popover dashboard (self-contained HTML/CSS/JS).
 // ---------------------------------------------------------------------------
 
 const DASHBOARD_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark">
 <style>
-:root{--g:#34c759;--y:#ffcc00;--r:#ff3b30;--accent:#5b9dff;}
+:root{--g:#34c759;--y:#ffcc00;--r:#ff3b30;--accent:#5b9dff;--line:#2c2c2e;}
 *{box-sizing:border-box;margin:0;padding:0;}
-html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;color:#e8edf4;-webkit-user-select:none;cursor:default;}
-.panel{background:#1c1c1e;border:1px solid #38383a;border-radius:14px;overflow:hidden;}
-.row{display:grid;grid-template-columns:40px 1fr;gap:12px;padding:13px 16px;align-items:start;}
-.row + .row{border-top:1px solid #2c2c2e;}
-.ic{width:30px;height:30px;color:#8a93a2;margin-top:2px;}
+html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;color:#f2f4f8;-webkit-user-select:none;cursor:default;}
+.panel{background:#1c1c1e;border:1px solid #3a3a3c;border-radius:16px;overflow:hidden;}
+.row{display:grid;grid-template-columns:34px 1fr;gap:14px;padding:14px 18px;align-items:center;}
+.row + .row{border-top:1px solid var(--line);}
+.ic{width:30px;height:30px;color:#9aa3b2;}
 .ic svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;}
-.head{display:flex;justify-content:space-between;align-items:baseline;}
-.name{font-size:12px;color:#9aa3b2;letter-spacing:.02em;}
-.val{font-size:18px;font-weight:700;letter-spacing:-.01em;}
-.sub{font-size:11px;color:#8a93a2;margin-top:3px;line-height:1.5;white-space:pre-line;}
-.bar{height:6px;background:#3a3a3c;border-radius:99px;margin-top:9px;overflow:hidden;}
-.bar-fill{height:100%;border-radius:99px;width:0;transition:width .3s ease;}
-.bar-fill.g{background:var(--g);}.bar-fill.y{background:var(--y);}.bar-fill.r{background:var(--r);}
-.cores{display:flex;align-items:flex-end;gap:2px;height:16px;margin-top:9px;}
+.content{min-width:0;}
+.head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;}
+.name{font-size:12px;color:#9aa3b2;letter-spacing:.03em;text-transform:uppercase;}
+.val{font-size:20px;font-weight:700;letter-spacing:-.02em;white-space:nowrap;}
+.sub{font-size:11.5px;color:#8a93a2;margin-top:4px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.bar{height:6px;background:#3a3a3c;border-radius:99px;margin-top:11px;overflow:hidden;}
+.bar-fill{height:100%;border-radius:99px;width:0;transition:width .35s ease;}
+.bar-fill.g{background:var(--g);}.bar-fill.y{background:var(--y);}.bar-fill.r{background:var(--r);}.bar-fill.b{background:var(--accent);}
+.cores{display:flex;align-items:flex-end;gap:2px;height:16px;margin-top:11px;}
 .core{flex:1;background:var(--accent);border-radius:1px;min-height:2px;opacity:.85;}
-.foot{padding:9px 16px;color:#6b7280;font-size:11px;text-align:center;border-top:1px solid #2c2c2e;}
+.foot{padding:6px;border-top:1px solid var(--line);}
+.quit{display:block;width:100%;background:transparent;border:0;color:#8a93a2;font:inherit;font-size:12px;padding:10px;border-radius:9px;cursor:pointer;transition:background .15s,color .15s;}
+.quit:hover{background:#2c2c2e;color:#f2f4f8;}
 </style></head><body><div class="panel">
 
-<div class="row"><div class="ic"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></div>
-<div><div class="head"><span class="name">CPU</span><span class="val" id="cpu-val">—</span></div>
+<div class="row"><span class="ic"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>
+<div class="content"><div class="head"><span class="name">CPU</span><span class="val" id="cpu-val">—</span></div>
 <div class="sub" id="cpu-sub"></div><div class="cores" id="cores"></div>
 <div class="bar"><div class="bar-fill" id="cpu-bar"></div></div></div></div>
 
-<div class="row"><div class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="11" rx="1.5"/><path d="M6 18v2M10 18v2M14 18v2M18 18v2M6 10v4M10 10v4M14 10v4"/></svg></div>
-<div><div class="head"><span class="name">Memory</span><span class="val" id="mem-val">—</span></div>
+<div class="row"><span class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="11" rx="1.5"/><path d="M6 18v2M10 18v2M14 18v2M18 18v2M6 10v4M10 10v4M14 10v4"/></svg></span>
+<div class="content"><div class="head"><span class="name">Memory</span><span class="val" id="mem-val">—</span></div>
 <div class="sub" id="mem-sub"></div><div class="bar"><div class="bar-fill" id="mem-bar"></div></div></div></div>
 
-<div class="row"><div class="ic"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></div>
-<div><div class="head"><span class="name">Storage</span><span class="val" id="disk-val">—</span></div>
+<div class="row"><span class="ic"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span>
+<div class="content"><div class="head"><span class="name">Storage</span><span class="val" id="disk-val">—</span></div>
 <div class="sub" id="disk-sub"></div><div class="bar"><div class="bar-fill" id="disk-bar"></div></div></div></div>
 
-<div class="row" id="sec-batt"><div class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="18" height="9" rx="2"/><path d="M22 11v3"/></svg></div>
-<div><div class="head"><span class="name">Battery</span><span class="val" id="batt-val">—</span></div>
+<div class="row" id="sec-temp"><span class="ic"><svg viewBox="0 0 24 24"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg></span>
+<div class="content"><div class="head"><span class="name">Temperature</span><span class="val" id="temp-val">—</span></div>
+<div class="sub" id="temp-sub"></div><div class="bar"><div class="bar-fill" id="temp-bar"></div></div></div></div>
+
+<div class="row" id="sec-fans"><span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.5"/><path d="M12 9.5c0-4 .5-6 2.5-6S18 6 14.5 10M12 14.5c4 0 6 .5 6 2.5s-2.5 3.5-6.5 0M9.5 12c-4 0-6-.5-6-2.5S6 6 10 9.5"/></svg></span>
+<div class="content"><div class="head"><span class="name">Fans</span><span class="val" id="fans-val">—</span></div>
+<div class="sub" id="fans-sub"></div><div class="bar"><div class="bar-fill b" id="fans-bar"></div></div></div></div>
+
+<div class="row" id="sec-batt"><span class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="18" height="9" rx="2"/><path d="M22 11v3"/></svg></span>
+<div class="content"><div class="head"><span class="name">Battery</span><span class="val" id="batt-val">—</span></div>
 <div class="sub" id="batt-sub"></div><div class="bar"><div class="bar-fill" id="batt-bar"></div></div></div></div>
 
-<div class="row"><div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg></div>
-<div><div class="head"><span class="name">Network</span><span class="val"></span></div>
+<div class="row"><span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg></span>
+<div class="content"><div class="head"><span class="name">Network</span><span class="val"></span></div>
 <div class="sub" id="net-sub"></div></div></div>
 
-<div class="foot">PeterFan · right-click the icon for the menu</div>
+<div class="foot"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
 </div>
 <script>
 window.__pf={update:function(d){
  function cls(p){return p<50?'g':p<80?'y':'r';}
- function setBar(id,p,c){var b=document.getElementById(id);if(b){b.style.width=Math.max(0,Math.min(100,p))+'%';b.className='bar-fill '+(c||cls(p));}}
+ function bar(id,p,c){var b=document.getElementById(id);if(b){b.style.width=Math.max(0,Math.min(100,p))+'%';b.className='bar-fill '+(c||cls(p));}}
  function set(id,t){var e=document.getElementById(id);if(e)e.textContent=t;}
- set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);setBar('cpu-bar',d.cpu_pct);
+ function show(id,on){var e=document.getElementById(id);if(e)e.style.display=on?'':'none';}
+ set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
  var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p){var s=document.createElement('span');s.className='core';s.style.height=Math.max(8,Math.min(100,p))+'%';cc.appendChild(s);});}
- set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);setBar('mem-bar',d.mem_pct);
- set('disk-val',d.disk_text);set('disk-sub',d.disk_sub);setBar('disk-bar',d.disk_pct);
- var sb=document.getElementById('sec-batt');if(sb)sb.style.display=d.batt_present?'':'none';
- if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);setBar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
+ set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
+ set('disk-val',d.disk_text);set('disk-sub',d.disk_sub);bar('disk-bar',d.disk_pct);
+ show('sec-temp',d.temp_present);if(d.temp_present){set('temp-val',d.temp_text);set('temp-sub',d.temp_sub);bar('temp-bar',d.temp_pct,d.temp_cls);}
+ show('sec-fans',d.fans_present);if(d.fans_present){set('fans-val',d.fans_text);set('fans-sub',d.fans_sub);bar('fans-bar',d.fans_pct,'b');}
+ show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
  set('net-sub',d.net_sub);
 }};
 </script></body></html>"##;
