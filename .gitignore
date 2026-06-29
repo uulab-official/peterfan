@@ -1,0 +1,19 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# We DO commit Cargo.lock: this workspace produces binaries.
+# (Leave the line below commented; documented here so it isn't "fixed" later.)
+# Cargo.lock
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Tauri / desktop (planned)
+apps/desktop/node_modules/
+apps/desktop/dist/
+apps/desktop/src-tauri/target/

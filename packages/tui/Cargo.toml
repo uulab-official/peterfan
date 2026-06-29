@@ -1,0 +1,19 @@
+[package]
+name = "peterfan-tui"
+description = "PeterFan terminal dashboard (ratatui)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "peterfan-tui"
+path = "src/main.rs"
+
+[dependencies]
+peterfan-core = { workspace = true }
+peterfan-platform = { workspace = true }
+ratatui = { workspace = true }
+anyhow = { workspace = true }

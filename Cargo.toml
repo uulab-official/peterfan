@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "packages/core",
+    "packages/platform",
+    "packages/cli",
+    "packages/tui",
+]
+
+# Crates that are part of the long-term layout but not yet scaffolded
+# (see docs/ROADMAP.md): packages/daemon, apps/desktop.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["PeterFan contributors"]
+repository = "https://github.com/peterfan/peterfan"
+rust-version = "1.80"
+
+[workspace.dependencies]
+peterfan-core = { path = "packages/core" }
+peterfan-platform = { path = "packages/platform" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+owo-colors = "4"
+ratatui = "0.29"
+crossterm = "0.28"
+libc = "0.2"
+
+[profile.release]
+lto = "thin"
+strip = true
