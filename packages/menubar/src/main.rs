@@ -103,13 +103,17 @@ fn main() {
 fn build_tray(app: &mut App) {
     let menu = Menu::new();
 
+    // Data rows are `enabled: true` so macOS renders them in full color —
+    // disabled items are dimmed grey, which looked washed-out. The header
+    // stays disabled to read as a subtle section title. Clicking a data row
+    // simply closes the menu (only Quit is wired to an action).
     let header = MenuItem::new("PeterFan", false, None);
-    let cpu_item = IconMenuItem::new("CPU", false, None, None);
-    let cores_item = MenuItem::new("Cores", false, None);
-    let mem_item = IconMenuItem::new("Memory", false, None, None);
-    let disk_item = IconMenuItem::new("Disk", false, None, None);
-    let net_item = MenuItem::new("Network", false, None);
-    let batt_item = IconMenuItem::new("Battery", false, None, None);
+    let cpu_item = IconMenuItem::new("CPU", true, None, None);
+    let cores_item = MenuItem::new("Cores", true, None);
+    let mem_item = IconMenuItem::new("Memory", true, None, None);
+    let disk_item = IconMenuItem::new("Disk", true, None, None);
+    let net_item = MenuItem::new("Network", true, None);
+    let batt_item = IconMenuItem::new("Battery", true, None, None);
     let quit = MenuItem::new("Quit PeterFan", true, None);
     let sep = PredefinedMenuItem::separator();
     let sep2 = PredefinedMenuItem::separator();

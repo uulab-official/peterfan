@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.2] — Readable menu-bar rows
+
+### Fixed
+- Menu-bar dropdown rows were rendered dim/grey because every row was a
+  *disabled* menu item (macOS dims disabled items). Data rows are now enabled
+  so they render in full, readable color; the header stays a subtle title.
+
 ## [0.4.1] — Professional menu-bar UI
 
 ### Changed
@@ -72,7 +79,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.4.2
 [0.4.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.4.1
 [0.4.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.4.0
 [0.3.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.3.0
