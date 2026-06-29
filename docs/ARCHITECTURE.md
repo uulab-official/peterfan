@@ -34,7 +34,8 @@ architectural invariant to defend in review.
 | `peterfan-core` | `packages/core` | Domain types, system `metrics`, fan `curve`s, `profile`s, and the two backend traits (`HardwareProvider`, `SystemMonitor`). Pure, no OS deps. Unit-tested. |
 | `peterfan-platform` | `packages/platform` | Backend implementations: `system` (real cross-platform metrics via `sysinfo` + `battery`), `mock`/`mock_monitor` (simulated), `macos` (real read-only thermal info via `sysctl`). `detect()`/`system_monitor()` pick real backends; `mock()`/`mock_monitor()` force simulation. |
 | `peterfan-cli` | `packages/cli` | The `peterfan` binary. Pure presentation over core + a provider. |
-| `peterfan-tui` | `packages/tui` | `peterfan-tui` binary: a ratatui dashboard polling a provider. |
+| `peterfan-tui` | `packages/tui` | `peterfan-tui` binary: a ratatui dashboard polling a `SystemMonitor`. |
+| `peterfan-menubar` | `packages/menubar` | `peterfan-menubar` binary: a macOS menu-bar (Windows tray) app showing live metrics, built on `tray-icon` + `tao`. |
 
 Planned (see [ROADMAP](./ROADMAP.md)): `packages/daemon` (privileged control
 service + safety watchdog) and `apps/desktop` (Tauri + React GUI).

@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.3.0.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.4.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
@@ -37,6 +37,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 | Fan **control** | 🚧 planned |
 | CLI — `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `system`, `temps`, `fans`, `profile`, `curve`, `hardware`, `doctor` | ✅ runnable |
 | TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes | ✅ runnable |
+| **Menu-bar app** (macOS menu bar / Windows tray) — live CPU + dropdown | ✅ runnable |
 | Desktop GUI (Tauri), daemon, plugins, HTTP API | 🗺️ roadmap |
 
 When a backend can't read real sensors yet, the CLI/TUI **transparently fall
@@ -71,6 +72,9 @@ cargo run -p peterfan-cli -- --mock status
 
 # Live terminal dashboard
 cargo run -p peterfan-tui -- --mock
+
+# Live metrics in the macOS menu bar (Windows: system tray)
+cargo run -p peterfan-menubar
 ```
 
 Once installed, the binary is simply `peterfan`.
@@ -141,7 +145,8 @@ peterfan/
 │   ├── core/        peterfan-core      — OS-agnostic types, curves, profiles, trait
 │   ├── platform/    peterfan-platform  — mock + macOS backends (Windows/Linux planned)
 │   ├── cli/         peterfan           — the command-line interface
-│   └── tui/         peterfan-tui       — ratatui live dashboard
+│   ├── tui/         peterfan-tui       — ratatui live dashboard
+│   └── menubar/     peterfan-menubar   — macOS menu-bar / Windows tray app
 ├── apps/
 │   └── landing/     static marketing website (open apps/landing/index.html)
 ├── docs/            architecture, roadmap, CLI reference

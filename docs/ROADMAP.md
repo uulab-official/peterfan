@@ -20,10 +20,17 @@ then richer surfaces. Versions are goals, not promises.
 - [x] CLI: `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `system`; full `status` dashboard
 - [x] Mock metrics monitor for `--mock`
 
-## v0.3 — System dashboard TUI (current)
+## v0.3 — System dashboard TUI
 
 - [x] TUI rebuilt on `SystemMonitor`: CPU (global + per-core), memory, disk,
       network, CPU history, battery, top-process table
+
+## v0.4 — Menu-bar app (current)
+
+- [x] `peterfan-menubar`: live CPU in the macOS menu bar + CPU/mem/net dropdown
+      (tray-icon + tao; accessory app, Windows tray fallback)
+- [ ] Bundle as a signed `.app` + Homebrew cask / `winget` for one-click install
+- [ ] Configurable menu-bar metric (CPU / temp / net) and refresh interval
 - [ ] Config file (TOML): default profile, startup, notifications
 - [ ] `--watch` live refresh for CLI metric commands
 

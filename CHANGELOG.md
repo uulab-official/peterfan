@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] — Menu-bar app
+
+### Added
+- **`peterfan-menubar`** — a macOS menu-bar app (à la Stats) that shows live
+  CPU usage in the menu bar with a dropdown of CPU / memory / network detail and
+  a Quit item, refreshing once a second from the shared `SystemMonitor`. Runs as
+  an accessory app (no Dock icon) via `tray-icon` + `tao`. On Windows the same
+  binary shows a system-tray icon with the metrics in its tooltip. `--mock`
+  drives it from the simulated machine. Run with `cargo run -p peterfan-menubar`.
+
 ## [0.3.0] — System dashboard TUI
 
 ### Changed
@@ -53,7 +63,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.4.0
 [0.3.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.3.0
 [0.2.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.2.0
 [0.1.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.1.0
