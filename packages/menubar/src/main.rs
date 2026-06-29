@@ -194,10 +194,10 @@ fn update(app: &mut App) {
     app.monitor.refresh();
     let cpu = app.monitor.cpu();
 
-    // Clean, readable menu-bar title — just the CPU percentage. (A block-char
-    // sparkline here smears into a solid bar at high load.)
+    // Clean, readable menu-bar title — the CPU percentage at the same precision
+    // as the popover (one decimal), so the two never disagree.
     if let Some(tray) = &app.tray {
-        set_menubar_text(tray, &format!("{:.0}%", cpu.usage_percent));
+        set_menubar_text(tray, &format!("{:.1}%", cpu.usage_percent));
     }
 
     if !app.popover_visible {

@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.7.0.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.8.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
@@ -52,17 +52,23 @@ See [`docs/ROADMAP.md`](./docs/ROADMAP.md) for the full plan.
 ## Download
 
 Prebuilt binaries are attached to each [GitHub Release](https://github.com/uulab-official/peterfan/releases/latest).
-Each archive contains `peterfan` (CLI), `peterfan-tui` (dashboard), and
-`peterfan-menubar` (menu-bar app). macOS (Apple Silicon + Intel) and Windows
-builds are produced by CI on every tagged release.
+Each macOS archive contains `peterfan` (CLI), `peterfan-tui` (dashboard),
+`peterfan-menubar` (menu-bar binary), **and a double-clickable `PeterFan.app`**
+menu-bar agent. macOS (Apple Silicon + Intel) and Windows builds are produced by
+CI on every tagged release.
 
 ```sh
 # macOS (Apple Silicon) — from the Releases page
 tar -xzf peterfan-*-aarch64-apple-darwin.tar.gz
 cd peterfan-*-aarch64-apple-darwin
-xattr -d com.apple.quarantine peterfan* 2>/dev/null   # binaries are unsigned
+
+# the build is unsigned, so clear the quarantine flag once:
+xattr -dr com.apple.quarantine PeterFan.app peterfan*
+
+# menu-bar app: drag PeterFan.app to /Applications and double-click it
+open PeterFan.app
+# …or use the CLI / TUI directly
 ./peterfan status
-./peterfan-menubar &
 ```
 
 ## Build from source

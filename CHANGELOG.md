@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] — Double-clickable .app + consistent precision
+
+### Added
+- **`PeterFan.app`** — a double-clickable macOS menu-bar agent bundle
+  (`LSUIElement`, no Dock icon), assembled by `scripts/bundle-macos.sh` and
+  attached to macOS releases. Drag to /Applications and open.
+
+### Fixed
+- The menu-bar CPU percentage and the popover's CPU value disagreed because
+  they rounded to different precision (e.g. `43%` vs `42.8%`). Both now use one
+  decimal, so they always match.
+
 ## [0.7.1] — Clean menu-bar title
 
 ### Fixed
@@ -122,7 +134,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.8.0
 [0.7.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.7.1
 [0.7.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.7.0
 [0.6.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.6.0

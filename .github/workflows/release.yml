@@ -55,6 +55,9 @@ jobs:
              target/${{ matrix.target }}/release/peterfan-menubar \
              "dist/$NAME/"
           cp README.md LICENSE CHANGELOG.md "dist/$NAME/"
+          # macOS: also include a double-clickable PeterFan.app menu-bar bundle.
+          VERSION="${GITHUB_REF_NAME#v}" bash scripts/bundle-macos.sh \
+            "target/${{ matrix.target }}/release/peterfan-menubar" "dist/$NAME"
           tar -czf "dist/$NAME.tar.gz" -C dist "$NAME"
           echo "ASSET=dist/$NAME.tar.gz" >> "$GITHUB_ENV"
 
