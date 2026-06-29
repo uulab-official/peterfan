@@ -4,10 +4,11 @@
 //! Windows, macOS, SMC keys, or Embedded Controllers. It only knows about:
 //!
 //! - domain [`types`] (temperatures, fans, hardware info),
+//! - system [`metrics`] (CPU, memory, disk, network, processes, battery),
 //! - fan [`curve`]s and their interpolation,
 //! - [`profile`]s (Silent / Balanced / Gaming / …),
-//! - and the single [`provider::HardwareProvider`] trait that platform
-//!   backends implement.
+//! - and the two backend seams: [`provider::HardwareProvider`] (thermal
+//!   hardware) and [`monitor::SystemMonitor`] (system metrics).
 //!
 //! The dependency direction is strictly one-way:
 //!
@@ -21,9 +22,12 @@
 
 pub mod curve;
 pub mod error;
+pub mod metrics;
+pub mod monitor;
 pub mod profile;
 pub mod provider;
 pub mod types;
 
 pub use error::{CoreError, Result};
+pub use monitor::{MonitorCapabilities, SystemMonitor};
 pub use provider::{Capabilities, HardwareProvider};

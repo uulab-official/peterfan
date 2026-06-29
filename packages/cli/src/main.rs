@@ -1,29 +1,40 @@
 //! `peterfan` — the command-line interface.
 //!
-//! The CLI is a thin presentation layer over [`peterfan_core`] and a
-//! [`peterfan_core::HardwareProvider`] supplied by [`peterfan_platform`]. It
-//! contains no hardware logic of its own.
+//! The CLI is a thin presentation layer over [`peterfan_core`] and two backend
+//! seams supplied by [`peterfan_platform`]:
+//!
+//! - a [`SystemMonitor`] for system metrics (CPU, memory, disk, network,
+//!   processes, battery) — real and cross-platform via `sysinfo`;
+//! - a [`HardwareProvider`] for thermal hardware (temperatures, fans).
+//!
+//! It contains no hardware logic of its own.
 
 mod render;
+
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use owo_colors::OwoColorize;
 
+use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
 use peterfan_core::types::{Fan, TempSensor};
-use peterfan_core::HardwareProvider;
+use peterfan_core::{HardwareProvider, SystemMonitor};
+
+/// Delay between the two metric samples; usage % and network rates are deltas.
+const SAMPLE_MS: u64 = 300;
 
 #[derive(Parser)]
 #[command(
     name = "peterfan",
     version,
-    about = "Tiny fan control & hardware monitor for developers",
-    long_about = "PeterFan — cross-platform fan controller and hardware monitor.\n\
+    about = "Tiny hardware monitor & fan controller for developers",
+    long_about = "PeterFan — cross-platform system monitor and fan controller.\n\
                   Run without a subcommand for a full dashboard."
 )]
 struct Cli {
-    /// Use the fully simulated backend instead of real hardware.
+    /// Use fully simulated backends instead of real hardware.
     #[arg(long, global = true)]
     mock: bool,
 
@@ -37,11 +48,36 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Show a full dashboard: hardware, temperatures, fans, profile (default).
+    /// Full dashboard: system, CPU, memory, disk, network, battery, thermals (default).
     Status,
-    /// Show temperature sensors.
+    /// CPU usage, per-core load, frequency, and load average.
+    Cpu,
+    /// Physical and swap memory usage.
+    #[command(alias = "mem")]
+    Memory,
+    /// Mounted disks: capacity and usage.
+    #[command(alias = "disks")]
+    Disk,
+    /// Network interfaces: throughput and totals.
+    #[command(alias = "net")]
+    Network,
+    /// Top processes by CPU (or memory with --mem).
+    #[command(alias = "proc")]
+    Top {
+        /// Rank by memory instead of CPU.
+        #[arg(long)]
+        mem: bool,
+        /// Number of processes to show.
+        #[arg(short = 'n', long, default_value_t = 10)]
+        count: usize,
+    },
+    /// Battery charge, health, and time remaining.
+    Battery,
+    /// Static system information (host, OS, kernel, cores, uptime).
+    System,
+    /// Temperature sensors.
     Temps,
-    /// Show fans and their current speeds.
+    /// Fans and their current speeds.
     Fans,
     /// List profiles, or preview/apply one: `peterfan profile gaming`.
     Profile {
@@ -55,7 +91,7 @@ enum Command {
     },
     /// Show detected hardware (CPU, RAM, OS, …).
     Hardware,
-    /// Diagnose the active backend, its capabilities, and privileges.
+    /// Diagnose the active backends, capabilities, and privileges.
     Doctor,
 }
 
@@ -68,22 +104,323 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let provider: Box<dyn HardwareProvider> = if cli.mock {
+    let json = cli.json;
+    let mock = cli.mock;
+    match cli.command.unwrap_or(Command::Status) {
+        Command::Status => cmd_status(mock, json),
+        Command::Cpu => cmd_cpu(mock, json),
+        Command::Memory => cmd_memory(mock, json),
+        Command::Disk => cmd_disk(mock, json),
+        Command::Network => cmd_network(mock, json),
+        Command::Top { mem, count } => cmd_top(mock, json, mem, count),
+        Command::Battery => cmd_battery(mock, json),
+        Command::System => cmd_system(mock, json),
+        Command::Temps => cmd_temps(provider(mock).as_ref(), json),
+        Command::Fans => cmd_fans(provider(mock).as_ref(), json),
+        Command::Profile { name } => cmd_profile(provider(mock).as_ref(), name, json),
+        Command::Curve { name } => cmd_curve(name, json),
+        Command::Hardware => cmd_hardware(provider(mock).as_ref(), json),
+        Command::Doctor => cmd_doctor(mock, json),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Backend acquisition
+// ---------------------------------------------------------------------------
+
+fn provider(mock: bool) -> Box<dyn HardwareProvider> {
+    if mock {
         peterfan_platform::mock()
     } else {
         peterfan_platform::detect()
-    };
-
-    match cli.command.unwrap_or(Command::Status) {
-        Command::Status => cmd_status(provider.as_ref(), cli.json),
-        Command::Temps => cmd_temps(provider.as_ref(), cli.json),
-        Command::Fans => cmd_fans(provider.as_ref(), cli.json),
-        Command::Profile { name } => cmd_profile(provider.as_ref(), name, cli.json),
-        Command::Curve { name } => cmd_curve(name, cli.json),
-        Command::Hardware => cmd_hardware(provider.as_ref(), cli.json),
-        Command::Doctor => cmd_doctor(provider.as_ref(), cli.json),
     }
 }
+
+/// A monitor sampled twice across [`SAMPLE_MS`] so usage % and rates are valid.
+fn sampled_monitor(mock: bool) -> Box<dyn SystemMonitor> {
+    let mut m = if mock {
+        peterfan_platform::mock_monitor()
+    } else {
+        peterfan_platform::system_monitor()
+    };
+    m.refresh();
+    std::thread::sleep(Duration::from_millis(SAMPLE_MS));
+    m.refresh();
+    m
+}
+
+// ---------------------------------------------------------------------------
+// System-metrics commands
+// ---------------------------------------------------------------------------
+
+fn cmd_cpu(mock: bool, json: bool) -> Result<()> {
+    let m = sampled_monitor(mock);
+    let cpu = m.cpu();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&cpu)?);
+        return Ok(());
+    }
+    println!(
+        "{} {}",
+        render::heading("CPU"),
+        format!("· {}", cpu.brand).dimmed()
+    );
+    println!(
+        "  {:<8} {}  {}",
+        "usage",
+        render::pct_colored(cpu.usage_percent),
+        render::load_bar(cpu.usage_percent)
+    );
+    println!("  {:<8} {} MHz", "freq", cpu.frequency_mhz);
+    if let Some(la) = cpu.load_avg {
+        println!(
+            "  {:<8} {:.2} {:.2} {:.2}",
+            "load", la.one, la.five, la.fifteen
+        );
+    }
+    println!();
+    for (i, &c) in cpu.per_core.iter().enumerate() {
+        println!(
+            "  core {:>2}  {}  {}",
+            i,
+            render::pct_colored(c),
+            render::load_bar(c)
+        );
+    }
+    Ok(())
+}
+
+fn cmd_memory(mock: bool, json: bool) -> Result<()> {
+    let m = sampled_monitor(mock);
+    let mem = m.memory();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&mem)?);
+        return Ok(());
+    }
+    println!("{}", render::heading("Memory"));
+    println!(
+        "  {} / {} ({})  {}",
+        render::bytes(mem.used),
+        render::bytes(mem.total),
+        render::pct_colored(mem.used_percent).trim(),
+        render::load_bar(mem.used_percent)
+    );
+    if mem.swap_total > 0 {
+        let swap_pct = mem.swap_used as f32 / mem.swap_total as f32 * 100.0;
+        println!(
+            "  swap {} / {}  {}",
+            render::bytes(mem.swap_used),
+            render::bytes(mem.swap_total),
+            render::load_bar(swap_pct)
+        );
+    }
+    Ok(())
+}
+
+fn cmd_disk(mock: bool, json: bool) -> Result<()> {
+    let m = sampled_monitor(mock);
+    let disks = m.disks();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&disks)?);
+        return Ok(());
+    }
+    println!("{}", render::heading("Disk"));
+    print_disks(&disks);
+    Ok(())
+}
+
+fn cmd_network(mock: bool, json: bool) -> Result<()> {
+    let m = sampled_monitor(mock);
+    let mut nets = m.networks();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&nets)?);
+        return Ok(());
+    }
+    nets.sort_by(|a, b| (b.rx_total + b.tx_total).cmp(&(a.rx_total + a.tx_total)));
+    println!("{}", render::heading("Network"));
+    print_networks(nets.iter().filter(|n| n.rx_total + n.tx_total > 0));
+    Ok(())
+}
+
+fn cmd_top(mock: bool, json: bool, mem: bool, count: usize) -> Result<()> {
+    let m = sampled_monitor(mock);
+    let sort = if mem { ProcSort::Memory } else { ProcSort::Cpu };
+    let procs = m.processes(count, sort);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&procs)?);
+        return Ok(());
+    }
+    println!(
+        "{} {}",
+        render::heading("Top processes"),
+        format!("· by {}", if mem { "memory" } else { "cpu" }).dimmed()
+    );
+    println!(
+        "  {:>7}  {:>6}  {:>10}  {}",
+        "PID".dimmed(),
+        "CPU%".dimmed(),
+        "MEM".dimmed(),
+        "NAME".dimmed()
+    );
+    for p in &procs {
+        println!(
+            "  {:>7}  {:>6.1}  {:>10}  {}",
+            p.pid,
+            p.cpu_percent,
+            render::bytes(p.memory),
+            p.name
+        );
+    }
+    Ok(())
+}
+
+fn cmd_battery(mock: bool, json: bool) -> Result<()> {
+    let m = sampled_monitor(mock);
+    let batt = m.battery();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&batt)?);
+        return Ok(());
+    }
+    println!("{}", render::heading("Battery"));
+    match batt {
+        None => println!("  {}", "no battery detected".dimmed()),
+        Some(b) => print_battery(&b),
+    }
+    Ok(())
+}
+
+fn cmd_system(mock: bool, json: bool) -> Result<()> {
+    let m = sampled_monitor(mock);
+    let info = m.system_info();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&info)?);
+        return Ok(());
+    }
+    println!("{}", render::heading("System"));
+    print_system(&info);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Status: the full dashboard
+// ---------------------------------------------------------------------------
+
+fn cmd_status(mock: bool, json: bool) -> Result<()> {
+    let m = sampled_monitor(mock);
+    let provider = provider(mock);
+
+    let info = m.system_info();
+    let cpu = m.cpu();
+    let mem = m.memory();
+    let disks = m.disks();
+    let mut nets = m.networks();
+    nets.sort_by(|a, b| (b.rx_total + b.tx_total).cmp(&(a.rx_total + a.tx_total)));
+    let battery = m.battery();
+    let sensors = read_sensors(provider.as_ref())?;
+
+    if json {
+        let value = serde_json::json!({
+            "metrics_backend": m.name(),
+            "thermal_backend": provider.name(),
+            "simulated_sensors": sensors.simulated,
+            "system": info,
+            "cpu": cpu,
+            "memory": mem,
+            "disks": disks,
+            "networks": nets,
+            "battery": battery,
+            "temps": sensors.temps,
+            "fans": sensors.fans,
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+
+    println!("{}", render::banner(env!("CARGO_PKG_VERSION")));
+    let os = info
+        .os_name
+        .as_deref()
+        .map(|n| match &info.os_version {
+            Some(v) => format!("{n} {v}"),
+            None => n.to_string(),
+        })
+        .unwrap_or_else(|| std::env::consts::OS.to_string());
+    println!(
+        "{} {}  ·  {}  ·  up {}",
+        "backend:".dimmed(),
+        format!("{} + {}", m.name(), provider.name()).bold(),
+        os.dimmed(),
+        render::duration(info.uptime_secs).dimmed()
+    );
+    println!();
+
+    // CPU
+    println!(
+        "{} {}",
+        render::heading("CPU"),
+        format!("· {}", cpu.brand).dimmed()
+    );
+    println!(
+        "  {}  {}   cores {}",
+        render::pct_colored(cpu.usage_percent),
+        render::load_bar(cpu.usage_percent),
+        render::core_spark(&cpu.per_core).cyan()
+    );
+    println!();
+
+    // Memory
+    println!("{}", render::heading("Memory"));
+    println!(
+        "  {} / {} ({})  {}",
+        render::bytes(mem.used),
+        render::bytes(mem.total),
+        render::pct_colored(mem.used_percent).trim(),
+        render::load_bar(mem.used_percent)
+    );
+    println!();
+
+    // Disk
+    if !disks.is_empty() {
+        println!("{}", render::heading("Disk"));
+        print_disks(&disks);
+        println!();
+    }
+
+    // Network (top interfaces by traffic)
+    let active: Vec<_> = nets
+        .iter()
+        .filter(|n| n.rx_total + n.tx_total > 0)
+        .take(3)
+        .collect();
+    if !active.is_empty() {
+        println!("{}", render::heading("Network"));
+        print_networks(active.into_iter());
+        println!();
+    }
+
+    // Battery
+    if let Some(b) = &battery {
+        println!("{}", render::heading("Battery"));
+        print_battery(b);
+        println!();
+    }
+
+    // Thermals
+    println!("{}", render::heading("Temperatures"));
+    if sensors.simulated {
+        println!("  {}", simulated_note());
+    }
+    print_temps(&sensors.temps);
+    println!();
+    println!("{}", render::heading("Fans"));
+    print_fans(&sensors.fans);
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Thermal commands (HardwareProvider)
+// ---------------------------------------------------------------------------
 
 /// Sensor readings plus whether they came from the simulated backend.
 struct Sensors {
@@ -92,10 +429,8 @@ struct Sensors {
     simulated: bool,
 }
 
-/// Read temps + fans from `provider`, transparently falling back to the mock
-/// backend (and flagging the data as simulated) when the real backend can't
-/// read sensors yet. This is what makes `peterfan temps` show *something*
-/// useful on macOS today instead of an error.
+/// Read temps + fans, transparently falling back to the mock backend (and
+/// flagging the data as simulated) when the real backend can't read sensors yet.
 fn read_sensors(provider: &dyn HardwareProvider) -> Result<Sensors> {
     let caps = provider.capabilities();
     if caps.read_temps && caps.read_fans {
@@ -120,50 +455,6 @@ fn simulated_note() -> String {
             .italic()
             .dimmed()
     )
-}
-
-// ---------------------------------------------------------------------------
-// Commands
-// ---------------------------------------------------------------------------
-
-fn cmd_status(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
-    let info = provider.hardware_info()?;
-    let sensors = read_sensors(provider)?;
-
-    if json {
-        let value = serde_json::json!({
-            "backend": provider.name(),
-            "simulated_sensors": sensors.simulated,
-            "hardware": info,
-            "temps": sensors.temps,
-            "fans": sensors.fans,
-        });
-        println!("{}", serde_json::to_string_pretty(&value)?);
-        return Ok(());
-    }
-
-    println!("{}", render::banner(env!("CARGO_PKG_VERSION")));
-    println!("{} {}", "backend:".dimmed(), provider.name().bold());
-    println!();
-
-    println!("{}", render::heading("Temperatures"));
-    if sensors.simulated {
-        println!("  {}", simulated_note());
-    }
-    print_temps(&sensors.temps);
-    println!();
-
-    println!("{}", render::heading("Fans"));
-    print_fans(&sensors.fans);
-    println!();
-
-    println!(
-        "{} {}",
-        render::heading("Hardware"),
-        format!("· {}", info.cpu).dimmed()
-    );
-
-    Ok(())
 }
 
 fn cmd_temps(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
@@ -225,8 +516,6 @@ fn cmd_profile(provider: &dyn HardwareProvider, name: Option<String>, json: bool
 
     let curve = profile.default_curve();
     let sensors = read_sensors(provider)?;
-    // Use the hottest CPU sensor as the curve input, falling back to the
-    // hottest reading overall.
     let temp = hottest_temp(&sensors.temps);
     let duty = curve.duty_at(temp);
 
@@ -255,30 +544,27 @@ fn cmd_profile(provider: &dyn HardwareProvider, name: Option<String>, json: bool
                 applied.join(", ")
             );
         }
+    } else if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "profile": profile.as_str(),
+                "input_temp_c": temp,
+                "duty_percent": duty,
+                "applied": false,
+                "reason": "backend cannot control fans",
+            }))?
+        );
     } else {
-        // Read-only backend: preview only.
-        if json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "profile": profile.as_str(),
-                    "input_temp_c": temp,
-                    "duty_percent": duty,
-                    "applied": false,
-                    "reason": "backend cannot control fans",
-                }))?
-            );
-        } else {
-            println!(
-                "Profile {} would set fans to {duty}% at {:.0}°C.",
-                profile.as_str().bold(),
-                temp
-            );
-            println!(
-                "  {}",
-                "this backend is read-only — not applied. Use --mock to try it live.".dimmed()
-            );
-        }
+        println!(
+            "Profile {} would set fans to {duty}% at {:.0}°C.",
+            profile.as_str().bold(),
+            temp
+        );
+        println!(
+            "  {}",
+            "this backend is read-only — not applied. Use --mock to try it live.".dimmed()
+        );
     }
     Ok(())
 }
@@ -287,12 +573,7 @@ fn list_profiles(json: bool) -> Result<()> {
     if json {
         let arr: Vec<_> = Profile::all()
             .iter()
-            .map(|p| {
-                serde_json::json!({
-                    "name": p.as_str(),
-                    "description": p.description(),
-                })
-            })
+            .map(|p| serde_json::json!({ "name": p.as_str(), "description": p.description() }))
             .collect();
         println!("{}", serde_json::to_string_pretty(&arr)?);
         return Ok(());
@@ -335,7 +616,6 @@ fn cmd_curve(name: Option<String>, json: bool) -> Result<()> {
         );
     }
     println!();
-    // Show a few interpolated samples so the curve's shape is obvious.
     print!("  {}: ", "samples".dimmed());
     for t in [30, 45, 60, 75, 90] {
         print!("{t}°C={}%  ", curve.duty_at(t as f32));
@@ -344,9 +624,11 @@ fn cmd_curve(name: Option<String>, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_doctor(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
+fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
+    let provider = provider(mock);
+    let monitor = sampled_monitor(mock);
     let caps = provider.capabilities();
-    let info = provider.hardware_info().ok();
+    let mcaps = monitor.capabilities();
     let elevated = is_elevated();
 
     if json {
@@ -355,14 +637,17 @@ fn cmd_doctor(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
             serde_json::to_string_pretty(&serde_json::json!({
                 "os": std::env::consts::OS,
                 "arch": std::env::consts::ARCH,
-                "backend": provider.name(),
+                "metrics_backend": monitor.name(),
+                "thermal_backend": provider.name(),
                 "elevated": elevated,
-                "capabilities": {
-                    "read_temps": caps.read_temps,
-                    "read_fans": caps.read_fans,
+                "metrics": {
+                    "cpu": mcaps.cpu, "memory": mcaps.memory, "disks": mcaps.disks,
+                    "networks": mcaps.networks, "processes": mcaps.processes, "battery": mcaps.battery,
+                },
+                "thermal": {
+                    "read_temps": caps.read_temps, "read_fans": caps.read_fans,
                     "control_fans": caps.control_fans,
                 },
-                "hardware": info,
             }))?
         );
         return Ok(());
@@ -373,10 +658,19 @@ fn cmd_doctor(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
         "OS / arch",
         &format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH),
     );
-    print_kv("Backend", provider.name());
+    print_kv("Metrics backend", monitor.name());
+    print_kv("Thermal backend", provider.name());
     print_kv("Elevated", if elevated { "yes" } else { "no" });
     println!();
-    println!("{}", render::heading("Capabilities"));
+    println!("{}", render::heading("System metrics"));
+    print_check("cpu", mcaps.cpu);
+    print_check("memory", mcaps.memory);
+    print_check("disks", mcaps.disks);
+    print_check("networks", mcaps.networks);
+    print_check("processes", mcaps.processes);
+    print_check("battery", mcaps.battery);
+    println!();
+    println!("{}", render::heading("Thermal hardware"));
     print_check("read temperatures", caps.read_temps);
     print_check("read fans", caps.read_fans);
     print_check("control fans", caps.control_fans);
@@ -384,11 +678,11 @@ fn cmd_doctor(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
     if !caps.read_temps {
         println!();
         println!(
-            "  {} sensor reading is not implemented for the '{}' backend yet;",
+            "  {} thermal sensor reading is not implemented for the '{}' backend yet;",
             "note:".yellow().bold(),
             provider.name()
         );
-        println!("        the CLI falls back to simulated data. Try `peterfan --mock status`.");
+        println!("        the CLI falls back to simulated temps/fans. System metrics are real.");
     }
     Ok(())
 }
@@ -396,6 +690,89 @@ fn cmd_doctor(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Shared printers
 // ---------------------------------------------------------------------------
+
+fn print_system(info: &peterfan_core::metrics::SystemInfo) {
+    print_kv("Host", info.host_name.as_deref().unwrap_or("—"));
+    let os = match (&info.os_name, &info.os_version) {
+        (Some(n), Some(v)) => format!("{n} {v}"),
+        (Some(n), None) => n.clone(),
+        _ => std::env::consts::OS.to_string(),
+    };
+    print_kv("OS", &os);
+    print_kv("Kernel", info.kernel_version.as_deref().unwrap_or("—"));
+    print_kv("Arch", &info.arch);
+    let cores = match info.physical_cores {
+        Some(p) => format!("{} logical / {} physical", info.logical_cores, p),
+        None => format!("{} logical", info.logical_cores),
+    };
+    print_kv("Cores", &cores);
+    print_kv("Uptime", &render::duration(info.uptime_secs));
+}
+
+fn print_disks(disks: &[peterfan_core::metrics::DiskInfo]) {
+    for d in disks {
+        println!(
+            "  {:<14} {} / {} ({})  {}  {}",
+            d.mount,
+            render::bytes(d.used),
+            render::bytes(d.total),
+            render::pct_colored(d.used_percent).trim(),
+            render::load_bar(d.used_percent),
+            d.kind.dimmed(),
+        );
+    }
+}
+
+fn print_networks<'a>(nets: impl Iterator<Item = &'a peterfan_core::metrics::NetInterface>) {
+    for n in nets {
+        println!(
+            "  {:<14} ↓ {:>11}  ↑ {:>11}   {}",
+            n.name,
+            render::rate(n.rx_rate),
+            render::rate(n.tx_rate),
+            format!(
+                "total ↓{} ↑{}",
+                render::bytes(n.rx_total),
+                render::bytes(n.tx_total)
+            )
+            .dimmed(),
+        );
+    }
+}
+
+fn print_battery(b: &peterfan_core::metrics::BatteryInfo) {
+    let remaining = match b.state.as_str() {
+        "charging" => b
+            .time_to_full_secs
+            .map(|s| format!("~{} to full", render::duration(s))),
+        _ => b
+            .time_to_empty_secs
+            .map(|s| format!("~{} left", render::duration(s))),
+    };
+    let mut line = format!(
+        "  {}  {}  {}",
+        render::pct_colored(b.charge_percent).trim(),
+        render::load_bar(b.charge_percent),
+        b.state,
+    );
+    if let Some(r) = remaining {
+        line.push_str(&format!("  {}", r.dimmed()));
+    }
+    println!("{line}");
+    let mut details = Vec::new();
+    if let Some(h) = b.health_percent {
+        details.push(format!("health {h:.0}%"));
+    }
+    if let Some(c) = b.cycle_count {
+        details.push(format!("{c} cycles"));
+    }
+    if let Some(w) = b.energy_rate_w {
+        details.push(format!("{w:.1} W"));
+    }
+    if !details.is_empty() {
+        println!("  {}", details.join("  ·  ").dimmed());
+    }
+}
 
 fn print_temps(temps: &[TempSensor]) {
     for t in temps {
@@ -419,12 +796,12 @@ fn print_fans(fans: &[Fan]) {
             .duty_percent
             .map(|d| render::bar(d as f32, 100.0))
             .unwrap_or_default();
-        println!("  {:<14} {:>5} RPM  {}  {}", f.label, f.rpm, duty, bar,);
+        println!("  {:<14} {:>5} RPM  {}  {}", f.label, f.rpm, duty, bar);
     }
 }
 
 fn print_kv(key: &str, value: &str) {
-    println!("  {:<13} {}", format!("{key}:").dimmed(), value);
+    println!("  {:<16} {}", format!("{key}:").dimmed(), value);
 }
 
 fn print_check(label: &str, ok: bool) {

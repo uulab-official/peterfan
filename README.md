@@ -7,9 +7,11 @@
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
 ![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-red.svg)
 
-PeterFan is **not** just a fan-speed slider. It aims to be a small, safe,
-scriptable hardware-control platform for developers and power users — the kind
-of tool you `brew install` next to `lazygit`, `btop`, and `mise`.
+PeterFan is **not** just a fan-speed slider. It's a small, safe, scriptable
+system monitor *and* fan-control platform for developers and power users — the
+kind of tool you `brew install` next to `lazygit`, `btop`, and `mise`. Think of
+the system-monitoring breadth of [Stats](https://mac-stats.com), but
+cross-platform and developer-first (CLI + TUI + `--json`).
 
 ```text
 Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
@@ -21,17 +23,19 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.1.0.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.2.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
-| Core domain model (types, curves, profiles) | ✅ implemented & tested |
-| `HardwareProvider` trait + platform layer | ✅ implemented |
-| **Mock backend** (fully simulated machine) | ✅ implemented |
-| **macOS** hardware info (CPU/RAM/OS via `sysctl`) | ✅ real, read-only |
-| macOS temperature / fan reading (SMC) | 🚧 not yet — falls back to simulated |
-| macOS / Windows fan **control** | 🚧 planned |
-| CLI (`status`, `temps`, `fans`, `profile`, `curve`, `hardware`, `doctor`) | ✅ runnable |
+| **System metrics** — CPU, memory, disk, network, processes | ✅ real, cross-platform (macOS + Windows) via `sysinfo` |
+| **Battery** — charge, state, cycles, time remaining | ✅ real via `battery` (health filtered on Apple Silicon) |
+| Core model (types, metrics, curves, profiles, traits) | ✅ implemented & tested |
+| Mock backends (fully simulated machine + metrics) | ✅ implemented |
+| macOS hardware info (CPU/RAM/OS via `sysctl`) | ✅ real, read-only |
+| Temperature / fan reading (SMC on macOS, EC on Windows) | 🚧 not yet — falls back to simulated, clearly labeled |
+| GPU utilization | 🚧 planned |
+| Fan **control** | 🚧 planned |
+| CLI — `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `system`, `temps`, `fans`, `profile`, `curve`, `hardware`, `doctor` | ✅ runnable |
 | TUI dashboard (ratatui) | ✅ runnable |
 | Desktop GUI (Tauri), daemon, plugins, HTTP API | 🗺️ roadmap |
 
@@ -51,13 +55,18 @@ Requires a [Rust toolchain](https://rustup.rs) (1.80+).
 # Build everything
 cargo build
 
-# Real hardware info on this machine
-cargo run -p peterfan-cli -- hardware
+# Full dashboard for THIS machine (real CPU/mem/disk/net/battery)
+cargo run -p peterfan-cli -- status
 
-# Diagnose the active backend & its capabilities
+# Individual metrics
+cargo run -p peterfan-cli -- cpu
+cargo run -p peterfan-cli -- top --mem -n 5
+cargo run -p peterfan-cli -- network
+
+# Diagnose the active backends & their capabilities
 cargo run -p peterfan-cli -- doctor
 
-# Full dashboard against the simulated machine
+# Everything against the simulated machine (great for demos/CI)
 cargo run -p peterfan-cli -- --mock status
 
 # Live terminal dashboard
@@ -66,23 +75,34 @@ cargo run -p peterfan-tui -- --mock
 
 Once installed, the binary is simply `peterfan`.
 
-### Example: `peterfan --mock status`
+### Example: `peterfan status`
 
 ```text
-PeterFan v0.1.0
-backend: mock
+PeterFan v0.2.0
+backend: sysinfo + macos  ·  macOS 26.1  ·  up 4d 7h 8m
 
-Temperatures
-  CPU CPU Package    54°C  ██████░░░░░░
-  GPU GPU Core       48°C  █████░░░░░░░
-  RAM Memory         41°C  ████░░░░░░░░
-  SSD NVMe SSD       37°C  ████░░░░░░░░
+CPU · Apple M3 Max
+   21.3%  ███░░░░░░░░░   cores ▄▃▂▁ ▂ ▁▁▁▃▁▃▂
+
+Memory
+  25.7 GB / 36.0 GB ( 71.3%)  █████████░░░
+
+Disk
+  /              868.3 GB / 926.4 GB ( 93.7%)  ███████████░  SSD
+
+Network
+  en0            ↓    2.4 KB/s  ↑     541 B/s   total ↓39.2 GB ↑82.2 GB
+
+Battery
+  100.0%  ████████████  full
+  213 cycles  ·  0.0 W
+
+Temperatures   (simulated — real SMC reading not implemented on this backend yet)
+  CPU CPU Package    42°C  █████░░░░░░░
+  ...
 
 Fans
   CPU Fan         1410 RPM   45%  █████░░░░░░░
-  GPU Fan         1146 RPM   38%  █████░░░░░░░
-
-Hardware · Mock CPU (8C/16T @ 4.5GHz)
 ```
 
 Add `--json` to any command for machine-readable output (handy for Raycast,

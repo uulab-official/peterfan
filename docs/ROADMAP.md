@@ -3,7 +3,7 @@
 PeterFan is built bottom-up: a clean core and trait first, then real backends,
 then richer surfaces. Versions are goals, not promises.
 
-## v0.1 — Foundation (current)
+## v0.1 — Foundation
 
 - [x] OS-agnostic core: types, fan curves, profiles
 - [x] `HardwareProvider` trait + capability model
@@ -11,8 +11,16 @@ then richer surfaces. Versions are goals, not promises.
 - [x] macOS real hardware info via `sysctl`
 - [x] CLI: `status`, `temps`, `fans`, `profile`, `curve`, `hardware`, `doctor`, `--json`
 - [x] TUI dashboard (ratatui)
+
+## v0.2 — System metrics (current)
+
+- [x] `SystemMonitor` trait + `metrics` types
+- [x] Real cross-platform metrics via `sysinfo` (CPU, memory, disk, network, processes)
+- [x] Battery via the `battery` crate
+- [x] CLI: `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `system`; full `status` dashboard
+- [x] Mock metrics monitor for `--mock`
 - [ ] Config file (TOML): default profile, startup, notifications
-- [ ] `peterfan-core` published docs
+- [ ] `--watch` live refresh for CLI metric commands
 
 ## v1.0 — Real monitoring & control
 

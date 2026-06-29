@@ -17,16 +17,41 @@ cargo run -p peterfan-cli -- <command> [flags]
 
 ## Commands
 
+PeterFan groups commands into **system metrics** (real, cross-platform) and
+**thermal hardware** (temps/fans/profiles).
+
 ### `status` (default)
 
-Full dashboard: hardware summary, temperatures, fans, in one view. Running
-`peterfan` with no subcommand is the same as `peterfan status`.
+Full dashboard: system info, CPU, memory, disk, network, battery, plus
+temperatures and fans, in one view. Running `peterfan` with no subcommand is the
+same as `peterfan status`.
 
 ```bash
 peterfan
 peterfan --mock status
 peterfan --json status
 ```
+
+### System metrics
+
+| Command | Aliases | Shows |
+| --- | --- | --- |
+| `cpu` | | Aggregate + per-core usage, frequency, load average |
+| `memory` | `mem` | Physical and swap usage |
+| `disk` | `disks` | Mounted volumes: capacity and usage |
+| `network` | `net` | Per-interface throughput (↓/↑) and totals |
+| `top` | `proc` | Top processes; `--mem` to rank by memory, `-n N` to set count |
+| `battery` | | Charge, state, cycles, time remaining |
+| `system` | | Host, OS, kernel, arch, cores, uptime |
+
+```bash
+peterfan cpu
+peterfan top --mem -n 5
+peterfan --json network | jq '.[] | select(.name=="en0") | .rx_rate'
+```
+
+These are sampled twice ~300 ms apart so usage percentages and network rates are
+accurate.
 
 ### `temps`
 

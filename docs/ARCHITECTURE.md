@@ -31,17 +31,32 @@ architectural invariant to defend in review.
 
 | Crate | Path | Responsibility |
 | --- | --- | --- |
-| `peterfan-core` | `packages/core` | Domain types ([`types`]), fan [`curve`]s, [`profile`]s, and the [`provider::HardwareProvider`] trait. Pure, no OS deps. Unit-tested. |
-| `peterfan-platform` | `packages/platform` | Backend implementations. `mock` (simulated), `macos` (real read-only info via `sysctl`). `detect()` picks the best one; `mock()` forces simulation. |
+| `peterfan-core` | `packages/core` | Domain types, system `metrics`, fan `curve`s, `profile`s, and the two backend traits (`HardwareProvider`, `SystemMonitor`). Pure, no OS deps. Unit-tested. |
+| `peterfan-platform` | `packages/platform` | Backend implementations: `system` (real cross-platform metrics via `sysinfo` + `battery`), `mock`/`mock_monitor` (simulated), `macos` (real read-only thermal info via `sysctl`). `detect()`/`system_monitor()` pick real backends; `mock()`/`mock_monitor()` force simulation. |
 | `peterfan-cli` | `packages/cli` | The `peterfan` binary. Pure presentation over core + a provider. |
 | `peterfan-tui` | `packages/tui` | `peterfan-tui` binary: a ratatui dashboard polling a provider. |
 
 Planned (see [ROADMAP](./ROADMAP.md)): `packages/daemon` (privileged control
 service + safety watchdog) and `apps/desktop` (Tauri + React GUI).
 
+## Two seams: `SystemMonitor` and `HardwareProvider`
+
+PeterFan has two backend traits because the data has two very different access
+stories:
+
+- **`SystemMonitor`** — general system metrics (CPU, memory, disk, network,
+  processes, battery). These are available cross-platform through `sysinfo`/
+  `battery` without any per-OS code or privileges, so the real backend
+  (`SysinfoMonitor`) already works on macOS and Windows today.
+- **`HardwareProvider`** — thermal hardware (temperatures, fans, control). This
+  needs per-OS native access (SMC on macOS, EC on Windows) and is where the
+  platform-specific work and the safety model live.
+
+Both follow the same capability + mock-fallback philosophy below.
+
 ## The `HardwareProvider` trait
 
-This is the heart of the design. A backend reports:
+This is the heart of the thermal design. A backend reports:
 
 - `name()` / `capabilities()` — what it is and what it can do **right now**;
 - `hardware_info()` — static machine description;

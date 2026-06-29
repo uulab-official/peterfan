@@ -13,11 +13,13 @@
 //! force the simulated one.
 
 pub mod mock;
+pub mod mock_monitor;
+pub mod system;
 
 #[cfg(target_os = "macos")]
 mod macos;
 
-use peterfan_core::HardwareProvider;
+use peterfan_core::{HardwareProvider, SystemMonitor};
 
 /// Return the best available backend for the current operating system.
 ///
@@ -37,4 +39,14 @@ pub fn detect() -> Box<dyn HardwareProvider> {
 /// Return the simulated backend, regardless of OS (`peterfan --mock`).
 pub fn mock() -> Box<dyn HardwareProvider> {
     Box::new(mock::MockProvider::new())
+}
+
+/// Return the real cross-platform system-metrics monitor (`sysinfo`-backed).
+pub fn system_monitor() -> Box<dyn SystemMonitor> {
+    Box::new(system::SysinfoMonitor::new())
+}
+
+/// Return the simulated system-metrics monitor (`peterfan --mock`).
+pub fn mock_monitor() -> Box<dyn SystemMonitor> {
+    Box::new(mock_monitor::MockMonitor::new())
 }

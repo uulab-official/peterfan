@@ -11,7 +11,7 @@ members = [
 # (see docs/ROADMAP.md): packages/daemon, apps/desktop.
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 authors = ["PeterFan contributors"]
@@ -31,6 +31,8 @@ owo-colors = "4"
 ratatui = "0.29"
 crossterm = "0.28"
 libc = "0.2"
+sysinfo = "0.36"
+battery = "0.7"
 
 [profile.release]
 lto = "thin"
