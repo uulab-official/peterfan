@@ -1,0 +1,78 @@
+name: Release
+
+# On every version tag (v*), build the binaries for each platform and attach
+# them to the matching GitHub Release. Trigger by pushing a tag:
+#   git tag -a v0.5.0 -m "..." && git push origin v0.5.0
+# or run manually from the Actions tab (workflow_dispatch) for a given tag.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            label: macOS (Apple Silicon)
+            archive: tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            label: macOS (Intel)
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows (x64)
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --bins
+
+      - name: Package (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          NAME="peterfan-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/$NAME"
+          cp target/${{ matrix.target }}/release/peterfan \
+             target/${{ matrix.target }}/release/peterfan-tui \
+             target/${{ matrix.target }}/release/peterfan-menubar \
+             "dist/$NAME/"
+          cp README.md LICENSE CHANGELOG.md "dist/$NAME/"
+          tar -czf "dist/$NAME.tar.gz" -C dist "$NAME"
+          echo "ASSET=dist/$NAME.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $name = "peterfan-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/peterfan.exe" "dist/$name/"
+          Copy-Item "target/${{ matrix.target }}/release/peterfan-tui.exe" "dist/$name/"
+          Copy-Item "target/${{ matrix.target }}/release/peterfan-menubar.exe" "dist/$name/"
+          Copy-Item README.md, LICENSE, CHANGELOG.md "dist/$name/"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          "ASSET=dist/$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          fail_on_unmatched_files: true
