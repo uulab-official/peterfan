@@ -511,11 +511,38 @@ code { font-family:var(--mono); }
   <section class="section section-alt" id="install">
     <div class="container">
       <div class="section-head">
-        <h2>Get started in one command.</h2>
-        <p>PeterFan ships as a single self-contained binary. Build from source today; package managers are on the way.</p>
+        <h2>Download &amp; get started.</h2>
+        <p>Grab a prebuilt binary from the latest release, or build from source. Each release bundles three small binaries — the CLI, the TUI dashboard, and the menu-bar app.</p>
+        <div class="hero-cta" style="justify-content:center;margin-top:24px;">
+          <a class="btn btn-primary" href="https://github.com/uulab-official/peterfan/releases/latest" rel="noopener" target="_blank">⤓ Download for macOS</a>
+          <a class="btn btn-ghost" href="https://github.com/uulab-official/peterfan/releases" rel="noopener" target="_blank">All releases</a>
+        </div>
       </div>
 
       <div class="grid install">
+        <div class="install-card">
+          <div class="install-head">
+            <span class="install-num">Available now</span>
+            <h3>Download a release</h3>
+          </div>
+          <div class="code-block">
+            <div class="code-bar">
+              <span class="code-file">~ shell</span>
+              <button class="copy-btn" type="button" data-copy>
+                <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                <span class="copy-label">Copy</span>
+              </button>
+            </div>
+            <pre><code><span class="c-dim"># download from the Releases page, then:</span>
+tar -xzf peterfan-*-aarch64-apple-darwin.tar.gz
+cd peterfan-*-aarch64-apple-darwin
+<span class="c-dim"># binaries are unsigned — clear the quarantine flag</span>
+xattr -d com.apple.quarantine peterfan* 2>/dev/null
+<span class="c-cyan">./peterfan</span> status
+<span class="c-cyan">./peterfan-menubar</span> &amp;</code></pre>
+          </div>
+        </div>
+
         <div class="install-card">
           <div class="install-head">
             <span class="install-num">Available now</span>

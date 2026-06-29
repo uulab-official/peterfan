@@ -48,7 +48,23 @@ See [`docs/ROADMAP.md`](./docs/ROADMAP.md) for the full plan.
 
 ---
 
-## Quick start
+## Download
+
+Prebuilt binaries are attached to each [GitHub Release](https://github.com/uulab-official/peterfan/releases/latest).
+Each archive contains `peterfan` (CLI), `peterfan-tui` (dashboard), and
+`peterfan-menubar` (menu-bar app). macOS (Apple Silicon + Intel) and Windows
+builds are produced by CI on every tagged release.
+
+```sh
+# macOS (Apple Silicon) — from the Releases page
+tar -xzf peterfan-*-aarch64-apple-darwin.tar.gz
+cd peterfan-*-aarch64-apple-darwin
+xattr -d com.apple.quarantine peterfan* 2>/dev/null   # binaries are unsigned
+./peterfan status
+./peterfan-menubar &
+```
+
+## Build from source
 
 Requires a [Rust toolchain](https://rustup.rs) (1.80+).
 

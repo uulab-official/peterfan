@@ -3,6 +3,9 @@
 **/*.rs.bk
 Cargo.lock.orig
 
+# Release packaging output
+/dist
+
 # We DO commit Cargo.lock: this workspace produces binaries.
 # (Leave the line below commented; documented here so it isn't "fixed" later.)
 # Cargo.lock
