@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.4] — `peterfan rule` — automation rule management from the CLI
+
+### Added
+- **`peterfan rule list`** — list all rules with their index, condition, and profile.
+- **`peterfan rule add <condition> <profile>`** — append a rule to the config.
+  Validates the condition before writing. Example:
+  ```
+  peterfan rule add on_battery silent
+  peterfan rule add "cpu_above:85" maximum
+  peterfan rule add "time:22-7" silent
+  ```
+- **`peterfan rule remove <index>`** — remove a rule by its `list` index.
+- **`peterfan rule clear`** — remove all rules.
+  All write commands use `platform::config::save()` and print the file path.
+
 ## [0.28.3] — `peterfan config --set` for in-place config editing
 
 ### Added

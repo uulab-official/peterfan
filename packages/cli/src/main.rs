@@ -117,6 +117,11 @@ enum Command {
         #[arg(long, value_names = ["KEY", "VALUE"], num_args = 2)]
         set: Option<Vec<String>>,
     },
+    /// Manage fan-control automation rules in the config file.
+    Rule {
+        #[command(subcommand)]
+        action: RuleAction,
+    },
     /// Serve a local JSON HTTP API (`/api/v1/status`, …) for integrations.
     Serve {
         /// Port to listen on (localhost only).
@@ -192,6 +197,26 @@ impl FanAction {
     }
 }
 
+#[derive(Subcommand, Clone)]
+enum RuleAction {
+    /// List automation rules (default when no subcommand given).
+    List,
+    /// Append a new rule: `peterfan rule add on_battery silent`.
+    Add {
+        /// Condition: on_battery | on_ac | cpu_above:<°C> | time:<start>-<end>
+        condition: String,
+        /// Profile: silent | balanced | gaming | performance | maximum
+        profile: String,
+    },
+    /// Remove a rule by its 0-based index from `peterfan rule list`.
+    Remove {
+        /// 0-based rule index.
+        index: usize,
+    },
+    /// Remove all automation rules.
+    Clear,
+}
+
 fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
@@ -246,6 +271,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Hardware => cmd_hardware(provider(mock).as_ref(), json),
         Command::Doctor => cmd_doctor(mock, json),
         Command::Config { init, set } => cmd_config(json, init, set),
+        Command::Rule { action } => cmd_rule(json, action),
         Command::Serve { port } => cmd_serve(mock, port),
         Command::Benchmark { secs } => cmd_benchmark(mock, json, secs),
         Command::Completions { shell } => {
@@ -899,6 +925,110 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>) -> Result<()> {
                 "  ⚠ invalid"
             };
             println!("    {:<16} → {}{}", r.when, r.profile.as_str(), ok.yellow());
+        }
+    }
+    Ok(())
+}
+
+fn cmd_rule(json: bool, action: RuleAction) -> Result<()> {
+    use peterfan_core::config::Rule;
+
+    let mut cfg = peterfan_platform::config::load();
+
+    match action {
+        RuleAction::List => {
+            if json {
+                let rules: Vec<_> = cfg
+                    .rules
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| {
+                        serde_json::json!({"index": i, "when": r.when, "profile": r.profile.as_str()})
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&rules)?);
+                return Ok(());
+            }
+            println!("{}", render::heading("Automation Rules"));
+            if cfg.rules.is_empty() {
+                println!("  (no rules — daemon follows the default profile)");
+            } else {
+                for (i, r) in cfg.rules.iter().enumerate() {
+                    let valid = if r.condition().is_some() {
+                        ""
+                    } else {
+                        "  ⚠ invalid condition"
+                    };
+                    println!(
+                        "  [{}] {:<20} → {}{}",
+                        i,
+                        r.when.cyan(),
+                        r.profile.as_str().bold(),
+                        valid.yellow()
+                    );
+                }
+            }
+        }
+        RuleAction::Add { condition, profile } => {
+            let p = peterfan_core::profile::Profile::parse(&profile)
+                .ok_or_else(|| anyhow::anyhow!("unknown profile '{profile}'"))?;
+            let rule = Rule {
+                when: condition.clone(),
+                profile: p,
+            };
+            if rule.condition().is_none() {
+                anyhow::bail!(
+                    "invalid condition '{condition}'.\n\
+                     Valid forms: on_battery | on_ac | cpu_above:<°C> | time:<start>-<end>\n\
+                     Example: cpu_above:85 | time:22-7"
+                );
+            }
+            cfg.rules.push(rule);
+            let path = peterfan_platform::config::save(&cfg)
+                .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+            if !json {
+                println!(
+                    "  {} added rule: {} → {}  ({})",
+                    "✓".green(),
+                    condition.cyan(),
+                    p.as_str().bold(),
+                    path.display()
+                );
+            }
+        }
+        RuleAction::Remove { index } => {
+            if index >= cfg.rules.len() {
+                anyhow::bail!(
+                    "index {index} out of range (have {} rule(s))",
+                    cfg.rules.len()
+                );
+            }
+            let removed = cfg.rules.remove(index);
+            let path = peterfan_platform::config::save(&cfg)
+                .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+            if !json {
+                println!(
+                    "  {} removed [{}]: {} → {}  ({})",
+                    "✓".green(),
+                    index,
+                    removed.when.cyan(),
+                    removed.profile.as_str().bold(),
+                    path.display()
+                );
+            }
+        }
+        RuleAction::Clear => {
+            let count = cfg.rules.len();
+            cfg.rules.clear();
+            let path = peterfan_platform::config::save(&cfg)
+                .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+            if !json {
+                println!(
+                    "  {} cleared {count} rule(s)  ({})",
+                    "✓".green(),
+                    path.display()
+                );
+            }
         }
     }
     Ok(())
