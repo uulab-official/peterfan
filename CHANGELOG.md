@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.0] — Fan control without sudo + TUI keyboard fan control
+
+### Added
+- **`peterfan fan set N` no longer needs `sudo`** when `peterfand` is running:
+  the command routes through the daemon IPC (`hold N%`) so the setting persists
+  across reboots and the daemon re-asserts it every tick. Falls back to a direct
+  SMC write (needs `sudo`) when no daemon is running.
+- **`peterfan fan auto`** similarly routes through the daemon when available.
+- **Daemon `hold <percent>` IPC command** — holds fans at a fixed duty until
+  `auto`, `rules`, or `profile` clears it. `status` now reports `hold:N%`.
+- **TUI fan control keyboard shortcuts** (when daemon is running or process has
+  root): `1` silent · `2` balanced · `3` gaming · `4` performance · `5` maximum
+  · `a` auto. Current daemon mode shown in the Thermals block title.
+- **Menu-bar popover** shows the daemon's current mode (`rules:balanced`,
+  `hold:80%`, `auto`) in real-time; shows an install-daemon tip when no daemon
+  is present.
+- **`peterfan status`** shows daemon mode below the Fans section.
+- **HTTP API** (`peterfan serve`) fan and profile endpoints route through the
+  daemon IPC when available.
+
+### Changed
+- `platform/ipc`: added shared `send_command()` helper used by CLI, TUI, and
+  menu-bar — removes three copies of the same IPC logic.
+
 ## [0.27.1] — Fan-control sequence matched to a proven implementation
 
 ### Changed

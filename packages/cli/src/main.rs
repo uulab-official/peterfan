@@ -704,6 +704,22 @@ fn api_apply_profile(body: &str, provider: &dyn HardwareProvider) -> (u16, serde
             serde_json::json!({ "error": format!("unknown profile '{name}'") }),
         );
     };
+
+    // Prefer routing through the daemon (no root needed for the HTTP server process).
+    if let Some(reply) = ipc_send(&format!("profile {name}")) {
+        let curve = profile.default_curve();
+        let temps = provider.temperatures().unwrap_or_default();
+        let temp = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+        let duty = curve.duty_at(temp);
+        return (
+            200,
+            serde_json::json!({
+                "applied": true, "via": "daemon", "daemon_reply": reply,
+                "profile": profile.as_str(), "duty_percent": duty,
+            }),
+        );
+    }
+
     if !provider.capabilities().control_fans {
         return (
             200,
@@ -739,6 +755,27 @@ fn api_apply_fan(body: &str, provider: &dyn HardwareProvider) -> (u16, serde_jso
         Err(_) => return (400, serde_json::json!({ "error": "invalid JSON" })),
     };
     let action = v.get("action").and_then(|a| a.as_str()).unwrap_or("");
+
+    // Prefer routing through the daemon (no root needed for the HTTP server).
+    let ipc_reply = match action {
+        "auto" => ipc_send("auto"),
+        "set" => {
+            let pct = v
+                .get("percent")
+                .and_then(|p| p.as_u64())
+                .unwrap_or(50)
+                .min(100) as u8;
+            ipc_send(&format!("hold {pct}"))
+        }
+        _ => None,
+    };
+    if let Some(reply) = ipc_reply {
+        return (
+            200,
+            serde_json::json!({ "applied": true, "via": "daemon", "action": action, "daemon_reply": reply }),
+        );
+    }
+
     if !provider.capabilities().control_fans {
         return (
             200,
@@ -1132,6 +1169,21 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
     println!();
     println!("{}", render::heading("Fans"));
     print_fans(&sensors.fans);
+
+    // Show daemon status below fans if reachable.
+    if !mock {
+        if let Some(daemon_st) = ipc_send("status")
+            .as_deref()
+            .and_then(|r| r.strip_prefix("ok "))
+            .map(str::to_string)
+        {
+            println!(
+                "  {} {}",
+                "fan daemon:".dimmed(),
+                daemon_st.bold()
+            );
+        }
+    }
 
     if let Some(w) = provider.power_watts() {
         println!();
