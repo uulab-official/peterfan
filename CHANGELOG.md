@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] — Fan-control daemon
+
+### Added
+- **`peterfand`** — a fan-control daemon that applies a profile's curve
+  continuously (hottest temperature → curve → fan duty), with two safety
+  behaviors:
+  - **critical-temperature override** (`--critical`, default 90°C → 100% fans);
+  - **restore-on-exit** — on `Ctrl-C`/`SIGTERM`/panic it returns the fans to
+    automatic control, so it never leaves them forced.
+  Flags: `--profile`, `--interval`, `--critical`, `--once`, `--mock`.
+- **LaunchDaemon install** (`packaging/com.uulab.peterfan.daemon.plist` +
+  `scripts/install-daemon-macos.sh`) so the daemon runs as root at boot — fan
+  control then works without per-command `sudo`. (`peterfand` ships in macOS
+  release archives.)
+
+### Notes
+- Running `peterfand` directly still needs root for SMC writes
+  (`sudo peterfand`); the LaunchDaemon runs as root for you. `--mock` needs no
+  privileges. Curve quality on Apple Silicon is limited until CPU/GPU die temps
+  (IOHID) land — it currently keys off the hottest available sensor.
+
 ## [0.9.1] — Refined popover
 
 ### Changed
@@ -170,7 +191,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.10.0
 [0.9.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.9.1
 [0.9.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.9.0
 [0.8.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.8.1

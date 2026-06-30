@@ -48,13 +48,18 @@ then richer surfaces. Versions are goals, not promises.
 - [ ] CPU/GPU **die** temps on Apple Silicon via the IOHID thermal API
 - [ ] Surface SMC **power** (system total W) in the metrics model
 
-## v0.9 — Fan control (current)
+## v0.9 — Fan control
 
 - [x] **Fan control on macOS** via SMC writes: `fan set <pct>` / `fan auto`
       (requires `sudo`); duty mapped onto each fan's `[min, max]` RPM
-- [ ] `peterfan-daemon` — privileged helper so control works without `sudo`,
-      with **restore-on-exit** and a **critical-temp force-ramp** watchdog
-- [ ] Fan curves applied continuously (not just one-shot)
+
+## v0.10 — Daemon (current)
+
+- [x] `peterfand` — applies a profile curve continuously, with
+      **restore-on-exit** and a **critical-temp 100% override**
+- [x] LaunchDaemon install (runs as root → no per-command `sudo`)
+- [ ] Code-signed privileged helper (SMAppService) for a fully unsigned-free,
+      no-`sudo` install; menu-bar app talks to the daemon over IPC
 
 ## v1.0 — Control depth & Windows
 

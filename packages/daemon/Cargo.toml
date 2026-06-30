@@ -1,0 +1,22 @@
+[package]
+name = "peterfan-daemon"
+description = "PeterFan fan-control daemon: applies a fan curve continuously with restore-on-exit and a critical-temperature safety override."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "peterfand"
+path = "src/main.rs"
+
+[dependencies]
+peterfan-core = { workspace = true }
+peterfan-platform = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

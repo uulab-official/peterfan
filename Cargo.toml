@@ -6,6 +6,7 @@ members = [
     "packages/cli",
     "packages/tui",
     "packages/menubar",
+    "packages/daemon",
 ]
 # Icon generator is a standalone dev tool, not part of the product build.
 exclude = ["tools/icongen"]
@@ -14,7 +15,7 @@ exclude = ["tools/icongen"]
 # (see docs/ROADMAP.md): packages/daemon, apps/desktop.
 
 [workspace.package]
-version = "0.9.1"
+version = "0.10.0"
 edition = "2021"
 license = "MIT"
 authors = ["PeterFan contributors"]

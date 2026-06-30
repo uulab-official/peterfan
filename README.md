@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.9.1.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.10.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
@@ -39,7 +39,8 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 | CLI — `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `system`, `temps`, `fans`, `profile`, `curve`, `hardware`, `doctor` | ✅ runnable |
 | TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes | ✅ runnable |
 | **Menu-bar app** — live CPU in the menu bar + a click-to-open popover dashboard (WebView): CPU/memory/storage/temps/fans/battery/network | ✅ runnable |
-| Desktop GUI (Tauri), daemon, plugins, HTTP API | 🗺️ roadmap |
+| **Daemon** (`peterfand`) — continuous curve + restore-on-exit + critical-temp override; LaunchDaemon install | ✅ runnable |
+| Desktop GUI (Tauri), plugins, HTTP API | 🗺️ roadmap |
 
 When a backend can't read real sensors yet, the CLI/TUI **transparently fall
 back to the mock backend and clearly label the data as `simulated`** — so you
@@ -169,11 +170,13 @@ peterfan/
 │   ├── platform/    peterfan-platform  — mock + macOS backends (Windows/Linux planned)
 │   ├── cli/         peterfan           — the command-line interface
 │   ├── tui/         peterfan-tui       — ratatui live dashboard
-│   └── menubar/     peterfan-menubar   — macOS menu-bar / Windows tray app
+│   ├── menubar/     peterfan-menubar   — macOS menu-bar / Windows tray app
+│   └── daemon/      peterfand          — fan-control daemon (curve + safety)
 ├── apps/
 │   └── landing/     static marketing website (open apps/landing/index.html)
+├── packaging/       LaunchDaemon plist · scripts/ install helpers
 ├── docs/            architecture, roadmap, CLI reference
-└── (planned) packages/daemon, apps/desktop
+└── (planned) apps/desktop (Tauri GUI)
 ```
 
 ## Safety
@@ -185,8 +188,9 @@ design commits to:
   offers control it can't safely perform.
 - **Read-only first** — monitoring works without elevated privileges; control is
   a deliberate, separate step.
-- **Restore on exit** — the (planned) daemon hands control back to the OS on
-  crash or shutdown, and ramps fans up on critical temperatures.
+- **Restore on exit** — the `peterfand` daemon hands control back to the OS on
+  Ctrl-C / SIGTERM / panic, and forces fans to 100% above a critical
+  temperature.
 
 ## Contributing
 
