@@ -8,6 +8,15 @@ authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# Apple Silicon GPU active-residency via the private IOReport API. OFF by
+# default: the IOReport `GPUPH` residency we can read does not match Activity
+# Monitor's GPU% definition (it counts low-power display-compositing states as
+# "busy"), so we don't ship it as a headline metric. Kept behind a flag as
+# working reference plumbing. See `src/macos_gpu.rs`.
+experimental-gpu = []
+
 [dependencies]
 peterfan-core = { workspace = true }
 sysinfo = { workspace = true }

@@ -21,10 +21,23 @@ pub mod system;
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(all(target_os = "macos", feature = "experimental-gpu"))]
+mod macos_gpu;
 #[cfg(target_os = "macos")]
 mod macos_hid;
 #[cfg(target_os = "macos")]
 mod smc_write;
+
+/// Apple Silicon GPU active-residency (%), behind the off-by-default
+/// `experimental-gpu` feature. Not exposed in the default build because the
+/// IOReport `GPUPH` residency we can read does not match Activity Monitor's
+/// GPU% definition (it counts low-power display-compositing states as "busy",
+/// reading ~50% even at idle), and we won't ship an inaccurate number. Kept as
+/// working reference plumbing — see `macos_gpu.rs`.
+#[cfg(all(target_os = "macos", feature = "experimental-gpu"))]
+pub fn gpu_usage_percent() -> Option<f32> {
+    macos_gpu::gpu_usage_percent()
+}
 
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
