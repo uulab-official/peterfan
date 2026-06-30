@@ -42,11 +42,33 @@ cargo run -p peterfan-platform --features experimental-gpu ...
 Good next step: weight residency by per-state frequency (also readable from
 IOReport) and cross-check against `sudo powermetrics --samplers gpu_power`.
 
-## Fan control on Apple Silicon (shipped as Intel-only)
+## Fan control on Apple Silicon (the `Ftst` unlock)
 
-Recorded here for completeness — see `CHANGELOG.md` v0.17.0. SMC fan-control
-writes (`F0Md`/`F0Tg`) are accepted on Apple Silicon but have no physical
-effect (fans are system-governed; the `FS! ` override key is absent). We
-verified fans *do* respond to the OS under load, just not to manual SMC writes,
-so fan **control** is gated to Intel Macs while fan **monitoring** works
-everywhere.
+**Earlier (wrong) conclusion:** we saw `F0Md`/`F0Tg` writes "succeed" with no
+physical effect and gated control to Intel only (v0.17). That was a mistake on
+two counts:
+
+1. **The writes were never run as root.** The `AppleSMC` user-client rejects
+   non-root writes with `kIOReturnNotPrivileged` — and the menu-bar app is
+   unprivileged. Real control must go through `sudo`/the root daemon.
+2. **Apple Silicon needs an unlock step.** `thermalmonitord` enforces a "System
+   Mode" and reverts a bare `F0Md = 1` back to `0` after ~3–4 s, so it looks
+   accepted but does nothing. The working sequence (community reverse
+   engineering, see refs) is:
+   - try `F0Md = 1` (ui8) — enough on M1 and M5;
+   - if it doesn't stick, write **`Ftst = 1`** (ui8) to inhibit the thermal
+     servo, then re-write `F0Md = 1`, polling ~4 s until it holds;
+   - write target RPM to `F0Tg` (little-endian `flt`);
+   - restore with `F0Md = 0` then `Ftst = 0`.
+   M5 uses a lowercase mode key (`F0md`) and needs no unlock; `Ftst` is absent
+   there.
+
+Implemented in `packages/platform/src/smc_write.rs` (v0.26.x). Control is
+**attempted on all SMC machines and verified by reading RPM back** — because
+some firmware revisions still ignore manual control, we only claim success when
+the RPM actually changes.
+
+Refs: exelban/stats #2928 ("Fan control doesn't work on Apple Silicon"),
+agoodkind/macos-smc-fan (M1–M5 unlock research), CrystalIDEA Macs Fan Control
+release notes (1.5.18 restored control after macOS 14.7/Sequoia firmware
+tightening).

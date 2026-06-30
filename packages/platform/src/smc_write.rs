@@ -6,8 +6,26 @@
 //! work on this hardware); we only add the `WRITE_BYTES` command.
 //!
 //! Fan control keys (per fan index `n`):
-//! - `Fn Md` — mode: `1` = forced, `0` = auto.
-//! - `Fn Tg` — target speed (a 4-byte `flt ` RPM on Apple Silicon).
+//! - `FnMd` (uppercase; `Fnmd` on M5) — mode: `1` = forced, `0` = auto.
+//! - `FnTg` — target speed (a 4-byte little-endian `flt ` RPM on Apple Silicon).
+//! - `Ftst` — diagnostic/force-test unlock (ui8).
+//!
+//! ## Apple Silicon unlock sequence
+//!
+//! On Apple Silicon, `thermalmonitord` enforces a "System Mode" and will revert
+//! a bare `FnMd = 1` back to `0` after a few seconds, so a direct write looks
+//! like it succeeds but has no effect. The working sequence (reverse-engineered
+//! by the community; see `docs/RESEARCH.md`) is:
+//!
+//! 1. Try `FnMd = 1` directly (enough on M1 and M5).
+//! 2. If it doesn't stick, write `Ftst = 1` to inhibit the thermal servo, then
+//!    re-write `FnMd = 1`, polling for a few seconds until it holds.
+//! 3. Write the target RPM to `FnTg`.
+//! 4. To restore, set `FnMd = 0` and `Ftst = 0` so the daemon takes back over.
+//!
+//! Even with the right sequence, **some firmware revisions ignore manual
+//! control entirely**, which is why callers verify by reading RPM back rather
+//! than trusting a successful write.
 //!
 //! SMC writes are privileged: without root the kernel returns
 //! `kIOReturnNotPrivileged`, surfaced here as [`FanCtlError::NotPrivileged`].
@@ -114,6 +132,11 @@ fn fan_key(idx: u8, suffix: [u8; 2]) -> u32 {
 /// The `FS! ` fan-force bitmask key (one bit per fan = manual mode).
 fn fs_key() -> u32 {
     u32::from_be_bytes([b'F', b'S', b'!', b' '])
+}
+
+/// The `Ftst` diagnostic/force-test unlock key (Apple Silicon).
+fn ftst_key() -> u32 {
+    u32::from_be_bytes([b'F', b't', b's', b't'])
 }
 
 /// Flip fan `idx`'s bit in the `FS! ` manual-mode bitmask (best-effort; the key
@@ -232,17 +255,71 @@ impl Drop for Conn {
 }
 
 impl Conn {
-    /// Force fan `idx` to `rpm`: enable manual mode (`FS! ` bitmask where it
-    /// exists, plus `Fn Md`), then set the target speed. Re-assert each tick.
-    pub fn force(&self, idx: u8, rpm: f32) -> Result<(), FanCtlError> {
-        set_force_bit(self, idx, true);
-        let _ = self.write_key(fan_key(idx, [b'M', b'd']), &[1u8]);
-        self.write_key(fan_key(idx, [b'T', b'g']), &rpm.to_ne_bytes())
+    /// Does `key` exist on this SMC? (Reads only its key-info / size.)
+    fn key_exists(&self, key: u32) -> bool {
+        let input = KeyData {
+            key,
+            data8: CMD_READ_KEYINFO,
+            ..Default::default()
+        };
+        let mut info = KeyData::default();
+        self.call(&input, &mut info).is_ok() && info.key_info.data_size > 0
     }
 
-    /// Return fan `idx` to automatic (OS-managed) control.
+    /// Resolve the mode key for fan `idx`: uppercase `FnMd` on M1–M4, lowercase
+    /// `Fnmd` on M5. Falls back to uppercase if neither probe succeeds.
+    fn mode_key(&self, idx: u8) -> u32 {
+        let upper = fan_key(idx, [b'M', b'd']);
+        if self.key_exists(upper) {
+            return upper;
+        }
+        let lower = fan_key(idx, [b'm', b'd']);
+        if self.key_exists(lower) {
+            return lower;
+        }
+        upper
+    }
+
+    /// Read a one-byte mode key; `true` if it currently reads `1` (manual).
+    fn mode_is_manual(&self, mode_key: u32) -> bool {
+        let mut b = [0u8; 1];
+        self.read_key(mode_key, &mut b).is_ok() && b[0] == 1
+    }
+
+    /// Force fan `idx` to `rpm`. Enables manual mode — using the `Ftst` unlock
+    /// sequence if a direct mode write doesn't stick (Apple Silicon) — then sets
+    /// the target speed. Called every tick by the daemon to re-assert; the slow
+    /// unlock/poll path only runs while manual mode isn't yet established.
+    pub fn force(&self, idx: u8, rpm: f32) -> Result<(), FanCtlError> {
+        set_force_bit(self, idx, true); // Intel `FS! ` bitmask; no-op where absent
+        let mode_key = self.mode_key(idx);
+
+        // 1) Direct attempt (sufficient on M1/M5 and on Intel).
+        let _ = self.write_key(mode_key, &[1u8]);
+
+        // 2) If it didn't stick, unlock via Ftst and poll the mode key until it
+        //    holds (thermalmonitord reverts it for the first few seconds).
+        if !self.mode_is_manual(mode_key) {
+            let _ = self.write_key(ftst_key(), &[1u8]);
+            for _ in 0..40 {
+                let _ = self.write_key(mode_key, &[1u8]);
+                if self.mode_is_manual(mode_key) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+
+        // 3) Set the target RPM (little-endian `flt` on Apple Silicon).
+        self.write_key(fan_key(idx, [b'T', b'g']), &rpm.to_le_bytes())
+    }
+
+    /// Return fan `idx` to automatic (OS-managed) control and hand the thermal
+    /// servo back by clearing the `Ftst` unlock.
     pub fn auto(&self, idx: u8) -> Result<(), FanCtlError> {
         set_force_bit(self, idx, false);
-        self.write_key(fan_key(idx, [b'M', b'd']), &[0u8])
+        let r = self.write_key(self.mode_key(idx), &[0u8]);
+        let _ = self.write_key(ftst_key(), &[0u8]); // best-effort; absent on M5
+        r
     }
 }

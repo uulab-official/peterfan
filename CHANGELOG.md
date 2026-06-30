@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.26.1] — Apple Silicon fan control: the real unlock sequence
+
+### Fixed
+- Implemented the **`Ftst` unlock sequence** required to actually drive fans on
+  Apple Silicon. A bare `F0Md = 1` is reverted by `thermalmonitord` after a few
+  seconds; we now write `Ftst = 1`, poll `F0Md = 1` until it holds, set `F0Tg`
+  (little-endian float), and clear `Ftst` on restore. Mode-key casing (`F0Md`
+  vs M5's `F0md`) is auto-detected. (Based on community reverse engineering —
+  see `docs/RESEARCH.md`.)
+
+This is what was missing in 0.26.0, where control was un-gated but still used a
+bare mode write that Apple Silicon firmware ignores. Verification (RPM
+read-back) is unchanged, so `sudo peterfan fan set N` will report a real ✓/✗.
+
 ## [0.26.0] — Fan control: un-gated, root-aware, and *verified*
 
 This release fixes the central problem: a fan controller that didn't control fans.
@@ -430,7 +444,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.26.1...HEAD
+[0.26.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.26.1
 [0.26.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.26.0
 [0.25.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.25.2
 [0.25.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.25.1
