@@ -566,6 +566,12 @@ fn cmd_login_item(action: LoginItemAction) -> Result<()> {
     anyhow::bail!("login-item is only supported on macOS")
 }
 
+const NEWSYSLOG_CONF: &str = "/etc/newsyslog.d/peterfand.conf";
+const NEWSYSLOG_BODY: &str = "\
+# PeterFan daemon log rotation (rotate at 1 MB, keep 5 compressed archives)\n\
+/var/log/peterfand.log  root:wheel  644  5  1024  *  J\n\
+/var/log/peterfand.err  root:wheel  644  3   512  *  J\n";
+
 #[cfg(target_os = "macos")]
 fn cmd_install_daemon(dry_run: bool) -> Result<()> {
     let bin = find_peterfand()?;
@@ -577,9 +583,14 @@ fn cmd_install_daemon(dry_run: bool) -> Result<()> {
          chown root:wheel '{plist_dst}'\n\
          chmod 644 '{plist_dst}'\n\
          launchctl bootout system '{plist_dst}' 2>/dev/null || true\n\
-         launchctl bootstrap system '{plist_dst}'\n",
+         launchctl bootstrap system '{plist_dst}'\n\
+         mkdir -p /etc/newsyslog.d\n\
+         printf '%s' '{newsyslog}' > {newsyslog_conf}\n\
+         chmod 644 {newsyslog_conf}\n",
         bin = bin.display(),
         plist = daemon_plist(),
+        newsyslog = NEWSYSLOG_BODY,
+        newsyslog_conf = NEWSYSLOG_CONF,
     );
     println!(
         "Installing the PeterFan fan-control daemon as root.\n\
@@ -593,7 +604,7 @@ fn cmd_install_daemon(dry_run: bool) -> Result<()> {
     std::thread::sleep(Duration::from_millis(800));
     if peterfan_platform::daemon_reachable() {
         println!("{}", "✓ daemon installed and running (root)".green());
-        println!("  it starts at every boot; logs at /var/log/peterfand.log");
+        println!("  logs at /var/log/peterfand.log (rotated at 1 MB, 5 archives)");
     } else {
         println!(
             "{}",
@@ -608,7 +619,8 @@ fn cmd_uninstall_daemon(dry_run: bool) -> Result<()> {
     let plist_dst = format!("/Library/LaunchDaemons/{DAEMON_LABEL}.plist");
     let script = format!(
         "launchctl bootout system '{plist_dst}' 2>/dev/null || true\n\
-         rm -f '{plist_dst}' /usr/local/bin/peterfand\n"
+         rm -f '{plist_dst}' /usr/local/bin/peterfand\n\
+         rm -f {NEWSYSLOG_CONF}\n"
     );
     println!("Removing the PeterFan fan-control daemon (one admin prompt)…");
     run_privileged(&script, dry_run)?;
@@ -2327,6 +2339,57 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                 .to_string()
         };
         println!("  → {verdict}");
+
+        // Additional setup checks (macOS only, non-mock).
+        #[cfg(target_os = "macos")]
+        {
+            println!();
+            println!("{}", render::heading("Setup"));
+            let login_item_installed =
+                login_item_plist_path().is_some_and(|p| p.exists());
+            print_check("menubar login item installed", login_item_installed);
+            if !login_item_installed {
+                println!(
+                    "    {} run `peterfan login-item install` to start at login",
+                    "→".dimmed()
+                );
+            }
+
+            let state_file = std::path::Path::new(
+                "/Library/Application Support/peterfand/state.toml",
+            );
+            if state_file.exists() {
+                let content = std::fs::read_to_string(state_file).unwrap_or_default();
+                let mode = content
+                    .lines()
+                    .find(|l| l.starts_with("mode"))
+                    .and_then(|l| l.split('"').nth(1))
+                    .unwrap_or("?");
+                print_kv("  daemon state file", &format!("present (mode = {mode})"));
+            } else {
+                print_kv("  daemon state file", "absent (reboot will use config profile)");
+            }
+
+            let log = std::path::Path::new(DAEMON_LOG);
+            if log.exists() {
+                let meta = std::fs::metadata(log).ok();
+                let size = meta
+                    .map(|m| {
+                        let kb = m.len() / 1024;
+                        if kb > 1024 {
+                            format!("{:.1} MB", kb as f32 / 1024.0)
+                        } else {
+                            format!("{kb} KB")
+                        }
+                    })
+                    .unwrap_or_else(|| "?".into());
+                let newsyslog_ok = std::path::Path::new(NEWSYSLOG_CONF).exists();
+                let rotation = if newsyslog_ok { "rotation configured" } else { "no rotation — run `peterfan install-daemon` to add log rotation" };
+                print_kv("  daemon log", &format!("{DAEMON_LOG} ({size}, {rotation})"));
+            } else {
+                print_kv("  daemon log", "absent (daemon not yet started)");
+            }
+        }
     }
 
     if !caps.read_temps {

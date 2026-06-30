@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.29.3] — Log rotation + doctor Setup section
+
+### Added
+- **`install-daemon` now writes `/etc/newsyslog.d/peterfand.conf`** — macOS log
+  rotation for `/var/log/peterfand.log` (≥1 MB → rotate, keep 5 bzip2
+  archives) and `/var/log/peterfand.err` (≥512 KB, keep 3). `uninstall-daemon`
+  removes it.
+- **`peterfan doctor` Setup section** (macOS) — now checks:
+  - Whether the menubar login item is installed (and suggests the install command)
+  - Whether the daemon state file exists and shows the saved mode
+  - Log file presence, size, and whether log rotation is configured
+
 ## [0.29.2] — `peterfan status --compact` + TUI fan duty% + log-on-change
 
 ### Added
