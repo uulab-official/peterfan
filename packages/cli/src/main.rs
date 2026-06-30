@@ -246,6 +246,9 @@ enum LoginItemAction {
         /// Path to peterfan-menubar binary (default: sibling of this binary).
         #[arg(long)]
         binary: Option<String>,
+        /// What to show in the menu bar: cpu (default), temp, fan.
+        #[arg(long, default_value = "cpu")]
+        metric: String,
     },
     /// Remove the peterfan-menubar login item.
     Remove,
@@ -438,7 +441,12 @@ fn find_menubar_binary(override_path: Option<&str>) -> Result<std::path::PathBuf
     )
 }
 
-fn login_item_plist(bin: &std::path::Path) -> String {
+fn login_item_plist(bin: &std::path::Path, metric: &str) -> String {
+    let metric_arg = if metric == "cpu" {
+        String::new()
+    } else {
+        format!("\n    <string>--metric</string>\n    <string>{metric}</string>")
+    };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -448,7 +456,7 @@ fn login_item_plist(bin: &std::path::Path) -> String {
   <key>Label</key>       <string>{LOGIN_ITEM_LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{}</string>
+    <string>{}</string>{metric_arg}
   </array>
   <key>RunAtLoad</key>   <true/>
   <key>KeepAlive</key>   <false/>
@@ -490,12 +498,12 @@ fn cmd_login_item(action: LoginItemAction) -> Result<()> {
                 );
             }
         }
-        LoginItemAction::Install { binary } => {
+        LoginItemAction::Install { binary, metric } => {
             let bin = find_menubar_binary(binary.as_deref())?;
             if let Some(dir) = plist_path.parent() {
                 std::fs::create_dir_all(dir)?;
             }
-            std::fs::write(&plist_path, login_item_plist(&bin))?;
+            std::fs::write(&plist_path, login_item_plist(&bin, &metric))?;
             // Load it immediately so the user doesn't have to log out/in.
             let _ = std::process::Command::new("launchctl")
                 .args(["load", "-w", plist_path.to_str().unwrap_or("")])

@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.7] — Configurable menu-bar metric (CPU / temp / fan RPM)
+
+### Added
+- **`peterfan-menubar --metric <cpu|temp|fan>`** — choose what to show in
+  the macOS menu bar:
+  - `cpu` (default) — CPU usage % as before
+  - `temp` — hottest temperature sensor in °C  
+  - `fan` — fastest fan speed in RPM
+- **`peterfan login-item install --metric <cpu|temp|fan>`** — embeds the
+  `--metric` flag into the LaunchAgent plist so the choice persists across
+  reboots.
+
 ## [0.28.6] — `peterfan login-item` — menubar auto-start at login
 
 ### Added

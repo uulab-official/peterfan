@@ -28,6 +28,17 @@ use peterfan_core::types::Celsius;
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
+
+/// What the menu-bar title shows.
+#[derive(Clone, Copy, PartialEq)]
+enum Metric {
+    /// CPU usage % (default).
+    Cpu,
+    /// Hottest temperature sensor in °C.
+    Temp,
+    /// Fastest fan in RPM.
+    Fan,
+}
 const POPOVER_W: f64 = 348.0;
 /// Initial height; the popover then reports its real content height (below) and
 /// the window is resized to fit exactly.
@@ -48,6 +59,7 @@ struct App {
     monitor: Box<dyn SystemMonitor>,
     provider: Box<dyn HardwareProvider>,
     has_battery: bool,
+    metric: Metric,
     tray: Option<TrayIcon>,
     window: Option<Window>,
     webview: Option<WebView>,
@@ -55,7 +67,19 @@ struct App {
 }
 
 fn main() {
-    let use_mock = std::env::args().any(|a| a == "--mock");
+    let args: Vec<String> = std::env::args().collect();
+    let use_mock = args.iter().any(|a| a == "--mock");
+    let metric = args
+        .iter()
+        .position(|a| a == "--metric")
+        .and_then(|i| args.get(i + 1))
+        .map(|v| match v.as_str() {
+            "temp" | "temperature" => Metric::Temp,
+            "fan" | "rpm" => Metric::Fan,
+            _ => Metric::Cpu,
+        })
+        .unwrap_or(Metric::Cpu);
+
     let (monitor, provider): (Box<dyn SystemMonitor>, Box<dyn HardwareProvider>) = if use_mock {
         (peterfan_platform::mock_monitor(), peterfan_platform::mock())
     } else {
@@ -75,6 +99,7 @@ fn main() {
         monitor,
         provider,
         has_battery,
+        metric,
         tray: None,
         window: None,
         webview: None,
@@ -238,10 +263,30 @@ fn update(app: &mut App) {
     app.monitor.refresh();
     let cpu = app.monitor.cpu();
 
-    // Clean, readable menu-bar title — the CPU percentage at the same precision
-    // as the popover (one decimal), so the two never disagree.
+    // Menu-bar title: CPU%, hottest temp, or fastest fan RPM.
     if let Some(tray) = &app.tray {
-        set_menubar_text(tray, &format!("{:.1}%", cpu.usage_percent));
+        let title = match app.metric {
+            Metric::Cpu => format!("{:.1}%", cpu.usage_percent),
+            Metric::Temp => {
+                let temps = app.provider.temperatures().unwrap_or_default();
+                let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+                if hottest > 0.0 {
+                    format!("{hottest:.0}°C")
+                } else {
+                    format!("{:.1}%", cpu.usage_percent)
+                }
+            }
+            Metric::Fan => {
+                let fans = app.provider.fans().unwrap_or_default();
+                let fastest = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
+                if fastest > 0 {
+                    format!("{fastest} RPM")
+                } else {
+                    format!("{:.1}%", cpu.usage_percent)
+                }
+            }
+        };
+        set_menubar_text(tray, &title);
     }
 
     if !app.popover_visible {
