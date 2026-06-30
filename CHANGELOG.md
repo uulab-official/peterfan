@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.6] — `peterfan login-item` — menubar auto-start at login
+
+### Added
+- **`peterfan login-item install`** — writes a LaunchAgent plist to
+  `~/Library/LaunchAgents/dev.peterfan.menubar.plist` and loads it
+  immediately so `peterfan-menubar` starts at next login (and right now).
+  Auto-discovers the sibling binary; `--binary <path>` overrides it.
+- **`peterfan login-item remove`** — unloads and removes the plist.
+- **`peterfan login-item status`** — shows whether the item is installed
+  and the binary it points to.
+
 ## [0.28.5] — `peterfan daemon` subcommand + live config reload
 
 ### Added

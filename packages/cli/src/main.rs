@@ -156,6 +156,11 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Manage the peterfan-menubar login item (auto-start at login).
+    LoginItem {
+        #[command(subcommand)]
+        action: LoginItemAction,
+    },
     /// Continuously emit one metrics row per interval (for logging / piping).
     Log {
         /// Seconds between rows.
@@ -232,6 +237,20 @@ enum DaemonAction {
     Stop,
 }
 
+#[derive(Subcommand, Clone)]
+enum LoginItemAction {
+    /// Show whether the login item is installed and which binary it points to.
+    Status,
+    /// Install the peterfan-menubar login item (auto-starts at login).
+    Install {
+        /// Path to peterfan-menubar binary (default: sibling of this binary).
+        #[arg(long)]
+        binary: Option<String>,
+    },
+    /// Remove the peterfan-menubar login item.
+    Remove,
+}
+
 fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
@@ -300,6 +319,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
             Ok(())
         }
         Command::Log { interval, format } => cmd_log(mock, interval, format),
+        Command::LoginItem { action } => cmd_login_item(action),
         Command::InstallDaemon { dry_run } => cmd_install_daemon(dry_run),
         Command::UninstallDaemon { dry_run } => cmd_uninstall_daemon(dry_run),
     }
@@ -375,6 +395,142 @@ fn run_privileged(script: &str, dry_run: bool) -> Result<()> {
         anyhow::bail!("privileged step was cancelled or failed");
     }
     Ok(())
+}
+
+const LOGIN_ITEM_LABEL: &str = "dev.peterfan.menubar";
+const LOGIN_ITEM_BINARY: &str = "peterfan-menubar";
+
+fn login_item_plist_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|h: std::path::PathBuf| {
+        h.join("Library")
+            .join("LaunchAgents")
+            .join(format!("{LOGIN_ITEM_LABEL}.plist"))
+    })
+}
+
+fn find_menubar_binary(override_path: Option<&str>) -> Result<std::path::PathBuf> {
+    if let Some(p) = override_path {
+        let path = std::path::PathBuf::from(p);
+        if path.exists() {
+            return Ok(path);
+        }
+        anyhow::bail!("binary not found at '{p}'");
+    }
+    // Look next to the current executable.
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.parent().map(|d| d.join(LOGIN_ITEM_BINARY));
+        if let Some(s) = sibling.filter(|p| p.exists()) {
+            return Ok(s);
+        }
+    }
+    // Fall back to $PATH.
+    if let Ok(out) = std::process::Command::new("which")
+        .arg(LOGIN_ITEM_BINARY)
+        .output()
+    {
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !s.is_empty() {
+            return Ok(std::path::PathBuf::from(s));
+        }
+    }
+    anyhow::bail!(
+        "could not find '{LOGIN_ITEM_BINARY}' — use --binary <path> to specify its location"
+    )
+}
+
+fn login_item_plist(bin: &std::path::Path) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>       <string>{LOGIN_ITEM_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{}</string>
+  </array>
+  <key>RunAtLoad</key>   <true/>
+  <key>KeepAlive</key>   <false/>
+  <key>StandardOutPath</key> <string>/tmp/peterfan-menubar.log</string>
+  <key>StandardErrorPath</key> <string>/tmp/peterfan-menubar.log</string>
+</dict>
+</plist>
+"#,
+        bin.display()
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn cmd_login_item(action: LoginItemAction) -> Result<()> {
+    use owo_colors::OwoColorize;
+    let plist_path =
+        login_item_plist_path().ok_or_else(|| anyhow::anyhow!("could not determine home dir"))?;
+
+    match action {
+        LoginItemAction::Status => {
+            if plist_path.exists() {
+                let content = std::fs::read_to_string(&plist_path).unwrap_or_default();
+                let bin_line = content
+                    .lines()
+                    .skip_while(|l| !l.contains("ProgramArguments"))
+                    .nth(2)
+                    .map(|l| l.trim().trim_start_matches("<string>").trim_end_matches("</string>"))
+                    .unwrap_or("?");
+                println!(
+                    "  {} login item installed\n  binary: {}\n  plist:  {}",
+                    "✓".green(),
+                    bin_line.bold(),
+                    plist_path.display()
+                );
+            } else {
+                println!(
+                    "  {} login item not installed — run `peterfan login-item install`",
+                    "✗".yellow()
+                );
+            }
+        }
+        LoginItemAction::Install { binary } => {
+            let bin = find_menubar_binary(binary.as_deref())?;
+            if let Some(dir) = plist_path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&plist_path, login_item_plist(&bin))?;
+            // Load it immediately so the user doesn't have to log out/in.
+            let _ = std::process::Command::new("launchctl")
+                .args(["load", "-w", plist_path.to_str().unwrap_or("")])
+                .status();
+            println!(
+                "  {} login item installed\n  binary: {}\n  plist:  {}\n  {} peterfan-menubar will start at login",
+                "✓".green(),
+                bin.display().bold(),
+                plist_path.display(),
+                "→".dimmed()
+            );
+        }
+        LoginItemAction::Remove => {
+            if !plist_path.exists() {
+                println!("  {} login item is not installed", "—".dimmed());
+                return Ok(());
+            }
+            let _ = std::process::Command::new("launchctl")
+                .args(["unload", "-w", plist_path.to_str().unwrap_or("")])
+                .status();
+            std::fs::remove_file(&plist_path)?;
+            println!(
+                "  {} login item removed  ({})",
+                "✓".green(),
+                plist_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cmd_login_item(action: LoginItemAction) -> Result<()> {
+    let _ = action;
+    anyhow::bail!("login-item is only supported on macOS")
 }
 
 #[cfg(target_os = "macos")]
