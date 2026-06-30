@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.25.1.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.25.2.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |

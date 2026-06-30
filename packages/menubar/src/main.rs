@@ -483,7 +483,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8
 <style>
 :root{--g:#30d158;--y:#ffd60a;--r:#ff453a;--accent:#5b9dff;--text:#f4f6fa;--dim:#7f8896;--line:rgba(255,255,255,.07);}
 *{box-sizing:border-box;margin:0;padding:0;}
-html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;color:var(--text);-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased;}
+html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;color:var(--text);-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased;overflow:hidden;}
 .panel{background:#1b1b1d;border:1px solid rgba(255,255,255,.09);border-radius:13px;overflow:hidden;}
 .row{display:grid;grid-template-columns:24px 1fr;gap:12px;padding:8px 15px;align-items:center;}
 .row + .row{border-top:1px solid var(--line);}
@@ -515,6 +515,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .chip{flex:1 1 28%;background:rgba(255,255,255,.06);border:0;color:var(--text);font:inherit;font-size:10px;font-weight:600;padding:6px 4px;border-radius:7px;cursor:pointer;transition:background .15s;}
 .chip:hover{background:rgba(91,157,255,.28);}
 .chip.auto{background:rgba(48,209,88,.16);color:var(--g);}
+.ctl-note{flex:1 1 100%;font-size:10.5px;color:var(--dim);line-height:1.5;}
 .foot{border-top:1px solid var(--line);padding:3px;}
 .quit{display:block;width:100%;background:transparent;border:0;color:var(--dim);font:inherit;font-size:10.5px;letter-spacing:.02em;padding:8px;border-radius:8px;cursor:pointer;transition:background .15s,color .15s;}
 .quit:hover{background:rgba(255,255,255,.06);color:var(--text);}
@@ -557,6 +558,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <button class="chip" onclick="window.ipc.postMessage('cmd:profile:gaming')">Gaming</button>
 <button class="chip" onclick="window.ipc.postMessage('cmd:profile:performance')">Perf</button>
 <button class="chip" onclick="window.ipc.postMessage('cmd:profile:maximum')">Max</button>
+<div class="ctl-note" id="ctl-note" style="display:none"></div>
 </div>
 <div class="foot"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
 </div>
@@ -578,9 +580,24 @@ window.__pf={update:function(d){
  set('net-sub',d.net_sub);
  var chips=document.querySelectorAll('.chip');
  for(var i=0;i<chips.length;i++){chips[i].style.display=d.can_control?'':'none';}
- set('ctl-status', d.can_control ? (d.ctl_status||'') : 'system-governed on Apple Silicon');
+ var note=document.getElementById('ctl-note');
+ if(d.can_control){
+   set('ctl-status', d.ctl_status||'');
+   if(note)note.style.display='none';
+ } else {
+   set('ctl-status','monitor-only');
+   if(note){note.style.display='';note.textContent='macOS manages the fans on Apple Silicon, so speed can’t be set here — PeterFan shows live RPM only. Manual profiles work on Intel Macs via the helper daemon.';}
+ }
  reportHeight();
 }};
-function reportHeight(){var p=document.querySelector('.panel');if(p&&window.ipc){window.ipc.postMessage('h:'+Math.ceil(p.getBoundingClientRect().height));}}
-document.addEventListener('DOMContentLoaded',function(){setTimeout(reportHeight,30);});
+function reportHeight(){
+  if(!window.ipc)return;
+  // Measure after layout settles so populated lists are included.
+  requestAnimationFrame(function(){
+    var h=Math.max(document.body.scrollHeight,document.documentElement.scrollHeight);
+    window.ipc.postMessage('h:'+Math.ceil(h));
+  });
+}
+// Height is reported from update() once real data has populated the lists,
+// so the window snaps to the exact content height instead of an empty one.
 </script></body></html>"##;

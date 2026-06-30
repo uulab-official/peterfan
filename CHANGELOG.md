@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.2] — Menu-bar popover: no inner scroll, clearer fan-control state
+
+### Fixed
+- Popover no longer shows an inner scrollbar / "frame-in-a-frame" look: the
+  window is sized to the exact content height (measured via `scrollHeight`
+  after layout settles, reported only once real data has populated), and the
+  body has `overflow:hidden`.
+
+### Changed
+- When fan control isn't available (Apple Silicon, where macOS governs the
+  fans), the Fan-control section now explains *why* there are no speed buttons
+  ("monitor-only" + a one-line note) instead of a terse footnote.
+
 ## [0.25.1] — Memory breakdown in `status`, docs polish
 
 ### Added
@@ -395,7 +408,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.25.1...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.25.2...HEAD
+[0.25.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.25.2
 [0.25.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.25.1
 [0.25.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.25.0
 [0.24.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.24.0
