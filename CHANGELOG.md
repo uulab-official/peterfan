@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.8] — UX polish: `peterfan rule` lists by default + fans shows daemon mode
+
+### Changed
+- **`peterfan rule`** (no subcommand) now lists rules instead of showing help.
+- **`peterfan fans`** now shows the daemon's current control mode (`hold:80%`,
+  `rules:balanced`, `auto`, …) as a bullet above the fan table when a daemon
+  is running.
+
 ## [0.28.7] — Configurable menu-bar metric (CPU / temp / fan RPM)
 
 ### Added

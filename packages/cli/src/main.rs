@@ -118,9 +118,10 @@ enum Command {
         set: Option<Vec<String>>,
     },
     /// Manage fan-control automation rules in the config file.
+    /// With no subcommand, lists current rules.
     Rule {
         #[command(subcommand)]
-        action: RuleAction,
+        action: Option<RuleAction>,
     },
     /// Manage the running peterfand daemon (status / reload / stop).
     Daemon {
@@ -308,7 +309,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Hardware => cmd_hardware(provider(mock).as_ref(), json),
         Command::Doctor => cmd_doctor(mock, json),
         Command::Config { init, set } => cmd_config(json, init, set),
-        Command::Rule { action } => cmd_rule(json, action),
+        Command::Rule { action } => cmd_rule(json, action.unwrap_or(RuleAction::List)),
         Command::Daemon { action } => cmd_daemon(json, action),
         Command::Serve { port } => cmd_serve(mock, port),
         Command::Benchmark { secs } => cmd_benchmark(mock, json, secs),
@@ -1656,12 +1657,23 @@ fn cmd_temps(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
 
 fn cmd_fans(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
     let sensors = read_sensors(provider)?;
+    let daemon_mode = ipc_send("status")
+        .as_deref()
+        .and_then(|r| r.strip_prefix("ok "))
+        .map(str::to_string);
     if json {
-        println!("{}", serde_json::to_string_pretty(&sensors.fans)?);
+        let val = serde_json::json!({
+            "fans": sensors.fans,
+            "daemon_mode": daemon_mode,
+        });
+        println!("{}", serde_json::to_string_pretty(&val)?);
         return Ok(());
     }
     if sensors.simulated {
         println!("{}", simulated_note());
+    }
+    if let Some(mode) = &daemon_mode {
+        println!("  {} daemon: {}", "•".cyan(), mode.bold());
     }
     print_fans(&sensors.fans);
     Ok(())
