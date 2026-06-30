@@ -416,9 +416,12 @@ fn daemon_status_str() -> String {
 /// back to controlling fans directly if this process happens to have access.
 /// Returns a short human-readable status for the popover.
 fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
-    let line = match cmd.strip_prefix("profile:") {
-        Some(name) => format!("profile {name}\n"),
-        None => format!("{cmd}\n"),
+    let line = if let Some(name) = cmd.strip_prefix("profile:") {
+        format!("profile {name}\n")
+    } else if let Some(pct) = cmd.strip_prefix("hold:") {
+        format!("hold {pct}\n")
+    } else {
+        format!("{cmd}\n")
     };
 
     #[cfg(unix)]
@@ -579,9 +582,16 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .ctl-head{flex:1 1 100%;display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;}
 .ctl-head .name{font-size:9.5px;font-weight:600;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;}
 .ctl-status{font-size:10px;color:var(--dim);font-variant-numeric:tabular-nums;}
-.chip{flex:1 1 28%;background:rgba(255,255,255,.06);border:0;color:var(--text);font:inherit;font-size:10px;font-weight:600;padding:6px 4px;border-radius:7px;cursor:pointer;transition:background .15s;}
+.chip{flex:1 1 28%;background:rgba(255,255,255,.06);border:1px solid transparent;color:var(--text);font:inherit;font-size:10px;font-weight:600;padding:6px 4px;border-radius:7px;cursor:pointer;transition:background .15s,border-color .15s;}
 .chip:hover{background:rgba(91,157,255,.28);}
 .chip.auto{background:rgba(48,209,88,.16);color:var(--g);}
+.chip.active{background:rgba(91,157,255,.22);border-color:rgba(91,157,255,.5);color:var(--accent);}
+.chip.auto.active{background:rgba(48,209,88,.28);border-color:rgba(48,209,88,.5);color:var(--g);}
+.hold-row{flex:1 1 100%;display:grid;grid-template-columns:auto 1fr auto auto;gap:7px;align-items:center;margin-top:2px;}
+.hold-row .hl{font-size:10px;color:var(--dim);white-space:nowrap;}
+.hold-row input[type=range]{-webkit-appearance:none;height:3px;border-radius:99px;background:rgba(255,255,255,.12);outline:none;cursor:pointer;}
+.hold-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;}
+.hold-pct{font-size:10px;font-weight:600;color:var(--accent);width:28px;text-align:right;font-variant-numeric:tabular-nums;}
 .ctl-note{flex:1 1 100%;font-size:10.5px;color:var(--dim);line-height:1.5;}
 .foot{border-top:1px solid var(--line);padding:3px;}
 .quit{display:block;width:100%;background:transparent;border:0;color:var(--dim);font:inherit;font-size:10.5px;letter-spacing:.02em;padding:8px;border-radius:8px;cursor:pointer;transition:background .15s,color .15s;}
@@ -619,12 +629,19 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 
 <div class="ctl">
 <div class="ctl-head"><span class="name">Fan control</span><span class="ctl-status" id="ctl-status"></span></div>
-<button class="chip auto" onclick="window.ipc.postMessage('cmd:auto')">Auto</button>
-<button class="chip" onclick="window.ipc.postMessage('cmd:profile:silent')">Silent</button>
-<button class="chip" onclick="window.ipc.postMessage('cmd:profile:balanced')">Balanced</button>
-<button class="chip" onclick="window.ipc.postMessage('cmd:profile:gaming')">Gaming</button>
-<button class="chip" onclick="window.ipc.postMessage('cmd:profile:performance')">Perf</button>
-<button class="chip" onclick="window.ipc.postMessage('cmd:profile:maximum')">Max</button>
+<button class="chip auto" id="chip-auto" onclick="window.ipc.postMessage('cmd:auto')">Auto</button>
+<button class="chip" id="chip-rules" onclick="window.ipc.postMessage('cmd:rules')">Rules</button>
+<button class="chip" id="chip-silent" onclick="window.ipc.postMessage('cmd:profile:silent')">Silent</button>
+<button class="chip" id="chip-balanced" onclick="window.ipc.postMessage('cmd:profile:balanced')">Balanced</button>
+<button class="chip" id="chip-gaming" onclick="window.ipc.postMessage('cmd:profile:gaming')">Gaming</button>
+<button class="chip" id="chip-performance" onclick="window.ipc.postMessage('cmd:profile:performance')">Perf</button>
+<button class="chip" id="chip-maximum" onclick="window.ipc.postMessage('cmd:profile:maximum')">Max</button>
+<div class="hold-row" id="hold-row">
+  <span class="hl">Hold</span>
+  <input type="range" id="hold-slider" min="0" max="100" value="50" oninput="document.getElementById('hold-pct').textContent=this.value+'%'">
+  <span class="hold-pct" id="hold-pct">50%</span>
+  <button class="chip" id="chip-hold" onclick="applyHold()" style="flex:0 0 auto;padding:6px 9px;">Set</button>
+</div>
 <div class="ctl-note" id="ctl-note" style="display:none"></div>
 </div>
 <div class="foot"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
@@ -646,7 +663,9 @@ window.__pf={update:function(d){
  show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
  set('net-sub',d.net_sub);
  var chips=document.querySelectorAll(‘.chip’);
+ var holdRow=document.getElementById(‘hold-row’);
  for(var i=0;i<chips.length;i++){chips[i].style.display=d.can_control?’’:’none’;}
+ if(holdRow)holdRow.style.display=d.can_control?’’:’none’;
  var note=document.getElementById(‘ctl-note’);
  if(d.can_control){
    set(‘ctl-status’, d.ctl_status||’’);
@@ -658,12 +677,28 @@ window.__pf={update:function(d){
        note.style.display=’none’;
      }
    }
+   // Active chip highlighting based on daemon mode.
+   var chipMap={‘auto’:’chip-auto’,’rules’:’chip-rules’,
+     ‘manual:silent’:’chip-silent’,’manual:balanced’:’chip-balanced’,
+     ‘manual:gaming’:’chip-gaming’,’manual:performance’:’chip-performance’,’manual:maximum’:’chip-maximum’};
+   chips.forEach(function(c){c.classList.remove(‘active’);});
+   var st=(d.ctl_status||’’).toLowerCase();
+   var matched=Object.keys(chipMap).find(function(k){return st.startsWith(k);});
+   if(matched){var el=document.getElementById(chipMap[matched]);if(el)el.classList.add(‘active’);}
+   // Sync hold slider when daemon is in hold mode.
+   var hm=st.match(/^hold:(\d+)/);
+   if(hm){
+     var sl=document.getElementById(‘hold-slider’);
+     if(sl&&sl!==document.activeElement){sl.value=hm[1];document.getElementById(‘hold-pct’).textContent=hm[1]+’%’;}
+     var hc=document.getElementById(‘chip-hold’);if(hc)hc.classList.add(‘active’);
+   }
  } else {
    set(‘ctl-status’,’unavailable’);
    if(note){note.style.display=’’;note.textContent=’Fan control unavailable on this Mac — showing live RPM only.’;}
  }
  reportHeight();
 }};
+function applyHold(){var v=document.getElementById(‘hold-slider’).value;window.ipc.postMessage(‘cmd:hold:’+v);}
 function reportHeight(){
   if(!window.ipc)return;
   // Measure after layout settles so populated lists are included.

@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.29.6] — Menubar popover: Rules + Hold slider + active-mode highlight
+
+### Added
+- **Popover Rules button** — switches daemon to rules mode from the menu-bar UI.
+- **Hold slider** — drag the 0–100% range slider and click "Set" to send
+  `hold <n>` to the daemon. While the slider is not focused the position
+  auto-syncs to the daemon's current hold %, so re-opening the popover always
+  shows the live value.
+- **Active-mode highlighting** — the button matching the current daemon mode
+  (auto, rules, a profile, or hold) is highlighted in blue on every tick so
+  the popover always shows at-a-glance what mode is active.
+
 ## [0.29.5] — TUI hold-% input + rules key
 
 ### Added
