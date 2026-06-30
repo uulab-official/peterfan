@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.27.0] — One-prompt fan-control setup (like Macs Fan Control)
+
+### Added
+- **`peterfan install-daemon` / `uninstall-daemon`** — install the root
+  fan-control helper with a single macOS password dialog (`osascript … with
+  administrator privileges`), no Terminal `sudo`. After that the menu-bar buttons
+  and `peterfan fan …` drive fans through the root daemon with no further
+  prompts — the same model Macs Fan Control / TG Pro use. `--dry-run` prints the
+  exact privileged script first.
+
+### Why
+Fan control fundamentally needs root; competitors just hide it behind a one-time
+privileged helper. PeterFan already had the unprivileged-app + root-daemon
+architecture — this makes installing that daemon a one-click, GUI-password step.
+
 ## [0.26.2] — `doctor` diagnoses fan-control readiness
 
 ### Added
@@ -453,7 +468,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.26.2...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.27.0
 [0.26.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.26.2
 [0.26.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.26.1
 [0.26.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.26.0

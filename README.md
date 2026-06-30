@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.26.2.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.27.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
@@ -73,6 +73,21 @@ open PeterFan.app
 # …or use the CLI / TUI directly
 ./peterfan status
 ```
+
+## Enable fan control (one-time)
+
+Fan control writes to the SMC, which **requires root** — exactly like Macs Fan
+Control or TG Pro. Rather than typing `sudo` every time, install the small root
+helper once (you'll get **one macOS password prompt**, no Terminal sudo):
+
+```sh
+./peterfan install-daemon      # one GUI admin prompt; runs at every boot
+./peterfan doctor              # confirms: root helper reachable, SMC keys present
+```
+
+After that the menu-bar buttons and `peterfan fan …` drive the fans through the
+root helper — no further prompts. Remove it with `peterfan uninstall-daemon`.
+`peterfan fan set N` **verifies by reading RPM back**, so you get a real ✓/✗.
 
 ## Build from source
 

@@ -198,6 +198,19 @@ peterfan completions bash > /usr/local/etc/bash_completion.d/peterfan
 # also: fish, powershell, elvish
 ```
 
+### `install-daemon` / `uninstall-daemon` — one-time root setup (macOS)
+
+Fan control needs root. Instead of per-command `sudo`, install a small root
+LaunchDaemon once — `osascript` shows **one macOS password dialog** (no Terminal
+sudo), then the helper runs at every boot and the menu-bar / `fan` commands drive
+fans through it.
+
+```bash
+peterfan install-daemon            # one GUI admin prompt
+peterfan install-daemon --dry-run  # print the exact privileged script first
+peterfan uninstall-daemon          # remove it
+```
+
 ### `doctor`
 
 Diagnoses the active backend, its capabilities, and whether the process is

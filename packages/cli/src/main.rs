@@ -130,6 +130,18 @@ enum Command {
         /// Target shell.
         shell: clap_complete::Shell,
     },
+    /// Install the root fan-control daemon (one admin-password prompt — like Macs Fan Control).
+    InstallDaemon {
+        /// Print what would run instead of asking for the admin password.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove the root fan-control daemon.
+    UninstallDaemon {
+        /// Print what would run instead of asking for the admin password.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Continuously emit one metrics row per interval (for logging / piping).
     Log {
         /// Seconds between rows.
@@ -239,7 +251,142 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
             Ok(())
         }
         Command::Log { interval, format } => cmd_log(mock, interval, format),
+        Command::InstallDaemon { dry_run } => cmd_install_daemon(dry_run),
+        Command::UninstallDaemon { dry_run } => cmd_uninstall_daemon(dry_run),
     }
+}
+
+/// LaunchDaemon label + paths (kept in sync with `packaging/…plist`).
+const DAEMON_LABEL: &str = "com.uulab.peterfan.daemon";
+
+/// The LaunchDaemon plist, generated so the install needs no extra files.
+fn daemon_plist() -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{DAEMON_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/peterfand</string>
+    <string>--profile</string><string>balanced</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/var/log/peterfand.log</string>
+  <key>StandardErrorPath</key><string>/var/log/peterfand.err</string>
+</dict>
+</plist>
+"#
+    )
+}
+
+/// Find the `peterfand` binary shipped next to this `peterfan` executable.
+#[cfg(target_os = "macos")]
+fn find_peterfand() -> Result<std::path::PathBuf> {
+    let mut cands = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            cands.push(dir.join("peterfand"));
+        }
+    }
+    cands.push(std::path::PathBuf::from("./peterfand"));
+    cands.push(std::path::PathBuf::from("target/release/peterfand"));
+    cands.into_iter().find(|p| p.exists()).ok_or_else(|| {
+        anyhow::anyhow!("peterfand not found next to peterfan (it ships in the same archive)")
+    })
+}
+
+/// Run a privileged shell script via one macOS admin-password GUI prompt.
+#[cfg(target_os = "macos")]
+fn run_privileged(script: &str, dry_run: bool) -> Result<()> {
+    let path = std::env::temp_dir().join("peterfan-daemon-install.sh");
+    if path.to_string_lossy().contains('\'') {
+        anyhow::bail!("temp path contains a quote; aborting");
+    }
+    std::fs::write(&path, script)?;
+    let apple = format!(
+        "do shell script \"/bin/bash '{}'\" with administrator privileges",
+        path.display()
+    );
+    if dry_run {
+        println!(
+            "--- script ({}) ---\n{script}\n--- osascript ---\n{apple}",
+            path.display()
+        );
+        return Ok(());
+    }
+    let status = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&apple)
+        .status()?;
+    let _ = std::fs::remove_file(&path);
+    if !status.success() {
+        anyhow::bail!("privileged step was cancelled or failed");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn cmd_install_daemon(dry_run: bool) -> Result<()> {
+    let bin = find_peterfand()?;
+    let plist_dst = format!("/Library/LaunchDaemons/{DAEMON_LABEL}.plist");
+    let script = format!(
+        "set -e\n\
+         install -m 755 '{bin}' /usr/local/bin/peterfand\n\
+         cat > '{plist_dst}' <<'PLIST'\n{plist}PLIST\n\
+         chown root:wheel '{plist_dst}'\n\
+         chmod 644 '{plist_dst}'\n\
+         launchctl bootout system '{plist_dst}' 2>/dev/null || true\n\
+         launchctl bootstrap system '{plist_dst}'\n",
+        bin = bin.display(),
+        plist = daemon_plist(),
+    );
+    println!(
+        "Installing the PeterFan fan-control daemon as root.\n\
+         macOS will ask for your password once — after that the menu-bar app and \
+         `peterfan fan …` work without sudo (just like Macs Fan Control)."
+    );
+    run_privileged(&script, dry_run)?;
+    if dry_run {
+        return Ok(());
+    }
+    std::thread::sleep(Duration::from_millis(800));
+    if peterfan_platform::daemon_reachable() {
+        println!("{}", "✓ daemon installed and running (root)".green());
+        println!("  it starts at every boot; logs at /var/log/peterfand.log");
+    } else {
+        println!(
+            "{}",
+            "installed, but the daemon isn't answering yet — check /var/log/peterfand.err".yellow()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn cmd_uninstall_daemon(dry_run: bool) -> Result<()> {
+    let plist_dst = format!("/Library/LaunchDaemons/{DAEMON_LABEL}.plist");
+    let script = format!(
+        "launchctl bootout system '{plist_dst}' 2>/dev/null || true\n\
+         rm -f '{plist_dst}' /usr/local/bin/peterfand\n"
+    );
+    println!("Removing the PeterFan fan-control daemon (one admin prompt)…");
+    run_privileged(&script, dry_run)?;
+    if !dry_run {
+        println!("{}", "✓ daemon removed".green());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cmd_install_daemon(_dry_run: bool) -> Result<()> {
+    anyhow::bail!("the daemon installer is macOS-only for now")
+}
+#[cfg(not(target_os = "macos"))]
+fn cmd_uninstall_daemon(_dry_run: bool) -> Result<()> {
+    anyhow::bail!("the daemon installer is macOS-only for now")
 }
 
 fn cmd_log(mock: bool, interval: u64, format: LogFormat) -> Result<()> {
