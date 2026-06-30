@@ -44,3 +44,15 @@ pub fn bind_listener() -> io::Result<(UnixListener, PathBuf)> {
 pub fn connect() -> Option<UnixStream> {
     PATHS.iter().find_map(|p| UnixStream::connect(p).ok())
 }
+
+/// Send a newline-terminated command to the running daemon and return the reply.
+/// Returns `None` when no daemon is reachable or the send/receive fails.
+pub fn send_command(cmd: &str) -> Option<String> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = connect()?;
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+    writeln!(stream, "{cmd}").ok()?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).ok()?;
+    Some(line.trim().to_string())
+}

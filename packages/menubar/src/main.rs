@@ -358,16 +358,9 @@ fn update(app: &mut App) {
 /// Returns an empty string when no daemon is reachable.
 fn daemon_status_str() -> String {
     #[cfg(unix)]
-    if let Some(mut stream) = peterfan_platform::ipc::connect() {
-        use std::io::{Read, Write};
-        let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
-        if stream.write_all(b"status\n").is_ok() {
-            let mut buf = [0u8; 96];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            let reply = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-            if let Some(rest) = reply.strip_prefix("ok ") {
-                return rest.to_string();
-            }
+    if let Some(reply) = peterfan_platform::ipc::send_command("status") {
+        if let Some(rest) = reply.strip_prefix("ok ") {
+            return rest.to_string();
         }
     }
     String::new()

@@ -2,7 +2,13 @@
 //!
 //! Polls the active [`SystemMonitor`] once a second and draws CPU (global +
 //! per-core), memory, disk, network, battery, and a top-process table. Quit
-//! with `q`, `Esc`, or `Ctrl-C`. Pass `--mock` for the simulated machine.
+//! with `q`, `Esc`, or `Ctrl-C`.
+//!
+//! Fan control (when daemon is running or process has root):
+//! - `1`–`5` → apply profile: silent / balanced / gaming / performance / maximum
+//! - `a`     → restore automatic (OS-managed) control
+//!
+//! Pass `--mock` for the simulated machine.
 
 use std::time::Duration;
 
@@ -18,6 +24,7 @@ use peterfan_core::metrics::{
     BatteryInfo, CpuMetrics, DiskInfo, MemoryMetrics, NetInterface, ProcSort, ProcessInfo,
     SystemInfo,
 };
+use peterfan_core::profile::Profile;
 use peterfan_core::types::{Fan, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
@@ -56,6 +63,10 @@ struct Dashboard<'a> {
     fans: Vec<Fan>,
     power: Option<f32>,
     cpu_history: &'a [u64],
+    /// Current fan control status (daemon mode or last command reply).
+    fan_status: String,
+    /// Whether fan control is available (daemon reachable or local root).
+    can_control: bool,
 }
 
 fn run(
@@ -65,9 +76,10 @@ fn run(
 ) -> Result<()> {
     let backend = monitor.name().to_string();
     let mut cpu_history: Vec<u64> = Vec::with_capacity(HISTORY_LEN);
+    // Transient message shown for one tick after a key press (then replaced by daemon status).
+    let mut pending_msg: Option<String> = None;
 
     loop {
-        // The loop period (~1s) is the sampling interval for usage % and rates.
         monitor.refresh();
 
         let cpu = monitor.cpu();
@@ -75,6 +87,17 @@ fn run(
         if cpu_history.len() > HISTORY_LEN {
             cpu_history.remove(0);
         }
+
+        // Query daemon status; fall back to checking local control capability.
+        let daemon_st = ipc_status();
+        let can_control =
+            !daemon_st.is_empty() || provider.capabilities().control_fans;
+
+        let fan_status = if let Some(msg) = pending_msg.take() {
+            msg
+        } else {
+            daemon_st
+        };
 
         let data = Dashboard {
             backend: &backend,
@@ -89,20 +112,103 @@ fn run(
             fans: provider.fans().unwrap_or_default(),
             power: provider.power_watts(),
             cpu_history: &cpu_history,
+            fan_status,
+            can_control,
         };
 
         terminal.draw(|f| ui(f, &data))?;
 
         if event::poll(Duration::from_millis(1000))? {
             if let Event::Key(key) = event::read()? {
-                let ctrl_c =
-                    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+                let ctrl_c = key.code == KeyCode::Char('c')
+                    && key.modifiers.contains(KeyModifiers::CONTROL);
                 if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) || ctrl_c {
                     return Ok(());
+                }
+                if can_control {
+                    pending_msg = handle_fan_key(key.code, provider.as_ref());
                 }
             }
         }
     }
+}
+
+/// Query the daemon's current mode for the status line.
+fn ipc_status() -> String {
+    #[cfg(unix)]
+    if let Some(reply) = peterfan_platform::ipc::send_command("status") {
+        if let Some(rest) = reply.strip_prefix("ok ") {
+            return rest.to_string();
+        }
+    }
+    String::new()
+}
+
+/// Handle a fan-control key press. Routes through daemon IPC when available,
+/// falls back to direct SMC writes (needs root). Returns a status string or `None`.
+fn handle_fan_key(key: KeyCode, provider: &dyn HardwareProvider) -> Option<String> {
+    let profile_name = match key {
+        KeyCode::Char('1') => Some("silent"),
+        KeyCode::Char('2') => Some("balanced"),
+        KeyCode::Char('3') => Some("gaming"),
+        KeyCode::Char('4') => Some("performance"),
+        KeyCode::Char('5') => Some("maximum"),
+        _ => None,
+    };
+
+    if let Some(name) = profile_name {
+        // Try daemon first (no root needed).
+        if let Some(reply) = ipc_send(&format!("profile {name}")) {
+            return Some(format!("→ {name}: {reply}"));
+        }
+        // Direct fallback (needs root / mock).
+        if let Some(p) = Profile::parse(name) {
+            let temps = provider.temperatures().unwrap_or_default();
+            let hot = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+            let duty = p.default_curve().duty_at(hot);
+            let fans: Vec<_> = provider
+                .fans()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|f| f.controllable)
+                .collect();
+            let ok = fans.iter().all(|f| provider.set_fan_duty(&f.id, duty).is_ok());
+            return Some(if ok {
+                format!("→ {name} ({duty}%)")
+            } else {
+                format!("→ {name}: needs daemon or root")
+            });
+        }
+    }
+
+    if key == KeyCode::Char('a') {
+        if let Some(reply) = ipc_send("auto") {
+            return Some(format!("→ auto: {reply}"));
+        }
+        let fans: Vec<_> = provider
+            .fans()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|f| f.controllable)
+            .collect();
+        let ok = fans.iter().all(|f| provider.set_fan_auto(&f.id).is_ok());
+        return Some(if ok {
+            "→ auto".into()
+        } else {
+            "→ auto: needs daemon or root".into()
+        });
+    }
+
+    None
+}
+
+fn ipc_send(cmd: &str) -> Option<String> {
+    #[cfg(unix)]
+    return peterfan_platform::ipc::send_command(cmd);
+    #[cfg(not(unix))]
+    let _ = cmd;
+    #[cfg(not(unix))]
+    None
 }
 
 fn ui(f: &mut Frame, d: &Dashboard) {
@@ -134,13 +240,19 @@ fn ui(f: &mut Frame, d: &Dashboard) {
 
     render_thermals(f, rows[5], d);
     render_processes(f, rows[6], &d.procs);
-    render_footer(f, rows[7]);
+    render_footer(f, rows[7], d.can_control);
 }
 
 fn render_thermals(f: &mut Frame, area: Rect, d: &Dashboard) {
+    // Show fan status (daemon mode or last command) in the block title.
+    let fan_label = if d.fan_status.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", d.fan_status)
+    };
     let title = match d.power {
-        Some(w) => format!(" Thermals · {w:.1} W "),
-        None => " Thermals ".to_string(),
+        Some(w) => format!(" Thermals · {w:.1} W{fan_label} "),
+        None => format!(" Thermals{fan_label} "),
     };
     let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
@@ -402,10 +514,15 @@ fn render_processes(f: &mut Frame, area: Rect, procs: &[ProcessInfo]) {
     f.render_widget(table, area);
 }
 
-fn render_footer(f: &mut Frame, area: Rect) {
+fn render_footer(f: &mut Frame, area: Rect, can_control: bool) {
+    let text = if can_control {
+        "q/Esc: quit   ·   1-5: profile (silent/balanced/gaming/perf/max)   ·   a: auto fan"
+    } else {
+        "q / Esc: quit   ·   refreshing every 1s"
+    };
     f.render_widget(
         Paragraph::new(Span::styled(
-            "q / Esc: quit   ·   refreshing every 1s",
+            text,
             Style::default().fg(Color::DarkGray),
         )),
         area,

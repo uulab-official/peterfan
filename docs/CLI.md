@@ -198,6 +198,14 @@ peterfan completions bash > /usr/local/etc/bash_completion.d/peterfan
 # also: fish, powershell, elvish
 ```
 
+### `fan` — IPC routing when daemon is running
+
+When `peterfand` is installed and running, `peterfan fan set N` routes the
+command through the daemon IPC — **no `sudo` required**. The daemon re-asserts
+the duty every tick, so the setting persists until `peterfan fan auto`.
+
+If no daemon is running, the CLI falls back to direct SMC writes (needs `sudo`).
+
 ### `install-daemon` / `uninstall-daemon` — one-time root setup (macOS)
 
 Fan control needs root. Instead of per-command `sudo`, install a small root

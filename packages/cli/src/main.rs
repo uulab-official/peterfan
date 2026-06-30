@@ -1221,17 +1221,10 @@ fn is_root() -> bool {
     true
 }
 
-/// Send a newline-terminated command to the running daemon and return the reply.
-/// Returns `None` if no daemon is reachable.
+/// Send a command to the running daemon and return the reply (delegates to platform).
 #[cfg(unix)]
 fn ipc_send(cmd: &str) -> Option<String> {
-    use std::io::{BufRead, BufReader, Write};
-    let mut stream = peterfan_platform::ipc::connect()?;
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    writeln!(stream, "{cmd}").ok()?;
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line).ok()?;
-    Some(line.trim().to_string())
+    peterfan_platform::ipc::send_command(cmd)
 }
 #[cfg(not(unix))]
 fn ipc_send(_cmd: &str) -> Option<String> {
