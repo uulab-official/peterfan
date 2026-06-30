@@ -71,6 +71,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
+name = "ascii"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
+
+[[package]]
 name = "atk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -247,6 +253,12 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "chunked_transfer"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
 
 [[package]]
 name = "clap"
@@ -1151,6 +1163,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "icu_collections"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1974,7 +1992,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "peterfan-cli"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1983,11 +2001,12 @@ dependencies = [
  "peterfan-core",
  "peterfan-platform",
  "serde_json",
+ "tiny_http",
 ]
 
 [[package]]
 name = "peterfan-core"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -1996,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-daemon"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2007,7 +2026,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-menubar"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "peterfan-core",
  "peterfan-platform",
@@ -2019,7 +2038,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-platform"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "battery",
  "core-foundation 0.10.1",
@@ -2033,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-tui"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "peterfan-core",
@@ -2755,6 +2774,18 @@ checksum = "dcef1a61bdb119096e153208ec5cbec23944ce8bca13be5c7f60c634f7403935"
 dependencies = [
  "num-conv",
  "time-core",
+]
+
+[[package]]
+name = "tiny_http"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "389915df6413a2e74fb181895f933386023c71110878cd0825588928e64cdc82"
+dependencies = [
+ "ascii",
+ "chunked_transfer",
+ "httpdate",
+ "log",
 ]
 
 [[package]]

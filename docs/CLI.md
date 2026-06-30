@@ -134,6 +134,24 @@ peterfan config --init   # create ~/.config/peterfan/config.toml
 The config (`profile`, `interval_secs`, `critical_temp_c`) supplies defaults for
 `--watch` and the `peterfand` daemon.
 
+### `serve` — local HTTP API
+
+Expose metrics (and fan control) as a localhost JSON API for integrations
+(Stream Deck, Raycast, Hammerspoon, Home Assistant, scripts).
+
+```bash
+peterfan serve --port 9847        # then:
+curl localhost:9847/api/v1/status
+curl localhost:9847/api/v1/cpu
+curl -X POST localhost:9847/api/v1/profile -d '{"name":"gaming"}'
+curl -X POST localhost:9847/api/v1/fan -d '{"action":"set","percent":60}'
+```
+
+Endpoints: `GET /api/v1/{status,system,cpu,memory,disks,network,battery,temps,fans,power}`;
+`POST /api/v1/profile` `{"name":"…"}`; `POST /api/v1/fan` `{"action":"auto"|"set","percent":N}`.
+Responses are JSON with `Access-Control-Allow-Origin: *`. Control endpoints
+apply only where fan control is available (Intel Macs).
+
 ### `doctor`
 
 Diagnoses the active backend, its capabilities, and whether the process is

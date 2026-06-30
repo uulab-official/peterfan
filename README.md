@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.17.0.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.18.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
@@ -36,11 +36,12 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 | Windows temperature / fan reading (EC) | 🚧 planned |
 | GPU utilization | 🚧 planned |
 | Fan **control** | ✅ Intel Macs (SMC writes, needs `sudo`/daemon) · ⚠️ Apple Silicon: fans are **system-governed**, no control (monitoring only) |
-| CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`, global `--watch` & `--json` | ✅ runnable |
+| CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`/`serve`, global `--watch` & `--json` | ✅ runnable |
 | TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes | ✅ runnable |
 | **Menu-bar app** — popover dashboard + **profile/Auto control buttons** that drive the daemon over IPC (no sudo) | ✅ runnable |
 | **Daemon** (`peterfand`) — continuous curve + restore-on-exit + critical-temp override + IPC server; LaunchDaemon install | ✅ runnable |
-| Desktop GUI (Tauri), plugins, HTTP API | 🗺️ roadmap |
+| **Local HTTP API** (`peterfan serve`) — JSON metrics + control for integrations | ✅ runnable |
+| Desktop GUI (Tauri), plugins | 🗺️ roadmap |
 
 When a backend can't read real sensors yet, the CLI/TUI **transparently fall
 back to the mock backend and clearly label the data as `simulated`** — so you

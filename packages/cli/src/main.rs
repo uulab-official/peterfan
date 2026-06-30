@@ -11,7 +11,7 @@
 
 mod render;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -112,6 +112,12 @@ enum Command {
         #[arg(long)]
         init: bool,
     },
+    /// Serve a local JSON HTTP API (`/api/v1/status`, …) for integrations.
+    Serve {
+        /// Port to listen on (localhost only).
+        #[arg(long, default_value_t = 9847)]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -194,6 +200,161 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Hardware => cmd_hardware(provider(mock).as_ref(), json),
         Command::Doctor => cmd_doctor(mock, json),
         Command::Config { init } => cmd_config(json, init),
+        Command::Serve { port } => cmd_serve(mock, port),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `serve` — a small local JSON HTTP API for integrations
+// ---------------------------------------------------------------------------
+
+fn cmd_serve(mock: bool, port: u16) -> Result<()> {
+    use tiny_http::{Header, Response, Server};
+
+    // Single-threaded: the monitor is refreshed about once a second between
+    // requests (recv_timeout), so usage %/rates stay valid without needing the
+    // monitor to be `Send` for a background thread.
+    let mut monitor: Box<dyn SystemMonitor> = if mock {
+        peterfan_platform::mock_monitor()
+    } else {
+        peterfan_platform::system_monitor()
+    };
+    monitor.refresh();
+    let provider = provider(mock);
+
+    let server = Server::http(("127.0.0.1", port))
+        .map_err(|e| anyhow::anyhow!("could not bind 127.0.0.1:{port}: {e}"))?;
+    println!("PeterFan API on http://127.0.0.1:{port}  —  try /api/v1/status   (Ctrl-C to stop)");
+
+    let mut last = Instant::now();
+    loop {
+        if last.elapsed() >= Duration::from_secs(1) {
+            monitor.refresh();
+            last = Instant::now();
+        }
+        let mut req = match server.recv_timeout(Duration::from_secs(1)) {
+            Ok(Some(r)) => r,
+            Ok(None) => continue, // timeout — loop back to refresh
+            Err(_) => continue,
+        };
+        let method = req.method().as_str().to_string();
+        let path = req.url().split('?').next().unwrap_or("/").to_string();
+        let mut body = String::new();
+        if method == "POST" {
+            let _ = req.as_reader().read_to_string(&mut body);
+        }
+
+        let (code, value) = route(&method, &path, &body, monitor.as_ref(), provider.as_ref());
+        let json = serde_json::to_string(&value).unwrap_or_else(|_| "{}".into());
+        let resp = Response::from_string(json)
+            .with_status_code(code)
+            .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+            .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+        let _ = req.respond(resp);
+    }
+}
+
+/// Build a (status, JSON) response for one API request.
+fn route(
+    method: &str,
+    path: &str,
+    body: &str,
+    m: &dyn SystemMonitor,
+    provider: &dyn HardwareProvider,
+) -> (u16, serde_json::Value) {
+    match (method, path) {
+        ("GET", "/api/v1/status") => (
+            200,
+            serde_json::json!({
+                "system": m.system_info(),
+                "cpu": m.cpu(),
+                "memory": m.memory(),
+                "disks": m.disks(),
+                "networks": m.networks(),
+                "battery": m.battery(),
+                "temps": provider.temperatures().unwrap_or_default(),
+                "fans": provider.fans().unwrap_or_default(),
+                "power_watts": provider.power_watts(),
+            }),
+        ),
+        ("GET", "/api/v1/system") => (200, serde_json::json!(m.system_info())),
+        ("GET", "/api/v1/cpu") => (200, serde_json::json!(m.cpu())),
+        ("GET", "/api/v1/memory") => (200, serde_json::json!(m.memory())),
+        ("GET", "/api/v1/disks") => (200, serde_json::json!(m.disks())),
+        ("GET", "/api/v1/network") | ("GET", "/api/v1/networks") => {
+            (200, serde_json::json!(m.networks()))
+        }
+        ("GET", "/api/v1/battery") => (200, serde_json::json!(m.battery())),
+        ("GET", "/api/v1/temps") => {
+            (200, serde_json::json!(provider.temperatures().unwrap_or_default()))
+        }
+        ("GET", "/api/v1/fans") => {
+            (200, serde_json::json!(provider.fans().unwrap_or_default()))
+        }
+        ("GET", "/api/v1/power") => (200, serde_json::json!({ "watts": provider.power_watts() })),
+        ("POST", "/api/v1/profile") => {
+            api_apply_profile(body, provider)
+        }
+        ("POST", "/api/v1/fan") => {
+            api_apply_fan(body, provider)
+        }
+        ("OPTIONS", _) => (204, serde_json::Value::Null),
+        _ => (404, serde_json::json!({ "error": "not found" })),
+    }
+}
+
+fn api_apply_profile(body: &str, provider: &dyn HardwareProvider) -> (u16, serde_json::Value) {
+    let name = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string));
+    let Some(name) = name else {
+        return (400, serde_json::json!({ "error": "expected {\"name\": \"...\"}" }));
+    };
+    let Some(profile) = Profile::parse(&name) else {
+        return (400, serde_json::json!({ "error": format!("unknown profile '{name}'") }));
+    };
+    if !provider.capabilities().control_fans {
+        return (200, serde_json::json!({ "applied": false, "reason": "no fan control on this backend" }));
+    }
+    let curve = profile.default_curve();
+    let temps = provider.temperatures().unwrap_or_default();
+    let temp = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+    let duty = curve.duty_at(temp);
+    for f in provider.fans().unwrap_or_default().iter().filter(|f| f.controllable) {
+        if let Err(e) = provider.set_fan_duty(&f.id, duty) {
+            return (500, serde_json::json!({ "applied": false, "error": e.to_string() }));
+        }
+    }
+    (200, serde_json::json!({ "applied": true, "profile": profile.as_str(), "duty_percent": duty }))
+}
+
+fn api_apply_fan(body: &str, provider: &dyn HardwareProvider) -> (u16, serde_json::Value) {
+    let v = match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v) => v,
+        Err(_) => return (400, serde_json::json!({ "error": "invalid JSON" })),
+    };
+    let action = v.get("action").and_then(|a| a.as_str()).unwrap_or("");
+    if !provider.capabilities().control_fans {
+        return (200, serde_json::json!({ "applied": false, "reason": "no fan control on this backend" }));
+    }
+    let fans: Vec<String> = provider
+        .fans()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| f.controllable)
+        .map(|f| f.id)
+        .collect();
+    let result = match action {
+        "auto" => fans.iter().try_for_each(|id| provider.set_fan_auto(id)),
+        "set" => {
+            let pct = v.get("percent").and_then(|p| p.as_u64()).unwrap_or(50).min(100) as u8;
+            fans.iter().try_for_each(|id| provider.set_fan_duty(id, pct))
+        }
+        _ => return (400, serde_json::json!({ "error": "action must be 'auto' or 'set'" })),
+    };
+    match result {
+        Ok(()) => (200, serde_json::json!({ "applied": true, "action": action })),
+        Err(e) => (500, serde_json::json!({ "applied": false, "error": e.to_string() })),
     }
 }
 

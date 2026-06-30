@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.0] — Local HTTP API (`serve`)
+
+### Added
+- **`peterfan serve`** — a local JSON HTTP API (localhost) so other tools
+  (Stream Deck, Raycast, Hammerspoon, Home Assistant, scripts) can read metrics
+  and drive fan profiles:
+  - `GET /api/v1/{status,system,cpu,memory,disks,network,battery,temps,fans,power}`
+  - `POST /api/v1/profile` `{"name":"gaming"}` · `POST /api/v1/fan` `{"action":"auto"|"set","percent":N}`
+  - CORS-enabled; single-threaded with ~1s background refresh. `--port` (default 9847).
+  Verified end-to-end with curl (status keys, profile/fan POST, 404).
+
 ## [0.17.0] — Honest fan-control capability
 
 ### Changed
@@ -303,7 +314,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.18.0
 [0.17.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.17.0
 [0.16.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.16.0
 [0.15.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.15.0
