@@ -1345,6 +1345,18 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     let elevated = is_elevated();
 
     if json {
+        let mut fan_control = serde_json::json!({
+            "elevated": elevated,
+            "daemon_reachable": peterfan_platform::daemon_reachable(),
+            "control_fans": caps.control_fans,
+        });
+        #[cfg(target_os = "macos")]
+        if let Some(p) = peterfan_platform::fan_control_probe() {
+            fan_control["smc_opened"] = serde_json::json!(p.opened);
+            fan_control["fan_mode_key"] = serde_json::json!(p.mode_key);
+            fan_control["ftst_key"] = serde_json::json!(p.ftst);
+            fan_control["fs_key"] = serde_json::json!(p.fs);
+        }
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -1361,6 +1373,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                     "read_temps": caps.read_temps, "read_fans": caps.read_fans,
                     "control_fans": caps.control_fans,
                 },
+                "fan_control": fan_control,
             }))?
         );
         return Ok(());
@@ -1387,6 +1400,41 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     print_check("read temperatures", caps.read_temps);
     print_check("read fans", caps.read_fans);
     print_check("control fans", caps.control_fans);
+
+    if !mock {
+        println!();
+        println!("{}", render::heading("Fan control readiness"));
+        print_check("running as root", elevated);
+        let daemon = peterfan_platform::daemon_reachable();
+        print_check("peterfand daemon reachable", daemon);
+        #[cfg(target_os = "macos")]
+        if let Some(p) = peterfan_platform::fan_control_probe() {
+            print_kv("  SMC opened", if p.opened { "yes" } else { "no" });
+            print_kv("  fan mode key", p.mode_key.unwrap_or("not found"));
+            print_kv(
+                "  Ftst unlock key",
+                if p.ftst { "present" } else { "absent" },
+            );
+            print_kv("  FS! force key", if p.fs { "present" } else { "absent" });
+        }
+        // Verdict.
+        let verdict = if !caps.control_fans {
+            "this backend can't write fans".yellow().to_string()
+        } else if elevated {
+            "ready — try `peterfan fan set 80` (verifies by RPM read-back)"
+                .green()
+                .to_string()
+        } else if daemon {
+            "use the menu-bar buttons or `peterfan fan` via the running daemon"
+                .green()
+                .to_string()
+        } else {
+            "needs root — run `sudo peterfan fan set 80`, or install the daemon"
+                .yellow()
+                .to_string()
+        };
+        println!("  → {verdict}");
+    }
 
     if !caps.read_temps {
         println!();

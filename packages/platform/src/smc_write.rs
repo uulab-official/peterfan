@@ -113,6 +113,47 @@ extern "C" {
     fn mach_task_self() -> MachPort;
 }
 
+/// Read-only snapshot of the SMC keys that matter for fan control, for
+/// `peterfan doctor`. None of this needs root (it only reads key-info).
+#[derive(Debug, Clone, Copy)]
+pub struct FanProbe {
+    /// The `AppleSMC` user-client could be opened at all.
+    pub opened: bool,
+    /// The fan-0 mode key that exists, if any (`F0Md` on M1–M4, `F0md` on M5).
+    pub mode_key: Option<&'static str>,
+    /// The `Ftst` Apple-Silicon unlock key is present.
+    pub ftst: bool,
+    /// The Intel `FS! ` force bitmask key is present.
+    pub fs: bool,
+}
+
+/// Probe the fan-control SMC keys (read-only; no root required).
+pub fn probe() -> FanProbe {
+    match Conn::open() {
+        Ok(c) => {
+            let mode_key = if c.key_exists(fan_key(0, [b'M', b'd'])) {
+                Some("F0Md")
+            } else if c.key_exists(fan_key(0, [b'm', b'd'])) {
+                Some("F0md")
+            } else {
+                None
+            };
+            FanProbe {
+                opened: true,
+                mode_key,
+                ftst: c.key_exists(ftst_key()),
+                fs: c.key_exists(fs_key()),
+            }
+        }
+        Err(_) => FanProbe {
+            opened: false,
+            mode_key: None,
+            ftst: false,
+            fs: false,
+        },
+    }
+}
+
 /// Errors from a fan-control write.
 #[derive(Debug)]
 pub enum FanCtlError {

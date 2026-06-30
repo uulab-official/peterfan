@@ -39,6 +39,30 @@ pub fn gpu_usage_percent() -> Option<f32> {
     macos_gpu::gpu_usage_percent()
 }
 
+#[cfg(target_os = "macos")]
+pub use smc_write::FanProbe;
+
+/// Read-only probe of the SMC fan-control keys, for `peterfan doctor`.
+/// `None` on platforms without this backend.
+#[cfg(target_os = "macos")]
+pub fn fan_control_probe() -> Option<FanProbe> {
+    Some(smc_write::probe())
+}
+#[cfg(not(target_os = "macos"))]
+pub fn fan_control_probe() -> Option<()> {
+    None
+}
+
+/// Whether a `peterfand` daemon is currently reachable over the local IPC socket.
+#[cfg(unix)]
+pub fn daemon_reachable() -> bool {
+    ipc::connect().is_some()
+}
+#[cfg(not(unix))]
+pub fn daemon_reachable() -> bool {
+    false
+}
+
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 /// Return the best available backend for the current operating system.

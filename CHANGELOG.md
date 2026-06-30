@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.26.2] — `doctor` diagnoses fan-control readiness
+
+### Added
+- `peterfan doctor` now has a **Fan control readiness** section: running as root?
+  `peterfand` reachable? and (macOS) a read-only SMC probe showing the fan mode
+  key (`F0Md`/`F0md`), whether the `Ftst` unlock key and Intel `FS! ` key are
+  present — plus a one-line verdict on how to actually drive the fans. Same data
+  in `--json` under `fan_control`. Needs no root (reads key-info only).
+
 ## [0.26.1] — Apple Silicon fan control: the real unlock sequence
 
 ### Fixed
@@ -444,7 +453,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.26.1...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.26.2...HEAD
+[0.26.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.26.2
 [0.26.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.26.1
 [0.26.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.26.0
 [0.25.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.25.2
