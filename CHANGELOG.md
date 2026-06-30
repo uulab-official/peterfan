@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.24.0] — Completions, logging, richer API
+
+### Added
+- **`peterfan completions <bash|zsh|fish|powershell>`** — shell completion
+  scripts (clap_complete).
+- **`peterfan log [--interval N] [--format csv|jsonl]`** — stream one metrics
+  row per interval (time, cpu%, mem%, disk%, temp, fan rpm, power) for
+  recording/piping (the spec's "Logs").
+- HTTP API: **`GET /`** human-friendly index page and **`GET /api/v1/processes`**
+  (top processes).
+
 ## [0.23.0] — Critical-temperature alerts
 
 ### Added
@@ -361,7 +372,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.24.0
 [0.23.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.23.0
 [0.22.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.22.0
 [0.21.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.21.0

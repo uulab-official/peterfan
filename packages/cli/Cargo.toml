@@ -16,6 +16,7 @@ path = "src/main.rs"
 peterfan-core = { workspace = true }
 peterfan-platform = { workspace = true }
 clap = { workspace = true }
+clap_complete = "4"
 owo-colors = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

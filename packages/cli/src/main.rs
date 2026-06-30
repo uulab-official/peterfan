@@ -14,7 +14,7 @@ mod render;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use owo_colors::OwoColorize;
 
 use peterfan_core::metrics::ProcSort;
@@ -124,6 +124,26 @@ enum Command {
         #[arg(long, default_value_t = 10)]
         secs: u64,
     },
+    /// Print a shell completion script: `peterfan completions zsh`.
+    Completions {
+        /// Target shell.
+        shell: clap_complete::Shell,
+    },
+    /// Continuously emit one metrics row per interval (for logging / piping).
+    Log {
+        /// Seconds between rows.
+        #[arg(long, default_value_t = 2)]
+        interval: u64,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = LogFormat::Csv)]
+        format: LogFormat,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum LogFormat {
+    Csv,
+    Jsonl,
 }
 
 #[derive(Subcommand, Clone)]
@@ -208,6 +228,71 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Config { init } => cmd_config(json, init),
         Command::Serve { port } => cmd_serve(mock, port),
         Command::Benchmark { secs } => cmd_benchmark(mock, json, secs),
+        Command::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "peterfan",
+                &mut std::io::stdout(),
+            );
+            Ok(())
+        }
+        Command::Log { interval, format } => cmd_log(mock, interval, format),
+    }
+}
+
+fn cmd_log(mock: bool, interval: u64, format: LogFormat) -> Result<()> {
+    use std::io::Write;
+    let interval = interval.max(1);
+    let mut monitor = if mock {
+        peterfan_platform::mock_monitor()
+    } else {
+        peterfan_platform::system_monitor()
+    };
+    let provider = provider(mock);
+
+    if matches!(format, LogFormat::Csv) {
+        println!("time,cpu_pct,mem_pct,disk_pct,temp_c,fan_rpm,power_w");
+    }
+    monitor.refresh();
+    loop {
+        std::thread::sleep(Duration::from_secs(interval));
+        monitor.refresh();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let cpu = monitor.cpu().usage_percent;
+        let mem = monitor.memory().used_percent;
+        let disk = monitor.disks().first().map(|d| d.used_percent).unwrap_or(0.0);
+        let temp = provider
+            .temperatures()
+            .unwrap_or_default()
+            .iter()
+            .map(|t| t.value.0)
+            .fold(0.0_f32, f32::max);
+        let rpm = provider
+            .fans()
+            .unwrap_or_default()
+            .iter()
+            .map(|f| f.rpm)
+            .max()
+            .unwrap_or(0);
+        let power = provider.power_watts().unwrap_or(0.0);
+
+        match format {
+            LogFormat::Csv => println!(
+                "{ts},{cpu:.1},{mem:.1},{disk:.1},{temp:.0},{rpm},{power:.1}"
+            ),
+            LogFormat::Jsonl => println!(
+                "{}",
+                serde_json::json!({
+                    "time": ts, "cpu_pct": cpu, "mem_pct": mem, "disk_pct": disk,
+                    "temp_c": temp, "fan_rpm": rpm, "power_w": power,
+                })
+            ),
+        }
+        std::io::stdout().flush().ok();
     }
 }
 
@@ -320,6 +405,24 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64) -> Result<()> {
     Ok(())
 }
 
+const API_INDEX_HTML: &str = r#"<!doctype html><meta charset="utf-8"><title>PeterFan API</title>
+<style>body{font:14px ui-sans-serif,system-ui,sans-serif;max-width:640px;margin:40px auto;padding:0 20px;color:#111}
+h1{font-size:20px}code{background:#f3f4f6;padding:2px 6px;border-radius:5px}a{color:#2563eb}li{margin:5px 0}</style>
+<h1>PeterFan — local API</h1>
+<p>Live JSON metrics + fan control. <a href="https://github.com/uulab-official/peterfan">GitHub</a></p>
+<h3>GET</h3>
+<ul>
+<li><a href="/api/v1/status">/api/v1/status</a> — full snapshot</li>
+<li><a href="/api/v1/cpu">/api/v1/cpu</a> · <a href="/api/v1/memory">/memory</a> · <a href="/api/v1/disks">/disks</a> · <a href="/api/v1/network">/network</a></li>
+<li><a href="/api/v1/battery">/api/v1/battery</a> · <a href="/api/v1/temps">/temps</a> · <a href="/api/v1/fans">/fans</a> · <a href="/api/v1/power">/power</a> · <a href="/api/v1/processes">/processes</a> · <a href="/api/v1/system">/system</a></li>
+</ul>
+<h3>POST</h3>
+<ul>
+<li><code>POST /api/v1/profile</code> <code>{"name":"gaming"}</code></li>
+<li><code>POST /api/v1/fan</code> <code>{"action":"auto"}</code> or <code>{"action":"set","percent":60}</code></li>
+</ul>
+"#;
+
 // ---------------------------------------------------------------------------
 // `serve` — a small local JSON HTTP API for integrations
 // ---------------------------------------------------------------------------
@@ -358,6 +461,15 @@ fn cmd_serve(mock: bool, port: u16) -> Result<()> {
         let mut body = String::new();
         if method == "POST" {
             let _ = req.as_reader().read_to_string(&mut body);
+        }
+
+        // Human-friendly index page.
+        if method == "GET" && path == "/" {
+            let resp = Response::from_string(API_INDEX_HTML)
+                .with_header(Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap())
+                .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+            let _ = req.respond(resp);
+            continue;
         }
 
         let (code, value) = route(&method, &path, &body, monitor.as_ref(), provider.as_ref());
@@ -401,6 +513,9 @@ fn route(
             (200, serde_json::json!(m.networks()))
         }
         ("GET", "/api/v1/battery") => (200, serde_json::json!(m.battery())),
+        ("GET", "/api/v1/processes") => {
+            (200, serde_json::json!(m.processes(20, ProcSort::Cpu)))
+        }
         ("GET", "/api/v1/temps") => {
             (200, serde_json::json!(provider.temperatures().unwrap_or_default()))
         }
