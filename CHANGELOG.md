@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] — Hold the SMC connection (Apple Silicon fan control)
+
+### Changed
+- **Fan control now keeps the SMC write connection open** instead of opening
+  and closing it per write. On Apple Silicon a forced fan reverts to automatic
+  as soon as the SMC connection closes, so a one-shot `fan set` had no lasting
+  effect; the **daemon holds the connection open** and re-asserts the target
+  each tick, which is the correct way to hold a forced speed.
+
+### Diagnostics / honesty
+- Verified the write encoding is correct on this hardware (`F0Md` = ui8,
+  `F0Tg` = `flt`; `FS! ` is absent on Apple Silicon, size 0). Writes succeed
+  without error. Whether the fan physically responds depends on the machine —
+  use `sudo peterfand --profile maximum` (continuous) and watch the RPM. A
+  one-shot `peterfan fan set` won't hold on Apple Silicon because the process
+  exits and the connection closes.
+
 ## [0.14.0] — Per-sensor & per-fan detail; sturdier fan control
 
 ### Added
@@ -262,7 +279,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.15.0
 [0.14.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.14.0
 [0.13.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.13.2
 [0.13.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.13.1

@@ -127,10 +127,16 @@ fn set_force_bit(conn: &Conn, idx: u8, manual: bool) {
     }
 }
 
-struct Conn(MachPort);
+/// An open SMC user-client connection. **Kept open** for the lifetime of the
+/// owner: on Apple Silicon a forced fan reverts to automatic when the SMC
+/// connection closes, so the controller must hold this open and re-assert.
+pub struct Conn(MachPort);
+
+// The handle is a plain mach port (u32); safe to move and to guard with a Mutex.
+unsafe impl Send for Conn {}
 
 impl Conn {
-    fn open() -> Result<Self, FanCtlError> {
+    pub fn open() -> Result<Self, FanCtlError> {
         unsafe {
             let matching = IOServiceMatching(c"AppleSMC".as_ptr());
             let device = IOServiceGetMatchingService(MASTER_PORT_DEFAULT, matching);
@@ -221,18 +227,18 @@ impl Drop for Conn {
     }
 }
 
-/// Force fan `idx` to `rpm`: enable manual mode (both the `FS! ` bitmask and
-/// `Fn Md`, since machines differ), then set the target speed.
-pub fn set_forced(idx: u8, rpm: f32) -> Result<(), FanCtlError> {
-    let conn = Conn::open()?;
-    set_force_bit(&conn, idx, true);
-    let _ = conn.write_key(fan_key(idx, [b'M', b'd']), &[1u8]);
-    conn.write_key(fan_key(idx, [b'T', b'g']), &rpm.to_ne_bytes())
-}
+impl Conn {
+    /// Force fan `idx` to `rpm`: enable manual mode (`FS! ` bitmask where it
+    /// exists, plus `Fn Md`), then set the target speed. Re-assert each tick.
+    pub fn force(&self, idx: u8, rpm: f32) -> Result<(), FanCtlError> {
+        set_force_bit(self, idx, true);
+        let _ = self.write_key(fan_key(idx, [b'M', b'd']), &[1u8]);
+        self.write_key(fan_key(idx, [b'T', b'g']), &rpm.to_ne_bytes())
+    }
 
-/// Return fan `idx` to automatic (OS-managed) control.
-pub fn set_auto(idx: u8) -> Result<(), FanCtlError> {
-    let conn = Conn::open()?;
-    set_force_bit(&conn, idx, false);
-    conn.write_key(fan_key(idx, [b'M', b'd']), &[0u8])
+    /// Return fan `idx` to automatic (OS-managed) control.
+    pub fn auto(&self, idx: u8) -> Result<(), FanCtlError> {
+        set_force_bit(self, idx, false);
+        self.write_key(fan_key(idx, [b'M', b'd']), &[0u8])
+    }
 }

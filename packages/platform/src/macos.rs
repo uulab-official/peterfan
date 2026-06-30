@@ -18,8 +18,11 @@
 use std::ffi::CString;
 use std::mem;
 use std::ptr;
+use std::sync::Mutex;
 
 use macsmc::Smc;
+
+use crate::smc_write::Conn;
 
 use peterfan_core::error::{CoreError, Result};
 use peterfan_core::provider::Capabilities;
@@ -29,12 +32,18 @@ use peterfan_core::HardwareProvider;
 pub struct MacosProvider {
     /// Whether the SMC could be opened on this machine (probed once at startup).
     has_smc: bool,
+    /// A persistent SMC write connection, opened on first control use and kept
+    /// open so forced fan state holds (it reverts when the connection closes).
+    force_conn: Mutex<Option<Conn>>,
 }
 
 impl MacosProvider {
     pub fn new() -> Result<Self> {
         let has_smc = Smc::connect().is_ok();
-        Ok(Self { has_smc })
+        Ok(Self {
+            has_smc,
+            force_conn: Mutex::new(None),
+        })
     }
 }
 
@@ -201,12 +210,23 @@ impl HardwareProvider for MacosProvider {
         let (min, max) = (fan.min.0, fan.max.0);
         let rpm = (min + (duty_percent as f32 / 100.0) * (max - min)).clamp(min, max);
 
-        crate::smc_write::set_forced(idx, rpm).map_err(map_fan_err)
+        self.with_conn(|c| c.force(idx, rpm))
     }
 
     fn set_fan_auto(&self, fan_id: &str) -> Result<()> {
         let idx = fan_index(fan_id)?;
-        crate::smc_write::set_auto(idx).map_err(map_fan_err)
+        self.with_conn(|c| c.auto(idx))
+    }
+}
+
+impl MacosProvider {
+    /// Run `f` against the persistent SMC write connection, opening it once.
+    fn with_conn(&self, f: impl FnOnce(&Conn) -> std::result::Result<(), crate::smc_write::FanCtlError>) -> Result<()> {
+        let mut guard = self.force_conn.lock().expect("smc conn poisoned");
+        if guard.is_none() {
+            *guard = Some(Conn::open().map_err(map_fan_err)?);
+        }
+        f(guard.as_ref().expect("conn present")).map_err(map_fan_err)
     }
 }
 
