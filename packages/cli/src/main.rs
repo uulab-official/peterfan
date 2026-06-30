@@ -2349,6 +2349,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     }
 
     println!("{}", render::heading("PeterFan doctor"));
+    print_kv("Version", env!("CARGO_PKG_VERSION"));
     print_kv(
         "OS / arch",
         &format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH),
@@ -2418,6 +2419,35 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
         {
             println!();
             println!("{}", render::heading("Setup"));
+
+            // ── LaunchDaemon ──────────────────────────────────────────────
+            let plist_exists = std::path::Path::new(
+                "/Library/LaunchDaemons/com.uulab.peterfan.daemon.plist",
+            )
+            .exists();
+            print_check("LaunchDaemon plist installed", plist_exists);
+            if plist_exists {
+                // Check if launchd has actually loaded it.
+                let loaded = std::process::Command::new("launchctl")
+                    .args(["list", "com.uulab.peterfan.daemon"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                print_check("  launchd loaded", loaded);
+                if !loaded && plist_exists {
+                    println!(
+                        "    {} run `peterfan install-daemon` to reload",
+                        "→".dimmed()
+                    );
+                }
+            } else {
+                println!(
+                    "    {} run `peterfan install-daemon` to set up persistent fan control",
+                    "→".dimmed()
+                );
+            }
+
+            // ── Menubar login item ────────────────────────────────────────
             let login_item_installed =
                 login_item_plist_path().is_some_and(|p| p.exists());
             print_check("menubar login item installed", login_item_installed);
@@ -2428,6 +2458,46 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                 );
             }
 
+            // ── Config file ───────────────────────────────────────────────
+            let cfg = peterfan_platform::config::load();
+            let cfg_path = peterfan_platform::config::path();
+            let cfg_exists = cfg_path.as_ref().is_some_and(|p| p.exists());
+            print_check("config file present", cfg_exists);
+            if cfg_exists {
+                let bad_rules: Vec<_> = cfg
+                    .rules
+                    .iter()
+                    .filter(|r| r.condition().is_none())
+                    .collect();
+                if bad_rules.is_empty() {
+                    print_kv(
+                        "  config",
+                        &format!(
+                            "profile={} interval={}s critical={:.0}°C rules={}",
+                            cfg.profile.as_str(),
+                            cfg.interval_secs,
+                            cfg.critical_temp_c,
+                            cfg.rules.len()
+                        ),
+                    );
+                } else {
+                    println!(
+                        "  {} config has {} invalid rule(s):",
+                        "⚠".yellow(),
+                        bad_rules.len()
+                    );
+                    for r in &bad_rules {
+                        println!("      unknown condition: '{}'", r.when);
+                    }
+                }
+            } else {
+                println!(
+                    "    {} run `peterfan config --init` to create it",
+                    "→".dimmed()
+                );
+            }
+
+            // ── Daemon state file ─────────────────────────────────────────
             let state_file = std::path::Path::new(
                 "/Library/Application Support/peterfand/state.toml",
             );
@@ -2443,6 +2513,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                 print_kv("  daemon state file", "absent (reboot will use config profile)");
             }
 
+            // ── Log file ──────────────────────────────────────────────────
             let log = std::path::Path::new(DAEMON_LOG);
             if log.exists() {
                 let meta = std::fs::metadata(log).ok();
@@ -2457,7 +2528,11 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                     })
                     .unwrap_or_else(|| "?".into());
                 let newsyslog_ok = std::path::Path::new(NEWSYSLOG_CONF).exists();
-                let rotation = if newsyslog_ok { "rotation configured" } else { "no rotation — run `peterfan install-daemon` to add log rotation" };
+                let rotation: &str = if newsyslog_ok {
+                    "rotation configured"
+                } else {
+                    "no rotation — run `peterfan install-daemon`"
+                };
                 print_kv("  daemon log", &format!("{DAEMON_LOG} ({size}, {rotation})"));
             } else {
                 print_kv("  daemon log", "absent (daemon not yet started)");

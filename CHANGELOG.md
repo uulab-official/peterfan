@@ -6,6 +6,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.0] — 정식 릴리즈
+
+### 주요 변경 (0.30.0 → 1.0.0)
+
+#### Added
+- **`peterfan doctor` 전면 강화** — LaunchDaemon 로딩 상태(`launchctl list`),
+  config 파일 유효성 검사(잘못된 규칙 조건 경고), config 요약 표시, 버전 번호 추가.
+- **`peterfan update --check`** → `peterfan update`로 단순화. GitHub 최신
+  릴리즈와 현재 버전 비교; 업데이트 시 `cargo install peterfan` 안내.
+- **CLI 레퍼런스 문서 전면 갱신** (`docs/CLI.md`) — `watch`, `update`, `rule`,
+  `daemon`, `config --set/--get`, `benchmark --profile` 모두 추가.
+
+### 전체 기능 요약 (v1.0.0)
+
+| 기능 | 커맨드 |
+|---|---|
+| 시스템 모니터링 | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `system` |
+| 열 측정 | `temps`, `fans`, `hardware` |
+| 팬 제어 | `fan set/auto/status`, `profile`, `curve` |
+| 실시간 모니터링 | `watch`, `tui` (별도 바이너리) |
+| 자동화 | `rule add/remove/clear`, `config --set` |
+| 데몬 관리 | `daemon status/reload/stop/log`, `install-daemon` |
+| 메뉴바 | `login-item install/remove`, `--metric cpu/temp/fan` |
+| 진단 | `doctor`, `update` |
+| 개발자 도구 | `log`, `benchmark`, `serve`, `completions` |
+
 ## [0.30.0] — watch + update + 데몬 reload 버그 수정
 
 ### Added

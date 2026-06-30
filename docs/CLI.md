@@ -12,8 +12,6 @@ cargo run -p peterfan-cli -- <command> [flags]
 | --- | --- |
 | `--mock` | Use the fully simulated backend instead of real hardware. |
 | `--json` | Emit machine-readable JSON instead of formatted text. |
-| `--watch` | Re-run the command on an interval, clearing the screen (Ctrl-C to stop). |
-| `--interval <secs>` | Refresh interval for `--watch` (default: from config, else 2). |
 | `-h`, `--help` | Help. |
 | `-V`, `--version` | Version. |
 
@@ -110,15 +108,19 @@ peterfan --json curve gaming     # array of {temp_c,duty_percent}
 
 ### `config`
 
-Show the config file path and current values; `--init` writes a default file.
+설정 파일 경로와 현재 값 표시. `--init`으로 기본 파일 생성, `--set`/`--get`으로 단일 값 편집.
 
 ```bash
-peterfan config          # show path + values
-peterfan config --init   # create ~/.config/peterfan/config.toml
+peterfan config                        # 경로 + 현재 값 출력
+peterfan config --init                 # 기본값으로 config 파일 생성
+peterfan config --set profile gaming   # profile 값 변경
+peterfan config --set interval 3       # 갱신 주기 변경
+peterfan config --set critical 95      # 임계 온도 변경
+peterfan config --get profile          # 특정 값만 출력
 ```
 
 The config (`profile`, `interval_secs`, `critical_temp_c`) supplies defaults for
-`--watch` and the `peterfand` daemon.
+the `peterfand` daemon.
 
 **Automation rules** let the daemon switch profile by condition (first match
 wins, else the base profile):
@@ -163,6 +165,25 @@ behaves under sustained load.
 ```bash
 peterfan benchmark --secs 30          # 30s all-core stress, live samples
 peterfan --json benchmark --secs 10   # machine-readable samples
+```
+
+### `watch` — 라이브 단일 줄 모니터링
+
+CPU%, MEM%, 온도, RPM, 전력, 데몬 모드를 한 줄에 색상으로 실시간 표시.
+Ctrl-C로 종료. tmux 상태바, 빠른 현황 확인에 적합.
+
+```bash
+peterfan watch              # 2초마다 갱신 (기본값)
+peterfan watch -i 1         # 1초마다 갱신
+peterfan watch --interval 5
+```
+
+### `update` — 버전 확인
+
+GitHub 최신 릴리즈와 현재 버전을 비교해 업데이트 여부를 안내.
+
+```bash
+peterfan update
 ```
 
 ### `log` — continuous metrics stream
@@ -224,6 +245,39 @@ peterfan doctor
 peterfan --json doctor
 ```
 
+### `rule` — 자동화 규칙 관리
+
+조건 기반으로 팬 프로파일을 자동 전환. 데몬이 매 틱마다 첫 번째 매칭 규칙을 적용.
+
+```bash
+peterfan rule                                      # 현재 규칙 목록
+peterfan rule add --condition "on_battery" --profile silent
+peterfan rule add --condition "cpu_above:85" --profile maximum
+peterfan rule add --condition "time:22-7" --profile silent
+peterfan rule remove 0                             # 인덱스 0 규칙 삭제
+peterfan rule clear                                # 전체 삭제
+```
+
+조건 형식: `on_ac`, `on_battery`, `cpu_above:<°C>`, `time:<시작>-<끝>`
+
+### `daemon` — 데몬 관리
+
+```bash
+peterfan daemon status    # 현재 모드 + 백엔드 확인
+peterfan daemon reload    # 설정 파일 다시 읽기
+peterfan daemon stop      # 데몬 종료
+peterfan daemon log       # 최근 로그 50줄 출력
+peterfan daemon log --follow  # 로그 실시간 팔로우 (tail -f)
+```
+
+### `benchmark` — 스트레스 테스트
+
+```bash
+peterfan benchmark --secs 30              # 30초 전체 코어 부하
+peterfan benchmark --profile gaming       # gaming 프로파일 적용 후 테스트 (종료 시 복원)
+peterfan --json benchmark --secs 10
+```
+
 ## Scripting
 
 `--json` makes every command pipeable. Example with `jq`:
@@ -234,7 +288,7 @@ peterfan --mock --json temps | jq 'max_by(.value.0 // .value)'
 
 # Current CPU-fan RPM
 peterfan --mock --json fans | jq '.[] | select(.id=="fan.cpu") | .rpm'
-```
 
-This is the same data the planned local HTTP API will expose, so scripts written
-against `--json` will map cleanly onto `GET /api/v1/*` later.
+# Daemon status in scripts
+peterfan --json daemon status | jq -r '.mode'
+```
