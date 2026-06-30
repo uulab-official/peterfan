@@ -18,7 +18,8 @@ use peterfan_core::metrics::{
     BatteryInfo, CpuMetrics, DiskInfo, MemoryMetrics, NetInterface, ProcSort, ProcessInfo,
     SystemInfo,
 };
-use peterfan_core::SystemMonitor;
+use peterfan_core::types::{Fan, TempSensor};
+use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const HISTORY_LEN: usize = 120;
 
@@ -29,9 +30,14 @@ fn main() -> Result<()> {
     } else {
         peterfan_platform::system_monitor()
     };
+    let provider: Box<dyn HardwareProvider> = if use_mock {
+        peterfan_platform::mock()
+    } else {
+        peterfan_platform::detect()
+    };
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, monitor);
+    let result = run(&mut terminal, monitor, provider);
     ratatui::restore();
     result
 }
@@ -46,10 +52,17 @@ struct Dashboard<'a> {
     nets: Vec<NetInterface>,
     battery: Option<BatteryInfo>,
     procs: Vec<ProcessInfo>,
+    temps: Vec<TempSensor>,
+    fans: Vec<Fan>,
+    power: Option<f32>,
     cpu_history: &'a [u64],
 }
 
-fn run(terminal: &mut ratatui::DefaultTerminal, mut monitor: Box<dyn SystemMonitor>) -> Result<()> {
+fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    mut monitor: Box<dyn SystemMonitor>,
+    provider: Box<dyn HardwareProvider>,
+) -> Result<()> {
     let backend = monitor.name().to_string();
     let mut cpu_history: Vec<u64> = Vec::with_capacity(HISTORY_LEN);
 
@@ -72,6 +85,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, mut monitor: Box<dyn SystemMonit
             nets: monitor.networks(),
             battery: monitor.battery(),
             procs: monitor.processes(12, ProcSort::Cpu),
+            temps: provider.temperatures().unwrap_or_default(),
+            fans: provider.fans().unwrap_or_default(),
+            power: provider.power_watts(),
             cpu_history: &cpu_history,
         };
 
@@ -96,6 +112,7 @@ fn ui(f: &mut Frame, d: &Dashboard) {
         Constraint::Length(3), // memory
         Constraint::Length(4), // disk + network side by side
         Constraint::Length(3), // battery / cpu history
+        Constraint::Length(4), // thermals (temps + fans + power)
         Constraint::Min(5),    // processes
         Constraint::Length(1), // footer
     ])
@@ -115,8 +132,52 @@ fn ui(f: &mut Frame, d: &Dashboard) {
     render_history(f, low[0], d.cpu_history);
     render_battery(f, low[1], d.battery.as_ref());
 
-    render_processes(f, rows[5], &d.procs);
-    render_footer(f, rows[6]);
+    render_thermals(f, rows[5], d);
+    render_processes(f, rows[6], &d.procs);
+    render_footer(f, rows[7]);
+}
+
+fn render_thermals(f: &mut Frame, area: Rect, d: &Dashboard) {
+    let title = match d.power {
+        Some(w) => format!(" Thermals · {w:.1} W "),
+        None => " Thermals ".to_string(),
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let cols = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(inner);
+
+    // Temperatures (left): up to two rows.
+    let temp_lines: Vec<Line> = d
+        .temps
+        .iter()
+        .take(inner.height as usize)
+        .map(|t| {
+            Line::from(vec![
+                Span::styled(format!("{:<12} ", t.label), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{:.0}°C", t.value.0), Style::default().fg(temp_color(t.value.0))),
+            ])
+        })
+        .collect();
+    f.render_widget(Paragraph::new(temp_lines), cols[0]);
+
+    // Fans (right).
+    let fan_lines: Vec<Line> = if d.fans.is_empty() {
+        vec![Line::from(Span::styled("no fan data", Style::default().fg(Color::DarkGray)))]
+    } else {
+        d.fans
+            .iter()
+            .take(inner.height as usize)
+            .map(|fan| {
+                Line::from(vec![
+                    Span::styled(format!("{:<8} ", fan.label), Style::default().fg(Color::DarkGray)),
+                    Span::styled(format!("{:>5} RPM", fan.rpm), Style::default().fg(Color::Cyan)),
+                ])
+            })
+            .collect()
+    };
+    f.render_widget(Paragraph::new(fan_lines), cols[1]);
 }
 
 fn render_title(f: &mut Frame, area: Rect, d: &Dashboard) {
@@ -153,6 +214,14 @@ fn load_color(p: f32) -> Color {
     match p {
         x if x < 50.0 => Color::Green,
         x if x < 80.0 => Color::Yellow,
+        _ => Color::Red,
+    }
+}
+
+fn temp_color(c: f32) -> Color {
+    match c {
+        x if x < 50.0 => Color::Green,
+        x if x < 70.0 => Color::Yellow,
         _ => Color::Red,
     }
 }
