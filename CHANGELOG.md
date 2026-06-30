@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.29.5] — TUI hold-% input + rules key
+
+### Added
+- **TUI `h` key** — enters an inline hold-input prompt in the footer bar. Type a
+  duty % (0–100), press Enter to send `hold <n>` to the daemon, or Esc to cancel.
+  The prompt renders with a highlighted yellow bar and a blinking cursor.
+- **TUI `r` key** — switches the daemon to rules mode directly from the TUI.
+- Footer now lists all fan-control keys: `1-5 · a · r · h`.
+
 ## [0.29.4] — `benchmark --profile` with daemon restore
 
 ### Added

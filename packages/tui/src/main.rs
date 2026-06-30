@@ -7,6 +7,8 @@
 //! Fan control (when daemon is running or process has root):
 //! - `1`–`5` → apply profile: silent / balanced / gaming / performance / maximum
 //! - `a`     → restore automatic (OS-managed) control
+//! - `r`     → switch daemon to rules mode
+//! - `h`     → hold fans at a typed duty % (0–100), Enter to confirm, Esc to cancel
 //!
 //! Pass `--mock` for the simulated machine.
 
@@ -67,6 +69,8 @@ struct Dashboard<'a> {
     fan_status: String,
     /// Whether fan control is available (daemon reachable or local root).
     can_control: bool,
+    /// When `Some`, we are in hold-input mode and this is the digits typed so far.
+    hold_input: Option<String>,
 }
 
 fn run(
@@ -78,6 +82,8 @@ fn run(
     let mut cpu_history: Vec<u64> = Vec::with_capacity(HISTORY_LEN);
     // Transient message shown for one tick after a key press (then replaced by daemon status).
     let mut pending_msg: Option<String> = None;
+    // When Some, we're collecting digits for a hold-% command.
+    let mut hold_input: Option<String> = None;
 
     loop {
         monitor.refresh();
@@ -114,19 +120,63 @@ fn run(
             cpu_history: &cpu_history,
             fan_status,
             can_control,
+            hold_input: hold_input.clone(),
         };
 
         terminal.draw(|f| ui(f, &data))?;
 
-        if event::poll(Duration::from_millis(1000))? {
+        // Poll with a short timeout so hold-input feels responsive.
+        let poll_ms = if hold_input.is_some() { 100 } else { 1000 };
+        if event::poll(Duration::from_millis(poll_ms))? {
             if let Event::Key(key) = event::read()? {
                 let ctrl_c = key.code == KeyCode::Char('c')
                     && key.modifiers.contains(KeyModifiers::CONTROL);
-                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) || ctrl_c {
+
+                // Handle hold-input mode first.
+                if hold_input.is_some() {
+                    match key.code {
+                        KeyCode::Esc => {
+                            hold_input = None;
+                        }
+                        KeyCode::Backspace => {
+                            if let Some(ref mut s) = hold_input {
+                                s.pop();
+                            }
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() => {
+                            if let Some(ref mut s) = hold_input {
+                                if s.len() < 3 {
+                                    s.push(c);
+                                }
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(s) = hold_input.take() {
+                                let pct: u32 = s.parse().unwrap_or(0);
+                                let pct = pct.min(100);
+                                let msg = if let Some(reply) = ipc_send(&format!("hold {pct}")) {
+                                    format!("→ hold {pct}%: {reply}")
+                                } else {
+                                    format!("→ hold {pct}%: daemon not reachable")
+                                };
+                                pending_msg = Some(msg);
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                if ctrl_c || matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
                     return Ok(());
                 }
+
                 if can_control {
-                    pending_msg = handle_fan_key(key.code, provider.as_ref());
+                    if key.code == KeyCode::Char('h') {
+                        hold_input = Some(String::new());
+                    } else {
+                        pending_msg = handle_fan_key(key.code, provider.as_ref());
+                    }
                 }
             }
         }
@@ -199,6 +249,13 @@ fn handle_fan_key(key: KeyCode, provider: &dyn HardwareProvider) -> Option<Strin
         });
     }
 
+    if key == KeyCode::Char('r') {
+        if let Some(reply) = ipc_send("rules") {
+            return Some(format!("→ rules: {reply}"));
+        }
+        return Some("→ rules: daemon not reachable".into());
+    }
+
     None
 }
 
@@ -240,7 +297,7 @@ fn ui(f: &mut Frame, d: &Dashboard) {
 
     render_thermals(f, rows[5], d);
     render_processes(f, rows[6], &d.procs);
-    render_footer(f, rows[7], d.can_control);
+    render_footer(f, rows[7], d);
 }
 
 fn render_thermals(f: &mut Frame, area: Rect, d: &Dashboard) {
@@ -517,9 +574,36 @@ fn render_processes(f: &mut Frame, area: Rect, procs: &[ProcessInfo]) {
     f.render_widget(table, area);
 }
 
-fn render_footer(f: &mut Frame, area: Rect, can_control: bool) {
-    let text = if can_control {
-        "q/Esc: quit   ·   1-5: profile (silent/balanced/gaming/perf/max)   ·   a: auto fan"
+fn render_footer(f: &mut Frame, area: Rect, d: &Dashboard) {
+    // Hold-input mode: show a typed-input prompt instead of the keybinding hint.
+    if let Some(ref digits) = d.hold_input {
+        let cursor = if digits.len() < 3 { "_" } else { "" };
+        let spans = vec![
+            Span::styled(
+                " Hold fans at: ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{digits}{cursor}% "),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "  Enter: confirm   Esc: cancel",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
+
+    let text = if d.can_control {
+        "q/Esc: quit   ·   1-5: profile   ·   a: auto   ·   r: rules   ·   h: hold %"
     } else {
         "q / Esc: quit   ·   refreshing every 1s"
     };
