@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.1] — Popover control buttons always respond
+
+### Fixed
+- The popover control buttons did nothing (and gave no feedback) when no daemon
+  was running. Now each button: (1) sends to the daemon if one is running and
+  shows its reply, or (2) falls back to controlling fans directly via this
+  process, or (3) shows a clear status (`start peterfand (needs root)`). A
+  "Fan control" status line in the popover reflects the result of every click.
+
 ## [0.13.0] — Menu-bar ↔ daemon control (IPC)
 
 ### Added
@@ -230,7 +239,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.13.1
 [0.13.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.13.0
 [0.12.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.12.0
 [0.11.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.11.0

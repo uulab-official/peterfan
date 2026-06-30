@@ -8,6 +8,7 @@
 //! simulated machine.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tao::dpi::{LogicalSize, PhysicalPosition};
@@ -23,6 +24,8 @@ use tray_icon::{
 };
 use wry::{WebView, WebViewBuilder};
 
+use peterfan_core::error::CoreError;
+use peterfan_core::profile::Profile;
 use peterfan_core::types::Celsius;
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
@@ -38,6 +41,10 @@ static QUIT: AtomicBool = AtomicBool::new(false);
 static DESIRED_H: AtomicU32 = AtomicU32::new(0);
 /// Height already applied to the window, to avoid resizing every tick.
 static APPLIED_H: AtomicU32 = AtomicU32::new(0);
+/// Control commands queued by popover buttons (`auto`, `profile:gaming`).
+static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Last control result, shown in the popover.
+static STATUS: Mutex<String> = Mutex::new(String::new());
 
 struct App {
     monitor: Box<dyn SystemMonitor>,
@@ -95,6 +102,16 @@ fn main() {
                 ..
             } => hide_popover(&mut app),
             _ => {}
+        }
+
+        // Run any control commands queued by the popover buttons.
+        let cmds: Vec<String> = std::mem::take(&mut *PENDING.lock().expect("pending poisoned"));
+        if !cmds.is_empty() {
+            for c in &cmds {
+                let status = execute_control(app.provider.as_ref(), c);
+                *STATUS.lock().expect("status poisoned") = status;
+            }
+            update(&mut app); // reflect the new status immediately
         }
 
         // Resize the popover window to the height the WebView reported, so it
@@ -171,7 +188,7 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
                     DESIRED_H.store(v, Ordering::Relaxed);
                 }
             } else if let Some(cmd) = body.strip_prefix("cmd:") {
-                send_daemon_command(cmd);
+                PENDING.lock().expect("pending poisoned").push(cmd.to_string());
             }
         })
         .build(&window)
@@ -309,26 +326,74 @@ fn update(app: &mut App) {
             s
         }).unwrap_or_default(),
         "net_sub": format!("↓ {}/s     ↑ {}/s", bytes(rx as u64), bytes(tx as u64)),
+        "ctl_status": STATUS.lock().expect("status poisoned").clone(),
     });
     let _ = wv.evaluate_script(&format!("window.__pf&&window.__pf.update({})", payload));
 }
 
-/// Forward a popover control action to the running `peterfand` daemon over its
-/// Unix socket. `cmd` is `auto` or `profile:<name>`. No-op if no daemon.
-#[cfg(unix)]
-fn send_daemon_command(cmd: &str) {
-    use std::io::Write;
+/// Run a popover control action (`auto` or `profile:<name>`). Prefers the
+/// running `peterfand` daemon (so the unprivileged app needs no root); falls
+/// back to controlling fans directly if this process happens to have access.
+/// Returns a short human-readable status for the popover.
+fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
     let line = match cmd.strip_prefix("profile:") {
         Some(name) => format!("profile {name}\n"),
         None => format!("{cmd}\n"),
     };
+
+    #[cfg(unix)]
     if let Some(mut stream) = peterfan_platform::ipc::connect() {
-        let _ = stream.write_all(line.as_bytes());
+        use std::io::{Read, Write};
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+        if stream.write_all(line.as_bytes()).is_ok() {
+            let mut buf = [0u8; 96];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let reply = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+            return format!("daemon: {}", if reply.is_empty() { "ok" } else { &reply });
+        }
     }
+
+    apply_local(provider, cmd)
 }
 
-#[cfg(not(unix))]
-fn send_daemon_command(_cmd: &str) {}
+/// Apply a control action directly via the hardware provider (needs privileges).
+fn apply_local(provider: &dyn HardwareProvider, cmd: &str) -> String {
+    if !provider.capabilities().control_fans {
+        return "no fan control on this backend".into();
+    }
+    let fans: Vec<String> = provider
+        .fans()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| f.controllable)
+        .map(|f| f.id)
+        .collect();
+
+    let (result, label) = if cmd == "auto" {
+        (fans.iter().try_for_each(|id| provider.set_fan_auto(id)), "auto".to_string())
+    } else if let Some(name) = cmd.strip_prefix("profile:") {
+        match Profile::parse(name) {
+            Some(p) => {
+                let temps = provider.temperatures().unwrap_or_default();
+                let hot = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+                let duty = p.default_curve().duty_at(hot);
+                (
+                    fans.iter().try_for_each(|id| provider.set_fan_duty(id, duty)),
+                    format!("{} ({duty}%)", p.as_str()),
+                )
+            }
+            None => return "unknown profile".into(),
+        }
+    } else {
+        return "unknown command".into();
+    };
+
+    match result {
+        Ok(()) => format!("{label} — applied locally"),
+        Err(CoreError::PermissionDenied(_)) => "start peterfand (needs root)".into(),
+        Err(e) => format!("error: {e}"),
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn set_menubar_text(tray: &TrayIcon, text: &str) {
@@ -418,6 +483,9 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .cores{display:flex;align-items:flex-end;gap:2px;height:11px;margin-top:7px;}
 .core{flex:1;background:var(--accent);border-radius:1px;min-height:2px;opacity:.8;}
 .ctl{display:flex;flex-wrap:wrap;gap:5px;padding:9px 15px;border-top:1px solid var(--line);}
+.ctl-head{flex:1 1 100%;display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;}
+.ctl-head .name{font-size:9.5px;font-weight:600;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;}
+.ctl-status{font-size:10px;color:var(--dim);font-variant-numeric:tabular-nums;}
 .chip{flex:1 1 28%;background:rgba(255,255,255,.06);border:0;color:var(--text);font:inherit;font-size:10px;font-weight:600;padding:6px 4px;border-radius:7px;cursor:pointer;transition:background .15s;}
 .chip:hover{background:rgba(91,157,255,.28);}
 .chip.auto{background:rgba(48,209,88,.16);color:var(--g);}
@@ -456,6 +524,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="sub" id="net-sub"></div></div></div>
 
 <div class="ctl">
+<div class="ctl-head"><span class="name">Fan control</span><span class="ctl-status" id="ctl-status"></span></div>
 <button class="chip auto" onclick="window.ipc.postMessage('cmd:auto')">Auto</button>
 <button class="chip" onclick="window.ipc.postMessage('cmd:profile:silent')">Silent</button>
 <button class="chip" onclick="window.ipc.postMessage('cmd:profile:balanced')">Balanced</button>
@@ -479,6 +548,7 @@ window.__pf={update:function(d){
  show('sec-fans',d.fans_present);if(d.fans_present){set('fans-val',d.fans_text);set('fans-sub',d.fans_sub);bar('fans-bar',d.fans_pct,'b');}
  show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
  set('net-sub',d.net_sub);
+ set('ctl-status',d.ctl_status||'');
  reportHeight();
 }};
 function reportHeight(){var p=document.querySelector('.panel');if(p&&window.ipc){window.ipc.postMessage('h:'+Math.ceil(p.getBoundingClientRect().height));}}
