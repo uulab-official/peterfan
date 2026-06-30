@@ -16,6 +16,7 @@
 //! without root.
 
 use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
@@ -23,6 +24,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 use clap::Parser;
+use serde::{Deserialize, Serialize};
 
 use peterfan_core::config::{Config, RuleContext};
 use peterfan_core::profile::Profile;
@@ -30,6 +32,64 @@ use peterfan_core::{HardwareProvider, SystemMonitor};
 
 /// Set by the signal handler; the control loop checks it and exits cleanly.
 static STOP: AtomicBool = AtomicBool::new(false);
+
+// ── State persistence ────────────────────────────────────────────────────────
+
+/// Serialized daemon state written to disk on every IPC change and read on
+/// startup, so the user's last fan setting survives a reboot.
+#[derive(Serialize, Deserialize, Default)]
+struct SavedState {
+    /// "auto" | "hold" | "profile" | "rules"
+    mode: String,
+    /// Set when mode = "hold".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hold_pct: Option<u8>,
+    /// Last active profile name (remembered across all modes for "rules" resume).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
+}
+
+fn state_file_path() -> PathBuf {
+    // macOS LaunchDaemon convention; falls back to /tmp for other platforms.
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from("/Library/Application Support/peterfand/state.toml")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        PathBuf::from("/var/lib/peterfand/state.toml")
+    }
+}
+
+fn save_state(state: &State) {
+    let saved = SavedState {
+        mode: if state.auto {
+            "auto".into()
+        } else if state.held_duty.is_some() {
+            "hold".into()
+        } else if state.manual {
+            "profile".into()
+        } else {
+            "rules".into()
+        },
+        hold_pct: state.held_duty,
+        profile: Some(state.profile.as_str().to_string()),
+    };
+    if let Ok(s) = toml::to_string(&saved) {
+        let path = state_file_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, s);
+    }
+}
+
+fn load_saved_state() -> Option<SavedState> {
+    let bytes = std::fs::read_to_string(state_file_path()).ok()?;
+    toml::from_str(&bytes).ok()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 
 /// Live control state, shared between the control loop and the IPC server.
 #[derive(Clone)]
@@ -125,13 +185,50 @@ fn run(cli: Cli) -> Result<()> {
         peterfan_platform::system_monitor()
     };
 
-    let shared = Arc::new(Mutex::new(State {
-        profile,
-        held_duty: None,
-        auto: false,
-        manual: false,
-        backend: provider.name().to_string(),
-    }));
+    let initial_state = {
+        let mut s = State {
+            profile,
+            held_duty: None,
+            auto: false,
+            manual: false,
+            backend: provider.name().to_string(),
+        };
+        // Restore the last user-chosen mode so a reboot doesn't reset fan settings.
+        if let Some(saved) = load_saved_state() {
+            match saved.mode.as_str() {
+                "auto" => {
+                    s.auto = true;
+                }
+                "hold" => {
+                    if let Some(pct) = saved.hold_pct {
+                        s.held_duty = Some(pct);
+                        s.manual = true;
+                    }
+                }
+                "profile" => {
+                    if let Some(name) = &saved.profile {
+                        if let Some(p) = Profile::parse(name) {
+                            s.profile = p;
+                            s.manual = true;
+                        }
+                    }
+                }
+                _ => {} // "rules" or unknown → keep defaults
+            }
+        }
+        s
+    };
+    let restored_mode = if initial_state.auto {
+        "auto".to_string()
+    } else if let Some(d) = initial_state.held_duty {
+        format!("hold:{d}%")
+    } else if initial_state.manual {
+        format!("profile:{}", initial_state.profile.as_str())
+    } else {
+        format!("rules:{}", initial_state.profile.as_str())
+    };
+
+    let shared = Arc::new(Mutex::new(initial_state));
 
     // IPC server (so the menu-bar app can switch profile / go auto without
     // root). Not started for one-shot runs.
@@ -140,11 +237,12 @@ fn run(cli: Cli) -> Result<()> {
     }
 
     println!(
-        "peterfand: profile={} interval={interval}s critical={critical:.0}°C rules={} fans={} backend={}",
+        "peterfand: profile={} interval={interval}s critical={critical:.0}°C rules={} fans={} backend={} restored={}",
         profile.as_str(),
         cfg.rules.len(),
         fan_ids.len(),
-        provider.name()
+        provider.name(),
+        restored_mode
     );
 
     // Run the control loop, then ALWAYS restore automatic control — even on a
@@ -319,6 +417,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             let mut s = shared.lock().expect("state poisoned");
             s.auto = true;
             s.held_duty = None;
+            save_state(&s);
             format!("ok auto ({backend})")
         }
         // Hand control back to the automation rules (clear manual override).
@@ -327,6 +426,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             s.manual = false;
             s.auto = false;
             s.held_duty = None;
+            save_state(&s);
             format!("ok rules ({backend})")
         }
         Some("profile") => match parts.next().and_then(Profile::parse) {
@@ -336,6 +436,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 s.auto = false;
                 s.held_duty = None;
                 s.manual = true;
+                save_state(&s);
                 format!("ok {} ({backend})", p.as_str())
             }
             None => "error: unknown profile".into(),
@@ -348,6 +449,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 s.held_duty = Some(d);
                 s.auto = false;
                 s.manual = true;
+                save_state(&s);
                 format!("ok hold:{d}% ({backend})")
             }
             None => "error: hold requires a percent 0-100".into(),

@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.2] — Daemon state persistence across reboots
+
+### Added
+- **`peterfand` saves its mode to disk** (`/Library/Application Support/peterfand/state.toml`
+  on macOS, `/var/lib/peterfand/state.toml` on Linux) on every IPC state
+  change (`hold`, `profile`, `auto`, `rules`). On next startup the last mode
+  is restored — `hold:80%` survives a reboot without any extra `peterfan fan
+  set` after boot. The startup log now includes `restored=<mode>`.
+
 ## [0.28.1] — `peterfan fan status` subcommand
 
 ### Added
