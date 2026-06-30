@@ -147,6 +147,10 @@ enum Command {
         /// Duration in seconds.
         #[arg(long, default_value_t = 10)]
         secs: u64,
+        /// Apply a fan profile for the duration of the benchmark, then restore.
+        /// Example: --profile gaming
+        #[arg(long)]
+        profile: Option<String>,
     },
     /// Print a shell completion script: `peterfan completions zsh`.
     Completions {
@@ -336,7 +340,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Rule { action } => cmd_rule(json, action.unwrap_or(RuleAction::List)),
         Command::Daemon { action } => cmd_daemon(json, action),
         Command::Serve { port } => cmd_serve(mock, port),
-        Command::Benchmark { secs } => cmd_benchmark(mock, json, secs),
+        Command::Benchmark { secs, profile } => cmd_benchmark(mock, json, secs, profile),
         Command::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -702,7 +706,7 @@ fn cmd_log(mock: bool, interval: u64, format: LogFormat) -> Result<()> {
 // `benchmark` — CPU stress + thermal/fan/power capture
 // ---------------------------------------------------------------------------
 
-fn cmd_benchmark(mock: bool, json: bool, secs: u64) -> Result<()> {
+fn cmd_benchmark(mock: bool, json: bool, secs: u64, bench_profile: Option<String>) -> Result<()> {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -713,6 +717,36 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64) -> Result<()> {
         peterfan_platform::system_monitor()
     };
     let provider = provider(mock);
+
+    // Remember what the daemon is doing now so we can restore it after.
+    let pre_mode = ipc_send("status")
+        .as_deref()
+        .and_then(|r| r.strip_prefix("ok "))
+        .and_then(|s| s.split_once(" (").map(|(m, _)| m.to_string()));
+
+    // Apply the requested profile for the duration of the benchmark.
+    let applied_profile = if let Some(ref p) = bench_profile {
+        let parsed = peterfan_core::profile::Profile::parse(p)
+            .ok_or_else(|| anyhow::anyhow!("unknown profile '{p}'"))?;
+        let ipc_ok = ipc_send(&format!("profile {}", parsed.as_str())).is_some();
+        if !json {
+            if ipc_ok {
+                println!(
+                    "  {} applied profile {} for benchmark duration",
+                    "→".cyan(),
+                    parsed.as_str().bold()
+                );
+            } else {
+                println!(
+                    "  {} daemon not reachable — running without profile override",
+                    "!".yellow()
+                );
+            }
+        }
+        Some(parsed.as_str().to_string())
+    } else {
+        None
+    };
 
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -783,12 +817,37 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64) -> Result<()> {
     let peak_rpm = samples.iter().map(|s| s.2).max().unwrap_or(0);
     let peak_power = peak(|s| s.3);
 
+    // Restore the previous daemon mode after the benchmark.
+    if applied_profile.is_some() {
+        let restore_cmd = match pre_mode.as_deref() {
+            Some(m) if m.starts_with("hold:") => {
+                let pct = m.trim_start_matches("hold:").trim_end_matches('%');
+                format!("hold {pct}")
+            }
+            Some(m) if m.starts_with("manual:") || m.starts_with("rules:") => {
+                let p = m.split_once(':').map(|(_, p)| p).unwrap_or("balanced");
+                format!("profile {p}")
+            }
+            Some("auto") => "auto".into(),
+            _ => "rules".into(),
+        };
+        let _ = ipc_send(&restore_cmd);
+        if !json {
+            println!(
+                "  {} restored daemon to: {}",
+                "↺".cyan(),
+                restore_cmd.bold()
+            );
+        }
+    }
+
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "duration_secs": secs,
                 "threads": workers,
+                "profile": applied_profile,
                 "avg_cpu_percent": avg_cpu,
                 "peak_cpu_percent": peak_cpu,
                 "peak_temp_c": peak_temp,
@@ -799,6 +858,9 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64) -> Result<()> {
     } else {
         println!();
         println!("{}", render::heading("Result"));
+        if let Some(ref p) = applied_profile {
+            print_kv("Profile used", p.as_str());
+        }
         print_kv("CPU avg / peak", &format!("{avg_cpu:.1}% / {peak_cpu:.1}%"));
         print_kv("Peak temp", &format!("{peak_temp:.0}°C"));
         print_kv("Peak fan", &format!("{peak_rpm} RPM"));

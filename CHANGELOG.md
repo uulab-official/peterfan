@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.29.4] — `benchmark --profile` with daemon restore
+
+### Added
+- **`peterfan benchmark --profile <name>`** — applies a named fan profile before
+  the stress run and automatically restores the previous daemon mode (hold, auto,
+  rules, or manual profile) when the benchmark finishes.
+- JSON output now includes `"profile"` key (applied profile or null) alongside
+  existing fields.
+- Text output shows the active profile and prints a restore confirmation line.
+
 ## [0.29.3] — Log rotation + doctor Setup section
 
 ### Added
