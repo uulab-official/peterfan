@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.0] — Benchmark / stress mode
+
+### Added
+- **`peterfan benchmark [--secs N]`** — saturates every CPU core and samples
+  CPU%, hottest temperature, fan RPM, and power once a second, then prints a
+  summary (avg/peak CPU, peak temp, peak fan, peak power). `--json` too.
+  Verified real: a short run drove CPU to 100%, power from ~24→35 W, and the
+  fans up past 7000 RPM.
+
 ## [0.21.0] — TUI thermals panel
 
 ### Added
@@ -344,7 +353,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.22.0
 [0.21.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.21.0
 [0.20.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.20.0
 [0.19.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.19.0

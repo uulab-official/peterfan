@@ -118,6 +118,12 @@ enum Command {
         #[arg(long, default_value_t = 9847)]
         port: u16,
     },
+    /// Stress all CPU cores and record temperature / fan / power over time.
+    Benchmark {
+        /// Duration in seconds.
+        #[arg(long, default_value_t = 10)]
+        secs: u64,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -201,7 +207,117 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Doctor => cmd_doctor(mock, json),
         Command::Config { init } => cmd_config(json, init),
         Command::Serve { port } => cmd_serve(mock, port),
+        Command::Benchmark { secs } => cmd_benchmark(mock, json, secs),
     }
+}
+
+// ---------------------------------------------------------------------------
+// `benchmark` — CPU stress + thermal/fan/power capture
+// ---------------------------------------------------------------------------
+
+fn cmd_benchmark(mock: bool, json: bool, secs: u64) -> Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let secs = secs.max(1);
+    let mut monitor = if mock {
+        peterfan_platform::mock_monitor()
+    } else {
+        peterfan_platform::system_monitor()
+    };
+    let provider = provider(mock);
+
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    if !json {
+        println!(
+            "{} {}",
+            render::heading("Benchmark"),
+            format!("· stressing {workers} threads for {secs}s").dimmed()
+        );
+    }
+
+    // Spawn CPU-bound workers.
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut handles = Vec::new();
+    for _ in 0..workers {
+        let stop = Arc::clone(&stop);
+        handles.push(std::thread::spawn(move || {
+            let mut x = 1.0f64;
+            while !stop.load(Ordering::Relaxed) {
+                for _ in 0..500_000 {
+                    x = (x * 1.000_000_1 + 0.5).sqrt().sin().abs() + 1.0;
+                }
+                std::hint::black_box(x);
+            }
+        }));
+    }
+
+    // Sample once a second while the stress runs.
+    let mut samples: Vec<(f32, f32, u32, f32)> = Vec::with_capacity(secs as usize);
+    monitor.refresh();
+    for sec in 1..=secs {
+        std::thread::sleep(Duration::from_secs(1));
+        monitor.refresh();
+        let cpu = monitor.cpu().usage_percent;
+        let temp = provider
+            .temperatures()
+            .unwrap_or_default()
+            .iter()
+            .map(|t| t.value.0)
+            .fold(0.0_f32, f32::max);
+        let rpm = provider
+            .fans()
+            .unwrap_or_default()
+            .iter()
+            .map(|f| f.rpm)
+            .max()
+            .unwrap_or(0);
+        let power = provider.power_watts().unwrap_or(0.0);
+        samples.push((cpu, temp, rpm, power));
+        if !json {
+            println!(
+                "  {sec:>3}s   cpu {:>5.1}%   temp {:>4.0}°C   fan {:>5} RPM   {:>5.1} W",
+                cpu, temp, rpm, power
+            );
+        }
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    for h in handles {
+        let _ = h.join();
+    }
+
+    let peak = |f: fn(&(f32, f32, u32, f32)) -> f32| {
+        samples.iter().map(f).fold(0.0_f32, f32::max)
+    };
+    let avg_cpu = samples.iter().map(|s| s.0).sum::<f32>() / samples.len().max(1) as f32;
+    let peak_cpu = peak(|s| s.0);
+    let peak_temp = peak(|s| s.1);
+    let peak_rpm = samples.iter().map(|s| s.2).max().unwrap_or(0);
+    let peak_power = peak(|s| s.3);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "duration_secs": secs,
+                "threads": workers,
+                "avg_cpu_percent": avg_cpu,
+                "peak_cpu_percent": peak_cpu,
+                "peak_temp_c": peak_temp,
+                "peak_fan_rpm": peak_rpm,
+                "peak_power_w": peak_power,
+            }))?
+        );
+    } else {
+        println!();
+        println!("{}", render::heading("Result"));
+        print_kv("CPU avg / peak", &format!("{avg_cpu:.1}% / {peak_cpu:.1}%"));
+        print_kv("Peak temp", &format!("{peak_temp:.0}°C"));
+        print_kv("Peak fan", &format!("{peak_rpm} RPM"));
+        print_kv("Peak power", &format!("{peak_power:.1} W"));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
