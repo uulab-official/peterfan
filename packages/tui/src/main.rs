@@ -292,15 +292,18 @@ fn render_thermals(f: &mut Frame, area: Rect, d: &Dashboard) {
             .iter()
             .take(inner.height as usize)
             .map(|fan| {
+                let rpm_str = format!("{:>5} RPM", fan.rpm);
+                let duty_str = fan
+                    .duty_percent
+                    .map(|d| format!(" {:>3}%", d))
+                    .unwrap_or_default();
                 Line::from(vec![
                     Span::styled(
                         format!("{:<8} ", fan.label),
                         Style::default().fg(Color::DarkGray),
                     ),
-                    Span::styled(
-                        format!("{:>5} RPM", fan.rpm),
-                        Style::default().fg(Color::Cyan),
-                    ),
+                    Span::styled(rpm_str, Style::default().fg(Color::Cyan)),
+                    Span::styled(duty_str, Style::default().fg(Color::Yellow)),
                 ])
             })
             .collect()

@@ -58,7 +58,11 @@ struct Cli {
 #[derive(Subcommand, Clone)]
 enum Command {
     /// Full dashboard: system, CPU, memory, disk, network, battery, thermals (default).
-    Status,
+    Status {
+        /// One-line summary suitable for shell prompts or status bars.
+        #[arg(long)]
+        compact: bool,
+    },
     /// CPU usage, per-core load, frequency, and load average.
     Cpu,
     /// Physical and swap memory usage.
@@ -277,7 +281,7 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let command = cli.command.unwrap_or(Command::Status);
+    let command = cli.command.unwrap_or(Command::Status { compact: false });
     if cli.watch {
         let interval = cli
             .interval
@@ -306,7 +310,14 @@ fn watch_loop(command: Command, mock: bool, json: bool, interval: u64) -> Result
 
 fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
     match command {
-        Command::Status => cmd_status(mock, json),
+        Command::Status { compact } => {
+            if compact {
+                cmd_status_compact(mock, json)?;
+            } else {
+                cmd_status(mock, json)?;
+            }
+            Ok(())
+        }
         Command::Cpu => cmd_cpu(mock, json),
         Command::Memory => cmd_memory(mock, json),
         Command::Disk => cmd_disk(mock, json),
@@ -1536,6 +1547,58 @@ fn cmd_system(mock: bool, json: bool) -> Result<()> {
     }
     println!("{}", render::heading("System"));
     print_system(&info);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Status: compact one-liner
+// ---------------------------------------------------------------------------
+
+fn cmd_status_compact(mock: bool, json: bool) -> Result<()> {
+    let m = sampled_monitor(mock);
+    let provider = provider(mock);
+    let cpu = m.cpu();
+    let mem = m.memory();
+    let temps = provider.temperatures().unwrap_or_default();
+    let fans = provider.fans().unwrap_or_default();
+    let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+    let fastest = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
+    let daemon = ipc_send("status")
+        .as_deref()
+        .and_then(|r| r.strip_prefix("ok "))
+        .map(|s| {
+            // Strip the backend qualifier: "hold:80% (macos)" → "hold:80%"
+            s.split_once(" (").map_or(s, |(mode, _)| mode).to_string()
+        });
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "cpu_pct": cpu.usage_percent,
+                "mem_pct": mem.used_percent,
+                "hottest_c": hottest,
+                "fastest_rpm": fastest,
+                "daemon_mode": daemon,
+            }))?
+        );
+        return Ok(());
+    }
+
+    let mut parts = vec![
+        format!("CPU {:.0}%", cpu.usage_percent),
+        format!("MEM {:.0}%", mem.used_percent),
+    ];
+    if hottest > 0.0 {
+        parts.push(format!("{hottest:.0}°C"));
+    }
+    if fastest > 0 {
+        parts.push(format!("{fastest} RPM"));
+    }
+    if let Some(mode) = daemon {
+        parts.push(mode);
+    }
+    println!("{}", parts.join(" | "));
     Ok(())
 }
 

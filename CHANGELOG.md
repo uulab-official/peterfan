@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.29.2] — `peterfan status --compact` + TUI fan duty% + log-on-change
+
+### Added
+- **`peterfan status --compact`** — one-line summary for shell prompts and
+  status bars: `CPU 23% | MEM 41% | 47°C | 2100 RPM | hold:80%`.
+- **TUI fan panel** now shows duty % (yellow) alongside RPM when available.
+
+### Changed
+- `peterfand` only logs when fan duty or control mode changes (see v0.29.1).
+
 ## [0.29.1] — Daemon log-on-change: only writes when duty or mode changes
 
 ### Changed
