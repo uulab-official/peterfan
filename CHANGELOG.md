@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] — 메뉴바 우클릭 네이티브 컨텍스트 메뉴
+
+### Added
+- **메뉴바 우클릭 네이티브 메뉴** — 팝오버를 열지 않고도 바로 팬 모드 전환.
+  메뉴 구성: Auto · Rules · — · Silent / Balanced / Gaming / Performance / Maximum · — · Quit
+- **좌클릭/우클릭 구분** — 좌클릭은 기존처럼 팝오버 토글, 우클릭은 네이티브 메뉴 표시.
+  선택 즉시 IPC로 데몬에 명령 전송 후 팝오버 상태도 갱신.
+
 ## [1.0.0] — 정식 릴리즈
 
 ### 주요 변경 (0.30.0 → 1.0.0)

@@ -19,7 +19,8 @@ use tao::window::{Window, WindowBuilder};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 
-use tray_icon::{Icon, MouseButtonState, Rect, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::{Icon, MouseButton, MouseButtonState, Rect, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use wry::{WebView, WebViewBuilder};
 
 use peterfan_core::error::CoreError;
@@ -55,12 +56,21 @@ static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Last control result, shown in the popover.
 static STATUS: Mutex<String> = Mutex::new(String::new());
 
+/// IDs of the tray context-menu items so we can identify them in MenuEvent.
+struct TrayMenu {
+    auto: tray_icon::menu::MenuId,
+    rules: tray_icon::menu::MenuId,
+    profiles: Vec<(String, tray_icon::menu::MenuId)>,
+    quit: tray_icon::menu::MenuId,
+}
+
 struct App {
     monitor: Box<dyn SystemMonitor>,
     provider: Box<dyn HardwareProvider>,
     has_battery: bool,
     metric: Metric,
     tray: Option<TrayIcon>,
+    tray_menu: Option<TrayMenu>,
     window: Option<Window>,
     webview: Option<WebView>,
     popover_visible: bool,
@@ -101,6 +111,7 @@ fn main() {
         has_battery,
         metric,
         tray: None,
+        tray_menu: None,
         window: None,
         webview: None,
         popover_visible: false,
@@ -150,9 +161,35 @@ fn main() {
             }
         }
 
+        // Handle context-menu item selections.
+        while let Ok(ev) = MenuEvent::receiver().try_recv() {
+            let id = &ev.id;
+            if let Some(ref tm) = app.tray_menu {
+                let cmd: Option<String> = if id == &tm.auto {
+                    Some("auto".into())
+                } else if id == &tm.rules {
+                    Some("rules".into())
+                } else if id == &tm.quit {
+                    QUIT.store(true, Ordering::Relaxed);
+                    None
+                } else {
+                    tm.profiles
+                        .iter()
+                        .find(|(_, pid)| pid == id)
+                        .map(|(name, _)| format!("profile:{name}"))
+                };
+                if let Some(c) = cmd {
+                    let status = execute_control(app.provider.as_ref(), &c);
+                    *STATUS.lock().expect("status poisoned") = status;
+                    update(&mut app);
+                }
+            }
+        }
+
         while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-            // Left or right (two-finger) click both toggle the popover.
+            // Left click toggles the popover; right click shows the native menu.
             if let TrayIconEvent::Click {
+                button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 rect,
                 ..
@@ -169,14 +206,62 @@ fn main() {
 // ---------------------------------------------------------------------------
 
 fn build_tray(app: &mut App) {
+    // Build context menu: Auto | Rules | — | profiles... | — | Quit
+    let auto_item = MenuItem::new("Auto (OS-managed)", true, None);
+    let rules_item = MenuItem::new("Rules", true, None);
+    let profile_items: Vec<(String, MenuItem)> = Profile::all()
+        .iter()
+        .map(|p| {
+            let label = format!(
+                "{}{}",
+                match *p {
+                    Profile::Silent => "Silent       ",
+                    Profile::Balanced => "Balanced     ",
+                    Profile::Gaming => "Gaming       ",
+                    Profile::Performance => "Performance  ",
+                    Profile::Maximum => "Maximum      ",
+                    _ => p.as_str(),
+                },
+                p.description().split('.').next().unwrap_or("")
+            );
+            (p.as_str().to_string(), MenuItem::new(&label, true, None))
+        })
+        .collect();
+    let quit_item = MenuItem::new("Quit PeterFan", true, None);
+
+    let menu = Menu::new();
+    let _ = menu.append(&auto_item);
+    let _ = menu.append(&rules_item);
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    for (_, item) in &profile_items {
+        let _ = menu.append(item);
+    }
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    let _ = menu.append(&quit_item);
+
+    let tray_menu = TrayMenu {
+        auto: auto_item.id().clone(),
+        rules: rules_item.id().clone(),
+        profiles: profile_items
+            .iter()
+            .map(|(name, item)| (name.clone(), item.id().clone()))
+            .collect(),
+        quit: quit_item.id().clone(),
+    };
+
     #[allow(unused_mut)]
-    let mut builder = TrayIconBuilder::new().with_icon(make_ring_icon());
+    let mut builder = TrayIconBuilder::new()
+        .with_icon(make_ring_icon())
+        .with_menu(Box::new(menu));
     #[cfg(target_os = "macos")]
     {
         builder = builder.with_icon_as_template(true);
     }
     match builder.build() {
-        Ok(tray) => app.tray = Some(tray),
+        Ok(tray) => {
+            app.tray = Some(tray);
+            app.tray_menu = Some(tray_menu);
+        }
         Err(e) => eprintln!("failed to create menu-bar item: {e}"),
     }
 }
