@@ -295,6 +295,9 @@ fn control_loop(
 ) -> Result<()> {
     let mut auto_applied = false;
     let mut was_critical = false;
+    // Track last-logged duty/mode so we only log on changes (keeps the log lean).
+    let mut last_duty: Option<u8> = None;
+    let mut last_src = String::new();
     while !STOP.load(Ordering::Relaxed) {
         monitor.refresh();
         let state = shared.lock().expect("state poisoned").clone();
@@ -348,7 +351,12 @@ fn control_loop(
             } else {
                 "auto-rule"
             };
-            println!("peterfand: {hottest:.0}°C -> {duty}% ({why}) [{src} ac={on_ac}]");
+            // Only log when duty or mode actually changes (avoids flooding the log).
+            if last_duty != Some(duty) || last_src != src {
+                println!("peterfand: {hottest:.0}°C -> {duty}% ({why}) [{src} ac={on_ac}]");
+                last_duty = Some(duty);
+                last_src = src.to_string();
+            }
 
             // Edge-triggered critical-temperature alert (with hysteresis).
             if hottest >= critical && !was_critical {

@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.29.1] — Daemon log-on-change: only writes when duty or mode changes
+
+### Changed
+- `peterfand` now only logs when the fan duty or control mode actually changes.
+  Previously it logged every 2 s tick (43k lines/day); now a steady state at a
+  fixed duty produces zero log growth. Changes, critical overrides, and IPC
+  commands are still logged.
+
 ## [0.29.0] — `peterfan daemon log` — tail the fan-control daemon log
 
 ### Added
