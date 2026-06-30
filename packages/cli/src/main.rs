@@ -116,6 +116,10 @@ enum Command {
         /// Example: --set profile gaming  |  --set interval 3  |  --set critical 95
         #[arg(long, value_names = ["KEY", "VALUE"], num_args = 2)]
         set: Option<Vec<String>>,
+        /// Print a single config value.
+        /// Example: --get profile
+        #[arg(long)]
+        get: Option<String>,
     },
     /// Manage fan-control automation rules in the config file.
     /// With no subcommand, lists current rules.
@@ -308,7 +312,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Curve { name } => cmd_curve(name, json),
         Command::Hardware => cmd_hardware(provider(mock).as_ref(), json),
         Command::Doctor => cmd_doctor(mock, json),
-        Command::Config { init, set } => cmd_config(json, init, set),
+        Command::Config { init, set, get } => cmd_config(json, init, set, get),
         Command::Rule { action } => cmd_rule(json, action.unwrap_or(RuleAction::List)),
         Command::Daemon { action } => cmd_daemon(json, action),
         Command::Serve { port } => cmd_serve(mock, port),
@@ -1033,13 +1037,31 @@ fn api_apply_fan(body: &str, provider: &dyn HardwareProvider) -> (u16, serde_jso
     }
 }
 
-fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>) -> Result<()> {
+fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<String>) -> Result<()> {
     if init {
         let p = peterfan_platform::config::init_default()
             .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
         if !json {
             println!("config ready at {}", p.display());
         }
+    }
+    if let Some(key) = get {
+        let cfg = peterfan_platform::config::load();
+        let value = match key.as_str() {
+            "profile" => cfg.profile.as_str().to_string(),
+            "interval" | "interval_secs" => cfg.interval_secs.to_string(),
+            "critical" | "critical_temp_c" => format!("{:.0}", cfg.critical_temp_c),
+            _ => anyhow::bail!("unknown key '{key}'; valid keys: profile, interval, critical"),
+        };
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({key: value}))?
+            );
+        } else {
+            println!("{value}");
+        }
+        return Ok(());
     }
     if let Some(kv) = set {
         let key = kv[0].as_str();

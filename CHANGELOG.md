@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.9] — `peterfan config --get` for reading single config values
+
+### Added
+- **`peterfan config --get <key>`** — print a single config value as a plain
+  string (or JSON with `--json`). Useful in scripts:
+  ```bash
+  PROFILE=$(peterfan config --get profile)
+  ```
+
 ## [0.28.8] — UX polish: `peterfan rule` lists by default + fans shows daemon mode
 
 ### Changed
