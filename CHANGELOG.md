@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] — Real CPU die temperature (Apple Silicon)
+
+### Added
+- **Real CPU/GPU die temperatures on Apple Silicon** via IOKit's IOHID
+  temperature-sensor API (the SMC doesn't expose these). `peterfan temps` /
+  `status` now show a real **CPU** temperature (average of the die sensors)
+  plus **CPU hottest** and **SSD** (NAND), alongside the existing ambient SMC
+  sensors. The menu-bar popover and the daemon's curve now key off the real CPU
+  temperature.
+
+### Notes
+- Sensors are read by matching HID services on the Apple-vendor temperature
+  usage page; the IOKit functions are private but exported by the framework.
+  No root required.
+
 ## [0.10.0] — Fan-control daemon
 
 ### Added
@@ -191,7 +206,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.11.0
 [0.10.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.10.0
 [0.9.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.9.1
 [0.9.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.9.0

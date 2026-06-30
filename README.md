@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.10.0.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.11.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
@@ -32,7 +32,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 | Core model (types, metrics, curves, profiles, traits) | ✅ implemented & tested |
 | Mock backends (fully simulated machine + metrics) | ✅ implemented |
 | macOS hardware info (CPU/RAM/OS via `sysctl`) | ✅ real, read-only |
-| **macOS temperatures & fan RPM** (SMC via `macsmc`) | ✅ real (Apple Silicon: airflow/palm-rest/etc.; CPU/GPU die temps need IOHID — planned) |
+| **macOS temperatures & fan RPM** | ✅ real — CPU/GPU **die temps via IOHID**, fan RPM + ambient via SMC |
 | Windows temperature / fan reading (EC) | 🚧 planned |
 | GPU utilization | 🚧 planned |
 | Fan **control** on macOS (`fan set` / `fan auto` via SMC writes) | ✅ implemented (requires `sudo`) |
@@ -106,7 +106,7 @@ Once installed, the binary is simply `peterfan`.
 ### Example: `peterfan status`
 
 ```text
-PeterFan v0.2.0
+PeterFan v0.11.0
 backend: sysinfo + macos  ·  macOS 26.1  ·  up 4d 7h 8m
 
 CPU · Apple M3 Max
@@ -125,12 +125,13 @@ Battery
   100.0%  ████████████  full
   213 cycles  ·  0.0 W
 
-Temperatures   (simulated — real SMC reading not implemented on this backend yet)
-  CPU CPU Package    42°C  █████░░░░░░░
-  ...
+Temperatures
+  CPU CPU            50°C  ██████░░░░░░   (real die temp via IOHID)
+  CPU CPU hottest    52°C  ██████░░░░░░
+  SSD SSD            34°C  ████░░░░░░░░
 
 Fans
-  CPU Fan         1410 RPM   45%  █████░░░░░░░
+  Fan 1           2314 RPM    0%  ░░░░░░░░░░░░
 ```
 
 Add `--json` to any command for machine-readable output (handy for Raycast,

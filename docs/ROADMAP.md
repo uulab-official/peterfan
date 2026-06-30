@@ -61,11 +61,17 @@ then richer surfaces. Versions are goals, not promises.
 - [ ] Code-signed privileged helper (SMAppService) for a fully unsigned-free,
       no-`sudo` install; menu-bar app talks to the daemon over IPC
 
+## v0.11 — Real CPU die temps (current)
+
+- [x] **CPU/GPU die temperatures on Apple Silicon via IOHID** — real `CPU`
+      temp in `temps`/`status`/popover; the daemon curve keys off it
+- [ ] Distinguish GPU die from CPU die; surface SMC power (W)
+
 ## v1.0 — Control depth & Windows
 
 - [ ] **Windows backend** — temps/fans via EC / LibreHardwareMonitor-style access
-- [ ] CPU/GPU die temps on Apple Silicon (IOHID); surface SMC power
 - [ ] `--watch` live refresh + TOML config (default profile, startup, alerts)
+- [ ] Menu-bar app ↔ daemon IPC (switch profile / control from the popover)
 - [ ] `peterfan-daemon` — privileged control service + safety watchdog
       (restore-on-exit, critical-temp force ramp)
 - [ ] Curve editor in the TUI

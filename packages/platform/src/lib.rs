@@ -20,6 +20,8 @@ pub mod system;
 mod macos;
 #[cfg(target_os = "macos")]
 mod smc_write;
+#[cfg(target_os = "macos")]
+mod macos_hid;
 
 use peterfan_core::{HardwareProvider, SystemMonitor};
 

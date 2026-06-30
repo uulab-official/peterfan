@@ -83,13 +83,53 @@ impl HardwareProvider for MacosProvider {
         if !self.has_smc {
             return Err(CoreError::Unsupported("SMC not available".into()));
         }
+        let mut temps: Vec<TempSensor> = Vec::new();
+
+        // Real CPU/GPU die temperatures via IOHID (the SMC doesn't expose these
+        // on Apple Silicon). Aggregate the per-cluster die sensors.
+        let hid = crate::macos_hid::read_temps();
+        let dies: Vec<f32> = hid
+            .iter()
+            .filter(|(n, _)| n.contains("tdie") || n.contains("tcal"))
+            .map(|(_, t)| *t)
+            .collect();
+        if !dies.is_empty() {
+            let avg = dies.iter().sum::<f32>() / dies.len() as f32;
+            let hot = dies.iter().cloned().fold(0.0, f32::max);
+            temps.push(TempSensor {
+                id: "cpu.die".into(),
+                label: "CPU".into(),
+                kind: SensorKind::Cpu,
+                value: Celsius(avg),
+            });
+            temps.push(TempSensor {
+                id: "cpu.die.hot".into(),
+                label: "CPU hottest".into(),
+                kind: SensorKind::Cpu,
+                value: Celsius(hot),
+            });
+        }
+        let nand: Vec<f32> = hid
+            .iter()
+            .filter(|(n, _)| n.contains("NAND"))
+            .map(|(_, t)| *t)
+            .collect();
+        if let Some(ssd) = nand.iter().cloned().reduce(f32::max) {
+            temps.push(TempSensor {
+                id: "ssd".into(),
+                label: "SSD".into(),
+                kind: SensorKind::Storage,
+                value: Celsius(ssd),
+            });
+        }
+
         let mut smc = Smc::connect().map_err(|e| CoreError::Hardware(format!("SMC: {e:?}")))?;
 
-        // (id, label, kind, °C) candidates; zeros are filtered out below.
+        // Ambient/board SMC sensors (id, label, kind, °C); zeros filtered below.
         let mut cand: Vec<(&str, &str, SensorKind, f32)> = Vec::new();
         if let Ok(t) = smc.cpu_temperature() {
-            cand.push(("cpu.die", "CPU die", SensorKind::Cpu, t.die.0));
-            cand.push(("cpu.proximity", "CPU", SensorKind::Cpu, t.proximity.0));
+            cand.push(("cpu.smc.die", "CPU die", SensorKind::Cpu, t.die.0));
+            cand.push(("cpu.smc.proximity", "CPU", SensorKind::Cpu, t.proximity.0));
         }
         if let Ok(t) = smc.gpu_temperature() {
             cand.push(("gpu.die", "GPU die", SensorKind::Gpu, t.die.0));
@@ -107,16 +147,19 @@ impl HardwareProvider for MacosProvider {
             cand.push(("palmrest.2", "Palm rest 2", SensorKind::Other, t.palm_rest_2.0));
         }
 
-        let temps = cand
-            .into_iter()
-            .filter(|&(_, _, _, c)| c > 1.0)
-            .map(|(id, label, kind, c)| TempSensor {
-                id: id.into(),
-                label: label.into(),
-                kind,
-                value: Celsius(c),
-            })
-            .collect();
+        // Add the SMC ambient sensors that returned a plausible value. On
+        // Apple Silicon the SMC CPU/GPU die keys read 0 (filtered) — the real
+        // die temps came from IOHID above; on Intel the SMC ones provide them.
+        temps.extend(
+            cand.into_iter()
+                .filter(|&(_, _, _, c)| c > 1.0)
+                .map(|(id, label, kind, c)| TempSensor {
+                    id: id.into(),
+                    label: label.into(),
+                    kind,
+                    value: Celsius(c),
+                }),
+        );
         Ok(temps)
     }
 

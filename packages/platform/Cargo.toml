@@ -16,3 +16,5 @@ battery = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true }
 macsmc = { workspace = true }
+core-foundation = { workspace = true }
+core-foundation-sys = { workspace = true }
