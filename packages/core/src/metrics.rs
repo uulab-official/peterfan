@@ -69,12 +69,18 @@ pub struct DiskInfo {
     pub removable: bool,
     /// `"SSD"`, `"HDD"`, or `"—"` when unknown.
     pub kind: String,
+    /// Read throughput in bytes/second over the last refresh interval.
+    pub read_bytes_per_sec: f64,
+    /// Write throughput in bytes/second over the last refresh interval.
+    pub write_bytes_per_sec: f64,
 }
 
 /// A network interface with cumulative counters and instantaneous rates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetInterface {
     pub name: String,
+    /// First non-loopback IPv4 address on this interface, if any.
+    pub ip: Option<String>,
     pub rx_total: u64,
     pub tx_total: u64,
     /// Receive rate in bytes/second, measured over the last refresh interval.

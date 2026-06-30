@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.20.0] — Network IP & disk I/O
+
+### Added
+- **Per-interface local IP** and **per-disk read/write throughput** (bytes/s).
+  `peterfan network` shows the IPv4 address; `peterfan disk` shows live `R …/s
+  W …/s`. Both are in `--json`, `status`, and the HTTP API automatically.
+
 ## [0.19.0] — Automation rules
 
 ### Added
@@ -330,7 +337,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.20.0
 [0.19.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.19.0
 [0.18.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.18.0
 [0.17.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.17.0

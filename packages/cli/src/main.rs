@@ -1062,31 +1062,42 @@ fn print_system(info: &peterfan_core::metrics::SystemInfo) {
 
 fn print_disks(disks: &[peterfan_core::metrics::DiskInfo]) {
     for d in disks {
+        let io = if d.read_bytes_per_sec + d.write_bytes_per_sec > 0.0 {
+            format!(
+                "R {} W {}",
+                render::rate(d.read_bytes_per_sec),
+                render::rate(d.write_bytes_per_sec)
+            )
+        } else {
+            String::new()
+        };
         println!(
-            "  {:<14} {} / {} ({})  {}  {}",
+            "  {:<14} {} / {} ({})  {}  {} {}",
             d.mount,
             render::bytes(d.used),
             render::bytes(d.total),
             render::pct_colored(d.used_percent).trim(),
             render::load_bar(d.used_percent),
             d.kind.dimmed(),
+            io.dimmed(),
         );
     }
 }
 
 fn print_networks<'a>(nets: impl Iterator<Item = &'a peterfan_core::metrics::NetInterface>) {
     for n in nets {
+        let meta = format!(
+            "{}total ↓{} ↑{}",
+            n.ip.as_deref().map(|ip| format!("{ip}  ·  ")).unwrap_or_default(),
+            render::bytes(n.rx_total),
+            render::bytes(n.tx_total)
+        );
         println!(
             "  {:<14} ↓ {:>11}  ↑ {:>11}   {}",
             n.name,
             render::rate(n.rx_rate),
             render::rate(n.tx_rate),
-            format!(
-                "total ↓{} ↑{}",
-                render::bytes(n.rx_total),
-                render::bytes(n.tx_total)
-            )
-            .dimmed(),
+            meta.dimmed(),
         );
     }
 }

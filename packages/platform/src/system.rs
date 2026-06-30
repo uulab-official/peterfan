@@ -34,6 +34,8 @@ pub struct SysinfoMonitor {
     networks: Networks,
     /// Per-interface (rx_rate, tx_rate) in bytes/sec from the last interval.
     net_rates: HashMap<String, (f64, f64)>,
+    /// Per-disk (read_rate, write_rate) in bytes/sec from the last interval.
+    disk_rates: HashMap<String, (f64, f64)>,
     last_refresh: Option<Instant>,
     battery_mgr: Option<battery::Manager>,
     has_battery: bool,
@@ -62,6 +64,7 @@ impl SysinfoMonitor {
             disks,
             networks,
             net_rates: HashMap::new(),
+            disk_rates: HashMap::new(),
             last_refresh: None,
             battery_mgr,
             has_battery,
@@ -107,10 +110,10 @@ impl SystemMonitor for SysinfoMonitor {
         self.networks.refresh(true);
 
         if elapsed > 0.0 {
-            let mut rates = HashMap::new();
+            let mut net = HashMap::new();
             for (name, data) in self.networks.iter() {
                 // received()/transmitted() are bytes since the previous refresh.
-                rates.insert(
+                net.insert(
                     name.clone(),
                     (
                         data.received() as f64 / elapsed,
@@ -118,7 +121,20 @@ impl SystemMonitor for SysinfoMonitor {
                     ),
                 );
             }
-            self.net_rates = rates;
+            self.net_rates = net;
+
+            let mut disk = HashMap::new();
+            for d in self.disks.iter() {
+                let u = d.usage();
+                disk.insert(
+                    d.name().to_string_lossy().into_owned(),
+                    (
+                        u.read_bytes as f64 / elapsed,
+                        u.written_bytes as f64 / elapsed,
+                    ),
+                );
+            }
+            self.disk_rates = disk;
         }
         self.last_refresh = Some(now);
     }
@@ -187,8 +203,9 @@ impl SystemMonitor for SysinfoMonitor {
                 let total = d.total_space();
                 let available = d.available_space();
                 let used = total.saturating_sub(available);
+                let name = d.name().to_string_lossy().into_owned();
+                let (read_bps, write_bps) = self.disk_rates.get(&name).copied().unwrap_or((0.0, 0.0));
                 DiskInfo {
-                    name: d.name().to_string_lossy().into_owned(),
                     mount: d.mount_point().to_string_lossy().into_owned(),
                     fs: d.file_system().to_string_lossy().into_owned(),
                     total,
@@ -201,6 +218,9 @@ impl SystemMonitor for SysinfoMonitor {
                         DiskKind::HDD => "HDD".to_string(),
                         _ => "—".to_string(),
                     },
+                    read_bytes_per_sec: read_bps,
+                    write_bytes_per_sec: write_bps,
+                    name,
                 }
             })
             .collect()
@@ -211,8 +231,15 @@ impl SystemMonitor for SysinfoMonitor {
             .iter()
             .map(|(name, data)| {
                 let (rx_rate, tx_rate) = self.net_rates.get(name).copied().unwrap_or((0.0, 0.0));
+                // First non-loopback IPv4 address, if any.
+                let ip = data
+                    .ip_networks()
+                    .iter()
+                    .find(|n| n.addr.is_ipv4() && !n.addr.is_loopback())
+                    .map(|n| n.addr.to_string());
                 NetInterface {
                     name: name.clone(),
+                    ip,
                     rx_total: data.total_received(),
                     tx_total: data.total_transmitted(),
                     rx_rate,

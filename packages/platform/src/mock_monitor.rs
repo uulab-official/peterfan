@@ -111,6 +111,8 @@ impl SystemMonitor for MockMonitor {
             used_percent: used as f32 / total as f32 * 100.0,
             removable: false,
             kind: "SSD".into(),
+            read_bytes_per_sec: 12.0e6 * self.wave(0.5) as f64,
+            write_bytes_per_sec: 4.0e6 * self.wave(0.8) as f64,
         }]
     }
 
@@ -119,6 +121,7 @@ impl SystemMonitor for MockMonitor {
         let tx = (5.0e5 * self.wave(0.6) as f64).max(0.0);
         vec![NetInterface {
             name: "en0".into(),
+            ip: Some("192.168.0.42".into()),
             rx_total: 4_800_000_000 + self.tick * 2_000_000,
             tx_total: 980_000_000 + self.tick * 500_000,
             rx_rate: rx,
