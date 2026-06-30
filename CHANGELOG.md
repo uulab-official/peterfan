@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.30.0] — watch + update + 데몬 reload 버그 수정
+
+### Added
+- **`peterfan watch`** — CPU%, MEM%, 온도, RPM, 전력, 데몬 모드를 한 줄에
+  색상으로 표시하며 주기적으로 갱신. Ctrl-C로 종료. `-i N`으로 갱신 주기 설정.
+- **`peterfan update`** — GitHub 최신 릴리즈와 현재 버전 비교. 업데이트가
+  있으면 `cargo install peterfan` 명령을 안내.
+
+### Fixed
+- **데몬 `reload` 후 `interval`/`critical` 미반영 버그 수정** — 기존에는
+  `peterfand --interval 5`로 시작한 값이 `reload` 후에도 그대로 유지됐으나,
+  이제 매 틱마다 `state.config`에서 값을 읽어 `reload` 즉시 반영됨.
+
 ## [0.29.6] — Menubar popover: Rules + Hold slider + active-mode highlight
 
 ### Added

@@ -183,6 +183,15 @@ enum Command {
         #[arg(long, value_enum, default_value_t = LogFormat::Csv)]
         format: LogFormat,
     },
+    /// Live single-line display — CPU, memory, temp, fans, daemon mode.
+    /// Refreshes in place; ideal for tmux statusbars or quick checks.
+    Watch {
+        /// Refresh interval in seconds.
+        #[arg(long, short, default_value_t = 2)]
+        interval: u64,
+    },
+    /// Check for a newer version on GitHub.
+    Update,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy)]
@@ -354,6 +363,8 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::LoginItem { action } => cmd_login_item(action),
         Command::InstallDaemon { dry_run } => cmd_install_daemon(dry_run),
         Command::UninstallDaemon { dry_run } => cmd_uninstall_daemon(dry_run),
+        Command::Watch { interval } => cmd_watch(mock, interval),
+        Command::Update => cmd_update(),
     }
 }
 
@@ -2623,4 +2634,158 @@ fn is_elevated() -> bool {
 #[cfg(not(unix))]
 fn is_elevated() -> bool {
     false
+}
+
+// ---------------------------------------------------------------------------
+// `peterfan watch` — live single-line display
+// ---------------------------------------------------------------------------
+
+fn cmd_watch(mock: bool, interval_secs: u64) -> Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static STOP: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(unix)]
+    {
+        extern "C" fn on_sig(_: libc::c_int) {
+            STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        unsafe {
+            libc::signal(libc::SIGINT, on_sig as *const () as libc::sighandler_t);
+        }
+    }
+
+    let prov = provider(mock);
+    let mut mon: Box<dyn peterfan_core::SystemMonitor> = if mock {
+        peterfan_platform::mock_monitor()
+    } else {
+        peterfan_platform::system_monitor()
+    };
+
+    eprintln!("PeterFan watch — Ctrl-C to quit");
+
+    while !STOP.load(Ordering::Relaxed) {
+        mon.refresh();
+        let cpu = mon.cpu();
+        let mem = mon.memory();
+        let temps = prov.temperatures().unwrap_or_default();
+        let fans = prov.fans().unwrap_or_default();
+        let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+        let fastest_rpm = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
+        let power = prov.power_watts();
+
+        // Read daemon mode (strip backend qualifier).
+        let mode = ipc_send("status")
+            .as_deref()
+            .and_then(|r| r.strip_prefix("ok "))
+            .map(|s| s.split_once(" (").map_or(s, |(m, _)| m).to_string())
+            .unwrap_or_default();
+
+        let power_part = power.map(|w| format!("  {w:.0}W")).unwrap_or_default();
+        let mode_part = if mode.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", mode.bold())
+        };
+
+        let temp_color = if hottest >= 80.0 {
+            format!("{:.0}°C", hottest).red().to_string()
+        } else if hottest >= 60.0 {
+            format!("{:.0}°C", hottest).yellow().to_string()
+        } else {
+            format!("{:.0}°C", hottest).green().to_string()
+        };
+
+        let cpu_color = if cpu.usage_percent >= 80.0 {
+            format!("{:.0}%", cpu.usage_percent).red().to_string()
+        } else if cpu.usage_percent >= 50.0 {
+            format!("{:.0}%", cpu.usage_percent).yellow().to_string()
+        } else {
+            format!("{:.0}%", cpu.usage_percent).green().to_string()
+        };
+
+        let line = format!(
+            "CPU {}  MEM {:.0}%  {}  {} RPM{}{}   ",
+            cpu_color,
+            mem.used_percent,
+            temp_color,
+            fastest_rpm,
+            power_part,
+            mode_part,
+        );
+
+        print!("\r{line}");
+        let _ = std::io::stdout().flush();
+
+        let step = std::time::Duration::from_millis(100);
+        let total = std::time::Duration::from_secs(interval_secs);
+        let mut elapsed = std::time::Duration::ZERO;
+        while elapsed < total && !STOP.load(Ordering::Relaxed) {
+            std::thread::sleep(step);
+            elapsed += step;
+        }
+    }
+
+    println!(); // 커서를 새 줄로 이동
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `peterfan update` — GitHub 최신 버전 확인
+// ---------------------------------------------------------------------------
+
+fn cmd_update() -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    print!("Current: v{current}  Checking GitHub…");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+
+    let out = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "--max-time",
+            "8",
+            "-H",
+            "User-Agent: peterfan-cli",
+            "https://api.github.com/repos/uulab/peterfan/releases/latest",
+        ])
+        .output();
+
+    print!("\r");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+
+    let body = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            println!("  {} curl error: {err}", "✗".red());
+            return Ok(());
+        }
+        Err(e) => {
+            println!("  {} curl not found: {e}", "✗".red());
+            return Ok(());
+        }
+    };
+
+    let val: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|_| anyhow::anyhow!("unexpected response from GitHub"))?;
+
+    let latest = val["tag_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .trim_start_matches('v');
+
+    print_kv("Current version", &format!("v{current}"));
+    print_kv("Latest version ", &format!("v{latest}"));
+
+    if current == latest {
+        println!("  {} already up to date", "✓".green());
+    } else {
+        println!(
+            "\n  {} Update available → {}",
+            "→".cyan(),
+            "cargo install peterfan".bold()
+        );
+    }
+    Ok(())
 }

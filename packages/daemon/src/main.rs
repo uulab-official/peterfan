@@ -189,13 +189,19 @@ fn run(cli: Cli) -> Result<()> {
     };
 
     let initial_state = {
+        // Store CLI-resolved values back so the control loop always reads
+        // from state.config (and reload() refreshes them from disk).
+        let mut resolved_cfg = cfg.clone();
+        resolved_cfg.interval_secs = interval;
+        resolved_cfg.critical_temp_c = critical;
+
         let mut s = State {
             profile,
             held_duty: None,
             auto: false,
             manual: false,
             backend: provider.name().to_string(),
-            config: cfg.clone(),
+            config: resolved_cfg,
         };
         // Restore the last user-chosen mode so a reboot doesn't reset fan settings.
         if let Some(saved) = load_saved_state() {
@@ -257,8 +263,6 @@ fn run(cli: Cli) -> Result<()> {
             monitor.as_mut(),
             profile,
             &fan_ids,
-            interval,
-            critical,
             cli.once,
             &shared,
         )
@@ -282,14 +286,11 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn control_loop(
     provider: &dyn HardwareProvider,
     monitor: &mut dyn SystemMonitor,
     base: Profile,
     fan_ids: &[String],
-    interval: u64,
-    critical: f32,
     once: bool,
     shared: &Arc<Mutex<State>>,
 ) -> Result<()> {
@@ -301,6 +302,9 @@ fn control_loop(
     while !STOP.load(Ordering::Relaxed) {
         monitor.refresh();
         let state = shared.lock().expect("state poisoned").clone();
+        // Read interval/critical from live config so `reload` takes effect immediately.
+        let interval = state.config.interval_secs.max(1);
+        let critical = state.config.critical_temp_c;
 
         if state.auto {
             if !auto_applied {
