@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.1] — Memory breakdown in `status`, docs polish
+
+### Added
+- `peterfan status` now shows the wired / active / compressed memory line
+  (previously only in `peterfan memory`).
+
+### Changed
+- Docs: documented `benchmark`, `log`, and `completions` in `docs/CLI.md`;
+  refreshed the README example output and feature matrix.
+- GPU utilization investigated via IOReport and **deferred** rather than shipped
+  inaccurate — see `docs/RESEARCH.md`. The plumbing lives behind the
+  off-by-default `experimental-gpu` feature.
+
 ## [0.25.0] — Memory breakdown + CI
 
 ### Added
@@ -382,7 +395,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.25.1...HEAD
+[0.25.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.25.1
 [0.25.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.25.0
 [0.24.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.24.0
 [0.23.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.23.0

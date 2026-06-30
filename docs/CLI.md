@@ -162,10 +162,41 @@ curl -X POST localhost:9847/api/v1/profile -d '{"name":"gaming"}'
 curl -X POST localhost:9847/api/v1/fan -d '{"action":"set","percent":60}'
 ```
 
-Endpoints: `GET /api/v1/{status,system,cpu,memory,disks,network,battery,temps,fans,power}`;
+`GET /` serves a small human-readable index of the routes. Data endpoints:
+`GET /api/v1/{status,system,cpu,memory,disks,network,battery,temps,fans,power,processes}`;
 `POST /api/v1/profile` `{"name":"…"}`; `POST /api/v1/fan` `{"action":"auto"|"set","percent":N}`.
 Responses are JSON with `Access-Control-Allow-Origin: *`. Control endpoints
 apply only where fan control is available (Intel Macs).
+
+### `benchmark` — stress test
+
+Loads every CPU core for a fixed duration and records temperature, fan RPM, and
+power over time — a quick way to see how the machine (and your fan curve)
+behaves under sustained load.
+
+```bash
+peterfan benchmark --secs 30          # 30s all-core stress, live samples
+peterfan --json benchmark --secs 10   # machine-readable samples
+```
+
+### `log` — continuous metrics stream
+
+Emits one row of metrics per interval (time, CPU %, memory %, disk %, hottest
+temp, max fan RPM, power) for recording or piping into other tools.
+
+```bash
+peterfan log --interval 2                 # CSV (with header) every 2s
+peterfan log --interval 5 --format jsonl  # one JSON object per line
+peterfan log >> metrics.csv               # append to a file
+```
+
+### `completions` — shell completion scripts
+
+```bash
+peterfan completions zsh  > ~/.zfunc/_peterfan
+peterfan completions bash > /usr/local/etc/bash_completion.d/peterfan
+# also: fish, powershell, elvish
+```
 
 ### `doctor`
 

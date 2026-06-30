@@ -939,6 +939,14 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
         render::pct_colored(mem.used_percent).trim(),
         render::load_bar(mem.used_percent)
     );
+    if let Some(b) = mem.breakdown {
+        println!(
+            "  wired {}  ·  active {}  ·  compressed {}",
+            render::bytes(b.wired),
+            render::bytes(b.active),
+            render::bytes(b.compressed),
+        );
+    }
     println!();
 
     // Disk

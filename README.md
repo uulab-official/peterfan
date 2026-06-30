@@ -23,18 +23,19 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.25.0.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.25.1.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
 | **System metrics** — CPU, memory, disk, network, processes | ✅ real, cross-platform (macOS + Windows) via `sysinfo` |
+| **macOS memory breakdown** — wired / active / inactive / compressed | ✅ real via mach `host_statistics64` (verified against `vm_stat`) |
 | **Battery** — charge, state, cycles, time remaining | ✅ real via `battery` (health filtered on Apple Silicon) |
 | Core model (types, metrics, curves, profiles, traits) | ✅ implemented & tested |
 | Mock backends (fully simulated machine + metrics) | ✅ implemented |
 | macOS hardware info (CPU/RAM/OS via `sysctl`) | ✅ real, read-only |
 | **macOS temperatures & fan RPM** | ✅ real — CPU/GPU **die temps via IOHID**, fan RPM + ambient via SMC |
 | Windows temperature / fan reading (EC) | 🚧 planned |
-| GPU utilization | 🚧 planned |
+| GPU utilization | 🔬 investigated — IOReport plumbing works, but the residency it exposes doesn't match Activity Monitor's GPU %, so it's deferred rather than shipped inaccurate ([`docs/RESEARCH.md`](./docs/RESEARCH.md)) |
 | Fan **control** | ✅ Intel Macs (SMC writes, needs `sudo`/daemon) · ⚠️ Apple Silicon: fans are **system-governed**, no control (monitoring only) |
 | CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`/`serve`/`benchmark`/`log`/`completions`, global `--watch` & `--json` | ✅ runnable |
 | TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes + temps/fans/power | ✅ runnable |
@@ -107,32 +108,36 @@ Once installed, the binary is simply `peterfan`.
 ### Example: `peterfan status`
 
 ```text
-PeterFan v0.11.0
-backend: sysinfo + macos  ·  macOS 26.1  ·  up 4d 7h 8m
+PeterFan v0.25.1
+backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
-   21.3%  ███░░░░░░░░░   cores ▄▃▂▁ ▂ ▁▁▁▃▁▃▂
+   21.6%  ███░░░░░░░░░   cores ▄▃▂▂▂▂▂▂▂ ▁▁ ▁
 
 Memory
-  25.7 GB / 36.0 GB ( 71.3%)  █████████░░░
+  27.4 GB / 36.0 GB ( 76.1%)  █████████░░░
+  wired 5.6 GB  ·  active 7.6 GB  ·  compressed 13.4 GB
 
 Disk
-  /              868.3 GB / 926.4 GB ( 93.7%)  ███████████░  SSD
+  /              896.7 GB / 926.4 GB ( 96.8%)  ████████████  SSD
 
 Network
-  en0            ↓    2.4 KB/s  ↑     541 B/s   total ↓39.2 GB ↑82.2 GB
+  en0            ↓    4.2 MB/s  ↑   53.4 KB/s   172.20.248.39  ·  total ↓50.0 GB ↑109.0 GB
 
 Battery
-  100.0%  ████████████  full
-  213 cycles  ·  0.0 W
+   72.0%  █████████░░░  charging  ~1h 7m to full
+  214 cycles  ·  41.8 W
 
 Temperatures
-  CPU CPU            50°C  ██████░░░░░░   (real die temp via IOHID)
-  CPU CPU hottest    52°C  ██████░░░░░░
-  SSD SSD            34°C  ████░░░░░░░░
+  CPU CPU            58°C  ███████░░░░░   (real die temp via IOHID)
+  CPU CPU hottest    60°C  ███████░░░░░
+  SSD SSD            36°C  ████░░░░░░░░
 
 Fans
-  Fan 1           2314 RPM    0%  ░░░░░░░░░░░░
+  Fan 1           2445 RPM    3%  ░░░░░░░░░░░░
+  Fan 2           2635 RPM    3%  ░░░░░░░░░░░░
+
+Power · 21.2 W
 ```
 
 Add `--json` to any command for machine-readable output (handy for Raycast,
@@ -177,7 +182,7 @@ peterfan/
 ├── apps/
 │   └── landing/     static marketing website (open apps/landing/index.html)
 ├── packaging/       LaunchDaemon plist · scripts/ install helpers
-├── docs/            architecture, roadmap, CLI reference
+├── docs/            architecture, roadmap, CLI reference, research notes
 └── (planned) apps/desktop (Tauri GUI)
 ```
 
