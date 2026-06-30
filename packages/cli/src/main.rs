@@ -1382,10 +1382,22 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
                 }
                 if moved {
                     println!("  {}", "✓ fans responded to manual control".green());
-                    if !via_daemon {
+                    if via_daemon {
+                        // Daemon holds the SMC connection open and re-asserts every tick.
+                    } else if cfg!(target_arch = "aarch64") {
+                        // On Apple Silicon the forced mode reverts when the SMC connection
+                        // closes (process exit). Use the daemon for persistent control.
                         println!(
                             "  {}",
-                            "⚠ they stay forced until you run `peterfan fan auto`".yellow()
+                            "⚠ Apple Silicon: forced mode is active while this process runs \
+                             but will revert on exit. Use `peterfan install-daemon` for \
+                             persistent control."
+                                .yellow()
+                        );
+                    } else {
+                        println!(
+                            "  {}",
+                            "⚠ they stay forced until you run `sudo peterfan fan auto`".yellow()
                         );
                     }
                 } else {
@@ -1675,16 +1687,25 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
         // Verdict.
         let verdict = if !caps.control_fans {
             "this backend can't write fans".yellow().to_string()
+        } else if daemon {
+            let mode = ipc_send("status")
+                .as_deref()
+                .and_then(|r| r.strip_prefix("ok "))
+                .map(|s| format!(" ({s})"))
+                .unwrap_or_default();
+            format!(
+                "✓ fully ready — daemon is running{mode}; \
+                 `peterfan fan set N` and menu-bar buttons work without sudo"
+            )
+            .green()
+            .to_string()
         } else if elevated {
             "ready — try `peterfan fan set 80` (verifies by RPM read-back)"
                 .green()
                 .to_string()
-        } else if daemon {
-            "use the menu-bar buttons or `peterfan fan` via the running daemon"
-                .green()
-                .to_string()
         } else {
-            "needs root — run `sudo peterfan fan set 80`, or install the daemon"
+            "not ready — install the daemon once (`peterfan install-daemon`) or \
+             run `sudo peterfan fan set 80`"
                 .yellow()
                 .to_string()
         };
