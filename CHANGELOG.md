@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.2] — Daemon backend tag
+
+### Changed
+- The daemon now tags its IPC replies with its backend, e.g.
+  `ok maximum (macos)` vs `ok maximum (mock)`. The popover's "Fan control"
+  status shows it, so a **simulated (`mock`) daemon** can't be mistaken for one
+  that actually drives the hardware — pressing a profile only moves real fans
+  when a real (root) daemon is running.
+
 ## [0.13.1] — Popover control buttons always respond
 
 ### Fixed
@@ -239,7 +248,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.13.2...HEAD
+[0.13.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.13.2
 [0.13.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.13.1
 [0.13.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.13.0
 [0.12.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.12.0

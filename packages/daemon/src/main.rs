@@ -37,6 +37,9 @@ struct State {
     profile: Profile,
     /// When true, fans are handed back to the OS (no curve applied).
     auto: bool,
+    /// Backend name (e.g. "macos", "mock") — surfaced in IPC replies so the UI
+    /// can tell real control from a simulated daemon.
+    backend: String,
 }
 
 #[derive(Parser)]
@@ -110,6 +113,7 @@ fn run(cli: Cli) -> Result<()> {
     let shared = Arc::new(Mutex::new(State {
         profile,
         auto: false,
+        backend: provider.name().to_string(),
     }));
 
     // IPC server (so the menu-bar app can switch profile / go auto without
@@ -224,26 +228,27 @@ fn spawn_ipc_server(shared: Arc<Mutex<State>>) {
 
 #[cfg(unix)]
 fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
+    let backend = shared.lock().expect("state poisoned").backend.clone();
     let mut parts = line.split_whitespace();
     match parts.next() {
-        Some("ping") => "ok peterfand".into(),
+        Some("ping") => format!("ok peterfand ({backend})"),
         Some("auto") => {
             shared.lock().expect("state poisoned").auto = true;
-            "ok auto".into()
+            format!("ok auto ({backend})")
         }
         Some("profile") => match parts.next().and_then(Profile::parse) {
             Some(p) => {
                 let mut s = shared.lock().expect("state poisoned");
                 s.profile = p;
                 s.auto = false;
-                format!("ok profile {}", p.as_str())
+                format!("ok {} ({backend})", p.as_str())
             }
             None => "error: unknown profile".into(),
         },
         Some("status") => {
             let s = shared.lock().expect("state poisoned");
             format!(
-                "ok {} {}",
+                "ok {} {} ({backend})",
                 if s.auto { "auto" } else { "curve" },
                 s.profile.as_str()
             )
