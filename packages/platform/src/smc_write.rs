@@ -23,6 +23,7 @@ const KERN_SUCCESS: KernReturn = 0;
 const RETURN_NOT_PRIVILEGED: KernReturn = 0xe000_02c1u32 as KernReturn;
 const KERNEL_INDEX_SMC: u32 = 2;
 const CMD_READ_KEYINFO: u8 = 9;
+const CMD_READ_BYTES: u8 = 5;
 const CMD_WRITE_BYTES: u8 = 6;
 
 #[repr(C)]
@@ -106,6 +107,26 @@ fn fan_key(idx: u8, suffix: [u8; 2]) -> u32 {
     u32::from_be_bytes([b'F', b'0' + idx, suffix[0], suffix[1]])
 }
 
+/// The `FS! ` fan-force bitmask key (one bit per fan = manual mode).
+fn fs_key() -> u32 {
+    u32::from_be_bytes([b'F', b'S', b'!', b' '])
+}
+
+/// Flip fan `idx`'s bit in the `FS! ` manual-mode bitmask (best-effort; the key
+/// is absent on some machines, in which case we rely on `Fn Md` alone).
+fn set_force_bit(conn: &Conn, idx: u8, manual: bool) {
+    let mut buf = [0u8; 2];
+    if conn.read_key(fs_key(), &mut buf).is_ok() {
+        let mut mask = u16::from_be_bytes(buf);
+        if manual {
+            mask |= 1 << idx;
+        } else {
+            mask &= !(1u16 << idx);
+        }
+        let _ = conn.write_key(fs_key(), &mask.to_be_bytes());
+    }
+}
+
 struct Conn(MachPort);
 
 impl Conn {
@@ -145,6 +166,28 @@ impl Conn {
         }
     }
 
+    /// Read up to `out.len()` bytes of `key` into `out`; returns the key size.
+    fn read_key(&self, key: u32, out: &mut [u8]) -> Result<usize, FanCtlError> {
+        let mut input = KeyData {
+            key,
+            data8: CMD_READ_KEYINFO,
+            ..Default::default()
+        };
+        let mut info = KeyData::default();
+        self.call(&input, &mut info)?;
+        let size = info.key_info.data_size as usize;
+        if size == 0 || size > 32 {
+            return Err(FanCtlError::Smc(-1));
+        }
+        input.key_info.data_size = info.key_info.data_size;
+        input.data8 = CMD_READ_BYTES;
+        let mut data = KeyData::default();
+        self.call(&input, &mut data)?;
+        let n = size.min(out.len());
+        out[..n].copy_from_slice(&data.bytes.0[..n]);
+        Ok(size)
+    }
+
     /// Write `data` to `key` (after reading its declared size from the SMC).
     fn write_key(&self, key: u32, data: &[u8]) -> Result<(), FanCtlError> {
         let mut input = KeyData {
@@ -178,16 +221,18 @@ impl Drop for Conn {
     }
 }
 
-/// Force fan `idx` to `rpm` (sets mode = forced, then the target speed).
+/// Force fan `idx` to `rpm`: enable manual mode (both the `FS! ` bitmask and
+/// `Fn Md`, since machines differ), then set the target speed.
 pub fn set_forced(idx: u8, rpm: f32) -> Result<(), FanCtlError> {
     let conn = Conn::open()?;
-    conn.write_key(fan_key(idx, [b'M', b'd']), &[1u8])?;
-    conn.write_key(fan_key(idx, [b'T', b'g']), &rpm.to_ne_bytes())?;
-    Ok(())
+    set_force_bit(&conn, idx, true);
+    let _ = conn.write_key(fan_key(idx, [b'M', b'd']), &[1u8]);
+    conn.write_key(fan_key(idx, [b'T', b'g']), &rpm.to_ne_bytes())
 }
 
 /// Return fan `idx` to automatic (OS-managed) control.
 pub fn set_auto(idx: u8) -> Result<(), FanCtlError> {
     let conn = Conn::open()?;
+    set_force_bit(&conn, idx, false);
     conn.write_key(fan_key(idx, [b'M', b'd']), &[0u8])
 }

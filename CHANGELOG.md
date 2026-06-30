@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.0] — Per-sensor & per-fan detail; sturdier fan control
+
+### Added
+- The popover now lists **every temperature sensor and every fan on its own
+  line** (CPU / CPU-hottest / SSD / Airport / palm-rest …, and Fan 1 / Fan 2 …
+  each with its own speed bar) instead of one truncated summary line — so
+  machines with multiple CPU-die clusters or multiple fans show all of it.
+
+### Changed
+- Fan forcing now also flips the `FS! ` manual-mode bitmask (in addition to
+  `Fn Md`), which some Macs require for `Fn Tg` to take effect. Best-effort:
+  skipped where the key is absent. (Real-fan efficacy depends on the machine /
+  SMC and needs a root daemon to exercise.)
+
 ## [0.13.2] — Daemon backend tag
 
 ### Changed
@@ -248,7 +262,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.14.0
 [0.13.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.13.2
 [0.13.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.13.1
 [0.13.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.13.0

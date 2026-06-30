@@ -265,33 +265,33 @@ fn update(app: &mut App) {
         .unwrap_or_default();
     let disk = disks.first();
 
-    // Temperatures: hottest as the headline, the rest in the sub-line.
+    // Temperatures: hottest is the headline; every sensor is listed below
+    // (so multiple CPU-die clusters / sensors are all visible).
     let hottest = temps
         .iter()
         .max_by(|a, b| a.value.0.partial_cmp(&b.value.0).unwrap_or(std::cmp::Ordering::Equal));
-    let temp_sub = temps
+    let temp_rows: Vec<_> = temps
         .iter()
-        .map(|t| format!("{} {:.0}°", t.label, t.value.0))
-        .collect::<Vec<_>>()
-        .join("   ");
-
-    // Fans: average load for the bar, per-fan RPM in the sub-line.
-    let fan_avg = if fans.is_empty() {
-        0.0
-    } else {
-        fans.iter()
-            .map(|f| match f.max_rpm {
-                Some(m) if m > 0 => f.rpm as f32 / m as f32 * 100.0,
-                _ => 0.0,
+        .map(|t| {
+            serde_json::json!({
+                "l": t.label,
+                "c": format!("{:.0}°C", t.value.0),
+                "cls": temp_cls(t.value),
             })
-            .sum::<f32>()
-            / fans.len() as f32
-    };
-    let fan_sub = fans
+        })
+        .collect();
+
+    // Fans: every fan listed with its own RPM and a speed bar (rpm / max).
+    let fan_rows: Vec<_> = fans
         .iter()
-        .map(|f| format!("{} {} rpm", f.label, f.rpm))
-        .collect::<Vec<_>>()
-        .join("   ");
+        .map(|f| {
+            let pct = match f.max_rpm {
+                Some(m) if m > 0 => (f.rpm as f32 / m as f32 * 100.0).clamp(0.0, 100.0),
+                _ => 0.0,
+            };
+            serde_json::json!({ "l": f.label, "rpm": format!("{} rpm", f.rpm), "pct": pct })
+        })
+        .collect();
 
     let payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
@@ -311,11 +311,10 @@ fn update(app: &mut App) {
         "temp_pct": hottest.map(|t| t.value.0).unwrap_or(0.0),
         "temp_text": hottest.map(|t| format!("{:.0}°C", t.value.0)).unwrap_or_default(),
         "temp_cls": hottest.map(|t| temp_cls(t.value)).unwrap_or("g"),
-        "temp_sub": temp_sub,
+        "temps": temp_rows,
         "fans_present": !fans.is_empty(),
-        "fans_pct": fan_avg,
-        "fans_text": fans.first().map(|f| format!("{} rpm", f.rpm)).unwrap_or_default(),
-        "fans_sub": fan_sub,
+        "fans_text": if fans.len() > 1 { format!("{} fans", fans.len()) } else { fans.first().map(|f| format!("{} rpm", f.rpm)).unwrap_or_default() },
+        "fans": fan_rows,
         "batt_present": battery.is_some(),
         "batt_pct": battery.as_ref().map(|b| b.charge_percent).unwrap_or(0.0),
         "batt_text": battery.as_ref().map(|b| format!("{:.0}%", b.charge_percent)).unwrap_or_default(),
@@ -482,6 +481,15 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .bar-fill.g{background:var(--g);}.bar-fill.y{background:var(--y);}.bar-fill.r{background:var(--r);}.bar-fill.b{background:var(--accent);}
 .cores{display:flex;align-items:flex-end;gap:2px;height:11px;margin-top:7px;}
 .core{flex:1;background:var(--accent);border-radius:1px;min-height:2px;opacity:.8;}
+.trow{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;margin-top:5px;}
+.trow .l{color:var(--dim);}
+.trow .v{font-weight:600;font-variant-numeric:tabular-nums;}
+.v.g{color:var(--g);}.v.y{color:var(--y);}.v.r{color:var(--r);}
+.frow{display:grid;grid-template-columns:auto 1fr auto;gap:9px;align-items:center;font-size:10.5px;margin-top:6px;}
+.frow .l{color:var(--dim);white-space:nowrap;}
+.frow .v{font-variant-numeric:tabular-nums;white-space:nowrap;}
+.fbar{height:3px;background:rgba(255,255,255,.08);border-radius:99px;overflow:hidden;}
+.fbar i{display:block;height:100%;background:var(--accent);border-radius:99px;width:0;transition:width .35s;}
 .ctl{display:flex;flex-wrap:wrap;gap:5px;padding:9px 15px;border-top:1px solid var(--line);}
 .ctl-head{flex:1 1 100%;display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;}
 .ctl-head .name{font-size:9.5px;font-weight:600;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;}
@@ -509,11 +517,11 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 
 <div class="row" id="sec-temp"><span class="ic"><svg viewBox="0 0 24 24"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg></span>
 <div class="content"><div class="head"><span class="name">Temperature</span><span class="val" id="temp-val">—</span></div>
-<div class="sub" id="temp-sub"></div><div class="bar"><div class="bar-fill" id="temp-bar"></div></div></div></div>
+<div class="bar"><div class="bar-fill" id="temp-bar"></div></div><div id="temp-list"></div></div></div>
 
 <div class="row" id="sec-fans"><span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.5"/><path d="M12 9.5c0-4 .5-6 2.5-6S18 6 14.5 10M12 14.5c4 0 6 .5 6 2.5s-2.5 3.5-6.5 0M9.5 12c-4 0-6-.5-6-2.5S6 6 10 9.5"/></svg></span>
 <div class="content"><div class="head"><span class="name">Fans</span><span class="val" id="fans-val">—</span></div>
-<div class="sub" id="fans-sub"></div><div class="bar"><div class="bar-fill b" id="fans-bar"></div></div></div></div>
+<div id="fans-list"></div></div></div>
 
 <div class="row" id="sec-batt"><span class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="18" height="9" rx="2"/><path d="M22 11v3"/></svg></span>
 <div class="content"><div class="head"><span class="name">Battery</span><span class="val" id="batt-val">—</span></div>
@@ -544,8 +552,10 @@ window.__pf={update:function(d){
  var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p){var s=document.createElement('span');s.className='core';s.style.height=Math.max(8,Math.min(100,p))+'%';cc.appendChild(s);});}
  set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
  set('disk-val',d.disk_text);set('disk-sub',d.disk_sub);bar('disk-bar',d.disk_pct);
- show('sec-temp',d.temp_present);if(d.temp_present){set('temp-val',d.temp_text);set('temp-sub',d.temp_sub);bar('temp-bar',d.temp_pct,d.temp_cls);}
- show('sec-fans',d.fans_present);if(d.fans_present){set('fans-val',d.fans_text);set('fans-sub',d.fans_sub);bar('fans-bar',d.fans_pct,'b');}
+ show('sec-temp',d.temp_present);if(d.temp_present){set('temp-val',d.temp_text);bar('temp-bar',d.temp_pct,d.temp_cls);
+   var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c;r.children[1].className='v '+t.cls;tl.appendChild(r);});}}
+ show('sec-fans',d.fans_present);if(d.fans_present){set('fans-val',d.fans_text);
+   var fl=document.getElementById('fans-list');if(fl){fl.innerHTML='';(d.fans||[]).forEach(function(f){var r=document.createElement('div');r.className='frow';r.innerHTML='<span class="l"></span><span class="fbar"><i></i></span><span class="v"></span>';r.children[0].textContent=f.l;r.querySelector('.fbar i').style.width=Math.max(0,Math.min(100,f.pct))+'%';r.children[2].textContent=f.rpm;fl.appendChild(r);});}}
  show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
  set('net-sub',d.net_sub);
  set('ctl-status',d.ctl_status||'');
