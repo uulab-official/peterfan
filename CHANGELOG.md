@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.0] — Honest fan-control capability
+
+### Changed
+- **Fan control is now reported honestly per platform.** On **Intel** Macs the
+  SMC fan-write path is offered (needs root/daemon). On **Apple Silicon** the
+  fans are governed by the system — the same SMC writes are accepted but have no
+  effect — so `control_fans` is now `false` there: `doctor` shows `✗ control
+  fans`, `fan set` explains it's unavailable, and the popover hides the control
+  buttons and notes "system-governed on Apple Silicon". Monitoring (CPU/die
+  temps/fan RPM/power/…) is unaffected and fully real.
+
+Background: across earlier versions the SMC write path was verified correct
+(`F0Md`=ui8, `F0Tg`=flt; `FS! ` absent on Apple Silicon) and the connection is
+held open, yet the physical fan does not respond on Apple Silicon. Rather than
+ship a control that does nothing, PeterFan now says so.
+
 ## [0.16.0] — System power (watts)
 
 ### Added
@@ -287,7 +303,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.17.0
 [0.16.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.16.0
 [0.15.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.15.0
 [0.14.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.14.0

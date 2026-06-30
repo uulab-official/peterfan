@@ -331,6 +331,7 @@ fn update(app: &mut App) {
             s
         }).unwrap_or_default(),
         "net_sub": format!("↓ {}/s     ↑ {}/s", bytes(rx as u64), bytes(tx as u64)),
+        "can_control": app.provider.capabilities().control_fans,
         "ctl_status": STATUS.lock().expect("status poisoned").clone(),
     });
     let _ = wv.evaluate_script(&format!("window.__pf&&window.__pf.update({})", payload));
@@ -564,7 +565,9 @@ window.__pf={update:function(d){
    var fl=document.getElementById('fans-list');if(fl){fl.innerHTML='';(d.fans||[]).forEach(function(f){var r=document.createElement('div');r.className='frow';r.innerHTML='<span class="l"></span><span class="fbar"><i></i></span><span class="v"></span>';r.children[0].textContent=f.l;r.querySelector('.fbar i').style.width=Math.max(0,Math.min(100,f.pct))+'%';r.children[2].textContent=f.rpm;fl.appendChild(r);});}}
  show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
  set('net-sub',d.net_sub);
- set('ctl-status',d.ctl_status||'');
+ var chips=document.querySelectorAll('.chip');
+ for(var i=0;i<chips.length;i++){chips[i].style.display=d.can_control?'':'none';}
+ set('ctl-status', d.can_control ? (d.ctl_status||'') : 'system-governed on Apple Silicon');
  reportHeight();
 }};
 function reportHeight(){var p=document.querySelector('.panel');if(p&&window.ipc){window.ipc.postMessage('h:'+Math.ceil(p.getBoundingClientRect().height));}}
