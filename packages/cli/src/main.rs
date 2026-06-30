@@ -175,12 +175,15 @@ enum FanAction {
         #[arg(long)]
         fan: Option<usize>,
     },
+    /// Show current fan control state (daemon mode + live RPM).
+    Status,
 }
 
 impl FanAction {
     fn fan_index(&self) -> Option<usize> {
         match self {
             FanAction::Set { fan, .. } | FanAction::Auto { fan, .. } => *fan,
+            FanAction::Status => None,
         }
     }
 }
@@ -1284,6 +1287,11 @@ fn ipc_send(_cmd: &str) -> Option<String> {
 }
 
 fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Result<()> {
+    // `fan status` works without control capability — just reads state.
+    if matches!(action, FanAction::Status) {
+        return cmd_fan_status(provider, json);
+    }
+
     if !provider.capabilities().control_fans {
         anyhow::bail!(
             "the '{}' backend can't control fans (no SMC/EC write support here)",
@@ -1305,6 +1313,7 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
     }
 
     match action {
+        FanAction::Status => unreachable!("handled above"),
         FanAction::Set { percent, .. } => {
             let pct = percent.min(100);
             // RPM before the write, so we can verify the fans actually moved.
@@ -1455,6 +1464,52 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
                 );
             }
         }
+    }
+    Ok(())
+}
+
+fn cmd_fan_status(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
+    let fans = provider.fans().unwrap_or_default();
+    let daemon_mode = ipc_send("status")
+        .as_deref()
+        .and_then(|r| r.strip_prefix("ok "))
+        .map(str::to_string);
+    let can_control = provider.capabilities().control_fans;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "can_control": can_control,
+                "daemon_mode": daemon_mode,
+                "fans": fans.iter().map(|f| serde_json::json!({
+                    "id": f.id, "label": f.label, "rpm": f.rpm,
+                    "min_rpm": f.min_rpm, "max_rpm": f.max_rpm,
+                    "duty_percent": f.duty_percent, "controllable": f.controllable,
+                })).collect::<Vec<_>>(),
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("{}", render::heading("Fan control status"));
+    print_kv(
+        "Control",
+        if can_control { "available" } else { "unavailable (read-only backend)" },
+    );
+    match &daemon_mode {
+        Some(mode) => print_kv("Daemon mode", mode),
+        None => print_kv("Daemon", "not running — install with `peterfan install-daemon`"),
+    }
+    println!();
+    println!("{}", render::heading("Fans"));
+    print_fans(&fans);
+    if daemon_mode.is_none() && can_control {
+        println!();
+        println!(
+            "  {}",
+            "tip: `peterfan install-daemon` enables sudo-free fan control".dimmed()
+        );
     }
     Ok(())
 }

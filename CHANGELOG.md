@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.1] — `peterfan fan status` subcommand
+
+### Added
+- **`peterfan fan status`** — shows the current fan-control mode (daemon:
+  `hold:N%` / `rules:…` / `auto` / `manual:profile`, or the local provider
+  fallback) plus live RPM for every fan. Useful for scripting and quick checks
+  without needing the full `peterfan status` output.
+
 ## [0.28.0] — Fan control without sudo + TUI keyboard fan control
 
 ### Added

@@ -82,20 +82,6 @@ Detected machine: CPU, GPU, motherboard, memory, OS. On macOS this is **real**
 peterfan hardware
 ```
 
-### `fan` — control fans (macOS)
-
-Force fan speed or restore automatic control. **Requires `sudo`** (SMC writes
-are privileged); without it you get a clear permission error. Forced control
-persists until `fan auto` or a reboot.
-
-```bash
-sudo peterfan fan set 60          # force all controllable fans to 60%
-sudo peterfan fan set 100 --fan 0 # force only fan 0 to 100%
-sudo peterfan fan auto            # restore OS-managed control
-```
-
-Duty is mapped onto each fan's real `[min, max]` RPM range and clamped.
-
 ### `profile [name]`
 
 With no name, lists the built-in profiles. With a name
@@ -198,13 +184,22 @@ peterfan completions bash > /usr/local/etc/bash_completion.d/peterfan
 # also: fish, powershell, elvish
 ```
 
-### `fan` — IPC routing when daemon is running
+### `fan` — fan control (macOS)
 
-When `peterfand` is installed and running, `peterfan fan set N` routes the
-command through the daemon IPC — **no `sudo` required**. The daemon re-asserts
-the duty every tick, so the setting persists until `peterfan fan auto`.
+```bash
+peterfan fan status                  # current control mode + live RPM
+peterfan fan set 80                  # force all fans to ~80% duty
+sudo peterfan fan set 80 --fan 0     # direct SMC write (no daemon)
+peterfan fan auto                    # restore OS-managed control
+```
 
-If no daemon is running, the CLI falls back to direct SMC writes (needs `sudo`).
+When `peterfand` is installed and running, `peterfan fan set N` routes through
+the daemon IPC — **no `sudo` required**. The daemon re-asserts every tick so
+the setting persists until `peterfan fan auto`.
+
+Without a running daemon the CLI falls back to a direct SMC write (needs
+`sudo`). On **Apple Silicon** that write is process-scoped — it reverts when
+the command exits. Install the daemon for persistent control.
 
 ### `install-daemon` / `uninstall-daemon` — one-time root setup (macOS)
 
