@@ -6,6 +6,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.26.0] — Fan control: un-gated, root-aware, and *verified*
+
+This release fixes the central problem: a fan controller that didn't control fans.
+
+### Changed
+- **Apple Silicon fan control is no longer disabled.** It was gated to Intel
+  after early writes showed no effect — but those writes were never run as root
+  (the SMC rejects non-root writes), and tools like Macs Fan Control/TG Pro do
+  drive Apple Silicon fans. Control is now attempted wherever the SMC is present.
+- **`peterfan fan set N` verifies the result.** It records fan RPM, writes, waits,
+  then re-reads RPM and reports a real **✓ responded / ✗ no change** — instead of
+  printing "ok" for a write the firmware may have ignored. The menu-bar buttons
+  show daemon status the same way.
+- **Clear root guidance.** Fan writes need root; `fan set` now says exactly that
+  (`sudo peterfan fan set N`, or run the `peterfand` daemon) instead of a generic
+  permission error.
+
+### Note
+Fan control requires **root**. Run `sudo peterfan fan set 80` (or install the
+daemon) — the verification will tell you definitively whether your Mac honors
+manual fan control.
+
 ## [0.25.2] — Menu-bar popover: no inner scroll, clearer fan-control state
 
 ### Fixed
@@ -408,7 +430,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.25.2...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.26.0
 [0.25.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.25.2
 [0.25.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.25.1
 [0.25.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.25.0

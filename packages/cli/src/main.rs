@@ -17,6 +17,7 @@ use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
 use owo_colors::OwoColorize;
 
+use peterfan_core::error::CoreError;
 use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
 use peterfan_core::types::{Fan, TempSensor};
@@ -1062,6 +1063,17 @@ fn cmd_fans(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// True when the process is running as root (fan writes need it).
+#[cfg(unix)]
+fn is_root() -> bool {
+    // SAFETY: geteuid() is always safe and has no preconditions.
+    unsafe { libc::geteuid() == 0 }
+}
+#[cfg(not(unix))]
+fn is_root() -> bool {
+    true
+}
+
 fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Result<()> {
     if !provider.capabilities().control_fans {
         anyhow::bail!(
@@ -1086,30 +1098,71 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
     match action {
         FanAction::Set { percent, .. } => {
             let pct = percent.min(100);
+            // RPM before the write, so we can verify the fans actually moved.
+            let before: Vec<u32> = targets.iter().map(|f| f.rpm).collect();
             for f in &targets {
-                provider.set_fan_duty(&f.id, pct)?;
+                if let Err(e) = provider.set_fan_duty(&f.id, pct) {
+                    if matches!(e, CoreError::PermissionDenied(_)) || !is_root() {
+                        anyhow::bail!(
+                            "fan control needs root — run `sudo peterfan fan set {pct}` \
+                             (or install the daemon: `sudo peterfand`). ({e})"
+                        );
+                    }
+                    return Err(e.into());
+                }
             }
+
+            // Verify: re-read RPM after a few seconds. A non-error from the SMC
+            // write does NOT mean the firmware honored it (notably on Apple
+            // Silicon), so we only claim success if the RPM actually changed.
+            std::thread::sleep(Duration::from_secs(4));
+            let after = provider.fans().unwrap_or_default();
+            let mut moved = false;
+            let mut rows = Vec::new();
+            for (f, &b) in targets.iter().zip(&before) {
+                let now = after
+                    .iter()
+                    .find(|x| x.id == f.id)
+                    .map(|x| x.rpm)
+                    .unwrap_or(b);
+                let delta = now as i64 - b as i64;
+                if delta.abs() >= 150 {
+                    moved = true;
+                }
+                rows.push((f.label.clone(), b, now, delta));
+            }
+
             if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
-                        "action": "set", "duty_percent": pct,
-                        "fans": targets.iter().map(|f| &f.label).collect::<Vec<_>>(),
+                        "action": "set", "duty_percent": pct, "verified_change": moved,
+                        "fans": rows.iter().map(|(l, b, n, d)| serde_json::json!({
+                            "label": l, "rpm_before": b, "rpm_after": n, "delta": d,
+                        })).collect::<Vec<_>>(),
                     }))?
                 );
             } else {
-                println!(
-                    "Forced {} to {pct}%.",
-                    targets
-                        .iter()
-                        .map(|f| f.label.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                println!(
-                    "  {}",
-                    "⚠ fans stay forced until you run `peterfan fan auto`".yellow()
-                );
+                println!("Sent force-to-{pct}% to {} fan(s):", rows.len());
+                for (label, b, n, d) in &rows {
+                    println!("  {label:<14} {b} → {n} RPM ({d:+})");
+                }
+                if moved {
+                    println!("  {}", "✓ fans responded to manual control".green());
+                    println!(
+                        "  {}",
+                        "⚠ they stay forced until you run `peterfan fan auto`".yellow()
+                    );
+                } else {
+                    println!(
+                        "  {}",
+                        "✗ RPM did not change — the write was accepted but had no effect.".red()
+                    );
+                    println!(
+                        "    On Apple Silicon, macOS firmware may ignore manual fan writes. \
+                         If you ran this without sudo, retry with `sudo peterfan fan set {pct}`."
+                    );
+                }
             }
         }
         FanAction::Auto { .. } => {

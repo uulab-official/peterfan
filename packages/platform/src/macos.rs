@@ -60,7 +60,10 @@ impl HardwareProvider for MacosProvider {
             // Silicon the fans are governed by the system: the same SMC writes
             // are accepted but have no effect, so we honestly report no control
             // rather than offer a dead knob.
-            control_fans: self.has_smc && cfg!(target_arch = "x86_64"),
+            // Attempted wherever the SMC is present. On Apple Silicon the write
+            // may be ignored by firmware, so callers should verify the RPM
+            // actually changed rather than trust a non-error as success.
+            control_fans: self.has_smc,
         }
     }
 
@@ -231,18 +234,13 @@ impl HardwareProvider for MacosProvider {
                 min_rpm: Some(f.min.0.round() as u32),
                 max_rpm: Some(f.max.0.round() as u32),
                 duty_percent: Some(f.percentage().clamp(0.0, 100.0).round() as u8),
-                controllable: self.has_smc && cfg!(target_arch = "x86_64"),
+                controllable: self.has_smc,
             });
         }
         Ok(out)
     }
 
     fn set_fan_duty(&self, fan_id: &str, duty_percent: u8) -> Result<()> {
-        if !cfg!(target_arch = "x86_64") {
-            return Err(CoreError::Unsupported(
-                "fan control is not available on Apple Silicon (fans are system-governed)".into(),
-            ));
-        }
         let idx = fan_index(fan_id)?;
         // Map duty% onto the fan's real [min, max] RPM range.
         let mut smc = Smc::connect().map_err(|e| CoreError::Hardware(format!("SMC: {e:?}")))?;
@@ -259,11 +257,6 @@ impl HardwareProvider for MacosProvider {
     }
 
     fn set_fan_auto(&self, fan_id: &str) -> Result<()> {
-        if !cfg!(target_arch = "x86_64") {
-            return Err(CoreError::Unsupported(
-                "fan control is not available on Apple Silicon (fans are system-governed)".into(),
-            ));
-        }
         let idx = fan_index(fan_id)?;
         self.with_conn(|c| c.auto(idx))
     }

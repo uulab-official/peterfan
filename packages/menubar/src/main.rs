@@ -585,8 +585,8 @@ window.__pf={update:function(d){
    set('ctl-status', d.ctl_status||'');
    if(note)note.style.display='none';
  } else {
-   set('ctl-status','monitor-only');
-   if(note){note.style.display='';note.textContent='macOS manages the fans on Apple Silicon, so speed can’t be set here — PeterFan shows live RPM only. Manual profiles work on Intel Macs via the helper daemon.';}
+   set('ctl-status','unavailable');
+   if(note){note.style.display='';note.textContent='This Mac doesn’t expose fan control to PeterFan — showing live RPM only.';}
  }
  reportHeight();
 }};

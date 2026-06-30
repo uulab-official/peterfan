@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.25.2.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.26.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
@@ -36,7 +36,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 | **macOS temperatures & fan RPM** | ✅ real — CPU/GPU **die temps via IOHID**, fan RPM + ambient via SMC |
 | Windows temperature / fan reading (EC) | 🚧 planned |
 | GPU utilization | 🔬 investigated — IOReport plumbing works, but the residency it exposes doesn't match Activity Monitor's GPU %, so it's deferred rather than shipped inaccurate ([`docs/RESEARCH.md`](./docs/RESEARCH.md)) |
-| Fan **control** | ✅ Intel Macs (SMC writes, needs `sudo`/daemon) · ⚠️ Apple Silicon: fans are **system-governed**, no control (monitoring only) |
+| Fan **control** | ⚙️ SMC writes, **needs root** (`sudo peterfan fan set N` or the daemon). `fan set` **verifies by reading RPM back** so you get a real ✓/✗, not a fake "ok". Confirmed on Intel; on Apple Silicon it's attempted and verified (some models' firmware may ignore it) |
 | CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`/`serve`/`benchmark`/`log`/`completions`, global `--watch` & `--json` | ✅ runnable |
 | TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes + temps/fans/power | ✅ runnable |
 | **Menu-bar app** — popover dashboard + **profile/Auto control buttons** that drive the daemon over IPC (no sudo) | ✅ runnable |
