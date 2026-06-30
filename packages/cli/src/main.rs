@@ -264,7 +264,11 @@ fn cmd_log(mock: bool, interval: u64, format: LogFormat) -> Result<()> {
             .unwrap_or(0);
         let cpu = monitor.cpu().usage_percent;
         let mem = monitor.memory().used_percent;
-        let disk = monitor.disks().first().map(|d| d.used_percent).unwrap_or(0.0);
+        let disk = monitor
+            .disks()
+            .first()
+            .map(|d| d.used_percent)
+            .unwrap_or(0.0);
         let temp = provider
             .temperatures()
             .unwrap_or_default()
@@ -281,9 +285,9 @@ fn cmd_log(mock: bool, interval: u64, format: LogFormat) -> Result<()> {
         let power = provider.power_watts().unwrap_or(0.0);
 
         match format {
-            LogFormat::Csv => println!(
-                "{ts},{cpu:.1},{mem:.1},{disk:.1},{temp:.0},{rpm},{power:.1}"
-            ),
+            LogFormat::Csv => {
+                println!("{ts},{cpu:.1},{mem:.1},{disk:.1},{temp:.0},{rpm},{power:.1}")
+            }
             LogFormat::Jsonl => println!(
                 "{}",
                 serde_json::json!({
@@ -312,7 +316,9 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64) -> Result<()> {
     };
     let provider = provider(mock);
 
-    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8);
     if !json {
         println!(
             "{} {}",
@@ -372,9 +378,7 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64) -> Result<()> {
         let _ = h.join();
     }
 
-    let peak = |f: fn(&(f32, f32, u32, f32)) -> f32| {
-        samples.iter().map(f).fold(0.0_f32, f32::max)
-    };
+    let peak = |f: fn(&(f32, f32, u32, f32)) -> f32| samples.iter().map(f).fold(0.0_f32, f32::max);
     let avg_cpu = samples.iter().map(|s| s.0).sum::<f32>() / samples.len().max(1) as f32;
     let peak_cpu = peak(|s| s.0);
     let peak_temp = peak(|s| s.1);
@@ -466,8 +470,13 @@ fn cmd_serve(mock: bool, port: u16) -> Result<()> {
         // Human-friendly index page.
         if method == "GET" && path == "/" {
             let resp = Response::from_string(API_INDEX_HTML)
-                .with_header(Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap())
-                .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+                .with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
+                        .unwrap(),
+                )
+                .with_header(
+                    Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+                );
             let _ = req.respond(resp);
             continue;
         }
@@ -476,8 +485,12 @@ fn cmd_serve(mock: bool, port: u16) -> Result<()> {
         let json = serde_json::to_string(&value).unwrap_or_else(|_| "{}".into());
         let resp = Response::from_string(json)
             .with_status_code(code)
-            .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
-            .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+            .with_header(
+                Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+            )
+            .with_header(
+                Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+            );
         let _ = req.respond(resp);
     }
 }
@@ -513,22 +526,15 @@ fn route(
             (200, serde_json::json!(m.networks()))
         }
         ("GET", "/api/v1/battery") => (200, serde_json::json!(m.battery())),
-        ("GET", "/api/v1/processes") => {
-            (200, serde_json::json!(m.processes(20, ProcSort::Cpu)))
-        }
-        ("GET", "/api/v1/temps") => {
-            (200, serde_json::json!(provider.temperatures().unwrap_or_default()))
-        }
-        ("GET", "/api/v1/fans") => {
-            (200, serde_json::json!(provider.fans().unwrap_or_default()))
-        }
+        ("GET", "/api/v1/processes") => (200, serde_json::json!(m.processes(20, ProcSort::Cpu))),
+        ("GET", "/api/v1/temps") => (
+            200,
+            serde_json::json!(provider.temperatures().unwrap_or_default()),
+        ),
+        ("GET", "/api/v1/fans") => (200, serde_json::json!(provider.fans().unwrap_or_default())),
         ("GET", "/api/v1/power") => (200, serde_json::json!({ "watts": provider.power_watts() })),
-        ("POST", "/api/v1/profile") => {
-            api_apply_profile(body, provider)
-        }
-        ("POST", "/api/v1/fan") => {
-            api_apply_fan(body, provider)
-        }
+        ("POST", "/api/v1/profile") => api_apply_profile(body, provider),
+        ("POST", "/api/v1/fan") => api_apply_fan(body, provider),
         ("OPTIONS", _) => (204, serde_json::Value::Null),
         _ => (404, serde_json::json!({ "error": "not found" })),
     }
@@ -539,24 +545,44 @@ fn api_apply_profile(body: &str, provider: &dyn HardwareProvider) -> (u16, serde
         .ok()
         .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string));
     let Some(name) = name else {
-        return (400, serde_json::json!({ "error": "expected {\"name\": \"...\"}" }));
+        return (
+            400,
+            serde_json::json!({ "error": "expected {\"name\": \"...\"}" }),
+        );
     };
     let Some(profile) = Profile::parse(&name) else {
-        return (400, serde_json::json!({ "error": format!("unknown profile '{name}'") }));
+        return (
+            400,
+            serde_json::json!({ "error": format!("unknown profile '{name}'") }),
+        );
     };
     if !provider.capabilities().control_fans {
-        return (200, serde_json::json!({ "applied": false, "reason": "no fan control on this backend" }));
+        return (
+            200,
+            serde_json::json!({ "applied": false, "reason": "no fan control on this backend" }),
+        );
     }
     let curve = profile.default_curve();
     let temps = provider.temperatures().unwrap_or_default();
     let temp = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
     let duty = curve.duty_at(temp);
-    for f in provider.fans().unwrap_or_default().iter().filter(|f| f.controllable) {
+    for f in provider
+        .fans()
+        .unwrap_or_default()
+        .iter()
+        .filter(|f| f.controllable)
+    {
         if let Err(e) = provider.set_fan_duty(&f.id, duty) {
-            return (500, serde_json::json!({ "applied": false, "error": e.to_string() }));
+            return (
+                500,
+                serde_json::json!({ "applied": false, "error": e.to_string() }),
+            );
         }
     }
-    (200, serde_json::json!({ "applied": true, "profile": profile.as_str(), "duty_percent": duty }))
+    (
+        200,
+        serde_json::json!({ "applied": true, "profile": profile.as_str(), "duty_percent": duty }),
+    )
 }
 
 fn api_apply_fan(body: &str, provider: &dyn HardwareProvider) -> (u16, serde_json::Value) {
@@ -566,7 +592,10 @@ fn api_apply_fan(body: &str, provider: &dyn HardwareProvider) -> (u16, serde_jso
     };
     let action = v.get("action").and_then(|a| a.as_str()).unwrap_or("");
     if !provider.capabilities().control_fans {
-        return (200, serde_json::json!({ "applied": false, "reason": "no fan control on this backend" }));
+        return (
+            200,
+            serde_json::json!({ "applied": false, "reason": "no fan control on this backend" }),
+        );
     }
     let fans: Vec<String> = provider
         .fans()
@@ -578,14 +607,30 @@ fn api_apply_fan(body: &str, provider: &dyn HardwareProvider) -> (u16, serde_jso
     let result = match action {
         "auto" => fans.iter().try_for_each(|id| provider.set_fan_auto(id)),
         "set" => {
-            let pct = v.get("percent").and_then(|p| p.as_u64()).unwrap_or(50).min(100) as u8;
-            fans.iter().try_for_each(|id| provider.set_fan_duty(id, pct))
+            let pct = v
+                .get("percent")
+                .and_then(|p| p.as_u64())
+                .unwrap_or(50)
+                .min(100) as u8;
+            fans.iter()
+                .try_for_each(|id| provider.set_fan_duty(id, pct))
         }
-        _ => return (400, serde_json::json!({ "error": "action must be 'auto' or 'set'" })),
+        _ => {
+            return (
+                400,
+                serde_json::json!({ "error": "action must be 'auto' or 'set'" }),
+            )
+        }
     };
     match result {
-        Ok(()) => (200, serde_json::json!({ "applied": true, "action": action })),
-        Err(e) => (500, serde_json::json!({ "applied": false, "error": e.to_string() })),
+        Ok(()) => (
+            200,
+            serde_json::json!({ "applied": true, "action": action }),
+        ),
+        Err(e) => (
+            500,
+            serde_json::json!({ "applied": false, "error": e.to_string() }),
+        ),
     }
 }
 
@@ -621,7 +666,11 @@ fn cmd_config(json: bool, init: bool) -> Result<()> {
     } else {
         println!("  {}", "Rules:".dimmed());
         for r in &cfg.rules {
-            let ok = if r.condition().is_some() { "" } else { "  ⚠ invalid" };
+            let ok = if r.condition().is_some() {
+                ""
+            } else {
+                "  ⚠ invalid"
+            };
             println!("    {:<16} → {}{}", r.when, r.profile.as_str(), ok.yellow());
         }
     }
@@ -709,6 +758,15 @@ fn cmd_memory(mock: bool, json: bool) -> Result<()> {
         render::pct_colored(mem.used_percent).trim(),
         render::load_bar(mem.used_percent)
     );
+    if let Some(b) = mem.breakdown {
+        println!(
+            "  wired {}  ·  active {}  ·  inactive {}  ·  compressed {}",
+            render::bytes(b.wired),
+            render::bytes(b.active),
+            render::bytes(b.inactive),
+            render::bytes(b.compressed),
+        );
+    }
     if mem.swap_total > 0 {
         let swap_pct = mem.swap_used as f32 / mem.swap_total as f32 * 100.0;
         println!(
@@ -921,7 +979,11 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
 
     if let Some(w) = provider.power_watts() {
         println!();
-        println!("{} {}", render::heading("Power"), format!("· {w:.1} W").dimmed());
+        println!(
+            "{} {}",
+            render::heading("Power"),
+            format!("· {w:.1} W").dimmed()
+        );
     }
 
     Ok(())
@@ -1030,7 +1092,11 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
             } else {
                 println!(
                     "Forced {} to {pct}%.",
-                    targets.iter().map(|f| f.label.as_str()).collect::<Vec<_>>().join(", ")
+                    targets
+                        .iter()
+                        .map(|f| f.label.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
                 println!(
                     "  {}",
@@ -1053,7 +1119,11 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
             } else {
                 println!(
                     "Restored {} to automatic control.",
-                    targets.iter().map(|f| f.label.as_str()).collect::<Vec<_>>().join(", ")
+                    targets
+                        .iter()
+                        .map(|f| f.label.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
             }
         }
@@ -1319,7 +1389,9 @@ fn print_networks<'a>(nets: impl Iterator<Item = &'a peterfan_core::metrics::Net
     for n in nets {
         let meta = format!(
             "{}total ↓{} ↑{}",
-            n.ip.as_deref().map(|ip| format!("{ip}  ·  ")).unwrap_or_default(),
+            n.ip.as_deref()
+                .map(|ip| format!("{ip}  ·  "))
+                .unwrap_or_default(),
             render::bytes(n.rx_total),
             render::bytes(n.tx_total)
         );

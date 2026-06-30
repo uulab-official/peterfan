@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.0] — Memory breakdown + CI
+
+### Added
+- **macOS memory breakdown** — wired / active / inactive / compressed bytes via
+  the mach `host_statistics64(HOST_VM_INFO64)` call (the same source Activity
+  Monitor uses). Shown in `peterfan memory` and exposed on the memory API.
+  Cross-checked against `vm_stat`.
+- **CI workflow** (`.github/workflows/ci.yml`) — `cargo fmt --check`, `clippy
+  -D warnings`, and `cargo test` on every push / PR to `main`.
+
 ## [0.24.0] — Completions, logging, richer API
 
 ### Added
@@ -372,7 +382,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.25.0
 [0.24.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.24.0
 [0.23.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.23.0
 [0.22.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.22.0

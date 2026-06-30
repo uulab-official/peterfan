@@ -85,7 +85,10 @@ impl Condition {
             Some(("cpu_above", v)) => v.trim().parse::<f32>().ok().map(Condition::CpuAbove),
             Some(("time", v)) => {
                 let (a, b) = v.split_once('-')?;
-                Some(Condition::Time(a.trim().parse().ok()?, b.trim().parse().ok()?))
+                Some(Condition::Time(
+                    a.trim().parse().ok()?,
+                    b.trim().parse().ok()?,
+                ))
             }
             _ => None,
         }
@@ -162,7 +165,11 @@ mod tests {
 
     #[test]
     fn condition_parsing_and_matching() {
-        let ctx = RuleContext { on_ac: false, cpu_temp_c: 70.0, hour: 23 };
+        let ctx = RuleContext {
+            on_ac: false,
+            cpu_temp_c: 70.0,
+            hour: 23,
+        };
         assert!(Condition::parse("on_battery").unwrap().matches(&ctx));
         assert!(!Condition::parse("on_ac").unwrap().matches(&ctx));
         assert!(Condition::parse("cpu_above:65").unwrap().matches(&ctx));
@@ -183,11 +190,23 @@ mod tests {
             profile = "silent"
         "#;
         let cfg = Config::from_toml(toml).unwrap();
-        let cool_battery = RuleContext { on_ac: false, cpu_temp_c: 40.0, hour: 12 };
+        let cool_battery = RuleContext {
+            on_ac: false,
+            cpu_temp_c: 40.0,
+            hour: 12,
+        };
         assert_eq!(cfg.active_profile(&cool_battery), Some(Profile::Silent));
-        let hot = RuleContext { on_ac: true, cpu_temp_c: 90.0, hour: 12 };
+        let hot = RuleContext {
+            on_ac: true,
+            cpu_temp_c: 90.0,
+            hour: 12,
+        };
         assert_eq!(cfg.active_profile(&hot), Some(Profile::Maximum));
-        let plugged_cool = RuleContext { on_ac: true, cpu_temp_c: 40.0, hour: 12 };
+        let plugged_cool = RuleContext {
+            on_ac: true,
+            cpu_temp_c: 40.0,
+            hour: 12,
+        };
         assert_eq!(cfg.active_profile(&plugged_cool), None);
     }
 }

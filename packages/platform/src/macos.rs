@@ -147,30 +147,68 @@ impl HardwareProvider for MacosProvider {
             cand.push(("gpu.proximity", "GPU", SensorKind::Gpu, t.proximity.0));
         }
         if let Ok(t) = smc.other_temperatures() {
-            cand.push(("mem.proximity", "Memory", SensorKind::Memory, t.memory_bank_proximity.0));
-            cand.push(("mainboard.proximity", "Mainboard", SensorKind::Mainboard, t.mainboard_proximity.0));
+            cand.push((
+                "mem.proximity",
+                "Memory",
+                SensorKind::Memory,
+                t.memory_bank_proximity.0,
+            ));
+            cand.push((
+                "mainboard.proximity",
+                "Mainboard",
+                SensorKind::Mainboard,
+                t.mainboard_proximity.0,
+            ));
             cand.push(("airport", "Airport", SensorKind::Other, t.airport.0));
-            cand.push(("airflow.left", "Airflow left", SensorKind::Other, t.airflow_left.0));
-            cand.push(("airflow.right", "Airflow right", SensorKind::Other, t.airflow_right.0));
-            cand.push(("heatpipe.1", "Heatpipe 1", SensorKind::Other, t.heatpipe_1.0));
-            cand.push(("heatpipe.2", "Heatpipe 2", SensorKind::Other, t.heatpipe_2.0));
-            cand.push(("palmrest.1", "Palm rest 1", SensorKind::Other, t.palm_rest_1.0));
-            cand.push(("palmrest.2", "Palm rest 2", SensorKind::Other, t.palm_rest_2.0));
+            cand.push((
+                "airflow.left",
+                "Airflow left",
+                SensorKind::Other,
+                t.airflow_left.0,
+            ));
+            cand.push((
+                "airflow.right",
+                "Airflow right",
+                SensorKind::Other,
+                t.airflow_right.0,
+            ));
+            cand.push((
+                "heatpipe.1",
+                "Heatpipe 1",
+                SensorKind::Other,
+                t.heatpipe_1.0,
+            ));
+            cand.push((
+                "heatpipe.2",
+                "Heatpipe 2",
+                SensorKind::Other,
+                t.heatpipe_2.0,
+            ));
+            cand.push((
+                "palmrest.1",
+                "Palm rest 1",
+                SensorKind::Other,
+                t.palm_rest_1.0,
+            ));
+            cand.push((
+                "palmrest.2",
+                "Palm rest 2",
+                SensorKind::Other,
+                t.palm_rest_2.0,
+            ));
         }
 
         // Add the SMC ambient sensors that returned a plausible value. On
         // Apple Silicon the SMC CPU/GPU die keys read 0 (filtered) — the real
         // die temps came from IOHID above; on Intel the SMC ones provide them.
-        temps.extend(
-            cand.into_iter()
-                .filter(|&(_, _, _, c)| c > 1.0)
-                .map(|(id, label, kind, c)| TempSensor {
-                    id: id.into(),
-                    label: label.into(),
-                    kind,
-                    value: Celsius(c),
-                }),
-        );
+        temps.extend(cand.into_iter().filter(|&(_, _, _, c)| c > 1.0).map(
+            |(id, label, kind, c)| TempSensor {
+                id: id.into(),
+                label: label.into(),
+                kind,
+                value: Celsius(c),
+            },
+        ));
         Ok(temps)
     }
 
@@ -242,7 +280,10 @@ impl HardwareProvider for MacosProvider {
 
 impl MacosProvider {
     /// Run `f` against the persistent SMC write connection, opening it once.
-    fn with_conn(&self, f: impl FnOnce(&Conn) -> std::result::Result<(), crate::smc_write::FanCtlError>) -> Result<()> {
+    fn with_conn(
+        &self,
+        f: impl FnOnce(&Conn) -> std::result::Result<(), crate::smc_write::FanCtlError>,
+    ) -> Result<()> {
         let mut guard = self.force_conn.lock().expect("smc conn poisoned");
         if guard.is_none() {
             *guard = Some(Conn::open().map_err(map_fan_err)?);
@@ -264,9 +305,9 @@ fn fan_index(fan_id: &str) -> Result<u8> {
 fn map_fan_err(e: crate::smc_write::FanCtlError) -> CoreError {
     use crate::smc_write::FanCtlError as F;
     match e {
-        F::NotPrivileged => CoreError::PermissionDenied(
-            "SMC fan control requires root — re-run with `sudo`".into(),
-        ),
+        F::NotPrivileged => {
+            CoreError::PermissionDenied("SMC fan control requires root — re-run with `sudo`".into())
+        }
         F::Open => CoreError::Hardware("could not open AppleSMC".into()),
         F::Smc(code) => CoreError::Hardware(format!("SMC write failed (code {code})")),
     }

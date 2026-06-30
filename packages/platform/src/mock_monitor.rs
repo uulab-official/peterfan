@@ -5,8 +5,8 @@
 //! substrate to test against.
 
 use peterfan_core::metrics::{
-    BatteryInfo, CpuMetrics, DiskInfo, LoadAvg, MemoryMetrics, NetInterface, ProcSort, ProcessInfo,
-    SystemInfo,
+    BatteryInfo, CpuMetrics, DiskInfo, LoadAvg, MemoryBreakdown, MemoryMetrics, NetInterface,
+    ProcSort, ProcessInfo, SystemInfo,
 };
 use peterfan_core::monitor::{MonitorCapabilities, SystemMonitor};
 
@@ -95,6 +95,12 @@ impl SystemMonitor for MockMonitor {
             used_percent: used as f32 / total as f32 * 100.0,
             swap_total: 8 * GIB,
             swap_used: (1.2 * GIB as f32) as u64,
+            breakdown: Some(MemoryBreakdown {
+                wired: 6 * GIB,
+                active: used.saturating_sub(8 * GIB),
+                inactive: 4 * GIB,
+                compressed: 2 * GIB,
+            }),
         }
     }
 

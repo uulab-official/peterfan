@@ -23,8 +23,8 @@ use sysinfo::{
 };
 
 use peterfan_core::metrics::{
-    BatteryInfo, CpuMetrics, DiskInfo, LoadAvg, MemoryMetrics, NetInterface, ProcSort, ProcessInfo,
-    SystemInfo,
+    BatteryInfo, CpuMetrics, DiskInfo, LoadAvg, MemoryBreakdown, MemoryMetrics, NetInterface,
+    ProcSort, ProcessInfo, SystemInfo,
 };
 use peterfan_core::monitor::{MonitorCapabilities, SystemMonitor};
 
@@ -193,6 +193,7 @@ impl SystemMonitor for SysinfoMonitor {
             used_percent: pct(used, total),
             swap_total: self.sys.total_swap(),
             swap_used: self.sys.used_swap(),
+            breakdown: memory_breakdown(),
         }
     }
 
@@ -204,7 +205,8 @@ impl SystemMonitor for SysinfoMonitor {
                 let available = d.available_space();
                 let used = total.saturating_sub(available);
                 let name = d.name().to_string_lossy().into_owned();
-                let (read_bps, write_bps) = self.disk_rates.get(&name).copied().unwrap_or((0.0, 0.0));
+                let (read_bps, write_bps) =
+                    self.disk_rates.get(&name).copied().unwrap_or((0.0, 0.0));
                 DiskInfo {
                     mount: d.mount_point().to_string_lossy().into_owned(),
                     fs: d.file_system().to_string_lossy().into_owned(),
@@ -305,4 +307,39 @@ fn pct(part: u64, whole: u64) -> f32 {
     } else {
         (part as f64 / whole as f64 * 100.0) as f32
     }
+}
+
+/// macOS virtual-memory breakdown (wired/active/inactive/compressed), via the
+/// mach `host_statistics64(HOST_VM_INFO64)` call — the same source Activity
+/// Monitor uses. `None` on other platforms or if the syscall fails.
+#[cfg(target_os = "macos")]
+#[allow(deprecated)] // `mach_host_self` is the standard mach entry point here.
+fn memory_breakdown() -> Option<MemoryBreakdown> {
+    // SAFETY: a single mach call into a zeroed, correctly-sized struct; counts
+    // are validated by the kernel returning KERN_SUCCESS (0).
+    unsafe {
+        let mut stats: libc::vm_statistics64 = std::mem::zeroed();
+        let mut count = libc::HOST_VM_INFO64_COUNT;
+        let rc = libc::host_statistics64(
+            libc::mach_host_self(),
+            libc::HOST_VM_INFO64,
+            &mut stats as *mut _ as libc::host_info64_t,
+            &mut count,
+        );
+        if rc != libc::KERN_SUCCESS {
+            return None;
+        }
+        let page = libc::sysconf(libc::_SC_PAGESIZE).max(4096) as u64;
+        Some(MemoryBreakdown {
+            wired: stats.wire_count as u64 * page,
+            active: stats.active_count as u64 * page,
+            inactive: stats.inactive_count as u64 * page,
+            compressed: stats.compressor_page_count as u64 * page,
+        })
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn memory_breakdown() -> Option<MemoryBreakdown> {
+    None
 }

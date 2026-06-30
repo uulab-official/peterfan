@@ -54,6 +54,23 @@ pub struct MemoryMetrics {
     pub used_percent: f32,
     pub swap_total: u64,
     pub swap_used: u64,
+    /// macOS-style breakdown (bytes), where the platform can report it.
+    /// `None` on platforms without a virtual-memory breakdown.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub breakdown: Option<MemoryBreakdown>,
+}
+
+/// macOS virtual-memory breakdown, mirroring Activity Monitor's categories.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct MemoryBreakdown {
+    /// Memory that cannot be paged out (kernel, drivers).
+    pub wired: u64,
+    /// In-use, recently-accessed pages (roughly "App Memory").
+    pub active: u64,
+    /// In-use but not recently accessed (reclaimable under pressure).
+    pub inactive: u64,
+    /// Memory held by the compressor (macOS memory compression).
+    pub compressed: u64,
 }
 
 /// A mounted disk / volume, sizes in bytes.

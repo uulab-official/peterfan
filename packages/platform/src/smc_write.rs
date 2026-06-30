@@ -76,8 +76,12 @@ struct KeyData {
 extern "C" {
     fn IOServiceMatching(name: *const c_char) -> *mut c_void;
     fn IOServiceGetMatchingService(master: MachPort, matching: *const c_void) -> MachPort;
-    fn IOServiceOpen(service: MachPort, owning: MachPort, typ: u32, connect: *mut MachPort)
-        -> KernReturn;
+    fn IOServiceOpen(
+        service: MachPort,
+        owning: MachPort,
+        typ: u32,
+        connect: *mut MachPort,
+    ) -> KernReturn;
     fn IOServiceClose(conn: MachPort) -> KernReturn;
     fn IOConnectCallStructMethod(
         conn: MachPort,

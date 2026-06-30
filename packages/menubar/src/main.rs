@@ -19,9 +19,7 @@ use tao::window::{Window, WindowBuilder};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 
-use tray_icon::{
-    Icon, MouseButtonState, Rect, TrayIcon, TrayIconBuilder, TrayIconEvent,
-};
+use tray_icon::{Icon, MouseButtonState, Rect, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use wry::{WebView, WebViewBuilder};
 
 use peterfan_core::error::CoreError;
@@ -61,7 +59,10 @@ fn main() {
     let (monitor, provider): (Box<dyn SystemMonitor>, Box<dyn HardwareProvider>) = if use_mock {
         (peterfan_platform::mock_monitor(), peterfan_platform::mock())
     } else {
-        (peterfan_platform::system_monitor(), peterfan_platform::detect())
+        (
+            peterfan_platform::system_monitor(),
+            peterfan_platform::detect(),
+        )
     };
     let has_battery = monitor.capabilities().battery;
 
@@ -188,7 +189,10 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
                     DESIRED_H.store(v, Ordering::Relaxed);
                 }
             } else if let Some(cmd) = body.strip_prefix("cmd:") {
-                PENDING.lock().expect("pending poisoned").push(cmd.to_string());
+                PENDING
+                    .lock()
+                    .expect("pending poisoned")
+                    .push(cmd.to_string());
             }
         })
         .build(&window)
@@ -268,9 +272,12 @@ fn update(app: &mut App) {
 
     // Temperatures: hottest is the headline; every sensor is listed below
     // (so multiple CPU-die clusters / sensors are all visible).
-    let hottest = temps
-        .iter()
-        .max_by(|a, b| a.value.0.partial_cmp(&b.value.0).unwrap_or(std::cmp::Ordering::Equal));
+    let hottest = temps.iter().max_by(|a, b| {
+        a.value
+            .0
+            .partial_cmp(&b.value.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let temp_rows: Vec<_> = temps
         .iter()
         .map(|t| {
@@ -376,7 +383,10 @@ fn apply_local(provider: &dyn HardwareProvider, cmd: &str) -> String {
         .collect();
 
     let (result, label) = if cmd == "auto" {
-        (fans.iter().try_for_each(|id| provider.set_fan_auto(id)), "auto".to_string())
+        (
+            fans.iter().try_for_each(|id| provider.set_fan_auto(id)),
+            "auto".to_string(),
+        )
     } else if let Some(name) = cmd.strip_prefix("profile:") {
         match Profile::parse(name) {
             Some(p) => {
@@ -384,7 +394,8 @@ fn apply_local(provider: &dyn HardwareProvider, cmd: &str) -> String {
                 let hot = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
                 let duty = p.default_curve().duty_at(hot);
                 (
-                    fans.iter().try_for_each(|id| provider.set_fan_duty(id, duty)),
+                    fans.iter()
+                        .try_for_each(|id| provider.set_fan_duty(id, duty)),
                     format!("{} ({duty}%)", p.as_str()),
                 )
             }

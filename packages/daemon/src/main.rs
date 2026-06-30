@@ -83,8 +83,9 @@ fn run(cli: Cli) -> Result<()> {
     // file, otherwise the built-in defaults.
     let cfg = peterfan_platform::config::load();
     let profile = match &cli.profile {
-        Some(name) => Profile::parse(name)
-            .ok_or_else(|| anyhow::anyhow!("unknown profile '{name}'"))?,
+        Some(name) => {
+            Profile::parse(name).ok_or_else(|| anyhow::anyhow!("unknown profile '{name}'"))?
+        }
         None => cfg.profile,
     };
     let interval = cli.interval.unwrap_or(cfg.interval_secs).max(1);
@@ -165,7 +166,10 @@ fn run(cli: Cli) -> Result<()> {
     for p in peterfan_platform::ipc::PATHS {
         let _ = std::fs::remove_file(p);
     }
-    println!("peterfand: restored {} fan(s) to automatic control", fan_ids.len());
+    println!(
+        "peterfand: restored {} fan(s) to automatic control",
+        fan_ids.len()
+    );
 
     match loop_result {
         Ok(r) => r,
@@ -242,7 +246,10 @@ fn control_loop(
                 );
                 was_critical = true;
             } else if hottest < critical - 5.0 && was_critical {
-                notify("PeterFan", &format!("Temperature back to normal ({hottest:.0}°C)"));
+                notify(
+                    "PeterFan",
+                    &format!("Temperature back to normal ({hottest:.0}°C)"),
+                );
                 was_critical = false;
             }
         }
@@ -277,7 +284,9 @@ fn spawn_ipc_server(shared: Arc<Mutex<State>>) {
     std::thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(mut stream) = conn else { continue };
-            let Ok(clone) = stream.try_clone() else { continue };
+            let Ok(clone) = stream.try_clone() else {
+                continue;
+            };
             let mut line = String::new();
             if BufReader::new(clone).read_line(&mut line).is_err() {
                 continue;

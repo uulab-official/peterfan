@@ -146,7 +146,8 @@ fn render_thermals(f: &mut Frame, area: Rect, d: &Dashboard) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let cols = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(inner);
+    let cols =
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(inner);
 
     // Temperatures (left): up to two rows.
     let temp_lines: Vec<Line> = d
@@ -155,8 +156,14 @@ fn render_thermals(f: &mut Frame, area: Rect, d: &Dashboard) {
         .take(inner.height as usize)
         .map(|t| {
             Line::from(vec![
-                Span::styled(format!("{:<12} ", t.label), Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{:.0}°C", t.value.0), Style::default().fg(temp_color(t.value.0))),
+                Span::styled(
+                    format!("{:<12} ", t.label),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{:.0}°C", t.value.0),
+                    Style::default().fg(temp_color(t.value.0)),
+                ),
             ])
         })
         .collect();
@@ -164,15 +171,24 @@ fn render_thermals(f: &mut Frame, area: Rect, d: &Dashboard) {
 
     // Fans (right).
     let fan_lines: Vec<Line> = if d.fans.is_empty() {
-        vec![Line::from(Span::styled("no fan data", Style::default().fg(Color::DarkGray)))]
+        vec![Line::from(Span::styled(
+            "no fan data",
+            Style::default().fg(Color::DarkGray),
+        ))]
     } else {
         d.fans
             .iter()
             .take(inner.height as usize)
             .map(|fan| {
                 Line::from(vec![
-                    Span::styled(format!("{:<8} ", fan.label), Style::default().fg(Color::DarkGray)),
-                    Span::styled(format!("{:>5} RPM", fan.rpm), Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        format!("{:<8} ", fan.label),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        format!("{:>5} RPM", fan.rpm),
+                        Style::default().fg(Color::Cyan),
+                    ),
                 ])
             })
             .collect()
