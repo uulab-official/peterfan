@@ -240,6 +240,15 @@ enum DaemonAction {
     Reload,
     /// Tell the running daemon to stop (fans restored to automatic).
     Stop,
+    /// Print the last N lines of the daemon log (default 40).
+    Log {
+        /// Number of lines to show.
+        #[arg(short = 'n', long, default_value_t = 40)]
+        lines: usize,
+        /// Follow the log continuously (like tail -f). Press Ctrl-C to stop.
+        #[arg(short = 'f', long)]
+        follow: bool,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -1252,11 +1261,17 @@ fn notify_daemon_reload(json: bool) {
     }
 }
 
+const DAEMON_LOG: &str = "/var/log/peterfand.log";
+
 fn cmd_daemon(json: bool, action: DaemonAction) -> Result<()> {
+    if let DaemonAction::Log { lines, follow } = action {
+        return cmd_daemon_log(json, lines, follow);
+    }
     let (cmd, label) = match &action {
         DaemonAction::Status => ("status", "status"),
         DaemonAction::Reload => ("reload", "reload"),
         DaemonAction::Stop => ("stop", "stop"),
+        DaemonAction::Log { .. } => unreachable!(),
     };
     match peterfan_platform::ipc::send_command(cmd) {
         Some(reply) => {
@@ -1288,6 +1303,54 @@ fn cmd_daemon(json: bool, action: DaemonAction) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn cmd_daemon_log(json: bool, lines: usize, follow: bool) -> Result<()> {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+    let path = std::path::Path::new(DAEMON_LOG);
+    if !path.exists() {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"error": "log file not found", "path": DAEMON_LOG})
+                )?
+            );
+        } else {
+            println!(
+                "  {} log not found at {DAEMON_LOG}\n  (daemon may not be installed as a LaunchDaemon)",
+                "✗".red()
+            );
+        }
+        return Ok(());
+    }
+
+    // Print the last N lines.
+    let content = std::fs::read_to_string(path)?;
+    let all: Vec<&str> = content.lines().collect();
+    let start = all.len().saturating_sub(lines);
+    for line in &all[start..] {
+        println!("{line}");
+    }
+
+    if !follow {
+        return Ok(());
+    }
+
+    // Follow mode: poll for new content by seeking to the current end.
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::End(0))?;
+    println!("--- following {} (Ctrl-C to stop) ---", DAEMON_LOG);
+    loop {
+        let mut new_lines = String::new();
+        BufReader::new(&file).read_line(&mut new_lines).ok();
+        if !new_lines.is_empty() {
+            print!("{new_lines}");
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

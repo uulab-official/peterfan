@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.29.0] — `peterfan daemon log` — tail the fan-control daemon log
+
+### Added
+- **`peterfan daemon log`** — print the last 40 lines of `/var/log/peterfand.log`
+  (the LaunchDaemon's stdout). `-n N` to change line count; `-f`/`--follow` for
+  continuous tailing (Ctrl-C to stop). Ideal for diagnosing fan-curve decisions
+  and IPC commands.
+
 ## [0.28.9] — `peterfan config --get` for reading single config values
 
 ### Added
