@@ -343,7 +343,8 @@ fn control_loop(
             } else if let Some(d) = state.held_duty {
                 (d, format!("hold:{d}%"))
             } else {
-                (profile.default_curve().duty_at(hottest), profile.as_str().into())
+                // Use config.curve_for() so Profile::Custom resolves to the user-defined curve.
+                (state.config.curve_for(profile).duty_at(hottest), profile.as_str().into())
             };
             for id in fan_ids {
                 provider.set_fan_duty(id, duty)?;

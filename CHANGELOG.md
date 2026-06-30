@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] — 사용자 정의 팬 곡선 (Custom Curve)
+
+### Added
+- **`peterfan profile create <name> --points "30:20,60:50,80:90,90:100"`**
+  — 온도:duty 쌍으로 커스텀 팬 곡선을 config 파일에 저장. 이름이 `custom`이면
+  `profile = "custom"` 기본 슬롯에, 다른 이름이면 named curve로 저장.
+- **`peterfan profile delete <name>`** — 커스텀 곡선 삭제.
+- **`peterfan profile list`** — 정의된 커스텀 곡선 목록 출력.
+- **Config `[custom_curve]` 섹션** — TOML에서 직접 정의 가능:
+  ```toml
+  [custom_curve]
+  points = [[30, 20], [60, 50], [80, 90], [90, 100]]
+  ```
+- **`[named_curves.<name>]` 섹션** — rules에서 이름으로 참조 가능한 추가 곡선.
+- **데몬 `Profile::Custom` 실제 적용** — `config.curve_for()` 사용으로
+  custom 프로파일 선택 시 사용자 정의 곡선이 실제로 적용됨.
+
 ## [1.1.0] — 메뉴바 우클릭 네이티브 컨텍스트 메뉴
 
 ### Added

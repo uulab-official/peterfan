@@ -97,10 +97,14 @@ enum Command {
         #[command(subcommand)]
         action: FanAction,
     },
-    /// List profiles, or preview/apply one: `peterfan profile gaming`.
+    /// List profiles or apply one. Subcommands: `create`, `delete`.
+    /// With no subcommand and no name, lists all profiles.
+    #[command(alias = "profiles")]
     Profile {
-        /// Profile name (silent, balanced, gaming, performance, maximum).
+        /// Profile name (silent, balanced, gaming, performance, maximum, custom).
         name: Option<String>,
+        #[command(subcommand)]
+        sub: Option<ProfileAction>,
     },
     /// Show a profile's fan curve as a table and ASCII plot.
     Curve {
@@ -192,6 +196,26 @@ enum Command {
     },
     /// Check for a newer version on GitHub.
     Update,
+}
+
+#[derive(Subcommand, Clone)]
+enum ProfileAction {
+    /// Define or update a custom fan curve.
+    /// Points are <temp_c>:<duty_pct> pairs, e.g. "30:20,60:50,80:90,90:100".
+    Create {
+        /// Name for the curve (use "custom" for the default custom slot, or any
+        /// identifier for a named curve usable in rules).
+        name: String,
+        /// Curve definition: comma-separated temp:duty pairs.
+        #[arg(long, short)]
+        points: String,
+    },
+    /// Remove a custom curve by name.
+    Delete {
+        name: String,
+    },
+    /// List all custom curves defined in the config.
+    List,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy)]
@@ -341,7 +365,13 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Temps => cmd_temps(provider(mock).as_ref(), json),
         Command::Fans => cmd_fans(provider(mock).as_ref(), json),
         Command::Fan { action } => cmd_fan(provider(mock).as_ref(), action, json),
-        Command::Profile { name } => cmd_profile(provider(mock).as_ref(), name, json),
+        Command::Profile { name, sub } => {
+            if let Some(action) = sub {
+                cmd_profile_action(json, action)
+            } else {
+                cmd_profile(provider(mock).as_ref(), name, json)
+            }
+        }
         Command::Curve { name } => cmd_curve(name, json),
         Command::Hardware => cmd_hardware(provider(mock).as_ref(), json),
         Command::Doctor => cmd_doctor(mock, json),
@@ -2709,6 +2739,111 @@ fn is_elevated() -> bool {
 #[cfg(not(unix))]
 fn is_elevated() -> bool {
     false
+}
+
+// ---------------------------------------------------------------------------
+// `peterfan profile create/delete/list` — custom fan curves
+// ---------------------------------------------------------------------------
+
+fn cmd_profile_action(json: bool, action: ProfileAction) -> Result<()> {
+    use peterfan_core::config::CustomCurveConfig;
+    use peterfan_core::curve::CurvePoint;
+
+    match action {
+        ProfileAction::Create { name, points } => {
+            // Parse "30:20,60:50,80:90,90:100"
+            let raw: Vec<[f32; 2]> = points
+                .split(',')
+                .map(|s| {
+                    let s = s.trim();
+                    let (t, d) = s.split_once(':')
+                        .ok_or_else(|| anyhow::anyhow!("invalid point '{s}' — use temp:duty"))?;
+                    let temp: f32 = t.trim().parse().map_err(|_| anyhow::anyhow!("bad temp '{}'", t.trim()))?;
+                    let duty: f32 = d.trim().parse().map_err(|_| anyhow::anyhow!("bad duty '{}'", d.trim()))?;
+                    Ok::<_, anyhow::Error>([temp, duty])
+                })
+                .collect::<Result<_>>()?;
+
+            if raw.len() < 2 {
+                anyhow::bail!("a curve needs at least 2 points");
+            }
+            // Validate by building a FanCurve.
+            let pts: Vec<CurvePoint> = raw.iter().map(|&[t, d]| CurvePoint::new(t, d as u8)).collect();
+            peterfan_core::curve::FanCurve::new(pts)
+                .map_err(|e| anyhow::anyhow!("invalid curve: {e}"))?;
+
+            let curve = CustomCurveConfig { points: raw.clone() };
+            let mut cfg = peterfan_platform::config::load();
+
+            if name == "custom" {
+                cfg.custom_curve = Some(curve);
+            } else {
+                cfg.named_curves.insert(name.clone(), curve);
+            }
+            let path = peterfan_platform::config::save(&cfg)
+                .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+
+            if !json {
+                println!(
+                    "  {} curve '{}' saved ({} points)  ({})",
+                    "✓".green(),
+                    name.bold(),
+                    raw.len(),
+                    path.display()
+                );
+                println!("  Points: {}", raw.iter().map(|&[t, d]| format!("{t:.0}°C→{d:.0}%")).collect::<Vec<_>>().join("  "));
+                println!("  Use with: {}", format!("peterfan config --set profile {name}").cyan());
+            }
+            notify_daemon_reload(json);
+        }
+
+        ProfileAction::Delete { name } => {
+            let mut cfg = peterfan_platform::config::load();
+            if name == "custom" {
+                if cfg.custom_curve.is_none() {
+                    anyhow::bail!("no custom curve defined");
+                }
+                cfg.custom_curve = None;
+            } else if cfg.named_curves.remove(&name).is_none() {
+                anyhow::bail!("no named curve '{}' found", name);
+            }
+            peterfan_platform::config::save(&cfg)
+                .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+            if !json {
+                println!("  {} curve '{}' removed", "✓".green(), name.bold());
+            }
+            notify_daemon_reload(json);
+        }
+
+        ProfileAction::List => {
+            let cfg = peterfan_platform::config::load();
+            if json {
+                let mut out = serde_json::json!({});
+                if let Some(cc) = &cfg.custom_curve {
+                    out["custom"] = serde_json::json!(cc.points);
+                }
+                for (k, v) in &cfg.named_curves {
+                    out[k] = serde_json::json!(v.points);
+                }
+                println!("{}", serde_json::to_string_pretty(&out)?);
+                return Ok(());
+            }
+            println!("{}", render::heading("Custom Curves"));
+            if cfg.custom_curve.is_none() && cfg.named_curves.is_empty() {
+                println!("  (none — use `peterfan profile create <name> --points \"30:20,60:50,...\"`)");
+                return Ok(());
+            }
+            if let Some(cc) = &cfg.custom_curve {
+                let pts_str = cc.points.iter().map(|&[t, d]| format!("{t:.0}°C→{d:.0}%")).collect::<Vec<_>>().join("  ");
+                println!("  {} custom  {}", "●".cyan(), pts_str.dimmed());
+            }
+            for (name, cc) in &cfg.named_curves {
+                let pts_str = cc.points.iter().map(|&[t, d]| format!("{t:.0}°C→{d:.0}%")).collect::<Vec<_>>().join("  ");
+                println!("  {} {:<12}  {}", "●".cyan(), name.bold(), pts_str.dimmed());
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

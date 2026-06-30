@@ -5,9 +5,47 @@
 //! (`peterfan_platform::config`), so `core` stays free of filesystem and
 //! OS-specific path logic.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
+use crate::curve::{CurvePoint, FanCurve};
 use crate::profile::Profile;
+
+/// A single control point as stored in config TOML: `[temp_c, duty_percent]`.
+type RawPoint = [f32; 2];
+
+/// A user-defined fan curve stored in the config file.
+///
+/// ```toml
+/// [custom_curve]
+/// points = [[30, 20], [60, 50], [80, 90], [90, 100]]
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomCurveConfig {
+    pub points: Vec<RawPoint>,
+}
+
+impl CustomCurveConfig {
+    /// Convert raw points into a validated [`FanCurve`], if valid.
+    pub fn to_fan_curve(&self) -> Option<FanCurve> {
+        let pts: Vec<CurvePoint> = self
+            .points
+            .iter()
+            .map(|&[t, d]| CurvePoint::new(t, d.min(100.0) as u8))
+            .collect();
+        FanCurve::new(pts).ok()
+    }
+}
+
+/// Named user-defined curves — each key is the curve name, usable as a profile
+/// name in rules (e.g. `profile = "work"`).
+///
+/// ```toml
+/// [named_curves.work]
+/// points = [[30, 20], [55, 40], [75, 80], [88, 100]]
+/// ```
+pub type NamedCurves = BTreeMap<String, CustomCurveConfig>;
 
 /// PeterFan settings, with sensible defaults for every field. Missing fields in
 /// a partial config file fall back to [`Config::default`].
@@ -22,6 +60,12 @@ pub struct Config {
     pub critical_temp_c: f32,
     /// Automation rules, evaluated in order by the daemon (first match wins).
     pub rules: Vec<Rule>,
+    /// User-defined curve for `profile = "custom"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_curve: Option<CustomCurveConfig>,
+    /// Named user-defined curves; keys are valid profile names in rules.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub named_curves: NamedCurves,
 }
 
 impl Default for Config {
@@ -31,6 +75,8 @@ impl Default for Config {
             interval_secs: 2,
             critical_temp_c: 90.0,
             rules: Vec::new(),
+            custom_curve: None,
+            named_curves: BTreeMap::new(),
         }
     }
 }
@@ -146,6 +192,32 @@ impl Config {
             .iter()
             .find(|r| r.condition().is_some_and(|c| c.matches(ctx)))
             .map(|r| r.profile)
+    }
+
+    /// Resolve a fan curve for `profile`, using the config's `custom_curve`
+    /// when the profile is `Custom` and a user curve is defined.
+    /// Falls back to the profile's built-in default curve.
+    pub fn curve_for(&self, profile: Profile) -> FanCurve {
+        if profile == Profile::Custom {
+            if let Some(cc) = &self.custom_curve {
+                if let Some(curve) = cc.to_fan_curve() {
+                    return curve;
+                }
+            }
+        }
+        profile.default_curve()
+    }
+
+    /// Look up a named custom curve by name, for use in rules or display.
+    /// Returns `None` if no such curve is defined.
+    pub fn named_curve(&self, name: &str) -> Option<FanCurve> {
+        self.named_curves.get(name)?.to_fan_curve()
+    }
+
+    /// Check whether a string is a valid profile reference — either a built-in
+    /// profile name or a named custom curve in this config.
+    pub fn is_valid_profile_ref(&self, name: &str) -> bool {
+        Profile::parse(name).is_some() || self.named_curves.contains_key(name)
     }
 }
 
