@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.0] — Automation rules
+
+### Added
+- **Automation rules** in the daemon: switch fan profile automatically by power
+  source, temperature, or time of day. Configure in the TOML config:
+  ```toml
+  [[rules]]
+  when = "on_battery"      # on_ac | on_battery | cpu_above:85 | time:22-7
+  profile = "silent"
+  ```
+  Conditions are evaluated in order (first match wins); falls back to the base
+  profile. The daemon reads power state and the local hour each tick.
+- IPC gained `rules` (hand control back to automation) and `status` now reports
+  the mode (`auto`/`manual`/`rules`). A manual `profile` over IPC overrides the
+  rules until `rules`/`auto`. `peterfan config` lists the rules.
+
 ## [0.18.0] — Local HTTP API (`serve`)
 
 ### Added
@@ -314,7 +330,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.19.0
 [0.18.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.18.0
 [0.17.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.17.0
 [0.16.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.16.0

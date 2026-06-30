@@ -385,6 +385,15 @@ fn cmd_config(json: bool, init: bool) -> Result<()> {
     print_kv("Profile", cfg.profile.as_str());
     print_kv("Interval", &format!("{}s", cfg.interval_secs));
     print_kv("Critical", &format!("{:.0}°C", cfg.critical_temp_c));
+    if cfg.rules.is_empty() {
+        print_kv("Rules", "(none)");
+    } else {
+        println!("  {}", "Rules:".dimmed());
+        for r in &cfg.rules {
+            let ok = if r.condition().is_some() { "" } else { "  ⚠ invalid" };
+            println!("    {:<16} → {}{}", r.when, r.profile.as_str(), ok.yellow());
+        }
+    }
     Ok(())
 }
 

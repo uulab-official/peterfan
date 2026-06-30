@@ -134,6 +134,21 @@ peterfan config --init   # create ~/.config/peterfan/config.toml
 The config (`profile`, `interval_secs`, `critical_temp_c`) supplies defaults for
 `--watch` and the `peterfand` daemon.
 
+**Automation rules** let the daemon switch profile by condition (first match
+wins, else the base profile):
+
+```toml
+[[rules]]
+when = "cpu_above:85"    # on_ac | on_battery | cpu_above:<°C> | time:<start>-<end>
+profile = "maximum"
+[[rules]]
+when = "on_battery"
+profile = "silent"
+```
+
+A manual choice over the daemon's IPC (or the menu-bar buttons) overrides the
+rules until you send `rules` (or `auto`).
+
 ### `serve` — local HTTP API
 
 Expose metrics (and fan control) as a localhost JSON API for integrations
