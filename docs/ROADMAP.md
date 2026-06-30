@@ -48,12 +48,18 @@ then richer surfaces. Versions are goals, not promises.
 - [ ] CPU/GPU **die** temps on Apple Silicon via the IOHID thermal API
 - [ ] Surface SMC **power** (system total W) in the metrics model
 
-## v1.0 — Control & Windows
+## v0.9 — Fan control (current)
 
-- [ ] **Fan control** (auto / manual / fixed RPM) via SMC writes, behind the
-      safety model (restore-on-exit, critical-temp ramp) — confirmed possible
-      on this hardware (cf. Macs Fan Control)
+- [x] **Fan control on macOS** via SMC writes: `fan set <pct>` / `fan auto`
+      (requires `sudo`); duty mapped onto each fan's `[min, max]` RPM
+- [ ] `peterfan-daemon` — privileged helper so control works without `sudo`,
+      with **restore-on-exit** and a **critical-temp force-ramp** watchdog
+- [ ] Fan curves applied continuously (not just one-shot)
+
+## v1.0 — Control depth & Windows
+
 - [ ] **Windows backend** — temps/fans via EC / LibreHardwareMonitor-style access
+- [ ] CPU/GPU die temps on Apple Silicon (IOHID); surface SMC power
 - [ ] `--watch` live refresh + TOML config (default profile, startup, alerts)
 - [ ] `peterfan-daemon` — privileged control service + safety watchdog
       (restore-on-exit, critical-temp force ramp)

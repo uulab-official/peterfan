@@ -59,11 +59,17 @@ pub trait HardwareProvider: Send + Sync {
         })
     }
 
-    /// Drive a fan to `duty_percent` (`0..=100`).
+    /// Drive a fan to `duty_percent` (`0..=100`), forcing manual control.
     ///
     /// Defaults to [`CoreError::Unsupported`](crate::error::CoreError::Unsupported)
-    /// so read-only backends get correct behavior for free.
+    /// so read-only backends get correct behavior for free. Forced control
+    /// persists until [`set_fan_auto`](Self::set_fan_auto) is called.
     fn set_fan_duty(&self, _fan_id: &str, _duty_percent: u8) -> Result<()> {
+        Err(crate::error::CoreError::Unsupported("fan control".into()))
+    }
+
+    /// Return a fan to automatic (OS-managed) control.
+    fn set_fan_auto(&self, _fan_id: &str) -> Result<()> {
         Err(crate::error::CoreError::Unsupported("fan control".into()))
     }
 }

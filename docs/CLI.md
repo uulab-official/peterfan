@@ -80,6 +80,20 @@ Detected machine: CPU, GPU, motherboard, memory, OS. On macOS this is **real**
 peterfan hardware
 ```
 
+### `fan` — control fans (macOS)
+
+Force fan speed or restore automatic control. **Requires `sudo`** (SMC writes
+are privileged); without it you get a clear permission error. Forced control
+persists until `fan auto` or a reboot.
+
+```bash
+sudo peterfan fan set 60          # force all controllable fans to 60%
+sudo peterfan fan set 100 --fan 0 # force only fan 0 to 100%
+sudo peterfan fan auto            # restore OS-managed control
+```
+
+Duty is mapped onto each fan's real `[min, max]` RPM range and clamped.
+
 ### `profile [name]`
 
 With no name, lists the built-in profiles. With a name

@@ -160,6 +160,18 @@ impl HardwareProvider for MockProvider {
         fan.duty = duty_percent.min(100);
         Ok(())
     }
+
+    fn set_fan_auto(&self, fan_id: &str) -> Result<()> {
+        // The simulated machine's "auto" is a nominal idle duty.
+        let mut state = self.state.lock().expect("mock state poisoned");
+        let fan = state
+            .fans
+            .iter_mut()
+            .find(|f| f.id == fan_id)
+            .ok_or_else(|| CoreError::NotFound(format!("fan id '{fan_id}'")))?;
+        fan.duty = 40;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

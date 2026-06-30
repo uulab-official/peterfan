@@ -79,6 +79,11 @@ enum Command {
     Temps,
     /// Fans and their current speeds.
     Fans,
+    /// Control fans: `peterfan fan set 60` (forced) or `peterfan fan auto`.
+    Fan {
+        #[command(subcommand)]
+        action: FanAction,
+    },
     /// List profiles, or preview/apply one: `peterfan profile gaming`.
     Profile {
         /// Profile name (silent, balanced, gaming, performance, maximum).
@@ -93,6 +98,32 @@ enum Command {
     Hardware,
     /// Diagnose the active backends, capabilities, and privileges.
     Doctor,
+}
+
+#[derive(Subcommand)]
+enum FanAction {
+    /// Force fan(s) to a duty cycle (0-100%). Persists until `fan auto`.
+    Set {
+        /// Duty cycle percentage (0-100).
+        percent: u8,
+        /// Target a single fan by index (default: all controllable fans).
+        #[arg(long)]
+        fan: Option<usize>,
+    },
+    /// Restore automatic (OS-managed) fan control.
+    Auto {
+        /// Target a single fan by index (default: all controllable fans).
+        #[arg(long)]
+        fan: Option<usize>,
+    },
+}
+
+impl FanAction {
+    fn fan_index(&self) -> Option<usize> {
+        match self {
+            FanAction::Set { fan, .. } | FanAction::Auto { fan, .. } => *fan,
+        }
+    }
 }
 
 fn main() {
@@ -117,6 +148,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::System => cmd_system(mock, json),
         Command::Temps => cmd_temps(provider(mock).as_ref(), json),
         Command::Fans => cmd_fans(provider(mock).as_ref(), json),
+        Command::Fan { action } => cmd_fan(provider(mock).as_ref(), action, json),
         Command::Profile { name } => cmd_profile(provider(mock).as_ref(), name, json),
         Command::Curve { name } => cmd_curve(name, json),
         Command::Hardware => cmd_hardware(provider(mock).as_ref(), json),
@@ -483,6 +515,75 @@ fn cmd_fans(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Result<()> {
+    if !provider.capabilities().control_fans {
+        anyhow::bail!(
+            "the '{}' backend can't control fans (no SMC/EC write support here)",
+            provider.name()
+        );
+    }
+    let fans = provider.fans().unwrap_or_default();
+    let targets: Vec<Fan> = match action.fan_index() {
+        Some(idx) => fans
+            .into_iter()
+            .enumerate()
+            .filter(|(i, f)| *i == idx && f.controllable)
+            .map(|(_, f)| f)
+            .collect(),
+        None => fans.into_iter().filter(|f| f.controllable).collect(),
+    };
+    if targets.is_empty() {
+        anyhow::bail!("no matching controllable fan");
+    }
+
+    match action {
+        FanAction::Set { percent, .. } => {
+            let pct = percent.min(100);
+            for f in &targets {
+                provider.set_fan_duty(&f.id, pct)?;
+            }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "action": "set", "duty_percent": pct,
+                        "fans": targets.iter().map(|f| &f.label).collect::<Vec<_>>(),
+                    }))?
+                );
+            } else {
+                println!(
+                    "Forced {} to {pct}%.",
+                    targets.iter().map(|f| f.label.as_str()).collect::<Vec<_>>().join(", ")
+                );
+                println!(
+                    "  {}",
+                    "⚠ fans stay forced until you run `peterfan fan auto`".yellow()
+                );
+            }
+        }
+        FanAction::Auto { .. } => {
+            for f in &targets {
+                provider.set_fan_auto(&f.id)?;
+            }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "action": "auto",
+                        "fans": targets.iter().map(|f| &f.label).collect::<Vec<_>>(),
+                    }))?
+                );
+            } else {
+                println!(
+                    "Restored {} to automatic control.",
+                    targets.iter().map(|f| f.label.as_str()).collect::<Vec<_>>().join(", ")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_hardware(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
     let info = provider.hardware_info()?;
     if json {
@@ -542,6 +643,10 @@ fn cmd_profile(provider: &dyn HardwareProvider, name: Option<String>, json: bool
                 profile.as_str().bold(),
                 temp,
                 applied.join(", ")
+            );
+            println!(
+                "  {}",
+                "⚠ fans stay forced until you run `peterfan fan auto`".yellow()
             );
         }
     } else if json {

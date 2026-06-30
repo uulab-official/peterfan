@@ -1974,7 +1974,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "peterfan-cli"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1987,7 +1987,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-core"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -1995,7 +1995,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-menubar"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "peterfan-core",
  "peterfan-platform",
@@ -2007,7 +2007,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-platform"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "battery",
  "libc",
@@ -2018,7 +2018,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-tui"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "peterfan-core",

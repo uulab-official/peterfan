@@ -47,8 +47,9 @@ impl HardwareProvider for MacosProvider {
         Capabilities {
             read_temps: self.has_smc,
             read_fans: self.has_smc,
-            // SMC writes (fan control) are a separate, safety-gated milestone.
-            control_fans: false,
+            // Fan control via SMC writes is implemented; the write itself is
+            // privileged (returns PermissionDenied without root).
+            control_fans: self.has_smc,
         }
     }
 
@@ -138,11 +139,52 @@ impl HardwareProvider for MacosProvider {
                 min_rpm: Some(f.min.0.round() as u32),
                 max_rpm: Some(f.max.0.round() as u32),
                 duty_percent: Some(f.percentage().clamp(0.0, 100.0).round() as u8),
-                // Reading only for now; SMC write/control is a later milestone.
-                controllable: false,
+                controllable: self.has_smc,
             });
         }
         Ok(out)
+    }
+
+    fn set_fan_duty(&self, fan_id: &str, duty_percent: u8) -> Result<()> {
+        let idx = fan_index(fan_id)?;
+        // Map duty% onto the fan's real [min, max] RPM range.
+        let mut smc = Smc::connect().map_err(|e| CoreError::Hardware(format!("SMC: {e:?}")))?;
+        let fan = smc
+            .fans()
+            .map_err(|e| CoreError::Hardware(format!("SMC fans: {e:?}")))?
+            .nth(idx as usize)
+            .and_then(|f| f.ok())
+            .ok_or_else(|| CoreError::NotFound(format!("fan '{fan_id}'")))?;
+        let (min, max) = (fan.min.0, fan.max.0);
+        let rpm = (min + (duty_percent as f32 / 100.0) * (max - min)).clamp(min, max);
+
+        crate::smc_write::set_forced(idx, rpm).map_err(map_fan_err)
+    }
+
+    fn set_fan_auto(&self, fan_id: &str) -> Result<()> {
+        let idx = fan_index(fan_id)?;
+        crate::smc_write::set_auto(idx).map_err(map_fan_err)
+    }
+}
+
+/// Parse `"fan.N"` (or a bare index) into a fan index.
+fn fan_index(fan_id: &str) -> Result<u8> {
+    fan_id
+        .rsplit('.')
+        .next()
+        .and_then(|s| s.parse::<u8>().ok())
+        .filter(|&n| n < 10)
+        .ok_or_else(|| CoreError::NotFound(format!("fan id '{fan_id}'")))
+}
+
+fn map_fan_err(e: crate::smc_write::FanCtlError) -> CoreError {
+    use crate::smc_write::FanCtlError as F;
+    match e {
+        F::NotPrivileged => CoreError::PermissionDenied(
+            "SMC fan control requires root — re-run with `sudo`".into(),
+        ),
+        F::Open => CoreError::Hardware("could not open AppleSMC".into()),
+        F::Smc(code) => CoreError::Hardware(format!("SMC write failed (code {code})")),
     }
 }
 

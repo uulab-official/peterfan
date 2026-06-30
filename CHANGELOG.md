@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] — Fan control
+
+### Added
+- **Fan control on macOS** via SMC writes. New commands:
+  - `peterfan fan set <pct> [--fan N]` — force fan(s) to a duty cycle.
+  - `peterfan fan auto [--fan N]` — restore automatic (OS-managed) control.
+  `peterfan profile <name>` now also applies on macOS.
+- Implemented a minimal SMC write client (`smc_write`, IOKit) since `macsmc` is
+  read-only. Duty % is mapped onto each fan's real `[min, max]` RPM range.
+
+### Notes
+- SMC writes are **privileged**: without root the kernel returns
+  `kIOReturnNotPrivileged`, surfaced as a clear "re-run with `sudo`" error.
+  Use `sudo peterfan fan set 60`.
+- **Safety**: forced control persists until `fan auto` (or reboot) — the CLI
+  warns about this on every `set`. Target RPM is clamped to the fan's rated
+  range. A daemon with restore-on-exit / critical-temp ramp is future work.
+
 ## [0.8.1] — App icon
 
 ### Added
@@ -142,7 +160,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.9.0
 [0.8.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.8.1
 [0.8.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.8.0
 [0.7.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.7.1

@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.8.1.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.9.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
@@ -35,7 +35,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 | **macOS temperatures & fan RPM** (SMC via `macsmc`) | ✅ real (Apple Silicon: airflow/palm-rest/etc.; CPU/GPU die temps need IOHID — planned) |
 | Windows temperature / fan reading (EC) | 🚧 planned |
 | GPU utilization | 🚧 planned |
-| Fan **control** (SMC writes) | 🚧 planned (reading works; control is next) |
+| Fan **control** on macOS (`fan set` / `fan auto` via SMC writes) | ✅ implemented (requires `sudo`) |
 | CLI — `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `system`, `temps`, `fans`, `profile`, `curve`, `hardware`, `doctor` | ✅ runnable |
 | TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes | ✅ runnable |
 | **Menu-bar app** — live CPU in the menu bar + a click-to-open popover dashboard (WebView): CPU/memory/storage/temps/fans/battery/network | ✅ runnable |
