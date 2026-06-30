@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.23.0] — Critical-temperature alerts
+
+### Added
+- The daemon now posts a **desktop notification** (macOS, via `osascript`) when
+  the hottest temperature crosses the critical threshold — and another when it
+  returns to normal (5°C hysteresis). Pairs with the existing force-to-100%
+  safety override.
+
 ## [0.22.0] — Benchmark / stress mode
 
 ### Added
@@ -353,7 +361,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.23.0
 [0.22.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.22.0
 [0.21.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.21.0
 [0.20.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.20.0

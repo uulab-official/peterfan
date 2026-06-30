@@ -186,6 +186,7 @@ fn control_loop(
     shared: &Arc<Mutex<State>>,
 ) -> Result<()> {
     let mut auto_applied = false;
+    let mut was_critical = false;
     while !STOP.load(Ordering::Relaxed) {
         monitor.refresh();
         let state = shared.lock().expect("state poisoned").clone();
@@ -232,6 +233,18 @@ fn control_loop(
             }
             let src = if state.manual { "manual" } else { "auto-rule" };
             println!("peterfand: {hottest:.0}°C -> {duty}% ({why}) [{src} ac={on_ac}]");
+
+            // Edge-triggered critical-temperature alert (with hysteresis).
+            if hottest >= critical && !was_critical {
+                notify(
+                    "PeterFan — critical temperature",
+                    &format!("{hottest:.0}°C ≥ {critical:.0}°C · fans forced to 100%"),
+                );
+                was_critical = true;
+            } else if hottest < critical - 5.0 && was_critical {
+                notify("PeterFan", &format!("Temperature back to normal ({hottest:.0}°C)"));
+                was_critical = false;
+            }
         }
 
         if once {
@@ -316,6 +329,29 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
         }
         _ => "error: unknown command".into(),
     }
+}
+
+/// Post a desktop notification (best-effort).
+#[cfg(target_os = "macos")]
+fn notify(title: &str, message: &str) {
+    let script = format!(
+        "display notification {} with title {}",
+        applescript_quote(message),
+        applescript_quote(title)
+    );
+    let _ = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .status();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn notify(_title: &str, _message: &str) {}
+
+/// Quote a string as an AppleScript string literal.
+#[cfg(target_os = "macos")]
+fn applescript_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Local hour (0–23) for time-based automation rules.
