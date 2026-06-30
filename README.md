@@ -23,7 +23,7 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 
 ## Status
 
-⚠️ **Pre-alpha — v0.12.0.** This is an early, honest foundation:
+⚠️ **Pre-alpha — v0.13.0.** This is an early, honest foundation:
 
 | Area | State |
 | --- | --- |
@@ -38,8 +38,8 @@ No ads. No bundleware. No vendor lock-in. MIT-licensed.
 | Fan **control** on macOS (`fan set` / `fan auto` via SMC writes) | ✅ implemented (requires `sudo`) |
 | CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`, global `--watch` & `--json` | ✅ runnable |
 | TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes | ✅ runnable |
-| **Menu-bar app** — live CPU in the menu bar + a click-to-open popover dashboard (WebView): CPU/memory/storage/temps/fans/battery/network | ✅ runnable |
-| **Daemon** (`peterfand`) — continuous curve + restore-on-exit + critical-temp override; LaunchDaemon install | ✅ runnable |
+| **Menu-bar app** — popover dashboard + **profile/Auto control buttons** that drive the daemon over IPC (no sudo) | ✅ runnable |
+| **Daemon** (`peterfand`) — continuous curve + restore-on-exit + critical-temp override + IPC server; LaunchDaemon install | ✅ runnable |
 | Desktop GUI (Tauri), plugins, HTTP API | 🗺️ roadmap |
 
 When a backend can't read real sensors yet, the CLI/TUI **transparently fall

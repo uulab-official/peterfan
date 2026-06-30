@@ -13,6 +13,8 @@
 //! force the simulated one.
 
 pub mod config;
+#[cfg(unix)]
+pub mod ipc;
 pub mod mock;
 pub mod mock_monitor;
 pub mod system;

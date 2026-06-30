@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] — Menu-bar ↔ daemon control (IPC)
+
+### Added
+- **Control buttons in the popover** — Auto / Silent / Balanced / Gaming /
+  Performance / Max. They send a command to the running `peterfand` daemon over
+  a Unix socket, so the menu-bar app (no privileges) can change the fan profile
+  while the root daemon performs the SMC writes — **no per-action sudo**.
+- **`peterfand` IPC server** (`platform::ipc`): line protocol `profile <name>` /
+  `auto` / `ping` / `status` over `/var/run/peterfand.sock` (falls back to
+  `/tmp`). The daemon switches profile / hands fans to the OS live; verified
+  end-to-end. The socket is world-accessible (local-trust convenience).
+
 ## [0.12.0] — Watch mode & config file
 
 ### Added
@@ -218,7 +230,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.13.0
 [0.12.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.12.0
 [0.11.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.11.0
 [0.10.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.10.0

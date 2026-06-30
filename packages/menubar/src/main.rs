@@ -170,6 +170,8 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
                 if let Ok(v) = h.trim().parse::<u32>() {
                     DESIRED_H.store(v, Ordering::Relaxed);
                 }
+            } else if let Some(cmd) = body.strip_prefix("cmd:") {
+                send_daemon_command(cmd);
             }
         })
         .build(&window)
@@ -311,6 +313,23 @@ fn update(app: &mut App) {
     let _ = wv.evaluate_script(&format!("window.__pf&&window.__pf.update({})", payload));
 }
 
+/// Forward a popover control action to the running `peterfand` daemon over its
+/// Unix socket. `cmd` is `auto` or `profile:<name>`. No-op if no daemon.
+#[cfg(unix)]
+fn send_daemon_command(cmd: &str) {
+    use std::io::Write;
+    let line = match cmd.strip_prefix("profile:") {
+        Some(name) => format!("profile {name}\n"),
+        None => format!("{cmd}\n"),
+    };
+    if let Some(mut stream) = peterfan_platform::ipc::connect() {
+        let _ = stream.write_all(line.as_bytes());
+    }
+}
+
+#[cfg(not(unix))]
+fn send_daemon_command(_cmd: &str) {}
+
 #[cfg(target_os = "macos")]
 fn set_menubar_text(tray: &TrayIcon, text: &str) {
     tray.set_title(Some(text));
@@ -398,6 +417,10 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .bar-fill.g{background:var(--g);}.bar-fill.y{background:var(--y);}.bar-fill.r{background:var(--r);}.bar-fill.b{background:var(--accent);}
 .cores{display:flex;align-items:flex-end;gap:2px;height:11px;margin-top:7px;}
 .core{flex:1;background:var(--accent);border-radius:1px;min-height:2px;opacity:.8;}
+.ctl{display:flex;flex-wrap:wrap;gap:5px;padding:9px 15px;border-top:1px solid var(--line);}
+.chip{flex:1 1 28%;background:rgba(255,255,255,.06);border:0;color:var(--text);font:inherit;font-size:10px;font-weight:600;padding:6px 4px;border-radius:7px;cursor:pointer;transition:background .15s;}
+.chip:hover{background:rgba(91,157,255,.28);}
+.chip.auto{background:rgba(48,209,88,.16);color:var(--g);}
 .foot{border-top:1px solid var(--line);padding:3px;}
 .quit{display:block;width:100%;background:transparent;border:0;color:var(--dim);font:inherit;font-size:10.5px;letter-spacing:.02em;padding:8px;border-radius:8px;cursor:pointer;transition:background .15s,color .15s;}
 .quit:hover{background:rgba(255,255,255,.06);color:var(--text);}
@@ -432,6 +455,14 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="content"><div class="head"><span class="name">Network</span><span class="val"></span></div>
 <div class="sub" id="net-sub"></div></div></div>
 
+<div class="ctl">
+<button class="chip auto" onclick="window.ipc.postMessage('cmd:auto')">Auto</button>
+<button class="chip" onclick="window.ipc.postMessage('cmd:profile:silent')">Silent</button>
+<button class="chip" onclick="window.ipc.postMessage('cmd:profile:balanced')">Balanced</button>
+<button class="chip" onclick="window.ipc.postMessage('cmd:profile:gaming')">Gaming</button>
+<button class="chip" onclick="window.ipc.postMessage('cmd:profile:performance')">Perf</button>
+<button class="chip" onclick="window.ipc.postMessage('cmd:profile:maximum')">Max</button>
+</div>
 <div class="foot"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
 </div>
 <script>

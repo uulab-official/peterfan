@@ -74,10 +74,15 @@ then richer surfaces. Versions are goals, not promises.
       daemon & watch read defaults from it
 - [ ] More config (startup, alert thresholds, menu-bar metric choice)
 
+## v0.13 — Menu-bar ↔ daemon IPC (current)
+
+- [x] Popover control buttons (Auto / profiles) drive the daemon over a Unix
+      socket — fan control from the menu bar with no per-action sudo
+- [ ] Reflect live daemon state (active profile / connected) in the popover
+
 ## v1.0 — Control depth & Windows
 
 - [ ] **Windows backend** — temps/fans via EC / LibreHardwareMonitor-style access
-- [ ] Menu-bar app ↔ daemon IPC (switch profile / control from the popover)
 - [ ] Code-signed privileged helper (no-`sudo` install); GPU die temp; SMC power (W)
 - [ ] `peterfan-daemon` — privileged control service + safety watchdog
       (restore-on-exit, critical-temp force ramp)

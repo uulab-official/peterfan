@@ -17,6 +17,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -28,6 +29,15 @@ use peterfan_core::HardwareProvider;
 
 /// Set by the signal handler; the control loop checks it and exits cleanly.
 static STOP: AtomicBool = AtomicBool::new(false);
+
+/// Live control state, shared between the control loop and the IPC server.
+#[derive(Clone)]
+struct State {
+    /// Active profile whose curve is applied.
+    profile: Profile,
+    /// When true, fans are handed back to the OS (no curve applied).
+    auto: bool,
+}
 
 #[derive(Parser)]
 #[command(
@@ -72,7 +82,6 @@ fn run(cli: Cli) -> Result<()> {
     };
     let interval = cli.interval.unwrap_or(cfg.interval_secs).max(1);
     let critical = cli.critical.unwrap_or(cfg.critical_temp_c);
-    let curve = profile.default_curve();
 
     let provider: Box<dyn HardwareProvider> = if cli.mock {
         peterfan_platform::mock()
@@ -98,6 +107,17 @@ fn run(cli: Cli) -> Result<()> {
 
     install_signal_handlers();
 
+    let shared = Arc::new(Mutex::new(State {
+        profile,
+        auto: false,
+    }));
+
+    // IPC server (so the menu-bar app can switch profile / go auto without
+    // root). Not started for one-shot runs.
+    if !cli.once {
+        spawn_ipc_server(Arc::clone(&shared));
+    }
+
     println!(
         "peterfand: profile={} interval={interval}s critical={critical:.0}°C fans={} backend={}",
         profile.as_str(),
@@ -108,11 +128,15 @@ fn run(cli: Cli) -> Result<()> {
     // Run the control loop, then ALWAYS restore automatic control — even on a
     // panic — so we never leave the fans forced.
     let loop_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        control_loop(provider.as_ref(), &curve, &fan_ids, interval, critical, cli.once)
+        control_loop(provider.as_ref(), &fan_ids, interval, critical, cli.once, &shared)
     }));
 
     for id in &fan_ids {
         let _ = provider.set_fan_auto(id);
+    }
+    #[cfg(unix)]
+    for p in peterfan_platform::ipc::PATHS {
+        let _ = std::fs::remove_file(p);
     }
     println!("peterfand: restored {} fan(s) to automatic control", fan_ids.len());
 
@@ -124,26 +148,38 @@ fn run(cli: Cli) -> Result<()> {
 
 fn control_loop(
     provider: &dyn HardwareProvider,
-    curve: &peterfan_core::curve::FanCurve,
     fan_ids: &[String],
     interval: u64,
     critical: f32,
     once: bool,
+    shared: &Arc<Mutex<State>>,
 ) -> Result<()> {
+    let mut auto_applied = false;
     while !STOP.load(Ordering::Relaxed) {
-        let temps = provider.temperatures().unwrap_or_default();
-        let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+        let state = shared.lock().expect("state poisoned").clone();
 
-        let (duty, why) = if hottest >= critical {
-            (100u8, "CRITICAL")
+        if state.auto {
+            if !auto_applied {
+                for id in fan_ids {
+                    provider.set_fan_auto(id)?;
+                }
+                println!("peterfand: auto (OS-managed)");
+                auto_applied = true;
+            }
         } else {
-            (curve.duty_at(hottest), "curve")
-        };
-
-        for id in fan_ids {
-            provider.set_fan_duty(id, duty)?;
+            auto_applied = false;
+            let temps = provider.temperatures().unwrap_or_default();
+            let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+            let (duty, why) = if hottest >= critical {
+                (100u8, "CRITICAL")
+            } else {
+                (state.profile.default_curve().duty_at(hottest), state.profile.as_str())
+            };
+            for id in fan_ids {
+                provider.set_fan_duty(id, duty)?;
+            }
+            println!("peterfand: {hottest:.0}°C -> {duty}% ({why})");
         }
-        println!("peterfand: {hottest:.0}°C -> {duty}% ({why})");
 
         if once {
             break;
@@ -156,6 +192,64 @@ fn control_loop(
         }
     }
     Ok(())
+}
+
+/// Accept IPC connections and apply commands to the shared state.
+#[cfg(unix)]
+fn spawn_ipc_server(shared: Arc<Mutex<State>>) {
+    use std::io::{BufRead, BufReader, Write};
+
+    let (listener, path) = match peterfan_platform::ipc::bind_listener() {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("peterfand: IPC disabled ({e})");
+            return;
+        }
+    };
+    println!("peterfand: listening on {}", path.display());
+
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut stream) = conn else { continue };
+            let Ok(clone) = stream.try_clone() else { continue };
+            let mut line = String::new();
+            if BufReader::new(clone).read_line(&mut line).is_err() {
+                continue;
+            }
+            let reply = handle_command(line.trim(), &shared);
+            let _ = writeln!(stream, "{reply}");
+        }
+    });
+}
+
+#[cfg(unix)]
+fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
+    let mut parts = line.split_whitespace();
+    match parts.next() {
+        Some("ping") => "ok peterfand".into(),
+        Some("auto") => {
+            shared.lock().expect("state poisoned").auto = true;
+            "ok auto".into()
+        }
+        Some("profile") => match parts.next().and_then(Profile::parse) {
+            Some(p) => {
+                let mut s = shared.lock().expect("state poisoned");
+                s.profile = p;
+                s.auto = false;
+                format!("ok profile {}", p.as_str())
+            }
+            None => "error: unknown profile".into(),
+        },
+        Some("status") => {
+            let s = shared.lock().expect("state poisoned");
+            format!(
+                "ok {} {}",
+                if s.auto { "auto" } else { "curve" },
+                s.profile.as_str()
+            )
+        }
+        _ => "error: unknown command".into(),
+    }
 }
 
 #[cfg(unix)]
