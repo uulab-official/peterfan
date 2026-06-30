@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.27.1] — Fan-control sequence matched to a proven implementation
+
+### Changed
+- Byte-for-byte aligned the Apple Silicon unlock with the known-working
+  reference (agoodkind/macos-smc-fan): after `Ftst = 1` we now wait ~0.5 s for
+  the thermal servo to settle, then poll the mode key for up to ~10 s (was 4 s)
+  until manual mode holds. Target RPM stays a native-endian `flt` (`F0Tg`); mode
+  key casing (`F0Md`/`F0md`) auto-detected.
+- The slow unlock+poll runs **at most once per connection**, so the daemon never
+  burns ~10 s every tick on firmware that ignores manual control.
+- `peterfan fan set N` prints an "Applying…" line so the multi-second unlock
+  isn't mistaken for a hang.
+
+Confirmed against this M3 Max via `doctor`: `F0Md` + `Ftst` keys are present, so
+the sequence is applicable; physical confirmation needs one root run of
+`peterfan fan set N` (it verifies by reading RPM back).
+
 ## [0.27.0] — One-prompt fan-control setup (like Macs Fan Control)
 
 ### Added
@@ -468,7 +485,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.27.1...HEAD
+[0.27.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.27.1
 [0.27.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.27.0
 [0.26.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.26.2
 [0.26.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.26.1

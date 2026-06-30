@@ -198,7 +198,13 @@ fn set_force_bit(conn: &Conn, idx: u8, manual: bool) {
 /// An open SMC user-client connection. **Kept open** for the lifetime of the
 /// owner: on Apple Silicon a forced fan reverts to automatic when the SMC
 /// connection closes, so the controller must hold this open and re-assert.
-pub struct Conn(MachPort);
+pub struct Conn {
+    port: MachPort,
+    /// Whether the slow `Ftst` unlock + poll has already been attempted, so the
+    /// daemon (which re-asserts every tick) doesn't burn ~10s per tick polling
+    /// when this machine's firmware simply ignores manual control.
+    unlock_tried: std::sync::atomic::AtomicBool,
+}
 
 // The handle is a plain mach port (u32); safe to move and to guard with a Mutex.
 unsafe impl Send for Conn {}
@@ -217,7 +223,10 @@ impl Conn {
             if rc != KERN_SUCCESS {
                 return Err(FanCtlError::Open);
             }
-            Ok(Conn(conn))
+            Ok(Conn {
+                port: conn,
+                unlock_tried: std::sync::atomic::AtomicBool::new(false),
+            })
         }
     }
 
@@ -225,7 +234,7 @@ impl Conn {
         let mut osize = size_of::<KeyData>();
         let rc = unsafe {
             IOConnectCallStructMethod(
-                self.0,
+                self.port,
                 KERNEL_INDEX_SMC,
                 input as *const _ as *const c_void,
                 size_of::<KeyData>(),
@@ -290,7 +299,7 @@ impl Conn {
 impl Drop for Conn {
     fn drop(&mut self) {
         unsafe {
-            IOServiceClose(self.0);
+            IOServiceClose(self.port);
         }
     }
 }
@@ -339,10 +348,16 @@ impl Conn {
         let _ = self.write_key(mode_key, &[1u8]);
 
         // 2) If it didn't stick, unlock via Ftst and poll the mode key until it
-        //    holds (thermalmonitord reverts it for the first few seconds).
-        if !self.mode_is_manual(mode_key) {
+        //    holds (thermalmonitord reverts it for the first few seconds). The
+        //    settle delay + poll window match the known-working reference
+        //    implementation (Ftst settle ~0.5s, retry up to ~10s). Done at most
+        //    once per connection so the daemon doesn't poll 10s every tick on
+        //    firmware that ignores manual control.
+        use std::sync::atomic::Ordering;
+        if !self.mode_is_manual(mode_key) && !self.unlock_tried.swap(true, Ordering::Relaxed) {
             let _ = self.write_key(ftst_key(), &[1u8]);
-            for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            for _ in 0..100 {
                 let _ = self.write_key(mode_key, &[1u8]);
                 if self.mode_is_manual(mode_key) {
                     break;
@@ -361,6 +376,9 @@ impl Conn {
         set_force_bit(self, idx, false);
         let r = self.write_key(self.mode_key(idx), &[0u8]);
         let _ = self.write_key(ftst_key(), &[0u8]); // best-effort; absent on M5
+                                                    // Allow a fresh unlock attempt next time control is forced.
+        self.unlock_tried
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         r
     }
 }

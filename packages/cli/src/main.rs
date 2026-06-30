@@ -1247,6 +1247,12 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
             let pct = percent.min(100);
             // RPM before the write, so we can verify the fans actually moved.
             let before: Vec<u32> = targets.iter().map(|f| f.rpm).collect();
+            if !json {
+                println!(
+                    "Applying… {}",
+                    "(unlocking manual control + measuring can take ~10s)".dimmed()
+                );
+            }
             for f in &targets {
                 if let Err(e) = provider.set_fan_duty(&f.id, pct) {
                     if matches!(e, CoreError::PermissionDenied(_)) || !is_root() {
