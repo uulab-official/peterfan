@@ -122,6 +122,11 @@ enum Command {
         #[command(subcommand)]
         action: RuleAction,
     },
+    /// Manage the running peterfand daemon (status / reload / stop).
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
     /// Serve a local JSON HTTP API (`/api/v1/status`, …) for integrations.
     Serve {
         /// Port to listen on (localhost only).
@@ -217,6 +222,16 @@ enum RuleAction {
     Clear,
 }
 
+#[derive(Subcommand, Clone)]
+enum DaemonAction {
+    /// Show the running daemon's current fan-control mode.
+    Status,
+    /// Tell the running daemon to reload its config from disk.
+    Reload,
+    /// Tell the running daemon to stop (fans restored to automatic).
+    Stop,
+}
+
 fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
@@ -272,6 +287,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Doctor => cmd_doctor(mock, json),
         Command::Config { init, set } => cmd_config(json, init, set),
         Command::Rule { action } => cmd_rule(json, action),
+        Command::Daemon { action } => cmd_daemon(json, action),
         Command::Serve { port } => cmd_serve(mock, port),
         Command::Benchmark { secs } => cmd_benchmark(mock, json, secs),
         Command::Completions { shell } => {
@@ -893,6 +909,7 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>) -> Result<()> {
                 p.display()
             );
         }
+        notify_daemon_reload(json);
         return Ok(());
     }
     let cfg = peterfan_platform::config::load();
@@ -995,6 +1012,7 @@ fn cmd_rule(json: bool, action: RuleAction) -> Result<()> {
                     path.display()
                 );
             }
+            notify_daemon_reload(json);
         }
         RuleAction::Remove { index } => {
             if index >= cfg.rules.len() {
@@ -1016,6 +1034,7 @@ fn cmd_rule(json: bool, action: RuleAction) -> Result<()> {
                     path.display()
                 );
             }
+            notify_daemon_reload(json);
         }
         RuleAction::Clear => {
             let count = cfg.rules.len();
@@ -1027,6 +1046,56 @@ fn cmd_rule(json: bool, action: RuleAction) -> Result<()> {
                     "  {} cleared {count} rule(s)  ({})",
                     "✓".green(),
                     path.display()
+                );
+            }
+            notify_daemon_reload(json);
+        }
+    }
+    Ok(())
+}
+
+/// Signal the running daemon to reload its config. Silent if no daemon is up.
+fn notify_daemon_reload(json: bool) {
+    if let Some(reply) = peterfan_platform::ipc::send_command("reload") {
+        if !json {
+            if let Some(rest) = reply.strip_prefix("ok ") {
+                println!("  {} daemon reloaded: {}", "↺".cyan(), rest);
+            }
+        }
+    }
+}
+
+fn cmd_daemon(json: bool, action: DaemonAction) -> Result<()> {
+    let (cmd, label) = match &action {
+        DaemonAction::Status => ("status", "status"),
+        DaemonAction::Reload => ("reload", "reload"),
+        DaemonAction::Stop => ("stop", "stop"),
+    };
+    match peterfan_platform::ipc::send_command(cmd) {
+        Some(reply) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({"reply": reply}))?
+                );
+            } else if let Some(rest) = reply.strip_prefix("ok ") {
+                println!("  {} {}: {}", "✓".green(), label, rest.bold());
+            } else {
+                println!("  {} {reply}", "✗".red());
+            }
+        }
+        None => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"error": "daemon not reachable"})
+                    )?
+                );
+            } else {
+                println!(
+                    "  {} daemon not reachable — run `peterfan install-daemon` first",
+                    "✗".red()
                 );
             }
         }

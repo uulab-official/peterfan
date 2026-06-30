@@ -26,7 +26,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
-use peterfan_core::config::{Config, RuleContext};
+use peterfan_core::config::RuleContext;
 use peterfan_core::profile::Profile;
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
@@ -107,6 +107,9 @@ struct State {
     /// Backend name (e.g. "macos", "mock") — surfaced in IPC replies so the UI
     /// can tell real control from a simulated daemon.
     backend: String,
+    /// Live copy of the config, refreshed by `reload`. The base profile and
+    /// automation rules are read from here each control-loop tick.
+    config: peterfan_core::config::Config,
 }
 
 #[derive(Parser)]
@@ -192,6 +195,7 @@ fn run(cli: Cli) -> Result<()> {
             auto: false,
             manual: false,
             backend: provider.name().to_string(),
+            config: cfg.clone(),
         };
         // Restore the last user-chosen mode so a reboot doesn't reset fan settings.
         if let Some(saved) = load_saved_state() {
@@ -251,7 +255,6 @@ fn run(cli: Cli) -> Result<()> {
         control_loop(
             provider.as_ref(),
             monitor.as_mut(),
-            &cfg,
             profile,
             &fan_ids,
             interval,
@@ -283,7 +286,6 @@ fn run(cli: Cli) -> Result<()> {
 fn control_loop(
     provider: &dyn HardwareProvider,
     monitor: &mut dyn SystemMonitor,
-    cfg: &Config,
     base: Profile,
     fan_ids: &[String],
     interval: u64,
@@ -324,7 +326,7 @@ fn control_loop(
             let profile = if state.manual {
                 state.profile
             } else {
-                cfg.active_profile(&ctx).unwrap_or(base)
+                state.config.active_profile(&ctx).unwrap_or(base)
             };
             // Reflect the effective profile so `status` is accurate.
             shared.lock().expect("state poisoned").profile = profile;
@@ -466,6 +468,19 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 format!("rules:{}", s.profile.as_str())
             };
             format!("ok {mode} ({backend})")
+        }
+        Some("reload") => {
+            let new_cfg = peterfan_platform::config::load();
+            let rules = new_cfg.rules.len();
+            {
+                let mut s = shared.lock().expect("state poisoned");
+                s.config = new_cfg;
+            }
+            format!("ok reloaded ({rules} rules) ({backend})")
+        }
+        Some("stop") => {
+            STOP.store(true, Ordering::Relaxed);
+            format!("ok stopping ({backend})")
         }
         _ => "error: unknown command".into(),
     }

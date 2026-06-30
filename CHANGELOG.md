@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.5] — `peterfan daemon` subcommand + live config reload
+
+### Added
+- **`peterfan daemon status`** — show the running daemon's fan-control mode.
+- **`peterfan daemon reload`** — tell the daemon to re-read its config from
+  disk immediately (new rules and profile default take effect within one tick).
+- **`peterfan daemon stop`** — tell the daemon to shut down gracefully (fans
+  restored to automatic before exit).
+- **`peterfan config --set` and `peterfan rule add/remove/clear`** now
+  automatically send `reload` to a running daemon, so config changes are live
+  without restarting the daemon.
+- Daemon `reload` and `stop` IPC commands added to `peterfand`.
+
 ## [0.28.4] — `peterfan rule` — automation rule management from the CLI
 
 ### Added
