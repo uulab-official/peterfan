@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] — Refined popover
+
+### Changed
+- Made the popover more compact and premium: tighter rows and padding, smaller
+  uppercase section labels, lighter value weight with tabular-figure numerals,
+  thinner bars, and subtler dividers.
+- **The window now sizes itself to the content** — the WebView reports its real
+  height and the window resizes to fit exactly (≈455px, down from 680), so
+  there's no oversized panel or empty space.
+
 ## [0.9.0] — Fan control
 
 ### Added
@@ -160,7 +170,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.9.1
 [0.9.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.9.0
 [0.8.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.8.1
 [0.8.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.8.0

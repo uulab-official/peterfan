@@ -7,7 +7,7 @@
 //! the popover. Runs as an accessory app (no Dock icon). `--mock` uses the
 //! simulated machine.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use tao::dpi::{LogicalSize, PhysicalPosition};
@@ -27,11 +27,17 @@ use peterfan_core::types::Celsius;
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
-const POPOVER_W: f64 = 360.0;
-const POPOVER_H: f64 = 680.0;
+const POPOVER_W: f64 = 348.0;
+/// Initial height; the popover then reports its real content height (below) and
+/// the window is resized to fit exactly.
+const POPOVER_H: f64 = 520.0;
 
 /// Set by the popover's Quit button (via WebView IPC), polled by the loop.
 static QUIT: AtomicBool = AtomicBool::new(false);
+/// Content height (CSS px) reported by the popover; 0 = not yet measured.
+static DESIRED_H: AtomicU32 = AtomicU32::new(0);
+/// Height already applied to the window, to avoid resizing every tick.
+static APPLIED_H: AtomicU32 = AtomicU32::new(0);
 
 struct App {
     monitor: Box<dyn SystemMonitor>,
@@ -91,6 +97,16 @@ fn main() {
             _ => {}
         }
 
+        // Resize the popover window to the height the WebView reported, so it
+        // fits the content exactly (no empty space, no clipping).
+        let desired = DESIRED_H.load(Ordering::Relaxed);
+        if desired > 0 && desired != APPLIED_H.load(Ordering::Relaxed) {
+            if let Some(w) = &app.window {
+                w.set_inner_size(LogicalSize::new(POPOVER_W, desired as f64));
+                APPLIED_H.store(desired, Ordering::Relaxed);
+            }
+        }
+
         while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
             // Left or right (two-finger) click both toggle the popover.
             if let TrayIconEvent::Click {
@@ -147,8 +163,13 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
         .with_html(DASHBOARD_HTML)
         .with_transparent(true)
         .with_ipc_handler(|req| {
-            if req.body() == "quit" {
+            let body = req.body();
+            if body == "quit" {
                 QUIT.store(true, Ordering::Relaxed);
+            } else if let Some(h) = body.strip_prefix("h:") {
+                if let Ok(v) = h.trim().parse::<u32>() {
+                    DESIRED_H.store(v, Ordering::Relaxed);
+                }
             }
         })
         .build(&window)
@@ -359,27 +380,27 @@ fn make_ring_icon() -> Icon {
 
 const DASHBOARD_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark">
 <style>
-:root{--g:#34c759;--y:#ffcc00;--r:#ff3b30;--accent:#5b9dff;--line:#2c2c2e;}
+:root{--g:#30d158;--y:#ffd60a;--r:#ff453a;--accent:#5b9dff;--text:#f4f6fa;--dim:#7f8896;--line:rgba(255,255,255,.07);}
 *{box-sizing:border-box;margin:0;padding:0;}
-html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;color:#f2f4f8;-webkit-user-select:none;cursor:default;}
-.panel{background:#1c1c1e;border:1px solid #3a3a3c;border-radius:16px;overflow:hidden;}
-.row{display:grid;grid-template-columns:34px 1fr;gap:14px;padding:14px 18px;align-items:center;}
+html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;color:var(--text);-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased;}
+.panel{background:#1b1b1d;border:1px solid rgba(255,255,255,.09);border-radius:13px;overflow:hidden;}
+.row{display:grid;grid-template-columns:24px 1fr;gap:12px;padding:8px 15px;align-items:center;}
 .row + .row{border-top:1px solid var(--line);}
-.ic{width:30px;height:30px;color:#9aa3b2;}
-.ic svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;}
+.ic{width:21px;height:21px;color:var(--dim);}
+.ic svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
 .content{min-width:0;}
 .head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;}
-.name{font-size:12px;color:#9aa3b2;letter-spacing:.03em;text-transform:uppercase;}
-.val{font-size:20px;font-weight:700;letter-spacing:-.02em;white-space:nowrap;}
-.sub{font-size:11.5px;color:#8a93a2;margin-top:4px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.bar{height:6px;background:#3a3a3c;border-radius:99px;margin-top:11px;overflow:hidden;}
+.name{font-size:9.5px;font-weight:600;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;}
+.val{font-size:14px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.sub{font-size:10px;color:var(--dim);margin-top:1px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;}
+.bar{height:3px;background:rgba(255,255,255,.08);border-radius:99px;margin-top:7px;overflow:hidden;}
 .bar-fill{height:100%;border-radius:99px;width:0;transition:width .35s ease;}
 .bar-fill.g{background:var(--g);}.bar-fill.y{background:var(--y);}.bar-fill.r{background:var(--r);}.bar-fill.b{background:var(--accent);}
-.cores{display:flex;align-items:flex-end;gap:2px;height:16px;margin-top:11px;}
-.core{flex:1;background:var(--accent);border-radius:1px;min-height:2px;opacity:.85;}
-.foot{padding:6px;border-top:1px solid var(--line);}
-.quit{display:block;width:100%;background:transparent;border:0;color:#8a93a2;font:inherit;font-size:12px;padding:10px;border-radius:9px;cursor:pointer;transition:background .15s,color .15s;}
-.quit:hover{background:#2c2c2e;color:#f2f4f8;}
+.cores{display:flex;align-items:flex-end;gap:2px;height:11px;margin-top:7px;}
+.core{flex:1;background:var(--accent);border-radius:1px;min-height:2px;opacity:.8;}
+.foot{border-top:1px solid var(--line);padding:3px;}
+.quit{display:block;width:100%;background:transparent;border:0;color:var(--dim);font:inherit;font-size:10.5px;letter-spacing:.02em;padding:8px;border-radius:8px;cursor:pointer;transition:background .15s,color .15s;}
+.quit:hover{background:rgba(255,255,255,.06);color:var(--text);}
 </style></head><body><div class="panel">
 
 <div class="row"><span class="ic"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>
@@ -427,5 +448,8 @@ window.__pf={update:function(d){
  show('sec-fans',d.fans_present);if(d.fans_present){set('fans-val',d.fans_text);set('fans-sub',d.fans_sub);bar('fans-bar',d.fans_pct,'b');}
  show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
  set('net-sub',d.net_sub);
+ reportHeight();
 }};
+function reportHeight(){var p=document.querySelector('.panel');if(p&&window.ipc){window.ipc.postMessage('h:'+Math.ceil(p.getBoundingClientRect().height));}}
+document.addEventListener('DOMContentLoaded',function(){setTimeout(reportHeight,30);});
 </script></body></html>"##;
