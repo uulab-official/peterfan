@@ -2282,32 +2282,59 @@ fn cmd_profile(provider: &dyn HardwareProvider, name: Option<String>, json: bool
 }
 
 fn list_profiles(json: bool) -> Result<()> {
+    let cfg = peterfan_platform::config::load();
     if json {
-        let arr: Vec<_> = Profile::all()
+        let mut arr: Vec<_> = Profile::all()
             .iter()
-            .map(|p| serde_json::json!({ "name": p.as_str(), "description": p.description() }))
+            .map(|p| serde_json::json!({ "name": p.as_str(), "description": p.description(), "custom": false }))
             .collect();
+        if cfg.custom_curve.is_some() {
+            arr.push(serde_json::json!({ "name": "custom", "description": "User-defined curve (config.custom_curve)", "custom": true }));
+        }
+        for name in cfg.named_curves.keys() {
+            arr.push(serde_json::json!({ "name": name, "description": "Named custom curve", "custom": true }));
+        }
         println!("{}", serde_json::to_string_pretty(&arr)?);
         return Ok(());
     }
     println!("{}", render::heading("Profiles"));
     for p in Profile::all() {
-        println!("  {:<12} {}", p.as_str().bold(), p.description().dimmed());
+        println!("  {:<14} {}", p.as_str().bold(), p.description().dimmed());
+    }
+    if cfg.custom_curve.is_some() {
+        println!("  {:<14} {}", "custom".bold().cyan(), "User-defined curve  →  `peterfan curve custom`".dimmed());
+    }
+    for name in cfg.named_curves.keys() {
+        println!("  {:<14} {}", name.bold().cyan(), "Named custom curve  →  `peterfan profile list`".dimmed());
     }
     println!();
     println!(
         "  {}",
-        "Apply with: peterfan profile <name>   ·   inspect: peterfan curve <name>".dimmed()
+        "Apply: peterfan profile <name>  ·  Inspect: peterfan curve <name>  ·  Create: peterfan profile create <name> --points 30:20,60:50,...".dimmed()
     );
     Ok(())
 }
 
 fn cmd_curve(name: Option<String>, json: bool) -> Result<()> {
-    let profile = match name {
-        Some(n) => Profile::parse(&n).ok_or_else(|| anyhow::anyhow!("unknown profile '{n}'"))?,
-        None => Profile::Balanced,
+    let cfg = peterfan_platform::config::load();
+    let (curve, display_name) = match name.as_deref() {
+        None => (Profile::Balanced.default_curve(), "balanced".to_string()),
+        Some(n) => {
+            // Check named custom curves first, then built-in profiles.
+            if let Some(c) = cfg.named_curve(n) {
+                (c, n.to_string())
+            } else if n == "custom" {
+                (cfg.curve_for(Profile::Custom), "custom".to_string())
+            } else {
+                let p = Profile::parse(n)
+                    .ok_or_else(|| anyhow::anyhow!("unknown profile or curve '{n}'"))?;
+                (cfg.curve_for(p), p.as_str().to_string())
+            }
+        }
     };
-    let curve = profile.default_curve();
+    // shadow for the rest of the function
+    let profile = Profile::parse(&display_name).unwrap_or(Profile::Balanced);
+    let _ = profile; // used below only for name display
 
     if json {
         println!("{}", serde_json::to_string_pretty(curve.points())?);
@@ -2317,7 +2344,7 @@ fn cmd_curve(name: Option<String>, json: bool) -> Result<()> {
     println!(
         "{} {}",
         render::heading("Fan curve"),
-        format!("· {}", profile.as_str()).dimmed()
+        format!("· {display_name}").dimmed()
     );
     for p in curve.points() {
         println!(

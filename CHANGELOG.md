@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.1] — profile/curve 커맨드 개선
+
+### Changed
+- **`peterfan profile`** — 목록에 정의된 custom + named curves도 함께 표시.
+  커스텀 곡선은 청록색으로 구분.
+- **`peterfan curve <name>`** — 커스텀 곡선 이름으로 곡선 시각화 지원.
+  예: `peterfan curve custom`, `peterfan curve work`
+
 ## [1.2.0] — 사용자 정의 팬 곡선 (Custom Curve)
 
 ### Added
