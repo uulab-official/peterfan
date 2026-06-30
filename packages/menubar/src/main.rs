@@ -255,6 +255,7 @@ fn update(app: &mut App) {
     };
     let temps = app.provider.temperatures().unwrap_or_default();
     let fans = app.provider.fans().unwrap_or_default();
+    let power = app.provider.power_watts();
 
     let rx: f64 = nets.iter().map(|n| n.rx_rate).sum();
     let tx: f64 = nets.iter().map(|n| n.tx_rate).sum();
@@ -296,7 +297,12 @@ fn update(app: &mut App) {
     let payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
         "cpu_text": format!("{:.1}%", cpu.usage_percent),
-        "cpu_sub": format!("{:.1} GHz   {}", ghz, load_str),
+        "cpu_sub": format!(
+            "{:.1} GHz   {}{}",
+            ghz,
+            load_str,
+            power.map(|w| format!("   {w:.1} W")).unwrap_or_default()
+        ),
         "cores": &cpu.per_core,
         "mem_pct": mem.used_percent,
         "mem_text": format!("{:.1}%", mem.used_percent),

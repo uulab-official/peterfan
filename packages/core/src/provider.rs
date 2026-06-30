@@ -72,4 +72,9 @@ pub trait HardwareProvider: Send + Sync {
     fn set_fan_auto(&self, _fan_id: &str) -> Result<()> {
         Err(crate::error::CoreError::Unsupported("fan control".into()))
     }
+
+    /// Total system power draw in watts, if the platform exposes it.
+    fn power_watts(&self) -> Option<f32> {
+        None
+    }
 }

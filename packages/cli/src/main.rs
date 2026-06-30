@@ -518,6 +518,11 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
     println!("{}", render::heading("Fans"));
     print_fans(&sensors.fans);
 
+    if let Some(w) = provider.power_watts() {
+        println!();
+        println!("{} {}", render::heading("Power"), format!("· {w:.1} W").dimmed());
+    }
+
     Ok(())
 }
 

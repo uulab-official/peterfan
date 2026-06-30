@@ -172,6 +172,10 @@ impl HardwareProvider for MockProvider {
         fan.duty = 40;
         Ok(())
     }
+
+    fn power_watts(&self) -> Option<f32> {
+        Some(18.5)
+    }
 }
 
 #[cfg(test)]

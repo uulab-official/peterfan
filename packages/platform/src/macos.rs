@@ -217,6 +217,15 @@ impl HardwareProvider for MacosProvider {
         let idx = fan_index(fan_id)?;
         self.with_conn(|c| c.auto(idx))
     }
+
+    fn power_watts(&self) -> Option<f32> {
+        if !self.has_smc {
+            return None;
+        }
+        let mut smc = Smc::connect().ok()?;
+        let w = smc.power_system_total().ok()?.0;
+        (w > 0.0).then_some(w)
+    }
 }
 
 impl MacosProvider {

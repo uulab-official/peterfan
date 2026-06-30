@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.0] — System power (watts)
+
+### Added
+- **Real system power draw (W)** on macOS via the SMC (`power_system_total`).
+  `peterfan status` shows a **Power** line and the menu-bar popover appends it
+  to the CPU line (e.g. `4.1 GHz   load …   24.3 W`). `HardwareProvider` gained
+  `power_watts()` (None where unsupported).
+
 ## [0.15.0] — Hold the SMC connection (Apple Silicon fan control)
 
 ### Changed
@@ -279,7 +287,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.16.0
 [0.15.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.15.0
 [0.14.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.14.0
 [0.13.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.13.2

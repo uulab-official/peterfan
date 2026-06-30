@@ -65,7 +65,8 @@ then richer surfaces. Versions are goals, not promises.
 
 - [x] **CPU/GPU die temperatures on Apple Silicon via IOHID** — real `CPU`
       temp in `temps`/`status`/popover; the daemon curve keys off it
-- [ ] Distinguish GPU die from CPU die; surface SMC power (W)
+- [x] SMC system power (W) surfaced in status & popover
+- [ ] Distinguish GPU die from CPU die
 
 ## v0.12 — Watch mode & config (current)
 
