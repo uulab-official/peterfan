@@ -67,11 +67,18 @@ then richer surfaces. Versions are goals, not promises.
       temp in `temps`/`status`/popover; the daemon curve keys off it
 - [ ] Distinguish GPU die from CPU die; surface SMC power (W)
 
+## v0.12 — Watch mode & config (current)
+
+- [x] `--watch [--interval N]` live refresh for CLI commands
+- [x] TOML config (`profile`, `interval_secs`, `critical_temp_c`) + `config` command;
+      daemon & watch read defaults from it
+- [ ] More config (startup, alert thresholds, menu-bar metric choice)
+
 ## v1.0 — Control depth & Windows
 
 - [ ] **Windows backend** — temps/fans via EC / LibreHardwareMonitor-style access
-- [ ] `--watch` live refresh + TOML config (default profile, startup, alerts)
 - [ ] Menu-bar app ↔ daemon IPC (switch profile / control from the popover)
+- [ ] Code-signed privileged helper (no-`sudo` install); GPU die temp; SMC power (W)
 - [ ] `peterfan-daemon` — privileged control service + safety watchdog
       (restore-on-exit, critical-temp force ramp)
 - [ ] Curve editor in the TUI

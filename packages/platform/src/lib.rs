@@ -12,6 +12,7 @@
 //! Use [`detect`] to get the best backend for the current OS, or [`mock`] to
 //! force the simulated one.
 
+pub mod config;
 pub mod mock;
 pub mod mock_monitor;
 pub mod system;

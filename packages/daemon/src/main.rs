@@ -39,15 +39,15 @@ struct Cli {
     /// Use the simulated machine (no root needed; for testing).
     #[arg(long)]
     mock: bool,
-    /// Profile whose curve to apply (silent, balanced, gaming, performance, maximum).
-    #[arg(long, default_value = "balanced")]
-    profile: String,
-    /// Seconds between curve updates.
-    #[arg(long, default_value_t = 2)]
-    interval: u64,
-    /// Above this temperature (°C) the fans are forced to 100%.
-    #[arg(long, default_value_t = 90.0)]
-    critical: f32,
+    /// Profile whose curve to apply (default: from config, or balanced).
+    #[arg(long)]
+    profile: Option<String>,
+    /// Seconds between curve updates (default: from config, or 2).
+    #[arg(long)]
+    interval: Option<u64>,
+    /// Above this temperature (°C) the fans are forced to 100% (default: from config, or 90).
+    #[arg(long)]
+    critical: Option<f32>,
     /// Apply the curve once and exit (for testing).
     #[arg(long)]
     once: bool,
@@ -62,8 +62,16 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let profile = Profile::parse(&cli.profile)
-        .ok_or_else(|| anyhow::anyhow!("unknown profile '{}'", cli.profile))?;
+    // Resolve settings: explicit flags win, otherwise fall back to the config
+    // file, otherwise the built-in defaults.
+    let cfg = peterfan_platform::config::load();
+    let profile = match &cli.profile {
+        Some(name) => Profile::parse(name)
+            .ok_or_else(|| anyhow::anyhow!("unknown profile '{name}'"))?,
+        None => cfg.profile,
+    };
+    let interval = cli.interval.unwrap_or(cfg.interval_secs).max(1);
+    let critical = cli.critical.unwrap_or(cfg.critical_temp_c);
     let curve = profile.default_curve();
 
     let provider: Box<dyn HardwareProvider> = if cli.mock {
@@ -91,18 +99,17 @@ fn run(cli: Cli) -> Result<()> {
     install_signal_handlers();
 
     println!(
-        "peterfand: profile={} interval={}s critical={:.0}°C fans={} backend={}",
+        "peterfand: profile={} interval={interval}s critical={critical:.0}°C fans={} backend={}",
         profile.as_str(),
-        cli.interval,
-        cli.critical,
         fan_ids.len(),
         provider.name()
     );
 
     // Run the control loop, then ALWAYS restore automatic control — even on a
     // panic — so we never leave the fans forced.
-    let loop_result =
-        std::panic::catch_unwind(AssertUnwindSafe(|| control_loop(provider.as_ref(), &curve, &fan_ids, &cli)));
+    let loop_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        control_loop(provider.as_ref(), &curve, &fan_ids, interval, critical, cli.once)
+    }));
 
     for id in &fan_ids {
         let _ = provider.set_fan_auto(id);
@@ -119,16 +126,15 @@ fn control_loop(
     provider: &dyn HardwareProvider,
     curve: &peterfan_core::curve::FanCurve,
     fan_ids: &[String],
-    cli: &Cli,
+    interval: u64,
+    critical: f32,
+    once: bool,
 ) -> Result<()> {
     while !STOP.load(Ordering::Relaxed) {
         let temps = provider.temperatures().unwrap_or_default();
-        let hottest = temps
-            .iter()
-            .map(|t| t.value.0)
-            .fold(0.0_f32, f32::max);
+        let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
 
-        let (duty, why) = if hottest >= cli.critical {
+        let (duty, why) = if hottest >= critical {
             (100u8, "CRITICAL")
         } else {
             (curve.duty_at(hottest), "curve")
@@ -139,12 +145,12 @@ fn control_loop(
         }
         println!("peterfand: {hottest:.0}°C -> {duty}% ({why})");
 
-        if cli.once {
+        if once {
             break;
         }
         // Sleep in small slices so a signal stops us promptly.
         let mut slept = 0u64;
-        while slept < cli.interval * 1000 && !STOP.load(Ordering::Relaxed) {
+        while slept < interval * 1000 && !STOP.load(Ordering::Relaxed) {
             sleep(Duration::from_millis(200));
             slept += 200;
         }

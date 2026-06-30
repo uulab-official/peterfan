@@ -20,6 +20,7 @@
 //! architecture portable: adding Linux later means adding one backend, not
 //! touching the core.
 
+pub mod config;
 pub mod curve;
 pub mod error;
 pub mod metrics;

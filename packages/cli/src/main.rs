@@ -42,11 +42,19 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// Continuously refresh the command until interrupted (Ctrl-C).
+    #[arg(long, global = true)]
+    watch: bool,
+
+    /// Refresh interval in seconds for --watch (default: from config, or 2).
+    #[arg(long, global = true)]
+    interval: Option<u64>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum Command {
     /// Full dashboard: system, CPU, memory, disk, network, battery, thermals (default).
     Status,
@@ -98,9 +106,15 @@ enum Command {
     Hardware,
     /// Diagnose the active backends, capabilities, and privileges.
     Doctor,
+    /// Show the config file path and values (`--init` creates it).
+    Config {
+        /// Create the config file with defaults if it doesn't exist.
+        #[arg(long)]
+        init: bool,
+    },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum FanAction {
     /// Force fan(s) to a duty cycle (0-100%). Persists until `fan auto`.
     Set {
@@ -135,9 +149,35 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let json = cli.json;
-    let mock = cli.mock;
-    match cli.command.unwrap_or(Command::Status) {
+    let command = cli.command.unwrap_or(Command::Status);
+    if cli.watch {
+        let interval = cli
+            .interval
+            .unwrap_or_else(|| peterfan_platform::config::load().interval_secs)
+            .max(1);
+        watch_loop(command, cli.mock, cli.json, interval)
+    } else {
+        dispatch(command, cli.mock, cli.json)
+    }
+}
+
+/// Re-run a command on an interval, clearing the screen each time.
+fn watch_loop(command: Command, mock: bool, json: bool, interval: u64) -> Result<()> {
+    use std::io::Write;
+    loop {
+        print!("\x1b[2J\x1b[H"); // clear screen, cursor home
+        println!(
+            "{}  ·  every {interval}s · Ctrl-C to stop\n",
+            "PeterFan watch".bold().cyan()
+        );
+        dispatch(command.clone(), mock, json)?;
+        std::io::stdout().flush().ok();
+        std::thread::sleep(Duration::from_secs(interval));
+    }
+}
+
+fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
+    match command {
         Command::Status => cmd_status(mock, json),
         Command::Cpu => cmd_cpu(mock, json),
         Command::Memory => cmd_memory(mock, json),
@@ -153,7 +193,38 @@ fn run(cli: Cli) -> Result<()> {
         Command::Curve { name } => cmd_curve(name, json),
         Command::Hardware => cmd_hardware(provider(mock).as_ref(), json),
         Command::Doctor => cmd_doctor(mock, json),
+        Command::Config { init } => cmd_config(json, init),
     }
+}
+
+fn cmd_config(json: bool, init: bool) -> Result<()> {
+    if init {
+        let p = peterfan_platform::config::init_default()
+            .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+        if !json {
+            println!("config ready at {}", p.display());
+        }
+    }
+    let cfg = peterfan_platform::config::load();
+    let path = peterfan_platform::config::path().map(|p| p.display().to_string());
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "path": path,
+                "profile": cfg.profile.as_str(),
+                "interval_secs": cfg.interval_secs,
+                "critical_temp_c": cfg.critical_temp_c,
+            }))?
+        );
+        return Ok(());
+    }
+    println!("{}", render::heading("Config"));
+    print_kv("Path", path.as_deref().unwrap_or("—"));
+    print_kv("Profile", cfg.profile.as_str());
+    print_kv("Interval", &format!("{}s", cfg.interval_secs));
+    print_kv("Critical", &format!("{:.0}°C", cfg.critical_temp_c));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] — Watch mode & config file
+
+### Added
+- **`--watch [--interval N]`** — re-run any command on an interval, clearing
+  the screen each time (a lightweight live monitor for `status`, `cpu`, `top`, …).
+- **TOML config** at `~/.config/peterfan/config.toml` (platform config dir):
+  `profile`, `interval_secs`, `critical_temp_c`. New `peterfan config [--init]`
+  shows the path/values and writes a default file. The daemon and `--watch` now
+  read their defaults from it (explicit flags still win).
+- `Config` lives in `peterfan-core` (pure data + TOML); path/IO in
+  `peterfan-platform::config`.
+
 ## [0.11.0] — Real CPU die temperature (Apple Silicon)
 
 ### Added
@@ -206,7 +218,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.12.0
 [0.11.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.11.0
 [0.10.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.10.0
 [0.9.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.9.1

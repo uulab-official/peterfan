@@ -12,6 +12,8 @@ cargo run -p peterfan-cli -- <command> [flags]
 | --- | --- |
 | `--mock` | Use the fully simulated backend instead of real hardware. |
 | `--json` | Emit machine-readable JSON instead of formatted text. |
+| `--watch` | Re-run the command on an interval, clearing the screen (Ctrl-C to stop). |
+| `--interval <secs>` | Refresh interval for `--watch` (default: from config, else 2). |
 | `-h`, `--help` | Help. |
 | `-V`, `--version` | Version. |
 
@@ -119,6 +121,18 @@ peterfan curve
 peterfan curve performance
 peterfan --json curve gaming     # array of {temp_c,duty_percent}
 ```
+
+### `config`
+
+Show the config file path and current values; `--init` writes a default file.
+
+```bash
+peterfan config          # show path + values
+peterfan config --init   # create ~/.config/peterfan/config.toml
+```
+
+The config (`profile`, `interval_secs`, `critical_temp_c`) supplies defaults for
+`--watch` and the `peterfand` daemon.
 
 ### `doctor`
 
