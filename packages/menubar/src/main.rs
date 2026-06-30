@@ -301,6 +301,15 @@ fn update(app: &mut App) {
         })
         .collect();
 
+    // Daemon status: poll every tick so the popover always shows current mode.
+    let daemon_st = daemon_status_str();
+    let can_control = app.provider.capabilities().control_fans || !daemon_st.is_empty();
+    let ctl_status = if !daemon_st.is_empty() {
+        daemon_st.clone()
+    } else {
+        STATUS.lock().expect("status poisoned").clone()
+    };
+
     let payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
         "cpu_text": format!("{:.1}%", cpu.usage_percent),
@@ -338,10 +347,30 @@ fn update(app: &mut App) {
             s
         }).unwrap_or_default(),
         "net_sub": format!("↓ {}/s     ↑ {}/s", bytes(rx as u64), bytes(tx as u64)),
-        "can_control": app.provider.capabilities().control_fans,
-        "ctl_status": STATUS.lock().expect("status poisoned").clone(),
+        "can_control": can_control,
+        "ctl_status": ctl_status,
+        "daemon_running": !daemon_st.is_empty(),
     });
     let _ = wv.evaluate_script(&format!("window.__pf&&window.__pf.update({})", payload));
+}
+
+/// Query the running daemon for its current mode/profile, for the status line.
+/// Returns an empty string when no daemon is reachable.
+fn daemon_status_str() -> String {
+    #[cfg(unix)]
+    if let Some(mut stream) = peterfan_platform::ipc::connect() {
+        use std::io::{Read, Write};
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+        if stream.write_all(b"status\n").is_ok() {
+            let mut buf = [0u8; 96];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let reply = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+            if let Some(rest) = reply.strip_prefix("ok ") {
+                return rest.to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 /// Run a popover control action (`auto` or `profile:<name>`). Prefers the
@@ -578,15 +607,22 @@ window.__pf={update:function(d){
    var fl=document.getElementById('fans-list');if(fl){fl.innerHTML='';(d.fans||[]).forEach(function(f){var r=document.createElement('div');r.className='frow';r.innerHTML='<span class="l"></span><span class="fbar"><i></i></span><span class="v"></span>';r.children[0].textContent=f.l;r.querySelector('.fbar i').style.width=Math.max(0,Math.min(100,f.pct))+'%';r.children[2].textContent=f.rpm;fl.appendChild(r);});}}
  show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
  set('net-sub',d.net_sub);
- var chips=document.querySelectorAll('.chip');
- for(var i=0;i<chips.length;i++){chips[i].style.display=d.can_control?'':'none';}
- var note=document.getElementById('ctl-note');
+ var chips=document.querySelectorAll(‘.chip’);
+ for(var i=0;i<chips.length;i++){chips[i].style.display=d.can_control?’’:’none’;}
+ var note=document.getElementById(‘ctl-note’);
  if(d.can_control){
-   set('ctl-status', d.ctl_status||'');
-   if(note)note.style.display='none';
+   set(‘ctl-status’, d.ctl_status||’’);
+   if(note){
+     if(!d.daemon_running){
+       note.style.display=’’;
+       note.textContent=’Tip: run peterfan install-daemon once for persistent control at boot.’;
+     } else {
+       note.style.display=’none’;
+     }
+   }
  } else {
-   set('ctl-status','unavailable');
-   if(note){note.style.display='';note.textContent='This Mac doesn’t expose fan control to PeterFan — showing live RPM only.';}
+   set(‘ctl-status’,’unavailable’);
+   if(note){note.style.display=’’;note.textContent=’Fan control unavailable on this Mac — showing live RPM only.’;}
  }
  reportHeight();
 }};

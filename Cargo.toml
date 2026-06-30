@@ -15,7 +15,7 @@ exclude = ["tools/icongen"]
 # (see docs/ROADMAP.md): packages/daemon, apps/desktop.
 
 [workspace.package]
-version = "0.27.1"
+version = "0.28.0"
 edition = "2021"
 license = "MIT"
 authors = ["PeterFan contributors"]

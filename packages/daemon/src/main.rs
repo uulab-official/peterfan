@@ -36,6 +36,9 @@ static STOP: AtomicBool = AtomicBool::new(false);
 struct State {
     /// Active profile whose curve is applied (effective; reflects rules too).
     profile: Profile,
+    /// When set, fans are held at this fixed duty % (overrides the curve).
+    /// Cleared by `auto` / `rules` / `profile` commands.
+    held_duty: Option<u8>,
     /// When true, fans are handed back to the OS (no curve applied).
     auto: bool,
     /// When true, the profile was set manually (IPC) and overrides automation
@@ -124,6 +127,7 @@ fn run(cli: Cli) -> Result<()> {
 
     let shared = Arc::new(Mutex::new(State {
         profile,
+        held_duty: None,
         auto: false,
         manual: false,
         backend: provider.name().to_string(),
@@ -227,15 +231,23 @@ fn control_loop(
             // Reflect the effective profile so `status` is accurate.
             shared.lock().expect("state poisoned").profile = profile;
 
-            let (duty, why) = if hottest >= critical {
-                (100u8, "CRITICAL")
+            let (duty, why): (u8, String) = if hottest >= critical {
+                (100, "CRITICAL".into())
+            } else if let Some(d) = state.held_duty {
+                (d, format!("hold:{d}%"))
             } else {
-                (profile.default_curve().duty_at(hottest), profile.as_str())
+                (profile.default_curve().duty_at(hottest), profile.as_str().into())
             };
             for id in fan_ids {
                 provider.set_fan_duty(id, duty)?;
             }
-            let src = if state.manual { "manual" } else { "auto-rule" };
+            let src = if state.held_duty.is_some() {
+                "hold"
+            } else if state.manual {
+                "manual"
+            } else {
+                "auto-rule"
+            };
             println!("peterfand: {hottest:.0}°C -> {duty}% ({why}) [{src} ac={on_ac}]");
 
             // Edge-triggered critical-temperature alert (with hysteresis).
@@ -306,6 +318,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
         Some("auto") => {
             let mut s = shared.lock().expect("state poisoned");
             s.auto = true;
+            s.held_duty = None;
             format!("ok auto ({backend})")
         }
         // Hand control back to the automation rules (clear manual override).
@@ -313,6 +326,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             let mut s = shared.lock().expect("state poisoned");
             s.manual = false;
             s.auto = false;
+            s.held_duty = None;
             format!("ok rules ({backend})")
         }
         Some("profile") => match parts.next().and_then(Profile::parse) {
@@ -320,21 +334,36 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 let mut s = shared.lock().expect("state poisoned");
                 s.profile = p;
                 s.auto = false;
+                s.held_duty = None;
                 s.manual = true;
                 format!("ok {} ({backend})", p.as_str())
             }
             None => "error: unknown profile".into(),
         },
+        // Hold fans at a fixed duty % until `auto`/`rules`/`profile`.
+        Some("hold") => match parts.next().and_then(|s| s.parse::<u8>().ok()) {
+            Some(pct) => {
+                let d = pct.min(100);
+                let mut s = shared.lock().expect("state poisoned");
+                s.held_duty = Some(d);
+                s.auto = false;
+                s.manual = true;
+                format!("ok hold:{d}% ({backend})")
+            }
+            None => "error: hold requires a percent 0-100".into(),
+        },
         Some("status") => {
             let s = shared.lock().expect("state poisoned");
             let mode = if s.auto {
-                "auto"
+                "auto".to_string()
+            } else if let Some(d) = s.held_duty {
+                format!("hold:{d}%")
             } else if s.manual {
-                "manual"
+                format!("manual:{}", s.profile.as_str())
             } else {
-                "rules"
+                format!("rules:{}", s.profile.as_str())
             };
-            format!("ok {mode} {} ({backend})", s.profile.as_str())
+            format!("ok {mode} ({backend})")
         }
         _ => "error: unknown command".into(),
     }

@@ -1221,6 +1221,23 @@ fn is_root() -> bool {
     true
 }
 
+/// Send a newline-terminated command to the running daemon and return the reply.
+/// Returns `None` if no daemon is reachable.
+#[cfg(unix)]
+fn ipc_send(cmd: &str) -> Option<String> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = peterfan_platform::ipc::connect()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    writeln!(stream, "{cmd}").ok()?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).ok()?;
+    Some(line.trim().to_string())
+}
+#[cfg(not(unix))]
+fn ipc_send(_cmd: &str) -> Option<String> {
+    None
+}
+
 fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Result<()> {
     if !provider.capabilities().control_fans {
         anyhow::bail!(
@@ -1247,28 +1264,45 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
             let pct = percent.min(100);
             // RPM before the write, so we can verify the fans actually moved.
             let before: Vec<u32> = targets.iter().map(|f| f.rpm).collect();
-            if !json {
-                println!(
-                    "Applying… {}",
-                    "(unlocking manual control + measuring can take ~10s)".dimmed()
-                );
-            }
-            for f in &targets {
-                if let Err(e) = provider.set_fan_duty(&f.id, pct) {
-                    if matches!(e, CoreError::PermissionDenied(_)) || !is_root() {
-                        anyhow::bail!(
-                            "fan control needs root — run `sudo peterfan fan set {pct}` \
-                             (or install the daemon: `sudo peterfand`). ({e})"
-                        );
-                    }
-                    return Err(e.into());
-                }
-            }
 
-            // Verify: re-read RPM after a few seconds. A non-error from the SMC
-            // write does NOT mean the firmware honored it (notably on Apple
-            // Silicon), so we only claim success if the RPM actually changed.
-            std::thread::sleep(Duration::from_secs(4));
+            // Prefer routing through the daemon: no sudo needed, and the daemon
+            // re-asserts the duty every tick so it persists until `fan auto`.
+            let via_daemon = if let Some(reply) = ipc_send(&format!("hold {pct}")) {
+                if !json {
+                    println!(
+                        "Routing through daemon: {} {}",
+                        reply.green(),
+                        "(persists until `peterfan fan auto`)".dimmed()
+                    );
+                }
+                true
+            } else {
+                // No daemon → direct SMC write (needs root).
+                if !json {
+                    println!(
+                        "Applying… {}",
+                        "(unlocking manual control + measuring can take ~10s)".dimmed()
+                    );
+                }
+                for f in &targets {
+                    if let Err(e) = provider.set_fan_duty(&f.id, pct) {
+                        if matches!(e, CoreError::PermissionDenied(_)) || !is_root() {
+                            anyhow::bail!(
+                                "fan control needs root — run `sudo peterfan fan set {pct}` \
+                                 or install the daemon first: `peterfan install-daemon`"
+                            );
+                        }
+                        return Err(e.into());
+                    }
+                }
+                false
+            };
+
+            // Verify: re-read RPM after a few seconds. Whether via daemon or direct
+            // write, a non-error does NOT confirm the firmware honored it on Apple
+            // Silicon — only an RPM change does.
+            let wait = if via_daemon { 3u64 } else { 4 };
+            std::thread::sleep(Duration::from_secs(wait));
             let after = provider.fans().unwrap_or_default();
             let mut moved = false;
             let mut rows = Vec::new();
@@ -1289,7 +1323,8 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
-                        "action": "set", "duty_percent": pct, "verified_change": moved,
+                        "action": "set", "duty_percent": pct,
+                        "via_daemon": via_daemon, "verified_change": moved,
                         "fans": rows.iter().map(|(l, b, n, d)| serde_json::json!({
                             "label": l, "rpm_before": b, "rpm_after": n, "delta": d,
                         })).collect::<Vec<_>>(),
@@ -1302,35 +1337,57 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
                 }
                 if moved {
                     println!("  {}", "✓ fans responded to manual control".green());
-                    println!(
-                        "  {}",
-                        "⚠ they stay forced until you run `peterfan fan auto`".yellow()
-                    );
+                    if !via_daemon {
+                        println!(
+                            "  {}",
+                            "⚠ they stay forced until you run `peterfan fan auto`".yellow()
+                        );
+                    }
                 } else {
                     println!(
                         "  {}",
                         "✗ RPM did not change — the write was accepted but had no effect.".red()
                     );
-                    println!(
-                        "    On Apple Silicon, macOS firmware may ignore manual fan writes. \
-                         If you ran this without sudo, retry with `sudo peterfan fan set {pct}`."
-                    );
+                    if !via_daemon && !is_root() {
+                        println!(
+                            "    Retry with sudo: `sudo peterfan fan set {pct}`, \
+                             or install the daemon: `peterfan install-daemon`"
+                        );
+                    } else {
+                        println!(
+                            "    Apple Silicon firmware may ignore manual fan writes \
+                             on some models — try running `peterfan doctor` to check."
+                        );
+                    }
                 }
             }
         }
         FanAction::Auto { .. } => {
-            for f in &targets {
-                provider.set_fan_auto(&f.id)?;
-            }
+            // Prefer daemon IPC: no sudo needed.
+            let via_daemon = if let Some(reply) = ipc_send("auto") {
+                if !json {
+                    println!(
+                        "Restored to automatic control via daemon: {}",
+                        reply.green()
+                    );
+                }
+                true
+            } else {
+                for f in &targets {
+                    provider.set_fan_auto(&f.id)?;
+                }
+                false
+            };
             if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
                         "action": "auto",
+                        "via_daemon": via_daemon,
                         "fans": targets.iter().map(|f| &f.label).collect::<Vec<_>>(),
                     }))?
                 );
-            } else {
+            } else if !via_daemon {
                 println!(
                     "Restored {} to automatic control.",
                     targets
