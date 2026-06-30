@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.3] — `peterfan config --set` for in-place config editing
+
+### Added
+- **`peterfan config --set <key> <value>`** — change a single config value
+  without opening the TOML file. Supported keys: `profile`, `interval`,
+  `critical`. Creates the file if missing. Examples:
+  ```
+  peterfan config --set profile gaming
+  peterfan config --set interval 3
+  peterfan config --set critical 95
+  ```
+
 ## [0.28.2] — Daemon state persistence across reboots
 
 ### Added

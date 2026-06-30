@@ -107,11 +107,15 @@ enum Command {
     Hardware,
     /// Diagnose the active backends, capabilities, and privileges.
     Doctor,
-    /// Show the config file path and values (`--init` creates it).
+    /// Show or edit the config file (`--init` creates it, `--set key value` changes a value).
     Config {
         /// Create the config file with defaults if it doesn't exist.
         #[arg(long)]
         init: bool,
+        /// Set a config value: profile, interval, or critical.
+        /// Example: --set profile gaming  |  --set interval 3  |  --set critical 95
+        #[arg(long, value_names = ["KEY", "VALUE"], num_args = 2)]
+        set: Option<Vec<String>>,
     },
     /// Serve a local JSON HTTP API (`/api/v1/status`, …) for integrations.
     Serve {
@@ -241,7 +245,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Curve { name } => cmd_curve(name, json),
         Command::Hardware => cmd_hardware(provider(mock).as_ref(), json),
         Command::Doctor => cmd_doctor(mock, json),
-        Command::Config { init } => cmd_config(json, init),
+        Command::Config { init, set } => cmd_config(json, init, set),
         Command::Serve { port } => cmd_serve(mock, port),
         Command::Benchmark { secs } => cmd_benchmark(mock, json, secs),
         Command::Completions { shell } => {
@@ -822,13 +826,48 @@ fn api_apply_fan(body: &str, provider: &dyn HardwareProvider) -> (u16, serde_jso
     }
 }
 
-fn cmd_config(json: bool, init: bool) -> Result<()> {
+fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>) -> Result<()> {
     if init {
         let p = peterfan_platform::config::init_default()
             .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
         if !json {
             println!("config ready at {}", p.display());
         }
+    }
+    if let Some(kv) = set {
+        let key = kv[0].as_str();
+        let val = kv[1].as_str();
+        let mut cfg = peterfan_platform::config::load();
+        match key {
+            "profile" => {
+                cfg.profile = peterfan_core::profile::Profile::parse(val)
+                    .ok_or_else(|| anyhow::anyhow!("unknown profile '{val}'"))?;
+            }
+            "interval" | "interval_secs" => {
+                cfg.interval_secs = val
+                    .parse::<u64>()
+                    .map_err(|_| anyhow::anyhow!("interval must be a number"))?
+                    .max(1);
+            }
+            "critical" | "critical_temp_c" => {
+                cfg.critical_temp_c = val
+                    .parse::<f32>()
+                    .map_err(|_| anyhow::anyhow!("critical must be a number"))?;
+            }
+            _ => anyhow::bail!("unknown key '{key}'; valid keys: profile, interval, critical"),
+        }
+        let p = peterfan_platform::config::save(&cfg)
+            .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+        if !json {
+            println!(
+                "  {} {} = {}  ({})",
+                "✓".green(),
+                key.bold(),
+                val.cyan(),
+                p.display()
+            );
+        }
+        return Ok(());
     }
     let cfg = peterfan_platform::config::load();
     let path = peterfan_platform::config::path().map(|p| p.display().to_string());

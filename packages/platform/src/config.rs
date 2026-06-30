@@ -33,3 +33,13 @@ pub fn init_default() -> io::Result<PathBuf> {
     }
     Ok(p)
 }
+
+/// Write `cfg` back to the config file, creating it if needed.
+pub fn save(cfg: &Config) -> io::Result<PathBuf> {
+    let p = path().ok_or_else(|| io::Error::other("no config directory"))?;
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&p, cfg.to_toml())?;
+    Ok(p)
+}
