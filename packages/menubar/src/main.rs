@@ -387,15 +387,39 @@ fn setup_detail(
     trial_expired: bool,
 ) -> String {
     match (lang, trial_expired, daemon_running, login_item) {
-        (ResolvedLanguage::Ko, true, _, _) => format!("v{} · 체험판 만료", env!("CARGO_PKG_VERSION")),
-        (ResolvedLanguage::Ko, false, true, true) => format!("v{} · 자동 실행 켜짐", env!("CARGO_PKG_VERSION")),
-        (ResolvedLanguage::Ko, false, true, false) => format!("v{} · 자동 실행 꺼짐", env!("CARGO_PKG_VERSION")),
-        (ResolvedLanguage::Ko, false, false, _) => format!("v{} · 데몬 미실행", env!("CARGO_PKG_VERSION")),
-        (ResolvedLanguage::En, true, _, _) => format!("v{} · trial expired", env!("CARGO_PKG_VERSION")),
-        (ResolvedLanguage::En, false, true, true) => format!("v{} · launch at login on", env!("CARGO_PKG_VERSION")),
-        (ResolvedLanguage::En, false, true, false) => format!("v{} · launch at login off", env!("CARGO_PKG_VERSION")),
-        (ResolvedLanguage::En, false, false, _) => format!("v{} · daemon not running", env!("CARGO_PKG_VERSION")),
+        (ResolvedLanguage::Ko, true, _, _) => {
+            format!("v{} · 체험판 만료", env!("CARGO_PKG_VERSION"))
+        }
+        (ResolvedLanguage::Ko, false, true, true) => {
+            format!("v{} · 자동 실행 켜짐", env!("CARGO_PKG_VERSION"))
+        }
+        (ResolvedLanguage::Ko, false, true, false) => {
+            format!("v{} · 자동 실행 꺼짐", env!("CARGO_PKG_VERSION"))
+        }
+        (ResolvedLanguage::Ko, false, false, _) => {
+            format!("v{} · 데몬 미실행", env!("CARGO_PKG_VERSION"))
+        }
+        (ResolvedLanguage::En, true, _, _) => {
+            format!("v{} · trial expired", env!("CARGO_PKG_VERSION"))
+        }
+        (ResolvedLanguage::En, false, true, true) => {
+            format!("v{} · launch at login on", env!("CARGO_PKG_VERSION"))
+        }
+        (ResolvedLanguage::En, false, true, false) => {
+            format!("v{} · launch at login off", env!("CARGO_PKG_VERSION"))
+        }
+        (ResolvedLanguage::En, false, false, _) => {
+            format!("v{} · daemon not running", env!("CARGO_PKG_VERSION"))
+        }
     }
+}
+
+fn active_profile_from_mode(mode: &str) -> Option<&str> {
+    let mode = mode.split_whitespace().next().unwrap_or(mode);
+    mode.strip_prefix("manual:")
+        .or_else(|| mode.strip_prefix("rules:"))
+        .or_else(|| mode.strip_prefix("profile:"))
+        .filter(|profile| !profile.is_empty())
 }
 
 /// Save a hand-drawn fan curve from the Detail Window's curve editor and
@@ -1503,6 +1527,11 @@ fn update(app: &mut App) {
         })
         .unwrap_or_default();
     let daemon_running = !daemon_st.is_empty();
+    let active_profile = daemon_json
+        .as_ref()
+        .and_then(|v| v.get("mode").and_then(|m| m.as_str()))
+        .and_then(active_profile_from_mode)
+        .unwrap_or_default();
     // Without a daemon to ask, fall back to the local shadow state that
     // `apply_local` maintains for its one-shot direct writes.
     let fan_overrides = if daemon_running {
@@ -1624,6 +1653,7 @@ fn update(app: &mut App) {
         "can_control": can_control,
         "ctl_status": ctl_status,
         "daemon_running": !daemon_st.is_empty(),
+        "active_profile": active_profile,
         "fan_setup_needed": !daemon_running && can_control,
         "login_item_installed": login_item,
         "app_version": env!("CARGO_PKG_VERSION"),
@@ -2262,6 +2292,11 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Set Up<", ">설정<")
             .replace(">Login<", ">자동 실행<")
             .replace(">Update<", ">업데이트<")
+            .replace(">Silent<", ">저소음<")
+            .replace(">Balanced<", ">균형<")
+            .replace(">Gaming<", ">게임<")
+            .replace(">Performance<", ">성능<")
+            .replace(">Max<", ">최대<")
             .replace("Buy License →", "라이선스 구매 →")
             .replace(">Activate<", ">활성화<")
             .replace("Open Detailed Window…", "상세 창 열기…")
@@ -2332,6 +2367,11 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .ctl-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;}
 .ctl-head .name{font-size:9.5px;font-weight:600;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;}
 .ctl-status{font-size:10px;color:var(--dim);font-variant-numeric:tabular-nums;}
+.profile-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;margin:3px 0 7px;}
+.profile-strip button{min-width:0;background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:700;padding:4px 2px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s,border-color .15s,opacity .15s;}
+.profile-strip button:hover{background:var(--chip-hover);color:var(--text);}
+.profile-strip button.active{background:rgba(91,157,255,.2);border-color:rgba(91,157,255,.48);color:var(--accent);}
+.profile-strip.disabled button{opacity:.42;pointer-events:none;}
 .fan-cards{display:flex;flex-direction:column;}
 .fan-card{padding:5px 0;}
 .fan-card+.fan-card{border-top:1px solid var(--line);}
@@ -2405,6 +2445,13 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 
 <div class="ctl" style="border-top:0;border-bottom:1px solid var(--line)">
 <div class="ctl-head"><span class="name">Fan control</span><span class="ctl-status" id="ctl-status"></span></div>
+<div class="profile-strip" id="profile-strip">
+<button data-profile="silent" title="Silent" onclick="setProfile('silent')">Silent</button>
+<button data-profile="balanced" title="Balanced" onclick="setProfile('balanced')">Balanced</button>
+<button data-profile="gaming" title="Gaming" onclick="setProfile('gaming')">Gaming</button>
+<button data-profile="performance" title="Performance" onclick="setProfile('performance')">Performance</button>
+<button data-profile="maximum" title="Maximum" onclick="setProfile('maximum')">Max</button>
+</div>
 <div class="fan-cards" id="fan-cards"></div>
 <div class="ctl-note" id="ctl-note" style="display:none"></div>
 </div>
@@ -2524,6 +2571,7 @@ window.__pf={
  var note=document.getElementById('ctl-note');
  if(d.can_control){
    set('ctl-status', d.ctl_status||'');
+   updateProfileStrip(d);
    if(note){
      // A command failure (e.g. a running daemon too old to understand a
      // command we just sent it) used to be silently swallowed — ctl-status
@@ -2563,6 +2611,7 @@ window.__pf={
    renderFanCards(d.fans);
  } else {
    set('ctl-status',LANG==='ko'?'사용 불가':'unavailable');
+   updateProfileStrip(d);
    if(note){note.style.display='';note.textContent=LANG==='ko'?'이 Mac에서는 팬 제어를 사용할 수 없습니다. 실시간 RPM만 표시합니다.':'Fan control unavailable on this Mac — showing live RPM only.';}
    var fc=document.getElementById('fan-cards');if(fc)fc.innerHTML='';
  }
@@ -2845,6 +2894,19 @@ function setChartRange(r){
   document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){b.classList.toggle('active',b.dataset.range===r);});
   window.ipc.postMessage('range:'+r);
 }
+function setProfile(profile){
+  window.ipc.postMessage('cmd:profile:'+profile);
+}
+function updateProfileStrip(d){
+  var strip=document.getElementById('profile-strip');
+  if(!strip)return;
+  var enabled=!!d.can_control;
+  strip.classList.toggle('disabled',!enabled);
+  Array.prototype.slice.call(strip.querySelectorAll('button')).forEach(function(b){
+    b.disabled=!enabled;
+    b.classList.toggle('active',enabled&&b.dataset.profile===(d.active_profile||''));
+  });
+}
 function setProcSort(s){
   var cpu=document.getElementById('ps-cpu'),mem=document.getElementById('ps-mem');
   if(cpu)cpu.classList.toggle('active',s==='cpu');
@@ -3007,6 +3069,7 @@ mod tests {
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
         assert!(ko.contains(">팬 제어<"));
         assert!(ko.contains(">PeterFan 종료<"));
+        assert!(ko.contains(">균형<"));
         // Auto/Manual per-fan card labels are rendered by JS at runtime
         // (LANG==='ko' ? ...), not baked into the static markup — both
         // languages ship the same script, just a different LANG value.
@@ -3035,6 +3098,10 @@ mod tests {
             assert!(html.contains("renderFanCards"));
             assert!(html.contains("fanControlSetupButton"));
             assert!(html.contains(r#"id="fan-cards""#));
+            assert!(html.contains(r#"id="profile-strip""#));
+            assert!(html.contains("setProfile"));
+            assert!(html.contains("updateProfileStrip"));
+            assert!(html.contains("cmd:profile:"));
             assert!(html.contains(r#"id="setup-row""#));
             assert!(html.contains(r#"id="setup-login""#));
             assert!(html.contains("togglelogin"));
@@ -3044,6 +3111,21 @@ mod tests {
             assert!(html.contains("cmd:fanauto:"));
             assert!(html.contains("savecurve:"));
         }
+    }
+
+    #[test]
+    fn active_profile_from_daemon_mode_handles_known_modes() {
+        assert_eq!(
+            active_profile_from_mode("manual:balanced"),
+            Some("balanced")
+        );
+        assert_eq!(
+            active_profile_from_mode("rules:performance (smc)"),
+            Some("performance")
+        );
+        assert_eq!(active_profile_from_mode("profile:silent"), Some("silent"));
+        assert_eq!(active_profile_from_mode("auto"), None);
+        assert_eq!(active_profile_from_mode("hold:45%"), None);
     }
 
     #[test]

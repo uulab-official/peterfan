@@ -156,8 +156,16 @@ pub fn download_and_install(asset_url: &str) -> Result<(), String> {
     let tmp_dir = std::env::temp_dir().join(format!("peterfan-update-{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
 
-    let is_dmg = asset_url.split('?').next().unwrap_or(asset_url).ends_with(".dmg");
-    let download = tmp_dir.join(if is_dmg { "update.dmg" } else { "update.tar.gz" });
+    let is_dmg = asset_url
+        .split('?')
+        .next()
+        .unwrap_or(asset_url)
+        .ends_with(".dmg");
+    let download = tmp_dir.join(if is_dmg {
+        "update.dmg"
+    } else {
+        "update.tar.gz"
+    });
     let status = std::process::Command::new("curl")
         .args([
             "-fL",
@@ -249,7 +257,8 @@ fn extract_app_from_archive(
     if !status.success() {
         return Err("extracting the update failed".into());
     }
-    find_app_bundle(tmp_dir).ok_or("downloaded archive did not contain a PeterFan.app bundle".into())
+    find_app_bundle(tmp_dir)
+        .ok_or("downloaded archive did not contain a PeterFan.app bundle".into())
 }
 
 #[cfg(target_os = "macos")]
