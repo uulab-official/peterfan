@@ -50,7 +50,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## ステータス
 
-**ベータ — v1.25.2。** 開発は活発に継続中。以下の表は実際にリリース済みの内容を示す。
+**ベータ — v1.26.2。** 開発は活発に継続中。以下の表は実際にリリース済みの内容を示す。
 
 | 領域 | 状態 |
 | --- | --- |
@@ -204,7 +204,7 @@ cargo run -p peterfan-menubar
 ### 例: `peterfan status`
 
 ```text
-PeterFan v1.25.2
+PeterFan v1.26.2
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max

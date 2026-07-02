@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Docs
+- **README 버전 표기 v1.26.2로 갱신** (4개 언어 파일 전부).
+- **docs/CLI.md 실제 명령어와 불일치하던 부분 수정**: 전역 `--watch`/
+  `--interval` 플래그 누락, `status --compact` 누락, `profile create/
+  delete/list`(커스텀 커브) 전체 섹션 누락, `login-item` 명령
+  전체 누락, `alert --memory`/`--mem` 예시 누락, `rule add`가 실제로는
+  `--condition`/`--profile` 플래그가 아니라 위치 인자(`rule add
+  on_battery silent`)라는 것, `daemon log` 기본 줄 수가 50이 아니라
+  40이라는 것 — 전부 실제 CLI 동작으로 직접 검증 후 수정.
+
 ## [1.26.2] — "데몬 업데이트" 버튼 중복 클릭 방지
 
 ### Fixed

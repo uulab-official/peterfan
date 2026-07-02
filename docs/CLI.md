@@ -12,6 +12,8 @@ cargo run -p peterfan-cli -- <command> [flags]
 | --- | --- |
 | `--mock` | Use the fully simulated backend instead of real hardware. |
 | `--json` | Emit machine-readable JSON instead of formatted text. |
+| `--watch` | Continuously refresh the command until interrupted (Ctrl-C). Works with any command, not just `watch`. |
+| `--interval <secs>` | Refresh interval for `--watch` (default: from config, or 2). |
 | `-h`, `--help` | Help. |
 | `-V`, `--version` | Version. |
 
@@ -30,6 +32,7 @@ same as `peterfan status`.
 peterfan
 peterfan --mock status
 peterfan --json status
+peterfan status --compact   # one-line summary for shell prompts/status bars
 ```
 
 ### System metrics
@@ -93,6 +96,16 @@ profile's curve at the current temperature and:
 peterfan profile                 # list
 peterfan profile gaming          # preview (read-only backend) or apply
 peterfan --mock profile maximum  # actually applies, on the mock machine
+```
+
+**Custom curves** — define your own temp→duty curve and use it like a
+built-in profile (including in `rule add`):
+
+```bash
+peterfan profile create custom --points "30:20,60:50,80:90,90:100"
+peterfan profile create work --points "30:10,55:30,75:70,88:100"  # named curve
+peterfan profile delete work
+peterfan profile list             # shows built-ins + your custom curves
 ```
 
 ### `curve [name]`
@@ -235,6 +248,20 @@ peterfan install-daemon --dry-run  # print the exact privileged script first
 peterfan uninstall-daemon          # remove it
 ```
 
+### `login-item` — start the menu-bar app at login (macOS)
+
+Installs a per-user LaunchAgent for `peterfan-menubar` — unlike
+`install-daemon`, this never needs an admin password (it's your own login
+item, not a system-wide service).
+
+```bash
+peterfan login-item status                       # installed? which binary?
+peterfan login-item install                      # auto-start at login, menu bar shows CPU%
+peterfan login-item install --metric temp        # shows temperature instead
+peterfan login-item install --binary /path/to/peterfan-menubar
+peterfan login-item remove
+```
+
 ### `doctor`
 
 Diagnoses the active backend, its capabilities, and whether the process is
@@ -251,9 +278,9 @@ peterfan --json doctor
 
 ```bash
 peterfan rule                                      # 현재 규칙 목록
-peterfan rule add --condition "on_battery" --profile silent
-peterfan rule add --condition "cpu_above:85" --profile maximum
-peterfan rule add --condition "time:22-7" --profile silent
+peterfan rule add on_battery silent                # <조건> <프로파일> — 위치 인자, 플래그 아님
+peterfan rule add cpu_above:85 maximum
+peterfan rule add time:22-7 silent
 peterfan rule remove 0                             # 인덱스 0 규칙 삭제
 peterfan rule clear                                # 전체 삭제
 ```
@@ -266,7 +293,7 @@ peterfan rule clear                                # 전체 삭제
 peterfan daemon status    # 현재 모드 + 백엔드 확인
 peterfan daemon reload    # 설정 파일 다시 읽기
 peterfan daemon stop      # 데몬 종료
-peterfan daemon log       # 최근 로그 50줄 출력
+peterfan daemon log       # 최근 로그 40줄 출력 (--lines/-n 으로 변경 가능)
 peterfan daemon log --follow  # 로그 실시간 팔로우 (tail -f)
 ```
 
@@ -284,6 +311,7 @@ CPU/메모리/온도가 지정한 임계값을 넘으면 알림(macOS `osascript
 
 ```bash
 peterfan alert --cpu 90 --temp 95         # 인터벌마다 체크, 초과 시 알림
+peterfan alert --memory 90                # 메모리 사용률 기준 (별칭: --mem)
 peterfan alert --cpu 90 --save            # 임계값을 config에 저장 (이후 플래그 없이 재사용)
 peterfan alert --once                     # 한 번만 체크하고 종료 (cron/스크립트용, 초과 시 exit 1)
 peterfan alert install                    # 로그인 시 자동 실행되는 LaunchAgent 설치
