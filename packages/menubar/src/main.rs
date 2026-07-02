@@ -1143,11 +1143,6 @@ fn update(app: &mut App) {
                 .map(|m| f.rpm as f32 / m as f32 * 100.0)
         })
         .fold(0.0_f32, f32::max);
-    // For converting a user-entered target RPM into the duty% that
-    // `hold:<pct>` already understands — `set_fan_duty` is percent-based
-    // (see HardwareProvider), so an exact-RPM input is just a % input in
-    // disguise, scaled by whichever fan spins fastest at 100%.
-    let max_fan_rpm = fans.iter().filter_map(|f| f.max_rpm).max().unwrap_or(0);
     let rx: f64 = nets.iter().map(|n| n.rx_rate).sum();
     let tx: f64 = nets.iter().map(|n| n.tx_rate).sum();
     // Which interface to label the local IP with: whichever one is actually
@@ -1367,13 +1362,6 @@ fn update(app: &mut App) {
         (ResolvedLanguage::En, Entitlement::TrialExpired) => ("Trial expired".to_string(), true),
     };
     let chart_range = ChartRange::from_u8(CHART_RANGE.load(Ordering::Relaxed));
-    // Each built-in profile's duty ceiling (the ~flat part of its curve past
-    // the highest defined temperature point) — shown as a "up to X%" hint on
-    // the profile chips, since curves themselves aren't a single number.
-    let profile_max_pct: std::collections::HashMap<&str, u8> = Profile::all()
-        .iter()
-        .map(|p| (p.as_str(), p.default_curve().duty_at(200.0)))
-        .collect();
 
     let payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
@@ -1406,8 +1394,6 @@ fn update(app: &mut App) {
         "fans_present": !fans.is_empty(),
         "fans_text": if fans.len() > 1 { format!("{} fans", fans.len()) } else { fans.first().map(|f| format!("{} rpm", f.rpm)).unwrap_or_default() },
         "fans": fan_rows,
-        "max_rpm": max_fan_rpm,
-        "profile_max_pct": profile_max_pct,
         "batt_present": battery.is_some(),
         "batt_pct": battery.as_ref().map(|b| b.charge_percent).unwrap_or(0.0),
         "batt_text": battery.as_ref().map(|b| format!("{:.0}%", b.charge_percent)).unwrap_or_default(),
@@ -1983,15 +1969,6 @@ fn dashboard_html(lang: ResolvedLanguage) -> String {
         ResolvedLanguage::En => html,
         ResolvedLanguage::Ko => html
             .replace(">Fan control<", ">팬 제어<")
-            .replace(">Auto<", ">자동<")
-            .replace(">Rules<", ">규칙<")
-            .replace(">Silent<", ">무음<")
-            .replace(">Balanced<", ">균형<")
-            .replace(">Gaming<", ">게이밍<")
-            .replace(">Perf<", ">성능<")
-            .replace(">Max<", ">최대<")
-            .replace(">Hold<", ">고정<")
-            .replace(">Set<", ">설정<")
             .replace(">Memory<", ">메모리<")
             .replace(">Storage<", ">저장공간<")
             .replace(">Temperature<", ">온도<")
@@ -2050,31 +2027,25 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .prow .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .prow .c{color:var(--accent);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .prow .m{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
-.ctl{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;padding:9px 15px;border-top:1px solid var(--line);}
-.ctl-head{grid-column:1/-1;display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;}
+.ctl{padding:7px 15px 8px;border-top:1px solid var(--line);}
+.ctl-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;}
 .ctl-head .name{font-size:9.5px;font-weight:600;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;}
 .ctl-status{font-size:10px;color:var(--dim);font-variant-numeric:tabular-nums;}
-.chip{background:var(--chip-bg);border:1px solid transparent;color:var(--text);font:inherit;font-size:10px;font-weight:600;padding:6px 4px;border-radius:7px;cursor:pointer;transition:background .15s,border-color .15s;}
-.chip:hover{background:var(--chip-hover);}
-.chip.auto{background:rgba(48,209,88,.16);color:var(--g);}
-.chip.active{background:rgba(91,157,255,.22);border-color:rgba(91,157,255,.5);color:var(--accent);}
-.chip.auto.active{background:rgba(48,209,88,.28);border-color:rgba(48,209,88,.5);color:var(--g);}
-.fan-cards{grid-column:1/-1;display:flex;flex-direction:column;gap:8px;margin-top:2px;}
-.fan-card{background:var(--chip-bg);border-radius:8px;padding:8px 9px;}
-.fan-card-head{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;margin-bottom:5px;}
+.fan-cards{display:flex;flex-direction:column;gap:6px;}
+.fan-card{background:var(--chip-bg);border-radius:8px;padding:7px 8px;}
+.fan-card-head{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;margin-bottom:4px;}
 .fan-card-head .fn{font-weight:600;}
 .fan-card-head .fv{font-variant-numeric:tabular-nums;color:var(--dim);}
-.fan-bar{height:3px;background:var(--track);border-radius:99px;overflow:hidden;margin-bottom:7px;}
+.fan-bar{height:3px;background:var(--track);border-radius:99px;overflow:hidden;margin-bottom:6px;}
 .fan-bar i{display:block;height:100%;background:var(--accent);border-radius:99px;width:0;transition:width .35s;}
-.fan-seg{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:0;}
+.fan-seg{display:grid;grid-template-columns:1fr 1fr;gap:4px;}
 .fan-seg button{background:transparent;border:0;color:var(--dim);font:inherit;font-size:10px;font-weight:600;padding:5px 0;border-radius:6px;cursor:pointer;transition:background .15s,color .15s;}
 .fan-seg button.active{background:var(--panel-bg);color:var(--text);}
-.fan-rpm-row{display:grid;grid-template-columns:auto 1fr auto;gap:7px;align-items:center;margin-top:7px;}
+.fan-rpm-row{display:grid;grid-template-columns:auto 1fr auto;gap:7px;align-items:center;margin-top:6px;}
 .fan-rpm-row span{font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .fan-rpm-row input[type=range]{-webkit-appearance:none;height:3px;border-radius:99px;background:var(--track);outline:none;cursor:pointer;}
 .fan-rpm-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;}
-.hold-pct{font-size:10px;font-weight:600;color:var(--accent);width:28px;text-align:right;font-variant-numeric:tabular-nums;}
-.ctl-note{grid-column:1/-1;font-size:10.5px;color:var(--dim);line-height:1.5;}
+.ctl-note{font-size:10.5px;color:var(--dim);line-height:1.5;margin-top:6px;}
 .chart{width:100%;height:28px;display:block;margin-top:8px;border-radius:4px;cursor:crosshair;}
 .chart-tip{position:fixed;pointer-events:none;background:rgba(20,20,22,.92);color:#fff;font-size:9.5px;font-weight:600;padding:3px 7px;border-radius:5px;display:none;z-index:999;white-space:nowrap;font-variant-numeric:tabular-nums;}
 .chart-stats{font-size:9px;color:var(--dim);text-align:right;margin-top:3px;font-variant-numeric:tabular-nums;}
@@ -2105,13 +2076,6 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 
 <div class="ctl" style="border-top:0;border-bottom:1px solid var(--line)">
 <div class="ctl-head"><span class="name">Fan control</span><span class="ctl-status" id="ctl-status"></span></div>
-<button class="chip auto" id="chip-auto" onclick="window.ipc.postMessage('cmd:auto')">Auto</button>
-<button class="chip" id="chip-rules" onclick="window.ipc.postMessage('cmd:rules')">Rules</button>
-<button class="chip" id="chip-silent" onclick="window.ipc.postMessage('cmd:profile:silent')">Silent</button>
-<button class="chip" id="chip-balanced" onclick="window.ipc.postMessage('cmd:profile:balanced')">Balanced</button>
-<button class="chip" id="chip-gaming" onclick="window.ipc.postMessage('cmd:profile:gaming')">Gaming</button>
-<button class="chip" id="chip-performance" onclick="window.ipc.postMessage('cmd:profile:performance')">Perf</button>
-<button class="chip" id="chip-maximum" onclick="window.ipc.postMessage('cmd:profile:maximum')">Max</button>
 <div class="fan-cards" id="fan-cards"></div>
 <div class="ctl-note" id="ctl-note" style="display:none"></div>
 </div>
@@ -2173,7 +2137,6 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="chart-tip" id="chart-tip"></div>
 <script>
 var LANG='__LANG__';
-var MAX_RPM=0;
 window.__pf={
  update:function(d){
  function cls(p){return p<50?'g':p<80?'y':'r';}
@@ -2190,7 +2153,6 @@ window.__pf={
  if(d.disk_io_present)drawChart('disk-io-chart', d.disk_io_hist, '#ff9f0a', null, fmtBytesPerSec);
  show('sec-temp',d.temp_present);if(d.temp_present){set('temp-val',d.temp_text);bar('temp-bar',d.temp_pct,d.temp_cls);
    var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c;r.children[1].className='v '+t.cls;tl.appendChild(r);});}}
- MAX_RPM=d.max_rpm||0;
  show('sec-fans',d.fans_present);if(d.fans_present){set('fans-val',d.fans_text);
    var fl=document.getElementById('fans-list');if(fl){fl.innerHTML='';(d.fans||[]).forEach(function(f){var r=document.createElement('div');r.className='frow';r.innerHTML='<span class="l"></span><span class="fbar"><i></i></span><span class="v"></span>';r.children[0].textContent=f.l;r.querySelector('.fbar i').style.width=Math.max(0,Math.min(100,f.pct))+'%';r.children[2].textContent=f.rpm;fl.appendChild(r);});}}
  show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
@@ -2216,18 +2178,6 @@ window.__pf={
  if(d.trial_expired&&licForm)licForm.classList.add('show');
  var licToggle=document.getElementById('lic-toggle');
  if(licToggle)licToggle.style.display=d.trial_expired?'none':'';
- if(d.profile_max_pct){
-   ['silent','balanced','gaming','performance','maximum'].forEach(function(k){
-     var el=document.getElementById('chip-'+k);
-     if(!el)return;
-     var pct=d.profile_max_pct[k];
-     if(pct==null)return;
-     var upTo=LANG==='ko'?'최대 ':'up to ';
-     el.title=MAX_RPM>0?(upTo+pct+'%  (~'+Math.round(MAX_RPM*pct/100)+' RPM)'):(upTo+pct+'%');
-   });
- }
- var chips=document.querySelectorAll('.chip');
- for(var i=0;i<chips.length;i++){chips[i].style.display=d.can_control?'':'none';}
  var note=document.getElementById('ctl-note');
  if(d.can_control){
    set('ctl-status', d.ctl_status||'');
@@ -2239,14 +2189,6 @@ window.__pf={
        note.style.display='none';
      }
    }
-   // Active chip highlighting based on daemon mode.
-   var chipMap={'auto':'chip-auto','rules':'chip-rules',
-     'manual:silent':'chip-silent','manual:balanced':'chip-balanced',
-     'manual:gaming':'chip-gaming','manual:performance':'chip-performance','manual:maximum':'chip-maximum'};
-   chips.forEach(function(c){c.classList.remove('active');});
-   var st=(d.ctl_status||'').toLowerCase();
-   var matched=Object.keys(chipMap).find(function(k){return st.startsWith(k);});
-   if(matched){var el=document.getElementById(chipMap[matched]);if(el)el.classList.add('active');}
    renderFanCards(d.fans);
  } else {
    set('ctl-status','unavailable');
@@ -2473,8 +2415,11 @@ mod tests {
 
         let ko = dashboard_html(ResolvedLanguage::Ko);
         assert!(ko.contains(">팬 제어<"));
-        assert!(ko.contains(">자동<"));
         assert!(ko.contains(">PeterFan 종료<"));
+        // Auto/Manual per-fan card labels are rendered by JS at runtime
+        // (LANG==='ko' ? ...), not baked into the static markup — both
+        // languages ship the same script, just a different LANG value.
+        assert!(ko.contains("'자동':'Auto'"));
         assert!(ko.contains("var LANG='ko';"));
         assert!(!ko.contains("__LANG__"));
         // Nothing English-only should survive the swap for the labels we
@@ -2495,15 +2440,14 @@ mod tests {
             assert!(html.contains(r#"id="fan-cards""#));
             assert!(html.contains("cmd:fanhold:"));
             assert!(html.contains("cmd:fanauto:"));
-            assert!(html.contains("profile_max_pct"));
         }
     }
 
     #[test]
     fn profile_duty_ceilings_match_default_curves() {
-        // Silent is the one built-in profile that doesn't ramp to 100% — the
-        // "up to X%" chip tooltip depends on that distinction actually
-        // showing up, not every profile collapsing to the same number.
+        // Silent is the one built-in profile that doesn't ramp to 100% —
+        // worth pinning down even though the UI no longer surfaces it
+        // directly, since it's a real, deliberate difference between curves.
         assert_eq!(Profile::Silent.default_curve().duty_at(200.0), 70);
         assert_eq!(Profile::Maximum.default_curve().duty_at(200.0), 100);
     }
