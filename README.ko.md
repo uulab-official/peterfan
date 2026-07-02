@@ -125,11 +125,15 @@ Windows는 `.zip`으로 제공됩니다(CLI/TUI/메뉴바 바이너리만 포함
 설치 프로그램은 없습니다).
 
 이 앱은 애드혹(ad-hoc) 서명만 되어 있습니다(유료 Apple Developer 계정이 없어
-공증(notarize)은 되어 있지 않습니다). 최초 실행 시 "개발자를 확인할 수 없음"이라는
-표준 macOS 경고가 뜹니다 — `PeterFan.app`을 우클릭 → **열기**를 선택하거나,
-**시스템 설정 → 개인정보 보호 및 보안 → 그래도 열기**를 이용하세요. macOS가 여전히
-"손상되어 열 수 없음"이라며 거부한다면 격리(quarantine) 플래그를 직접 제거하세요:
-`xattr -dr com.apple.quarantine PeterFan.app peterfan*`.
+공증(notarize)은 되어 있지 않습니다 — 오픈소스라고 해서 다른 건 아닙니다.
+Gatekeeper는 소스 공개 여부가 아니라 바이너리 서명만 봅니다). 최초 실행 시
+"개발자를 확인할 수 없음"이라는 표준 macOS 경고가 뜹니다 — `PeterFan.app`을
+우클릭 → **열기**를 선택하거나, **시스템 설정 → 개인정보 보호 및 보안 → 그래도
+열기**를 이용하세요. macOS가 여전히 "손상되어 열 수 없음"이라며 거부한다면
+격리(quarantine) 플래그를 직접 제거하세요: `xattr -dr com.apple.quarantine
+PeterFan.app peterfan*`. 이 과정 자체가 번거로우시면 [소스에서
+빌드하기](#소스에서-빌드하기)를 이용해보세요 — 직접 컴파일한 바이너리는 애초에
+격리 플래그가 붙지 않습니다.
 
 ---
 

@@ -128,11 +128,14 @@ Terminal. Windows gets a `.zip` (CLI/TUI/menu-bar binaries only — no `.exe`
 installer yet).
 
 The app is ad-hoc signed (no paid Apple Developer account behind it, so it's
-not notarized). First launch shows the standard "cannot verify developer"
-prompt — right-click `PeterFan.app` → **Open**, or **System Settings → Privacy
-& Security → Open Anyway**. If macOS still refuses with "is damaged and can't
-be opened," clear the quarantine flag manually: `xattr -dr
-com.apple.quarantine PeterFan.app peterfan*`.
+not notarized — being open source doesn't change this; Gatekeeper only checks
+the binary's signature, not whether the source is public). First launch shows
+the standard "cannot verify developer" prompt — right-click `PeterFan.app` →
+**Open**, or **System Settings → Privacy & Security → Open Anyway**. If macOS
+still refuses with "is damaged and can't be opened," clear the quarantine flag
+manually: `xattr -dr com.apple.quarantine PeterFan.app peterfan*`. Prefer to
+skip this altogether? [Build from source](#build-from-source) instead —
+locally-built binaries are never quarantined in the first place.
 
 ---
 
@@ -155,7 +158,10 @@ root helper — no further prompts. Remove it with `peterfan uninstall-daemon`.
 
 ## Build from source
 
-Requires a [Rust toolchain](https://rustup.rs) (1.80+).
+Requires a [Rust toolchain](https://rustup.rs) (1.80+). Bonus: a binary you
+compile yourself never gets the "downloaded from the internet" quarantine
+flag, so it skips the Gatekeeper prompt from the [Download](#download)
+section entirely — no notarization needed either way.
 
 ```bash
 # Build everything
