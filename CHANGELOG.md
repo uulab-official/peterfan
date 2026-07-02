@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **설치된 팬 제어 데몬 버전 감지** — 앱 번들과 `/usr/local/bin/peterfand`의
+  버전이 다르면 팝오버 상단 Setup 영역과 Fan control note에서 데몬 업데이트
+  버튼을 바로 보여줘, 앱만 최신이고 데몬은 오래된 상태를 알아차릴 수 있게 함.
+
 ### Fixed
 - **로컬 DMG 재생성 중 `resource busy` 방지** — 이전에 만든 PeterFan DMG가
   repo의 `dist/` 아래에서 마운트된 채 남아 있어도 `scripts/make-dmg.sh`가

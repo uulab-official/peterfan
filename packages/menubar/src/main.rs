@@ -61,6 +61,7 @@ static CHART_RANGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::n
 /// Top Processes sort column (0 = CPU, 1 = Memory) — same "session-only
 /// display preference" reasoning as `CHART_RANGE`.
 static PROC_SORT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static DAEMON_VERSION_CACHE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
 
 #[derive(Clone, Copy, PartialEq)]
 enum ChartRange {
@@ -350,8 +351,13 @@ fn login_item_installed() -> bool {
     false
 }
 
-fn setup_tone(daemon_running: bool, login_item: bool, trial_expired: bool) -> &'static str {
-    if trial_expired {
+fn setup_tone(
+    daemon_running: bool,
+    daemon_update_needed: bool,
+    login_item: bool,
+    trial_expired: bool,
+) -> &'static str {
+    if trial_expired || daemon_update_needed {
         "warn"
     } else if daemon_running && login_item {
         "ok"
@@ -365,53 +371,119 @@ fn setup_tone(daemon_running: bool, login_item: bool, trial_expired: bool) -> &'
 fn setup_title(
     lang: ResolvedLanguage,
     daemon_running: bool,
+    daemon_update_needed: bool,
     login_item: bool,
     trial_expired: bool,
 ) -> &'static str {
-    match (lang, trial_expired, daemon_running, login_item) {
-        (ResolvedLanguage::Ko, true, _, _) => "라이선스 필요",
-        (ResolvedLanguage::Ko, false, true, true) => "준비 완료",
-        (ResolvedLanguage::Ko, false, true, false) => "팬 제어 준비됨",
-        (ResolvedLanguage::Ko, false, false, _) => "설정 필요",
-        (ResolvedLanguage::En, true, _, _) => "License needed",
-        (ResolvedLanguage::En, false, true, true) => "Ready",
-        (ResolvedLanguage::En, false, true, false) => "Fan control ready",
-        (ResolvedLanguage::En, false, false, _) => "Setup needed",
+    match (
+        lang,
+        trial_expired,
+        daemon_update_needed,
+        daemon_running,
+        login_item,
+    ) {
+        (ResolvedLanguage::Ko, true, _, _, _) => "라이선스 필요",
+        (ResolvedLanguage::Ko, false, true, _, _) => "데몬 업데이트 필요",
+        (ResolvedLanguage::Ko, false, false, true, true) => "준비 완료",
+        (ResolvedLanguage::Ko, false, false, true, false) => "팬 제어 준비됨",
+        (ResolvedLanguage::Ko, false, false, false, _) => "설정 필요",
+        (ResolvedLanguage::En, true, _, _, _) => "License needed",
+        (ResolvedLanguage::En, false, true, _, _) => "Daemon update needed",
+        (ResolvedLanguage::En, false, false, true, true) => "Ready",
+        (ResolvedLanguage::En, false, false, true, false) => "Fan control ready",
+        (ResolvedLanguage::En, false, false, false, _) => "Setup needed",
     }
 }
 
 fn setup_detail(
     lang: ResolvedLanguage,
     daemon_running: bool,
+    daemon_update_needed: bool,
+    daemon_version: Option<&str>,
     login_item: bool,
     trial_expired: bool,
 ) -> String {
-    match (lang, trial_expired, daemon_running, login_item) {
-        (ResolvedLanguage::Ko, true, _, _) => {
+    match (
+        lang,
+        trial_expired,
+        daemon_update_needed,
+        daemon_running,
+        login_item,
+    ) {
+        (ResolvedLanguage::Ko, true, _, _, _) => {
             format!("v{} · 체험판 만료", env!("CARGO_PKG_VERSION"))
         }
-        (ResolvedLanguage::Ko, false, true, true) => {
+        (ResolvedLanguage::Ko, false, true, _, _) => format!(
+            "앱 v{} · 데몬 v{}",
+            env!("CARGO_PKG_VERSION"),
+            daemon_version.unwrap_or("unknown")
+        ),
+        (ResolvedLanguage::Ko, false, false, true, true) => {
             format!("v{} · 자동 실행 켜짐", env!("CARGO_PKG_VERSION"))
         }
-        (ResolvedLanguage::Ko, false, true, false) => {
+        (ResolvedLanguage::Ko, false, false, true, false) => {
             format!("v{} · 자동 실행 꺼짐", env!("CARGO_PKG_VERSION"))
         }
-        (ResolvedLanguage::Ko, false, false, _) => {
+        (ResolvedLanguage::Ko, false, false, false, _) => {
             format!("v{} · 데몬 미실행", env!("CARGO_PKG_VERSION"))
         }
-        (ResolvedLanguage::En, true, _, _) => {
+        (ResolvedLanguage::En, true, _, _, _) => {
             format!("v{} · trial expired", env!("CARGO_PKG_VERSION"))
         }
-        (ResolvedLanguage::En, false, true, true) => {
+        (ResolvedLanguage::En, false, true, _, _) => format!(
+            "app v{} · daemon v{}",
+            env!("CARGO_PKG_VERSION"),
+            daemon_version.unwrap_or("unknown")
+        ),
+        (ResolvedLanguage::En, false, false, true, true) => {
             format!("v{} · launch at login on", env!("CARGO_PKG_VERSION"))
         }
-        (ResolvedLanguage::En, false, true, false) => {
+        (ResolvedLanguage::En, false, false, true, false) => {
             format!("v{} · launch at login off", env!("CARGO_PKG_VERSION"))
         }
-        (ResolvedLanguage::En, false, false, _) => {
+        (ResolvedLanguage::En, false, false, false, _) => {
             format!("v{} · daemon not running", env!("CARGO_PKG_VERSION"))
         }
     }
+}
+
+fn parse_daemon_version_output(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .find(|part| part.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .map(|part| part.trim().to_string())
+        .filter(|part| !part.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn installed_daemon_version() -> Option<String> {
+    let output = std::process::Command::new("/usr/local/bin/peterfand")
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_daemon_version_output(&String::from_utf8_lossy(&output.stdout))
+}
+#[cfg(not(target_os = "macos"))]
+fn installed_daemon_version() -> Option<String> {
+    None
+}
+
+fn cached_installed_daemon_version() -> Option<String> {
+    let now = Instant::now();
+    let mut cache = DAEMON_VERSION_CACHE
+        .lock()
+        .expect("daemon version cache poisoned");
+    if let Some((at, version)) = &*cache {
+        if now.duration_since(*at) < Duration::from_secs(30) {
+            return version.clone();
+        }
+    }
+    let version = installed_daemon_version();
+    *cache = Some((now, version.clone()));
+    version
 }
 
 fn active_profile_from_mode(mode: &str) -> Option<&str> {
@@ -1543,6 +1615,11 @@ fn update(app: &mut App) {
         })
         .unwrap_or_default();
     let daemon_running = !daemon_st.is_empty();
+    let daemon_version = cached_installed_daemon_version();
+    let daemon_update_needed = daemon_running
+        && daemon_version
+            .as_deref()
+            .is_some_and(|version| version != env!("CARGO_PKG_VERSION"));
     let active_profile = daemon_json
         .as_ref()
         .and_then(|v| v.get("mode").and_then(|m| m.as_str()))
@@ -1674,14 +1751,16 @@ fn update(app: &mut App) {
         "can_control": can_control,
         "ctl_status": ctl_status,
         "daemon_running": !daemon_st.is_empty(),
+        "daemon_version": daemon_version.clone(),
+        "daemon_update_needed": daemon_update_needed,
         "active_profile": active_profile,
         "active_control_mode": active_control_mode,
-        "fan_setup_needed": !daemon_running && can_control,
+        "fan_setup_needed": (!daemon_running || daemon_update_needed) && can_control,
         "login_item_installed": login_item,
         "app_version": env!("CARGO_PKG_VERSION"),
-        "setup_tone": setup_tone(!daemon_st.is_empty(), login_item, trial_expired),
-        "setup_title": setup_title(app.language.resolve(), !daemon_st.is_empty(), login_item, trial_expired),
-        "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), login_item, trial_expired),
+        "setup_tone": setup_tone(!daemon_st.is_empty(), daemon_update_needed, login_item, trial_expired),
+        "setup_title": setup_title(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, login_item, trial_expired),
+        "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, daemon_version.as_deref(), login_item, trial_expired),
         "license_line": license_line,
         "trial_expired": trial_expired,
         "buy_url": BUY_URL,
@@ -2618,6 +2697,16 @@ window.__pf={
          note.appendChild(document.createElement('br'));
          note.appendChild(fanControlSetupButton(LANG==='ko'?'데몬 업데이트':'Update Daemon'));
        }
+     } else if(d.daemon_update_needed){
+       note.style.display='';
+       note.innerHTML='';
+       var updateMsg=document.createElement('span');
+       updateMsg.textContent=LANG==='ko'
+         ?'설치된 팬 제어 데몬이 오래되었습니다.'
+         :'The installed fan-control daemon is out of date.';
+       note.appendChild(updateMsg);
+       note.appendChild(document.createElement('br'));
+       note.appendChild(fanControlSetupButton(LANG==='ko'?'데몬 업데이트':'Update Daemon'));
      } else if(!d.daemon_running){
        note.style.display='';
        note.innerHTML='';
@@ -2966,7 +3055,7 @@ function updateSetup(d){
   var fan=document.getElementById('setup-fan');
   if(fan){
     fan.style.display=d.fan_setup_needed?'':'none';
-    fan.textContent=LANG==='ko'?'설정':'Set Up';
+    fan.textContent=d.daemon_update_needed?(LANG==='ko'?'업데이트':'Update'):(LANG==='ko'?'설정':'Set Up');
   }
   var login=document.getElementById('setup-login');
   if(login){
@@ -3141,6 +3230,7 @@ mod tests {
             assert!(html.contains("togglelogin"));
             assert!(html.contains("checkupdates"));
             assert!(html.contains("updateSetup"));
+            assert!(html.contains("daemon_update_needed"));
             assert!(html.contains("cmd:fanhold:"));
             assert!(html.contains("cmd:fanauto:"));
             assert!(html.contains("savecurve:"));
@@ -3172,6 +3262,40 @@ mod tests {
         );
         assert_eq!(active_control_mode_from_mode("hold:45%"), "hold");
         assert_eq!(active_control_mode_from_mode(""), "");
+    }
+
+    #[test]
+    fn parse_daemon_version_output_finds_semver_token() {
+        assert_eq!(
+            parse_daemon_version_output("peterfand 1.26.13\n"),
+            Some("1.26.13".to_string())
+        );
+        assert_eq!(
+            parse_daemon_version_output("warning\npeterfand 1.26.8"),
+            Some("1.26.8".to_string())
+        );
+        assert_eq!(parse_daemon_version_output("peterfand\n"), None);
+    }
+
+    #[test]
+    fn setup_copy_calls_out_stale_daemon() {
+        assert_eq!(
+            setup_title(ResolvedLanguage::En, true, true, false, false),
+            "Daemon update needed"
+        );
+        assert_eq!(
+            setup_title(ResolvedLanguage::Ko, true, true, false, false),
+            "데몬 업데이트 필요"
+        );
+        assert!(setup_detail(
+            ResolvedLanguage::En,
+            true,
+            true,
+            Some("1.26.8"),
+            false,
+            false
+        )
+        .contains("daemon v1.26.8"));
     }
 
     #[test]
