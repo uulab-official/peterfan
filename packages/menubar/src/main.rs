@@ -391,6 +391,20 @@ fn display_temperature_source(lang: ResolvedLanguage, sensor: Option<&TempSensor
     }
 }
 
+fn temperature_row_label(lang: ResolvedLanguage, sensor: &TempSensor) -> String {
+    match sensor.id.as_str() {
+        "cpu.die" => match lang {
+            ResolvedLanguage::Ko => "CPU 평균".to_string(),
+            ResolvedLanguage::En => "CPU avg".to_string(),
+        },
+        "cpu.die.hot" => match lang {
+            ResolvedLanguage::Ko => "CPU 최고".to_string(),
+            ResolvedLanguage::En => "CPU hottest".to_string(),
+        },
+        _ => sensor.label.clone(),
+    }
+}
+
 fn setup_tone(
     daemon_running: bool,
     daemon_update_needed: bool,
@@ -1676,7 +1690,7 @@ fn update(app: &mut App) {
         .iter()
         .map(|t| {
             serde_json::json!({
-                "l": t.label,
+                "l": temperature_row_label(app.language.resolve(), t),
                 "c": format!("{:.0}°C", t.value.0),
                 "cls": temp_cls(t.value),
             })
@@ -3337,7 +3351,7 @@ function drawChart(id,data,color,fixedMax,fmt){
   if(stats){
     var avgV=data.reduce(function(a,b){return a+b;},0)/n;
     var peakV=Math.max.apply(null,data);
-    var avgLabel=LANG==='ko'?'평균':'avg';
+    var avgLabel=LANG==='ko'?'기간 평균':'range avg';
     var peakLabel=LANG==='ko'?'최고':'peak';
     stats.textContent=avgLabel+' '+cv._fmt(avgV)+'   ·   '+peakLabel+' '+cv._fmt(peakV);
   }
@@ -3455,6 +3469,8 @@ mod tests {
             assert!(html.contains(r#"id="cpu-val""#));
             assert!(html.contains(r#"id="temp-name""#));
             assert!(html.contains("d.temp_source"));
+            assert!(html.contains("기간 평균"));
+            assert!(html.contains("range avg"));
             assert!(html.contains(r#"id="ctl-status""#));
             assert!(html.contains(r#"id="disk-io-chart-stats""#));
             assert!(html.contains(r#"id="net-ip""#));
@@ -3588,6 +3604,31 @@ mod tests {
             "airport"
         );
         assert!(display_temperature_source(ResolvedLanguage::Ko, None).is_empty());
+    }
+
+    #[test]
+    fn temperature_row_labels_call_out_average_and_hottest() {
+        let cpu = temp("cpu.die", SensorKind::Cpu, 52.0);
+        let hot = temp("cpu.die.hot", SensorKind::Cpu, 67.0);
+        let airport = temp("airport", SensorKind::Other, 45.0);
+
+        assert_eq!(
+            temperature_row_label(ResolvedLanguage::Ko, &cpu),
+            "CPU 평균"
+        );
+        assert_eq!(temperature_row_label(ResolvedLanguage::En, &cpu), "CPU avg");
+        assert_eq!(
+            temperature_row_label(ResolvedLanguage::Ko, &hot),
+            "CPU 최고"
+        );
+        assert_eq!(
+            temperature_row_label(ResolvedLanguage::En, &hot),
+            "CPU hottest"
+        );
+        assert_eq!(
+            temperature_row_label(ResolvedLanguage::Ko, &airport),
+            "airport"
+        );
     }
 
     #[test]

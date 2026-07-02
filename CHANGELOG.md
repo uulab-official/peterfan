@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.24] — 온도 평균 라벨 명확화
+
+### Changed
+- **온도 평균 라벨 명확화** — 센서 목록에서 순간값은 `CPU 평균`/`CPU 최고`로
+  표시하고, 그래프 통계의 `평균`은 `기간 평균`으로 바꿔 다른 앱의 순간 CPU
+  average와 혼동되지 않게 함.
+
 ## [1.26.23] — CPU 평균 온도 계산 보정
 
 ### Fixed
