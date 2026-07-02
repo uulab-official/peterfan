@@ -22,6 +22,39 @@ if [[ ! -d "$APP" ]]; then
   exit 1
 fi
 
+detach_repo_peterfan_images() {
+  local devs dev
+  devs="$(
+    hdiutil info | awk -v root="$PETERFAN_REPO_ROOT/dist/" '
+      function flush() {
+        if (index(img, root) == 1 && img ~ /\/PeterFan.*\.dmg$/ && dev != "") {
+          print dev
+        }
+        img = ""
+        dev = ""
+      }
+      /^image-path[[:space:]]*:/ {
+        flush()
+        sub(/^image-path[[:space:]]*:[[:space:]]*/, "")
+        img = $0
+        next
+      }
+      /^\/dev\/disk[0-9]+([[:space:]]|$)/ {
+        dev = $1
+      }
+      /^=+$/ {
+        flush()
+      }
+      END {
+        flush()
+      }
+    '
+  )"
+  for dev in $devs; do
+    hdiutil detach "$dev" >/dev/null 2>&1 || true
+  done
+}
+
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
 
@@ -34,14 +67,24 @@ if [[ -f "$FIXER" ]]; then
   chmod +x "$STAGING/Open PeterFan if macOS blocks it.command"
 fi
 
+detach_repo_peterfan_images
 rm -f "$OUT"
-hdiutil create \
+if ! hdiutil create \
   -volname "PeterFan" \
   -fs HFS+ \
   -srcfolder "$STAGING" \
   -ov \
   -format UDZO \
-  "$OUT" >/dev/null
+  "$OUT" >/dev/null; then
+  detach_repo_peterfan_images
+  hdiutil create \
+    -volname "PeterFan" \
+    -fs HFS+ \
+    -srcfolder "$STAGING" \
+    -ov \
+    -format UDZO \
+    "$OUT" >/dev/null
+fi
 
 IDENTITY="${PETERFAN_SIGN_IDENTITY:-${MACOS_SIGN_IDENTITY:-}}"
 if [[ -n "$IDENTITY" && "$IDENTITY" != "-" ]] && command -v codesign >/dev/null 2>&1; then

@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **로컬 DMG 재생성 중 `resource busy` 방지** — 이전에 만든 PeterFan DMG가
+  repo의 `dist/` 아래에서 마운트된 채 남아 있어도 `scripts/make-dmg.sh`가
+  해당 이미지들만 안전하게 detach한 뒤 새 DMG를 만들도록 함.
+
 ## [1.26.13] — 메뉴바 팬 제어 UX 및 릴리즈 검증 개선
 
 ### Added
