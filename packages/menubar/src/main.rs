@@ -486,6 +486,12 @@ fn cached_installed_daemon_version() -> Option<String> {
     version
 }
 
+fn clear_daemon_version_cache() {
+    *DAEMON_VERSION_CACHE
+        .lock()
+        .expect("daemon version cache poisoned") = None;
+}
+
 fn active_profile_from_mode(mode: &str) -> Option<&str> {
     let mode = mode.split_whitespace().next().unwrap_or(mode);
     mode.strip_prefix("manual:")
@@ -2075,11 +2081,29 @@ fn install_fan_control() {
     {
         return;
     }
+    let old_version = cached_installed_daemon_version();
+    let updating_existing = old_version
+        .as_deref()
+        .is_some_and(|version| version != env!("CARGO_PKG_VERSION"));
+    clear_daemon_version_cache();
     let (ok, message) = match peterfan_platform::daemon_install::install(false) {
-        Ok(InstallOutcome::Installed) => (
-            true,
-            "Fan control enabled — the daemon is running.".to_string(),
-        ),
+        Ok(InstallOutcome::Installed) => {
+            clear_daemon_version_cache();
+            if updating_existing {
+                (
+                    true,
+                    format!(
+                        "Fan control updated — daemon is now v{}.",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                )
+            } else {
+                (
+                    true,
+                    "Fan control enabled — the daemon is running.".to_string(),
+                )
+            }
+        }
         Ok(InstallOutcome::InstalledButUnreachable) => (
             false,
             "Installed, but the daemon isn't answering yet — check /var/log/peterfand.err".into(),
@@ -2088,7 +2112,15 @@ fn install_fan_control() {
         Err(e) => (false, e),
     };
     INSTALL_FAN_CONTROL_IN_FLIGHT.store(false, Ordering::SeqCst);
-    notify_control_result("Enable Fan Control", ok, &message);
+    notify_control_result(
+        if updating_existing {
+            "Update Fan Control"
+        } else {
+            "Enable Fan Control"
+        },
+        ok,
+        &message,
+    );
 }
 #[cfg(not(target_os = "macos"))]
 fn install_fan_control() {}
