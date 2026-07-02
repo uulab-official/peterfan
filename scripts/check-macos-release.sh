@@ -7,7 +7,26 @@ set -euo pipefail
 # shellcheck disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/load-env.sh"
 
-ARTIFACT="${1:-}"
+ARTIFACT_ONLY=0
+ARTIFACT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --artifact-only)
+      ARTIFACT_ONLY=1
+      shift
+      ;;
+    -*)
+      echo "usage: scripts/check-macos-release.sh [--artifact-only] [PeterFan.dmg]" >&2
+      exit 2
+      ;;
+    *)
+      ARTIFACT="$1"
+      shift
+      ;;
+  esac
+done
+
 if [[ -z "$ARTIFACT" ]]; then
   if [[ -d "$PETERFAN_REPO_ROOT/dist" ]]; then
     ARTIFACT=$(
@@ -41,88 +60,98 @@ echo "PeterFan macOS release readiness"
 echo
 
 echo "Toolchain"
-for cmd in git cargo rustup lipo codesign xcrun shasum hdiutil; do
+if [[ "$ARTIFACT_ONLY" == "1" ]]; then
+  REQUIRED_CMDS=(codesign xcrun shasum hdiutil diskutil plutil spctl)
+else
+  REQUIRED_CMDS=(git cargo rustup lipo codesign xcrun shasum hdiutil diskutil plutil spctl)
+fi
+for cmd in "${REQUIRED_CMDS[@]}"; do
   if have_cmd "$cmd"; then
     ok "$cmd is available"
   else
     fail "$cmd is missing"
   fi
 done
-if have_cmd gh; then
-  ok "gh is available"
-else
-  warn "gh is missing; release upload will not work from this Mac"
-fi
 
-if have_cmd rustup; then
-  if rustup target list --installed | grep -qx 'aarch64-apple-darwin'; then
-    ok "Rust target installed: aarch64-apple-darwin"
+if [[ "$ARTIFACT_ONLY" != "1" ]]; then
+  if have_cmd gh; then
+    ok "gh is available"
   else
-    warn "Rust target missing: aarch64-apple-darwin; release script can install it"
+    warn "gh is missing; release upload will not work from this Mac"
   fi
-  if rustup target list --installed | grep -qx 'x86_64-apple-darwin'; then
-    ok "Rust target installed: x86_64-apple-darwin"
+
+  if have_cmd rustup; then
+    if rustup target list --installed | grep -qx 'aarch64-apple-darwin'; then
+      ok "Rust target installed: aarch64-apple-darwin"
+    else
+      warn "Rust target missing: aarch64-apple-darwin; release script can install it"
+    fi
+    if rustup target list --installed | grep -qx 'x86_64-apple-darwin'; then
+      ok "Rust target installed: x86_64-apple-darwin"
+    else
+      warn "Rust target missing: x86_64-apple-darwin; release script can install it"
+    fi
+  fi
+fi
+
+if [[ "$ARTIFACT_ONLY" != "1" ]]; then
+  echo
+  echo "Local-only files"
+  if [[ -f "$PETERFAN_REPO_ROOT/.env" ]]; then
+    ok ".env exists"
   else
-    warn "Rust target missing: x86_64-apple-darwin; release script can install it"
+    fail ".env is missing; copy .env.example and fill local values"
   fi
-fi
 
-echo
-echo "Local-only files"
-if [[ -f "$PETERFAN_REPO_ROOT/.env" ]]; then
-  ok ".env exists"
-else
-  fail ".env is missing; copy .env.example and fill local values"
-fi
-
-if git -C "$PETERFAN_REPO_ROOT" check-ignore -q .env; then
-  ok ".env is ignored by git"
-else
-  fail ".env is not ignored by git"
-fi
-
-if git -C "$PETERFAN_REPO_ROOT" check-ignore -q private; then
-  ok "private/ is ignored by git"
-else
-  fail "private/ is not ignored by git"
-fi
-
-if git -C "$PETERFAN_REPO_ROOT" check-ignore -q dist; then
-  ok "dist/ is ignored by git"
-else
-  fail "dist/ is not ignored by git"
-fi
-
-if [[ -f "$PETERFAN_REPO_ROOT/private/macos-signing/developer-id.key" ]]; then
-  ok "local Developer ID private key material exists under private/"
-else
-  warn "local CSR private key not found under private/; this is fine after Keychain import"
-fi
-
-echo
-echo "Signing settings"
-echo "  Bundle ID: ${PETERFAN_BUNDLE_ID:-kr.co.uulab.peterfan}"
-echo "  Team ID:   ${APPLE_TEAM_ID:-not set}"
-echo "  Notary:    ${NOTARYTOOL_PROFILE:-not set}"
-
-IDENTITY="${PETERFAN_SIGN_IDENTITY:-}"
-if [[ -z "$IDENTITY" && "$(uname)" == "Darwin" ]]; then
-  IDENTITY=$(security find-identity -p codesigning -v 2>/dev/null | awk -F\" '/Developer ID Application/ {print $2; exit}')
-fi
-if [[ -n "$IDENTITY" ]]; then
-  ok "Developer ID identity available: $IDENTITY"
-else
-  fail "Developer ID Application identity is not available in Keychain"
-fi
-
-if [[ "$(uname)" == "Darwin" ]] && have_cmd xcrun && [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
-  if xcrun notarytool history --keychain-profile "$NOTARYTOOL_PROFILE" >/dev/null 2>&1; then
-    ok "notarytool keychain profile works: $NOTARYTOOL_PROFILE"
+  if git -C "$PETERFAN_REPO_ROOT" check-ignore -q .env; then
+    ok ".env is ignored by git"
   else
-    fail "notarytool keychain profile is missing or invalid: $NOTARYTOOL_PROFILE"
+    fail ".env is not ignored by git"
   fi
-else
-  warn "notary profile check skipped"
+
+  if git -C "$PETERFAN_REPO_ROOT" check-ignore -q private; then
+    ok "private/ is ignored by git"
+  else
+    fail "private/ is not ignored by git"
+  fi
+
+  if git -C "$PETERFAN_REPO_ROOT" check-ignore -q dist; then
+    ok "dist/ is ignored by git"
+  else
+    fail "dist/ is not ignored by git"
+  fi
+
+  if [[ -f "$PETERFAN_REPO_ROOT/private/macos-signing/developer-id.key" ]]; then
+    ok "local Developer ID private key material exists under private/"
+  else
+    warn "local CSR private key not found under private/; this is fine after Keychain import"
+  fi
+
+  echo
+  echo "Signing settings"
+  echo "  Bundle ID: ${PETERFAN_BUNDLE_ID:-kr.co.uulab.peterfan}"
+  echo "  Team ID:   ${APPLE_TEAM_ID:-not set}"
+  echo "  Notary:    ${NOTARYTOOL_PROFILE:-not set}"
+
+  IDENTITY="${PETERFAN_SIGN_IDENTITY:-}"
+  if [[ -z "$IDENTITY" && "$(uname)" == "Darwin" ]]; then
+    IDENTITY=$(security find-identity -p codesigning -v 2>/dev/null | awk -F\" '/Developer ID Application/ {print $2; exit}')
+  fi
+  if [[ -n "$IDENTITY" ]]; then
+    ok "Developer ID identity available: $IDENTITY"
+  else
+    fail "Developer ID Application identity is not available in Keychain"
+  fi
+
+  if [[ "$(uname)" == "Darwin" ]] && have_cmd xcrun && [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
+    if xcrun notarytool history --keychain-profile "$NOTARYTOOL_PROFILE" >/dev/null 2>&1; then
+      ok "notarytool keychain profile works: $NOTARYTOOL_PROFILE"
+    else
+      fail "notarytool keychain profile is missing or invalid: $NOTARYTOOL_PROFILE"
+    fi
+  else
+    warn "notary profile check skipped"
+  fi
 fi
 
 echo
@@ -204,8 +233,16 @@ fi
 
 echo
 if [[ "$FAILED" == "0" ]]; then
-  ok "release machine is ready"
+  if [[ "$ARTIFACT_ONLY" == "1" ]]; then
+    ok "release artifact is ready"
+  else
+    ok "release machine is ready"
+  fi
 else
-  fail "release machine needs attention"
+  if [[ "$ARTIFACT_ONLY" == "1" ]]; then
+    fail "release artifact needs attention"
+  else
+    fail "release machine needs attention"
+  fi
   exit 1
 fi

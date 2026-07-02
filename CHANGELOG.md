@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **GitHub Actions 릴리즈 DMG 검증 분리** — CI에서는 로컬 `.env`,
+  `private/`, Keychain notary profile까지 요구하지 않고 DMG artifact 자체의
+  서명/스테이플/Gatekeeper/HFS+만 검사하도록
+  `scripts/check-macos-release.sh --artifact-only`를 추가.
+- **공식 릴리즈 checksum 누락 방지** — GitHub Actions publish 단계에서
+  공식 저장소 릴리즈는 검증된 DMG가 없으면 실패하게 하고, `checksums.txt`가
+  DMG 없이 덮어써지는 문제를 막음.
+
 ## [1.26.12] — macOS 배포 서명/공증 및 OTA 업데이트 안정화
 
 ### Added

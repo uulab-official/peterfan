@@ -249,7 +249,7 @@ jobs:
           if [[ -z "$DMG" ]]; then
             exit 0
           fi
-          if scripts/check-macos-release.sh "$DMG"; then
+          if scripts/check-macos-release.sh --artifact-only "$DMG"; then
             echo "Verified distributable DMG: $DMG"
           else
             echo "DMG is not a verified notarized release artifact; removing it so GitHub Release does not publish a broken installer." >&2
@@ -267,6 +267,7 @@ jobs:
         with:
           name: release-macos-dmg
           path: dist/PeterFan-*.dmg
+          if-no-files-found: ignore
 
   # ── 5. Windows ─────────────────────────────────────────────────────────────
   build-windows:
@@ -322,8 +323,22 @@ jobs:
 
       - name: Generate SHA256 checksums
         working-directory: dist
+        shell: bash
         run: |
-          sha256sum *.tar.gz *.zip *.dmg 2>/dev/null | tee checksums.txt || true
+          shopt -s nullglob
+          if [[ "${GITHUB_REPOSITORY}" == "uulab-official/peterfan" ]]; then
+            dmg_files=(PeterFan-*.dmg)
+            if [[ "${#dmg_files[@]}" == "0" ]]; then
+              echo "error: official PeterFan releases must include a verified notarized DMG." >&2
+              exit 1
+            fi
+          fi
+          release_files=(*.tar.gz *.zip *.dmg)
+          if [[ "${#release_files[@]}" == "0" ]]; then
+            echo "error: no release files were downloaded." >&2
+            exit 1
+          fi
+          sha256sum "${release_files[@]}" | sort -k2 | tee checksums.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
