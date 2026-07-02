@@ -414,7 +414,7 @@ fn setup_detail(
             format!("v{} · 체험판 만료", env!("CARGO_PKG_VERSION"))
         }
         (ResolvedLanguage::Ko, false, true, _, _) => format!(
-            "앱 v{} · 데몬 v{}",
+            "앱 v{} · 데몬 v{} · 업데이트 필요",
             env!("CARGO_PKG_VERSION"),
             daemon_version.unwrap_or("unknown")
         ),
@@ -439,7 +439,7 @@ fn setup_detail(
             format!("v{} · trial expired", env!("CARGO_PKG_VERSION"))
         }
         (ResolvedLanguage::En, false, true, _, _) => format!(
-            "app v{} · daemon v{}",
+            "app v{} · daemon v{} · update needed",
             env!("CARGO_PKG_VERSION"),
             daemon_version.unwrap_or("unknown")
         ),
@@ -3495,6 +3495,15 @@ mod tests {
             false
         )
         .contains("daemon v1.26.8"));
+        assert!(setup_detail(
+            ResolvedLanguage::Ko,
+            true,
+            true,
+            Some("1.26.8"),
+            false,
+            false
+        )
+        .contains("업데이트 필요"));
     }
 
     #[test]

@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.20] — 데몬 업데이트 필요 상태 문구 개선
+
+### Changed
+- **데몬 업데이트 필요 상태 문구 강화** — 앱/데몬 버전이 다를 때 Setup 상세 줄에
+  `업데이트 필요`를 함께 표시해, 어떤 조치가 필요한지 더 바로 보이게 함.
+
 ## [1.26.19] — Setup 상태 버전 표시 개선
 
 ### Changed
