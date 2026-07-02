@@ -57,7 +57,7 @@ pub type NamedCurves = BTreeMap<String, CustomCurveConfig>;
 /// cooldown_secs = 300
 /// interval_secs = 10
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AlertConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,8 +83,12 @@ impl Default for AlertConfig {
 }
 
 impl AlertConfig {
+    /// True only when every field (including `cooldown_secs`/`interval_secs`)
+    /// still matches the default — checking thresholds alone would drop a
+    /// user's custom cooldown/interval on save just because no threshold was
+    /// ever set.
     pub fn is_empty(&self) -> bool {
-        self.cpu_pct.is_none() && self.memory_pct.is_none() && self.temp_c.is_none()
+        *self == Self::default()
     }
 }
 
@@ -451,6 +455,26 @@ mod tests {
         assert!(cfg.rules.is_empty());
         let back = Config::from_toml(&cfg.to_toml()).unwrap();
         assert_eq!(back.profile, Profile::Gaming);
+    }
+
+    #[test]
+    fn alert_config_with_only_cooldown_customized_is_not_empty() {
+        // A user who sets only cooldown/interval (no threshold) must not
+        // have the whole [alert] section silently dropped on save.
+        let alert = AlertConfig {
+            cooldown_secs: 600,
+            ..Default::default()
+        };
+        assert!(!alert.is_empty());
+
+        let cfg = Config {
+            alert,
+            ..Default::default()
+        };
+        let toml = cfg.to_toml();
+        assert!(toml.contains("[alert]"));
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(back.alert.cooldown_secs, 600);
     }
 
     #[test]

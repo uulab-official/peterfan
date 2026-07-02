@@ -157,6 +157,18 @@ static APPLIED_H: AtomicU32 = AtomicU32::new(0);
 static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Last control result, shown in the popover.
 static STATUS: Mutex<String> = Mutex::new(String::new());
+/// Guards `install_fan_control()` process-wide. The popover and Detail
+/// Window each track their own "installing…" button state in per-webview JS
+/// (`FAN_CONTROL_FIX_PENDING`), which doesn't stop both windows from firing
+/// the install thread within the same tick and stacking two macOS
+/// admin-password dialogs.
+static INSTALL_FAN_CONTROL_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+/// Shadow of `apply_local`'s per-fan pins, consulted only when no daemon is
+/// reachable (`daemon_fan_overrides()` always reports empty in that case,
+/// since it's a daemon IPC query). Without this, pinning a fan via a direct
+/// SMC write leaves the UI reporting "Auto" on the very next tick even
+/// though the fan is genuinely still pinned in hardware.
+static LOCAL_FAN_OVERRIDES: Mutex<Option<std::collections::HashMap<String, u8>>> = Mutex::new(None);
 
 /// IDs of the tray context-menu items so we can identify them in MenuEvent.
 struct TrayMenu {
@@ -423,10 +435,18 @@ fn activate_license(key: &str) -> (Entitlement, String) {
                 format!("licensed to {email}"),
             )
         }
-        license::LicenseStatus::Expired { email, .. } => (
-            resolve_entitlement(),
-            format!("license for {email} has expired"),
-        ),
+        license::LicenseStatus::Expired { email, .. } => {
+            // Unlike Invalid (garbage input, not worth remembering), this is
+            // a genuine, validly-signed key that just aged out — save it so
+            // it doesn't vanish from config the moment the popover closes.
+            let mut cfg = peterfan_platform::config::load();
+            cfg.license.key = Some(key.to_string());
+            let _ = peterfan_platform::config::save(&cfg);
+            (
+                resolve_entitlement(),
+                format!("license for {email} has expired"),
+            )
+        }
         license::LicenseStatus::Invalid(reason) => (resolve_entitlement(), reason),
     }
 }
@@ -1388,7 +1408,18 @@ fn update(app: &mut App) {
         .collect();
 
     // Fans: every fan listed with its own RPM and a speed bar (rpm / max).
-    let fan_overrides = daemon_fan_overrides();
+    // Daemon status: poll every tick so the popover always shows current mode.
+    let daemon_st = daemon_status_str();
+    let daemon_running = !daemon_st.is_empty();
+    // `daemon_fan_overrides()` is a daemon IPC query — it reports empty both
+    // when there genuinely are no overrides AND when there's no daemon to
+    // ask, so without a daemon fall back to the local shadow state that
+    // `apply_local` maintains for its one-shot direct writes.
+    let fan_overrides = if daemon_running {
+        daemon_fan_overrides()
+    } else {
+        local_fan_overrides()
+    };
     let fan_rows: Vec<_> = fans
         .iter()
         .map(|f| {
@@ -1411,8 +1442,6 @@ fn update(app: &mut App) {
         })
         .collect();
 
-    // Daemon status: poll every tick so the popover always shows current mode.
-    let daemon_st = daemon_status_str();
     // Persistent fan control is the paid feature — read-only metrics above
     // stay visible regardless of entitlement.
     let can_control = (app.provider.capabilities().control_fans || !daemon_st.is_empty())
@@ -1651,10 +1680,57 @@ fn apply_local(provider: &dyn HardwareProvider, cmd: &str) -> String {
     };
 
     match result {
-        Ok(()) => format!("{label} — applied locally"),
+        Ok(()) => {
+            // Mirror the daemon's own bookkeeping locally so the UI's per-fan
+            // "manual" flag survives past the next tick even without a
+            // daemon running to ask (see `local_fan_overrides`).
+            if cmd == "auto" || cmd.starts_with("profile:") || cmd.starts_with("hold:") {
+                clear_local_fan_overrides();
+            } else if let Some(rest) = cmd.strip_prefix("fanhold:") {
+                if let Some((id, duty)) = rest
+                    .rsplit_once(':')
+                    .and_then(|(id, pct)| pct.parse::<u8>().ok().map(|d| (id, d.min(100))))
+                {
+                    set_local_fan_override(id, Some(duty));
+                }
+            } else if let Some(id) = cmd.strip_prefix("fanauto:") {
+                set_local_fan_override(id, None);
+            }
+            format!("{label} — applied locally")
+        }
         Err(CoreError::PermissionDenied(_)) => "start peterfand (needs root)".into(),
         Err(e) => format!("error: {e}"),
     }
+}
+
+/// Read the local per-fan-pin shadow state (see `LOCAL_FAN_OVERRIDES`).
+fn local_fan_overrides() -> std::collections::HashMap<String, u8> {
+    LOCAL_FAN_OVERRIDES
+        .lock()
+        .expect("local fan overrides poisoned")
+        .clone()
+        .unwrap_or_default()
+}
+
+fn set_local_fan_override(id: &str, pct: Option<u8>) {
+    let mut guard = LOCAL_FAN_OVERRIDES
+        .lock()
+        .expect("local fan overrides poisoned");
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    match pct {
+        Some(d) => {
+            map.insert(id.to_string(), d);
+        }
+        None => {
+            map.remove(id);
+        }
+    }
+}
+
+fn clear_local_fan_overrides() {
+    *LOCAL_FAN_OVERRIDES
+        .lock()
+        .expect("local fan overrides poisoned") = Some(std::collections::HashMap::new());
 }
 
 #[cfg(target_os = "macos")]
@@ -1772,6 +1848,16 @@ fn toggle_launch_at_login(_tm: &TrayMenu, _metric: &str) {}
 #[cfg(target_os = "macos")]
 fn install_fan_control() {
     use peterfan_platform::daemon_install::InstallOutcome;
+    // compare_exchange (not a plain store) so a second concurrent call —
+    // fired from the other window before this one's dialog even appears —
+    // finds the flag already set and bails instead of piling on a second
+    // admin-password prompt.
+    if INSTALL_FAN_CONTROL_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
     let (ok, message) = match peterfan_platform::daemon_install::install(false) {
         Ok(InstallOutcome::Installed) => (
             true,
@@ -1784,6 +1870,7 @@ fn install_fan_control() {
         Ok(InstallOutcome::DryRun(_)) => unreachable!("menu bar never passes dry_run=true"),
         Err(e) => (false, e),
     };
+    INSTALL_FAN_CONTROL_IN_FLIGHT.store(false, Ordering::SeqCst);
     notify_control_result("Enable Fan Control", ok, &message);
 }
 #[cfg(not(target_os = "macos"))]
@@ -2810,8 +2897,16 @@ mod tests {
         assert_eq!(*h.minute.back().unwrap(), (RANGE_2M_CAP * 3 - 1) as f32);
     }
 
+    // `apply_local` mutates the process-wide `LOCAL_FAN_OVERRIDES` static as
+    // a side effect for global-mode commands (auto/profile/hold clear it).
+    // Cargo runs tests in this file concurrently on multiple threads, so any
+    // test asserting on that shadow state must serialize against the others
+    // via this lock, or their clears/inserts can interleave and flake.
+    static FAN_OVERRIDE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn apply_local_handles_hold_preset() {
+        let _guard = FAN_OVERRIDE_TEST_LOCK.lock().unwrap();
         let provider = peterfan_platform::mock();
         let result = apply_local(provider.as_ref(), "hold:50");
         assert!(
@@ -2831,10 +2926,32 @@ mod tests {
 
     #[test]
     fn apply_local_still_handles_auto_and_profile() {
+        let _guard = FAN_OVERRIDE_TEST_LOCK.lock().unwrap();
         let provider = peterfan_platform::mock();
         assert!(apply_local(provider.as_ref(), "auto").contains("applied locally"));
         assert!(apply_local(provider.as_ref(), "profile:balanced").contains("applied locally"));
         assert_eq!(apply_local(provider.as_ref(), "bogus"), "unknown command");
+    }
+
+    #[test]
+    fn apply_local_fanhold_remembers_pin_without_a_daemon() {
+        let _guard = FAN_OVERRIDE_TEST_LOCK.lock().unwrap();
+        clear_local_fan_overrides();
+        let provider = peterfan_platform::mock();
+        let fan_id = provider.fans().unwrap()[0].id.clone();
+
+        let result = apply_local(provider.as_ref(), &format!("fanhold:{fan_id}:30"));
+        assert!(result.contains("applied locally"), "unexpected: {result}");
+        assert_eq!(local_fan_overrides().get(&fan_id), Some(&30));
+
+        // The per-fan "Auto" toggle must clear just that fan's pin, and a
+        // global command must clear all of them — matching the daemon.
+        apply_local(provider.as_ref(), &format!("fanauto:{fan_id}"));
+        assert!(!local_fan_overrides().contains_key(&fan_id));
+
+        apply_local(provider.as_ref(), &format!("fanhold:{fan_id}:30"));
+        apply_local(provider.as_ref(), "auto");
+        assert!(local_fan_overrides().is_empty());
     }
 
     #[test]
