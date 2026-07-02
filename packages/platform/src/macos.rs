@@ -8,10 +8,9 @@
 //! Honesty notes:
 //! - We only report temperature sensors that return a plausible (non-zero)
 //!   reading. On Apple Silicon the SMC does **not** expose the classic CPU/GPU
-//!   die-temperature keys (they read 0), so those are filtered out; sensors the
-//!   chip *does* expose (e.g. airflow/airport, palm rest, memory) are shown.
-//!   Reading CPU/GPU die temps on Apple Silicon needs the IOHID thermal-sensor
-//!   API — a separate milestone (see `docs/ROADMAP.md`).
+//!   die-temperature keys (they read 0), so we read Apple Silicon CPU die
+//!   temperatures through IOHID and show the remaining SMC board/ambient
+//!   sensors that return plausible values.
 //! - Fan **control** (SMC writes) is not implemented yet, so fans report
 //!   `controllable: false`.
 
@@ -28,6 +27,20 @@ use peterfan_core::error::{CoreError, Result};
 use peterfan_core::provider::Capabilities;
 use peterfan_core::types::{Celsius, Fan, HardwareInfo, SensorKind, TempSensor};
 use peterfan_core::HardwareProvider;
+
+fn deduped_name_average_max<'a, I>(temps: I) -> Option<f32>
+where
+    I: IntoIterator<Item = (&'a str, f32)>,
+{
+    let mut by_name = std::collections::BTreeMap::<&str, f32>::new();
+    for (name, temp) in temps {
+        by_name
+            .entry(name)
+            .and_modify(|existing| *existing = existing.max(temp))
+            .or_insert(temp);
+    }
+    (!by_name.is_empty()).then(|| by_name.values().sum::<f32>() / by_name.len() as f32)
+}
 
 pub struct MacosProvider {
     /// Whether the SMC could be opened on this machine (probed once at startup).
@@ -99,17 +112,17 @@ impl HardwareProvider for MacosProvider {
         }
         let mut temps: Vec<TempSensor> = Vec::new();
 
-        // Real CPU/GPU die temperatures via IOHID (the SMC doesn't expose these
-        // on Apple Silicon). Aggregate the per-cluster die sensors.
+        // Real CPU die temperatures via IOHID (the SMC doesn't expose these on
+        // Apple Silicon). `tcal` is a calibration reading, not a die sensor;
+        // duplicate service entries are collapsed by sensor name.
         let hid = crate::macos_hid::read_temps();
-        let dies: Vec<f32> = hid
+        let dies: Vec<(&str, f32)> = hid
             .iter()
-            .filter(|(n, _)| n.contains("tdie") || n.contains("tcal"))
-            .map(|(_, t)| *t)
+            .filter(|(n, _)| n.contains("tdie"))
+            .map(|(n, t)| (n.as_str(), *t))
             .collect();
-        if !dies.is_empty() {
-            let avg = dies.iter().sum::<f32>() / dies.len() as f32;
-            let hot = dies.iter().cloned().fold(0.0, f32::max);
+        if let Some(avg) = deduped_name_average_max(dies.iter().copied()) {
+            let hot = dies.iter().map(|(_, t)| *t).fold(0.0, f32::max);
             temps.push(TempSensor {
                 id: "cpu.die".into(),
                 label: "CPU".into(),
@@ -384,4 +397,24 @@ fn sysctl_u64(name: &str) -> Option<u64> {
         return None;
     }
     Some(val)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn deduped_name_average_uses_one_value_per_sensor() {
+        let avg = super::deduped_name_average_max([
+            ("PMU tdie1", 50.0),
+            ("PMU tdie1", 52.0),
+            ("PMU tdie2", 56.0),
+        ])
+        .unwrap();
+
+        assert!((avg - 54.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn deduped_name_average_empty_input_is_none() {
+        assert!(super::deduped_name_average_max([]).is_none());
+    }
 }

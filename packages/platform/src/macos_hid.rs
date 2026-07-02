@@ -95,3 +95,14 @@ pub fn read_temps() -> Vec<(String, f32)> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "prints local IOHID temperature sensor names for manual debugging"]
+    fn print_hid_temperature_sensors() {
+        for (name, temp) in super::read_temps() {
+            println!("{temp:6.2}  {name}");
+        }
+    }
+}

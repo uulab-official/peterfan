@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.23] — CPU 평균 온도 계산 보정
+
+### Fixed
+- **CPU 평균 온도 계산 보정** — Apple Silicon IOHID 센서에서 `PMU tcal` 보정
+  센서를 CPU 평균에 섞지 않고, 중복으로 들어오는 같은 `PMU tdie*` 센서는
+  센서명 기준으로 한 번만 반영해 평균 온도 표시가 외부 모니터링 앱의 CPU
+  average 기준에 더 가깝게 맞도록 함.
+
 ## [1.26.22] — 온도 표시 출처 명확화
 
 ### Changed
