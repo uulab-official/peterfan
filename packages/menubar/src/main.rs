@@ -419,10 +419,18 @@ fn setup_detail(
             daemon_version.unwrap_or("unknown")
         ),
         (ResolvedLanguage::Ko, false, false, true, true) => {
-            format!("v{} · 자동 실행 켜짐", env!("CARGO_PKG_VERSION"))
+            format!(
+                "앱 v{} · 데몬 v{} · 자동 실행 켜짐",
+                env!("CARGO_PKG_VERSION"),
+                daemon_version.unwrap_or("unknown")
+            )
         }
         (ResolvedLanguage::Ko, false, false, true, false) => {
-            format!("v{} · 자동 실행 꺼짐", env!("CARGO_PKG_VERSION"))
+            format!(
+                "앱 v{} · 데몬 v{} · 자동 실행 꺼짐",
+                env!("CARGO_PKG_VERSION"),
+                daemon_version.unwrap_or("unknown")
+            )
         }
         (ResolvedLanguage::Ko, false, false, false, _) => {
             format!("v{} · 데몬 미실행", env!("CARGO_PKG_VERSION"))
@@ -436,10 +444,18 @@ fn setup_detail(
             daemon_version.unwrap_or("unknown")
         ),
         (ResolvedLanguage::En, false, false, true, true) => {
-            format!("v{} · launch at login on", env!("CARGO_PKG_VERSION"))
+            format!(
+                "app v{} · daemon v{} · login on",
+                env!("CARGO_PKG_VERSION"),
+                daemon_version.unwrap_or("unknown")
+            )
         }
         (ResolvedLanguage::En, false, false, true, false) => {
-            format!("v{} · launch at login off", env!("CARGO_PKG_VERSION"))
+            format!(
+                "app v{} · daemon v{} · login off",
+                env!("CARGO_PKG_VERSION"),
+                daemon_version.unwrap_or("unknown")
+            )
         }
         (ResolvedLanguage::En, false, false, false, _) => {
             format!("v{} · daemon not running", env!("CARGO_PKG_VERSION"))
@@ -3479,6 +3495,33 @@ mod tests {
             false
         )
         .contains("daemon v1.26.8"));
+    }
+
+    #[test]
+    fn setup_detail_shows_daemon_version_when_ready() {
+        let en = setup_detail(
+            ResolvedLanguage::En,
+            true,
+            false,
+            Some("1.26.18"),
+            true,
+            false,
+        );
+        assert!(en.contains("app v"));
+        assert!(en.contains("daemon v1.26.18"));
+        assert!(en.contains("login on"));
+
+        let ko = setup_detail(
+            ResolvedLanguage::Ko,
+            true,
+            false,
+            Some("1.26.18"),
+            false,
+            false,
+        );
+        assert!(ko.contains("앱 v"));
+        assert!(ko.contains("데몬 v1.26.18"));
+        assert!(ko.contains("자동 실행 꺼짐"));
     }
 
     #[test]
