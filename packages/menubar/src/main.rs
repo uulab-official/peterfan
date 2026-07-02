@@ -2177,6 +2177,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace("Open Detailed Window…", "상세 창 열기…")
             .replace(">Quit PeterFan<", ">PeterFan 종료<")
             .replace(">Fan Curve<", ">팬 커브<")
+            .replace(">Selected point<", ">선택한 점<")
             .replace(">Reset<", ">초기화<")
             .replace(">Remove Point<", ">점 삭제<")
             .replace(">Save &amp; Apply<", ">저장 및 적용<")
@@ -2254,6 +2255,11 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .note-fix-btn{margin-top:5px;background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:10px;font-weight:600;padding:5px 10px;border-radius:6px;cursor:pointer;}
 .note-fix-btn:hover{background:rgba(91,157,255,.32);}
 #curve-canvas{width:100%;height:120px;display:block;border-radius:6px;background:var(--track);cursor:crosshair;touch-action:none;margin-top:8px;}
+.curve-point-row{display:flex;align-items:center;gap:5px;margin-top:8px;font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums;}
+.curve-point-row .cpr-arrow{color:var(--dim);}
+.curve-point-row input[type=number]{width:40px;background:var(--track);border:1px solid transparent;border-radius:4px;color:var(--text);font:inherit;font-size:9px;font-variant-numeric:tabular-nums;text-align:center;padding:3px 0;-moz-appearance:textfield;}
+.curve-point-row input[type=number]::-webkit-inner-spin-button,.curve-point-row input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}
+.curve-point-row input[type=number]:focus{border-color:var(--accent);outline:none;}
 .curve-actions{display:flex;gap:6px;margin-top:8px;}
 .curve-actions button{flex:1;background:var(--chip-bg);border:1px solid transparent;color:var(--text);font:inherit;font-size:10px;font-weight:600;padding:6px 4px;border-radius:7px;cursor:pointer;transition:background .15s;}
 .curve-actions button:hover{background:var(--chip-hover);}
@@ -2296,6 +2302,12 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="content"><div class="head"><span class="name">Fan Curve</span></div>
 <canvas id="curve-canvas"></canvas>
 <div class="sub" id="curve-hint">Drag points to reshape. Click empty space to add a point.</div>
+<div class="curve-point-row" id="curve-point-row" style="display:none">
+<span id="curve-point-label">Selected point</span>
+<input type="number" id="cp-temp" min="0" max="100"><span>°C</span>
+<span class="cpr-arrow">→</span>
+<input type="number" id="cp-duty" min="0" max="100"><span>%</span>
+</div>
 <div class="curve-actions">
 <button onclick="resetCurve()">Reset</button>
 <button onclick="removeCurvePoint()">Remove Point</button>
@@ -2469,6 +2481,7 @@ window.__pf={
    }
    initCurveEditor();
    drawCurveEditor();
+   syncCurvePointInputs();
  } else {
    // Persistent custom curves are the same paid feature as fan cards —
    // hide the editor once the trial expires so it can't be used as a
@@ -2638,6 +2651,31 @@ function findNearestCurvePoint(cv,e){
   });
   return best;
 }
+// Dragging a point on the canvas is inherently approximate (mouse pixels,
+// not degrees/percent) — these two number inputs mirror whichever point was
+// last touched so an exact temp/duty pair can be typed instead of dragged.
+function syncCurvePointInputs(){
+  var row=document.getElementById('curve-point-row');
+  var tIn=document.getElementById('cp-temp'), dIn=document.getElementById('cp-duty');
+  if(!row||!tIn||!dIn)return;
+  if(!CURVE_POINTS||CURVE_LAST<0||CURVE_LAST>=CURVE_POINTS.length){
+    row.style.display='none';
+    return;
+  }
+  row.style.display='';
+  // Don't clobber an in-progress keystroke with the same values it already has.
+  if(tIn!==document.activeElement)tIn.value=CURVE_POINTS[CURVE_LAST][0];
+  if(dIn!==document.activeElement)dIn.value=CURVE_POINTS[CURVE_LAST][1];
+}
+function commitCurvePointInput(){
+  if(!CURVE_POINTS||CURVE_LAST<0||CURVE_LAST>=CURVE_POINTS.length)return;
+  var tIn=document.getElementById('cp-temp'), dIn=document.getElementById('cp-duty');
+  var t=parseInt(tIn.value,10), d=parseInt(dIn.value,10);
+  if(!isNaN(t))CURVE_POINTS[CURVE_LAST][0]=Math.max(CURVE_TMIN,Math.min(CURVE_TMAX,t));
+  if(!isNaN(d))CURVE_POINTS[CURVE_LAST][1]=Math.max(0,Math.min(100,d));
+  drawCurveEditor();
+  syncCurvePointInputs();
+}
 function initCurveEditor(){
   var cv=document.getElementById('curve-canvas');
   if(!cv||cv.dataset.bound)return;
@@ -2650,17 +2688,27 @@ function initCurveEditor(){
       drawCurveEditor();
     }
     CURVE_DRAG=idx;CURVE_LAST=idx;
+    syncCurvePointInputs();
   });
   cv.addEventListener('mousemove',function(e){
     if(CURVE_DRAG<0)return;
     CURVE_POINTS[CURVE_DRAG]=curveEventToPoint(cv,e);
     drawCurveEditor();
+    syncCurvePointInputs();
   });
   window.addEventListener('mouseup',function(){CURVE_DRAG=-1;});
+  var tIn=document.getElementById('cp-temp'), dIn=document.getElementById('cp-duty');
+  [tIn,dIn].forEach(function(inp){
+    if(!inp)return;
+    inp.addEventListener('change',commitCurvePointInput);
+    inp.addEventListener('keydown',function(e){if(e.key==='Enter')inp.blur();});
+  });
 }
 function resetCurve(){
   if(CURVE_POINTS_SAVED)CURVE_POINTS=CURVE_POINTS_SAVED.map(function(p){return p.slice();});
+  CURVE_LAST=-1;
   drawCurveEditor();
+  syncCurvePointInputs();
 }
 function removeCurvePoint(){
   if(!CURVE_POINTS||CURVE_POINTS.length<=2)return;
@@ -2668,6 +2716,7 @@ function removeCurvePoint(){
   CURVE_POINTS.splice(idx,1);
   CURVE_LAST=-1;
   drawCurveEditor();
+  syncCurvePointInputs();
 }
 function saveCurve(){
   if(!CURVE_POINTS||CURVE_POINTS.length<2)return;
@@ -2833,6 +2882,8 @@ mod tests {
         // actually translate.
         assert!(!ko.contains(">Fan control<"));
         assert!(!ko.contains(">Quit PeterFan<"));
+        assert!(ko.contains(">선택한 점<"));
+        assert!(ko.contains(r#"id="cp-temp""#) && ko.contains(r#"id="cp-duty""#));
         // Both languages must still be well-formed enough to contain the
         // dynamic element IDs the JS `update()` function looks up — a typo'd
         // replacement (e.g. matching too broadly) would silently break these.
