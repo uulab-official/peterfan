@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **메뉴바 팝오버 상단 Setup 상태 스트립 추가** — 팬 제어 데몬 상태,
+  로그인 자동 실행 상태, 현재 앱 버전을 첫 화면에서 바로 확인하고,
+  팬 제어 설정/자동 실행 토글/업데이트 확인을 오른쪽 클릭 메뉴 없이
+  실행할 수 있게 함.
+
 ### Fixed
 - **GitHub Actions 릴리즈 DMG 검증 분리** — CI에서는 로컬 `.env`,
   `private/`, Keychain notary profile까지 요구하지 않고 DMG artifact 자체의

@@ -341,6 +341,63 @@ fn save_language(language: Language) {
     let _ = peterfan_platform::config::save(&cfg);
 }
 
+#[cfg(target_os = "macos")]
+fn login_item_installed() -> bool {
+    peterfan_platform::login_item::is_installed()
+}
+#[cfg(not(target_os = "macos"))]
+fn login_item_installed() -> bool {
+    false
+}
+
+fn setup_tone(daemon_running: bool, login_item: bool, trial_expired: bool) -> &'static str {
+    if trial_expired {
+        "warn"
+    } else if daemon_running && login_item {
+        "ok"
+    } else if daemon_running {
+        "info"
+    } else {
+        "warn"
+    }
+}
+
+fn setup_title(
+    lang: ResolvedLanguage,
+    daemon_running: bool,
+    login_item: bool,
+    trial_expired: bool,
+) -> &'static str {
+    match (lang, trial_expired, daemon_running, login_item) {
+        (ResolvedLanguage::Ko, true, _, _) => "라이선스 필요",
+        (ResolvedLanguage::Ko, false, true, true) => "준비 완료",
+        (ResolvedLanguage::Ko, false, true, false) => "팬 제어 준비됨",
+        (ResolvedLanguage::Ko, false, false, _) => "설정 필요",
+        (ResolvedLanguage::En, true, _, _) => "License needed",
+        (ResolvedLanguage::En, false, true, true) => "Ready",
+        (ResolvedLanguage::En, false, true, false) => "Fan control ready",
+        (ResolvedLanguage::En, false, false, _) => "Setup needed",
+    }
+}
+
+fn setup_detail(
+    lang: ResolvedLanguage,
+    daemon_running: bool,
+    login_item: bool,
+    trial_expired: bool,
+) -> String {
+    match (lang, trial_expired, daemon_running, login_item) {
+        (ResolvedLanguage::Ko, true, _, _) => format!("v{} · 체험판 만료", env!("CARGO_PKG_VERSION")),
+        (ResolvedLanguage::Ko, false, true, true) => format!("v{} · 자동 실행 켜짐", env!("CARGO_PKG_VERSION")),
+        (ResolvedLanguage::Ko, false, true, false) => format!("v{} · 자동 실행 꺼짐", env!("CARGO_PKG_VERSION")),
+        (ResolvedLanguage::Ko, false, false, _) => format!("v{} · 데몬 미실행", env!("CARGO_PKG_VERSION")),
+        (ResolvedLanguage::En, true, _, _) => format!("v{} · trial expired", env!("CARGO_PKG_VERSION")),
+        (ResolvedLanguage::En, false, true, true) => format!("v{} · launch at login on", env!("CARGO_PKG_VERSION")),
+        (ResolvedLanguage::En, false, true, false) => format!("v{} · launch at login off", env!("CARGO_PKG_VERSION")),
+        (ResolvedLanguage::En, false, false, _) => format!("v{} · daemon not running", env!("CARGO_PKG_VERSION")),
+    }
+}
+
 /// Save a hand-drawn fan curve from the Detail Window's curve editor and
 /// switch to it. `points_json` is a JSON array of `[temp_c, duty_percent]`
 /// pairs, e.g. `[[30,20],[60,50],[90,100]]`.
@@ -636,6 +693,21 @@ fn main() {
                     // fix is one click from the exact error message that
                     // told the user they needed it, not a hunt through menus.
                     std::thread::spawn(install_fan_control);
+                } else if c == "togglelogin" {
+                    #[cfg(target_os = "macos")]
+                    {
+                        if let Some(ref tm) = app.tray_menu {
+                            toggle_launch_at_login(tm, app.metric.as_str());
+                            let installed = peterfan_platform::login_item::is_installed();
+                            *STATUS.lock().expect("status poisoned") = if installed {
+                                "launch at login enabled".into()
+                            } else {
+                                "launch at login disabled".into()
+                            };
+                        }
+                    }
+                } else if c == "checkupdates" {
+                    std::thread::spawn(check_for_updates_interactive);
                 } else {
                     // Hardware I/O (SMC calls) can take hundreds of ms,
                     // especially while failing (no daemon, no root) — run it
@@ -1052,6 +1124,11 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
                 QUIT.store(true, Ordering::Relaxed);
             } else if body == "open_detail" {
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
+            } else if body == "togglelogin" || body == "checkupdates" {
+                PENDING
+                    .lock()
+                    .expect("pending poisoned")
+                    .push(body.to_string());
             } else if let Some(h) = body.strip_prefix("h:") {
                 if let Ok(v) = h.trim().parse::<u32>() {
                     DESIRED_H.store(v, Ordering::Relaxed);
@@ -1129,6 +1206,13 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
             // to the content's natural height on every tick.
             if body == "quit" {
                 QUIT.store(true, Ordering::Relaxed);
+            } else if body == "open_detail" {
+                OPEN_DETAIL.store(true, Ordering::Relaxed);
+            } else if body == "togglelogin" || body == "checkupdates" {
+                PENDING
+                    .lock()
+                    .expect("pending poisoned")
+                    .push(body.to_string());
             } else if let Some(cmd) = body.strip_prefix("cmd:") {
                 PENDING
                     .lock()
@@ -1477,6 +1561,7 @@ fn update(app: &mut App) {
         }
         (ResolvedLanguage::En, Entitlement::TrialExpired) => ("Trial expired".to_string(), true),
     };
+    let login_item = login_item_installed();
     let chart_range = ChartRange::from_u8(CHART_RANGE.load(Ordering::Relaxed));
     // Seeds the Detail Window's curve editor: the user's saved custom curve
     // if there is one, otherwise Balanced's points as a reasonable starting
@@ -1539,6 +1624,12 @@ fn update(app: &mut App) {
         "can_control": can_control,
         "ctl_status": ctl_status,
         "daemon_running": !daemon_st.is_empty(),
+        "fan_setup_needed": !daemon_running && can_control,
+        "login_item_installed": login_item,
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "setup_tone": setup_tone(!daemon_st.is_empty(), login_item, trial_expired),
+        "setup_title": setup_title(app.language.resolve(), !daemon_st.is_empty(), login_item, trial_expired),
+        "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), login_item, trial_expired),
         "license_line": license_line,
         "trial_expired": trial_expired,
         "buy_url": BUY_URL,
@@ -2167,6 +2258,10 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Network<", ">네트워크<")
             .replace(">Top Processes<", ">실행 중 프로세스<")
             .replace(">MEM<", ">메모리<")
+            .replace(">Ready<", ">준비 완료<")
+            .replace(">Set Up<", ">설정<")
+            .replace(">Login<", ">자동 실행<")
+            .replace(">Update<", ">업데이트<")
             .replace("Buy License →", "라이선스 구매 →")
             .replace(">Activate<", ">활성화<")
             .replace("Open Detailed Window…", "상세 창 열기…")
@@ -2196,6 +2291,18 @@ const DASHBOARD_HTML_EN: &str = r##"<!doctype html><html><head><meta charset="ut
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;color:var(--text);-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased;overflow:hidden;}
 .panel{background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:13px;overflow-y:auto;overflow-x:hidden;box-shadow:var(--shadow);max-height:100vh;}
+.setup{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 15px 7px;border-bottom:1px solid var(--line);}
+.setup-main{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;}
+.setup-dot{width:7px;height:7px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 3px transparent;flex:0 0 auto;}
+.setup-dot.ok{background:var(--g);box-shadow:0 0 0 3px rgba(48,209,88,.12);}
+.setup-dot.info{background:var(--accent);box-shadow:0 0 0 3px rgba(91,157,255,.12);}
+.setup-dot.warn{background:var(--y);box-shadow:0 0 0 3px rgba(255,214,10,.14);}
+.setup-sub{font-size:9.5px;color:var(--dim);margin-top:1px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:135px;}
+.setup-actions{display:flex;gap:4px;flex:0 0 auto;}
+.setup-actions button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:700;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s,border-color .15s;}
+.setup-actions button:hover{background:var(--chip-hover);color:var(--text);}
+.setup-actions button.primary{background:rgba(91,157,255,.22);border-color:rgba(91,157,255,.5);color:var(--accent);}
+.setup-actions button.active{color:var(--g);border-color:rgba(48,209,88,.35);}
 .row{display:grid;grid-template-columns:24px 1fr;gap:12px;padding:8px 15px;align-items:center;}
 .row + .row{border-top:1px solid var(--line);}
 .ic{width:21px;height:21px;color:var(--dim);}
@@ -2287,6 +2394,15 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <button class="range-tab" data-range="1d" onclick="setChartRange('1d')">1d</button>
 </div>
 
+<div class="setup" id="setup-row">
+<div class="setup-copy"><div class="setup-main"><span class="setup-dot" id="setup-dot"></span><span id="setup-title">Ready</span></div><div class="setup-sub" id="setup-detail"></div></div>
+<div class="setup-actions">
+<button id="setup-fan" class="primary" onclick="window.ipc.postMessage('cmd:enablefancontrol')">Set Up</button>
+<button id="setup-login" onclick="window.ipc.postMessage('togglelogin')">Login</button>
+<button id="setup-update" onclick="window.ipc.postMessage('checkupdates')">Update</button>
+</div>
+</div>
+
 <div class="ctl" style="border-top:0;border-bottom:1px solid var(--line)">
 <div class="ctl-head"><span class="name">Fan control</span><span class="ctl-status" id="ctl-status"></span></div>
 <div class="fan-cards" id="fan-cards"></div>
@@ -2371,6 +2487,7 @@ window.__pf={
  function bar(id,p,c){var b=document.getElementById(id);if(b){b.style.width=Math.max(0,Math.min(100,p))+'%';b.className='bar-fill '+(c||cls(p));}}
  function set(id,t){var e=document.getElementById(id);if(e)e.textContent=t;}
  function show(id,on){var e=document.getElementById(id);if(e)e.style.display=on?'':'none';}
+ updateSetup(d);
  set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
  var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span');s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title='Core '+(i+1)+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
  set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
@@ -2445,7 +2562,7 @@ window.__pf={
    }
    renderFanCards(d.fans);
  } else {
-   set('ctl-status','unavailable');
+   set('ctl-status',LANG==='ko'?'사용 불가':'unavailable');
    if(note){note.style.display='';note.textContent=LANG==='ko'?'이 Mac에서는 팬 제어를 사용할 수 없습니다. 실시간 RPM만 표시합니다.':'Fan control unavailable on this Mac — showing live RPM only.';}
    var fc=document.getElementById('fan-cards');if(fc)fc.innerHTML='';
  }
@@ -2746,6 +2863,26 @@ function submitLicense(){
   window.ipc.postMessage('license:'+v);
   inp.value='';
 }
+function updateSetup(d){
+  var title=document.getElementById('setup-title');
+  if(title)title.textContent=d.setup_title||'Ready';
+  var detail=document.getElementById('setup-detail');
+  if(detail)detail.textContent=d.setup_detail||('v'+(d.app_version||''));
+  var dot=document.getElementById('setup-dot');
+  if(dot)dot.className='setup-dot '+(d.setup_tone||'info');
+  var fan=document.getElementById('setup-fan');
+  if(fan){
+    fan.style.display=d.fan_setup_needed?'':'none';
+    fan.textContent=LANG==='ko'?'설정':'Set Up';
+  }
+  var login=document.getElementById('setup-login');
+  if(login){
+    login.textContent=d.login_item_installed?(LANG==='ko'?'자동 실행 켜짐':'Login On'):(LANG==='ko'?'자동 실행':'Login');
+    login.classList.toggle('active',!!d.login_item_installed);
+  }
+  var update=document.getElementById('setup-update');
+  if(update)update.textContent=LANG==='ko'?'업데이트':'Update';
+}
 // Draws a filled area + line sparkline of `data` into the <canvas id=id>.
 // `fixedMax` pins the y-axis (e.g. 100 for percentages); null auto-scales to the data's own peak.
 // `fmt(v)` formats a raw sample for the hover tooltip.
@@ -2898,6 +3035,11 @@ mod tests {
             assert!(html.contains("renderFanCards"));
             assert!(html.contains("fanControlSetupButton"));
             assert!(html.contains(r#"id="fan-cards""#));
+            assert!(html.contains(r#"id="setup-row""#));
+            assert!(html.contains(r#"id="setup-login""#));
+            assert!(html.contains("togglelogin"));
+            assert!(html.contains("checkupdates"));
+            assert!(html.contains("updateSetup"));
             assert!(html.contains("cmd:fanhold:"));
             assert!(html.contains("cmd:fanauto:"));
             assert!(html.contains("savecurve:"));
