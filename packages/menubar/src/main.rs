@@ -40,7 +40,7 @@ use peterfan_core::error::CoreError;
 use peterfan_core::license::{self, Entitlement};
 use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
-use peterfan_core::types::Celsius;
+use peterfan_core::types::{Celsius, SensorKind, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 /// Placeholder purchase link — point this at the real store page once one
@@ -349,6 +349,27 @@ fn login_item_installed() -> bool {
 #[cfg(not(target_os = "macos"))]
 fn login_item_installed() -> bool {
     false
+}
+
+fn hottest_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
+    temps.iter().max_by(|a, b| {
+        a.value
+            .0
+            .partial_cmp(&b.value.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
+fn display_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
+    temps
+        .iter()
+        .find(|t| t.id == "cpu.die")
+        .or_else(|| {
+            temps
+                .iter()
+                .find(|t| t.kind == SensorKind::Cpu && !t.id.contains("hot"))
+        })
+        .or_else(|| hottest_temperature(temps))
 }
 
 fn setup_tone(
@@ -1465,7 +1486,8 @@ fn update(app: &mut App) {
     let nets = app.monitor.networks();
     let temps = app.provider.temperatures().unwrap_or_default();
     let fans = app.provider.fans().unwrap_or_default();
-    let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+    let display_temp = display_temperature(&temps).map(|t| t.value.0);
+    let hottest = hottest_temperature(&temps).map(|t| t.value.0);
     let fastest_rpm = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
     let fastest_pct = fans
         .iter()
@@ -1492,7 +1514,7 @@ fn update(app: &mut App) {
     push_hist(&mut app.fan_hist, fastest_pct);
     app.cpu_h.push(cpu.usage_percent);
     app.mem_h.push(mem.used_percent);
-    app.temp_h.push(hottest);
+    app.temp_h.push(display_temp.unwrap_or(0.0));
     app.net_h.push((rx + tx) as f32);
 
     // Menu-bar item: number, graph, or both, tracking whichever metric the
@@ -1507,8 +1529,8 @@ fn update(app: &mut App) {
             MenubarMetric::Cpu => format!("{:>5.1}%", cpu.usage_percent),
             MenubarMetric::Memory => format!("{:>5.1}%", mem.used_percent),
             MenubarMetric::Temp => {
-                if hottest > 0.0 {
-                    format!("{hottest:>3.0}°C")
+                if let Some(temp) = display_temp.filter(|t| *t > 0.0) {
+                    format!("{temp:>3.0}°C")
                 } else {
                     format!("{:>5.1}%", cpu.usage_percent)
                 }
@@ -1555,8 +1577,18 @@ fn update(app: &mut App) {
             "CPU {:.1}%   {mem_label} {:.1}%",
             cpu.usage_percent, mem.used_percent
         )];
-        if hottest > 0.0 {
-            tip_parts.push(format!("{hottest:.0}°C"));
+        if let Some(temp) = display_temp.filter(|t| *t > 0.0) {
+            tip_parts.push(format!("CPU {temp:.0}°C"));
+        }
+        if let (Some(display), Some(hot)) = (display_temp, hottest) {
+            if hot > display + 1.0 {
+                let label = if app.language.resolve() == ResolvedLanguage::Ko {
+                    "최고"
+                } else {
+                    "Hot"
+                };
+                tip_parts.push(format!("{label} {hot:.0}°C"));
+            }
         }
         if fastest_rpm > 0 {
             tip_parts.push(format!("{fastest_rpm} RPM"));
@@ -1618,14 +1650,9 @@ fn update(app: &mut App) {
         })
         .collect();
 
-    // Temperatures: hottest is the headline; every sensor is listed below
-    // (so multiple CPU-die clusters / sensors are all visible).
-    let hottest = temps.iter().max_by(|a, b| {
-        a.value
-            .0
-            .partial_cmp(&b.value.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Temperatures: CPU average is the headline users compare with iStat/Stats;
+    // the hottest sensor is still listed below and remains the fan-control input.
+    let display_temp = display_temperature(&temps);
     let temp_rows: Vec<_> = temps
         .iter()
         .map(|t| {
@@ -1759,10 +1786,10 @@ fn update(app: &mut App) {
         "disk_io_sub": disk_io_sub,
         "procs": proc_rows,
         "proc_sort": if matches!(proc_sort, ProcSort::Memory) { "mem" } else { "cpu" },
-        "temp_present": hottest.is_some(),
-        "temp_pct": hottest.map(|t| t.value.0).unwrap_or(0.0),
-        "temp_text": hottest.map(|t| format!("{:.0}°C", t.value.0)).unwrap_or_default(),
-        "temp_cls": hottest.map(|t| temp_cls(t.value)).unwrap_or("g"),
+        "temp_present": display_temp.is_some(),
+        "temp_pct": display_temp.map(|t| t.value.0).unwrap_or(0.0),
+        "temp_text": display_temp.map(|t| format!("{:.0}°C", t.value.0)).unwrap_or_default(),
+        "temp_cls": display_temp.map(|t| temp_cls(t.value)).unwrap_or("g"),
         "temps": temp_rows,
         "fans": fan_rows,
         "batt_present": battery.is_some(),
@@ -3474,6 +3501,46 @@ mod tests {
             Some("1.26.8".to_string())
         );
         assert_eq!(parse_daemon_version_output("peterfand\n"), None);
+    }
+
+    fn temp(id: &str, kind: SensorKind, value: f32) -> TempSensor {
+        TempSensor {
+            id: id.to_string(),
+            label: id.to_string(),
+            kind,
+            value: Celsius(value),
+        }
+    }
+
+    #[test]
+    fn display_temperature_prefers_cpu_average_over_hottest() {
+        let temps = vec![
+            temp("cpu.die", SensorKind::Cpu, 52.0),
+            temp("cpu.die.hot", SensorKind::Cpu, 67.0),
+            temp("ssd", SensorKind::Storage, 70.0),
+        ];
+
+        assert_eq!(
+            display_temperature(&temps).map(|t| t.id.as_str()),
+            Some("cpu.die")
+        );
+        assert_eq!(
+            hottest_temperature(&temps).map(|t| t.id.as_str()),
+            Some("ssd")
+        );
+    }
+
+    #[test]
+    fn display_temperature_falls_back_to_hottest_without_cpu_average() {
+        let temps = vec![
+            temp("battery", SensorKind::Battery, 33.0),
+            temp("airport", SensorKind::Other, 45.0),
+        ];
+
+        assert_eq!(
+            display_temperature(&temps).map(|t| t.id.as_str()),
+            Some("airport")
+        );
     }
 
     #[test]

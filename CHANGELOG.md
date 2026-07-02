@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.21] — CPU 평균 온도 표시 보정
+
+### Changed
+- **메뉴바 온도 표시를 CPU 평균 기준으로 조정** — 팬 제어/안전 판단은 최고 온도를
+  계속 쓰되, 메뉴바 숫자와 Temperature 그래프/평균은 `CPU` 평균 센서를 우선
+  사용해 iStat/Stats류의 CPU average 표시와 더 가깝게 맞춤.
+
 ## [1.26.20] — 데몬 업데이트 필요 상태 문구 개선
 
 ### Changed

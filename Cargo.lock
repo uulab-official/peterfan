@@ -2080,7 +2080,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "peterfan-cli"
-version = "1.26.20"
+version = "1.26.21"
 dependencies = [
  "anyhow",
  "clap",
@@ -2096,7 +2096,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-core"
-version = "1.26.20"
+version = "1.26.21"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -2108,7 +2108,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-daemon"
-version = "1.26.20"
+version = "1.26.21"
 dependencies = [
  "anyhow",
  "clap",
@@ -2122,7 +2122,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-menubar"
-version = "1.26.20"
+version = "1.26.21"
 dependencies = [
  "libc",
  "peterfan-core",
@@ -2135,7 +2135,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-platform"
-version = "1.26.20"
+version = "1.26.21"
 dependencies = [
  "battery",
  "core-foundation 0.10.1",
@@ -2150,7 +2150,7 @@ dependencies = [
 
 [[package]]
 name = "peterfan-tui"
-version = "1.26.20"
+version = "1.26.21"
 dependencies = [
  "anyhow",
  "peterfan-core",
