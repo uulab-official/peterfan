@@ -201,17 +201,22 @@ if gh release view "$TAG" >/dev/null 2>&1; then
     "$OUT_ROOT/checksums.txt" \
     --clobber
 else
-  CREATE_ARGS=()
   if [[ "$DRAFT" == "1" ]]; then
-    CREATE_ARGS+=(--draft)
+    gh release create "$TAG" \
+      "$OUT_ROOT/${NAME}.tar.gz" \
+      "$DMG" \
+      "$OUT_ROOT/checksums.txt" \
+      --title "PeterFan $TAG" \
+      --notes-file "$NOTES_FILE" \
+      --draft
+  else
+    gh release create "$TAG" \
+      "$OUT_ROOT/${NAME}.tar.gz" \
+      "$DMG" \
+      "$OUT_ROOT/checksums.txt" \
+      --title "PeterFan $TAG" \
+      --notes-file "$NOTES_FILE"
   fi
-  gh release create "$TAG" \
-    "$OUT_ROOT/${NAME}.tar.gz" \
-    "$DMG" \
-    "$OUT_ROOT/checksums.txt" \
-    --title "PeterFan $TAG" \
-    --notes-file "$NOTES_FILE" \
-    "${CREATE_ARGS[@]}"
 fi
 
 echo "Uploaded GitHub Release assets for $TAG"
