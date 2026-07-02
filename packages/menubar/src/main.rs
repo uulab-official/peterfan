@@ -599,6 +599,12 @@ fn main() {
                         let status = save_custom_curve(provider.as_ref(), &json);
                         *STATUS.lock().expect("status poisoned") = status;
                     });
+                } else if c == "enablefancontrol" {
+                    // Same admin-prompt install the right-click menu item
+                    // triggers — exposed here too so the "update the daemon"
+                    // fix is one click from the exact error message that
+                    // told the user they needed it, not a hunt through menus.
+                    std::thread::spawn(install_fan_control);
                 } else {
                     // Hardware I/O (SMC calls) can take hundreds of ms,
                     // especially while failing (no daemon, no root) — run it
@@ -2120,11 +2126,14 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .fan-seg{display:flex;gap:4px;flex:0 0 auto;}
 .fan-seg button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:600;padding:3px 8px;border-radius:5px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s;}
 .fan-seg button.active{background:var(--panel-bg);color:var(--text);border-color:rgba(91,157,255,.4);}
-.fan-rpm-row{display:grid;grid-template-columns:auto 1fr auto;gap:7px;align-items:center;margin-top:5px;}
+.fan-rpm-row{display:grid;grid-template-columns:auto 1fr auto;gap:7px;align-items:center;margin-top:5px;transition:opacity .15s;}
+.fan-rpm-row.inactive{opacity:.35;pointer-events:none;}
 .fan-rpm-row span{font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .fan-rpm-row input[type=range]{-webkit-appearance:none;height:3px;border-radius:99px;background:var(--track);outline:none;cursor:pointer;}
 .fan-rpm-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;}
 .ctl-note{font-size:10.5px;color:var(--dim);line-height:1.5;margin-top:6px;}
+.note-fix-btn{margin-top:5px;background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:10px;font-weight:600;padding:5px 10px;border-radius:6px;cursor:pointer;}
+.note-fix-btn:hover{background:rgba(91,157,255,.32);}
 #curve-canvas{width:100%;height:120px;display:block;border-radius:6px;background:var(--track);cursor:crosshair;touch-action:none;margin-top:8px;}
 .curve-actions{display:flex;gap:6px;margin-top:8px;}
 .curve-actions button{flex:1;background:var(--chip-bg);border:1px solid transparent;color:var(--text);font:inherit;font-size:10px;font-weight:600;padding:6px 4px;border-radius:7px;cursor:pointer;transition:background .15s;}
@@ -2281,13 +2290,22 @@ window.__pf={
      if(isErr){
        note.style.display='';
        // "unknown command" specifically means the running daemon predates
-       // whatever command we just sent it — the fix is a daemon update,
-       // not a config change, so say so directly instead of leaving the
-       // user to guess.
-       var hint=/unknown command/i.test(d.last_cmd_status)
-         ?(LANG==='ko'?' — 메뉴에서 "Enable Fan Control"을 다시 실행해 데몬을 업데이트하세요.':' — try "Enable Fan Control" from the menu again to update the daemon.')
-         :'';
-       note.textContent=(LANG==='ko'?'오류: ':'Error: ')+d.last_cmd_status+hint;
+       // whatever command we just sent it — the fix is a daemon update, not
+       // a config change, so offer it as a one-click button right here
+       // instead of pointing at a menu item the user has to go find.
+       var isUnknownCmd=/unknown command/i.test(d.last_cmd_status);
+       note.innerHTML='';
+       var msg=document.createElement('span');
+       msg.textContent=(LANG==='ko'?'오류: ':'Error: ')+d.last_cmd_status;
+       note.appendChild(msg);
+       if(isUnknownCmd){
+         var fixBtn=document.createElement('button');
+         fixBtn.className='note-fix-btn';
+         fixBtn.textContent=LANG==='ko'?'데몬 업데이트':'Update Daemon';
+         fixBtn.onclick=function(){window.ipc.postMessage('cmd:enablefancontrol');};
+         note.appendChild(document.createElement('br'));
+         note.appendChild(fixBtn);
+       }
      } else if(!d.daemon_running){
        note.style.display='';
        note.textContent='Tip: run peterfan install-daemon once for persistent control at boot.';
@@ -2333,7 +2351,7 @@ function renderFanCards(fans){
       card.innerHTML='<div class="fan-card-head"><span class="fn"></span><span class="fv"></span></div>'+
         '<div class="fan-bar"><i></i></div>'+
         '<div class="fan-bottom"><span class="fan-rpm-text"></span><span class="fan-seg"><button class="fa-auto"></button><button class="fa-manual"></button></span></div>'+
-        '<div class="fan-rpm-row" style="display:none"><span class="fa-min"></span><input type="range"><span class="fa-max"></span></div>';
+        '<div class="fan-rpm-row inactive"><span class="fa-min"></span><input type="range"><span class="fa-max"></span></div>';
       var btnAuto=card.querySelector('.fa-auto');
       var btnManual=card.querySelector('.fa-manual');
       btnAuto.textContent=LANG==='ko'?'자동':'Auto';
@@ -2345,7 +2363,7 @@ function renderFanCards(fans){
         // (potentially stale, first-render-time) copy of `f`.
         var curPct=Math.round(parseFloat(card.dataset.curPct||'50'));
         window.ipc.postMessage('cmd:fanhold:'+f.id+':'+curPct);
-        card.querySelector('.fan-rpm-row').style.display='';
+        card.querySelector('.fan-rpm-row').classList.remove('inactive');
       };
       var slider=card.querySelector('input[type=range]');
       slider.addEventListener('input',function(){
@@ -2374,7 +2392,12 @@ function renderFanCards(fans){
     card.querySelector('.fa-manual').classList.toggle('active',manual);
     card.querySelector('.fa-min').textContent=useRpm?f.min_rpm:'0%';
     card.querySelector('.fa-max').textContent=useRpm?f.max_rpm:'100%';
-    card.querySelector('.fan-rpm-row').style.display=manual?'':'none';
+    // Always occupies the same layout space (opacity/pointer-events toggle
+    // only, never display) — hiding it outright used to change the
+    // popover's total content height, which triggers a full window resize
+    // (see reportHeight/DESIRED_H) and made every chart below visibly
+    // redraw at a new width, which read as "the graphs randomly changed."
+    card.querySelector('.fan-rpm-row').classList.toggle('inactive', !manual);
     var slider=card.querySelector('input[type=range]');
     slider.dataset.useRpm=useRpm?'1':'0';
     slider.min=useRpm?f.min_rpm:0;
