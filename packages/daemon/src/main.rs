@@ -133,6 +133,12 @@ struct State {
     last_fans: Vec<peterfan_core::types::Fan>,
     /// Most recent power draw in watts.
     last_power_w: Option<f32>,
+    /// Whether persistent fan control is licensed/in-trial. Checked by both
+    /// the control loop (forces OS-managed auto when false) and the
+    /// `fanhold`/`fanauto` IPC handlers (refuse to set/clear per-fan
+    /// overrides when false) — per-fan overrides are the same paid feature
+    /// as the global hold/profile/rules modes, just applied per-fan.
+    entitled: bool,
 }
 
 #[derive(Parser)]
@@ -267,6 +273,7 @@ fn run(cli: Cli) -> Result<()> {
             last_temps: Vec::new(),
             last_fans: Vec::new(),
             last_power_w: None,
+            entitled,
         };
         // Restore the last user-chosen mode so a reboot doesn't reset fan settings.
         if let Some(saved) = load_saved_state() {
@@ -333,7 +340,6 @@ fn run(cli: Cli) -> Result<()> {
             profile,
             &fan_ids,
             cli.once,
-            entitled,
             &shared,
         )
     }));
@@ -362,7 +368,6 @@ fn control_loop(
     base: Profile,
     fan_ids: &[String],
     once: bool,
-    entitled: bool,
     shared: &Arc<Mutex<State>>,
 ) -> Result<()> {
     let mut auto_applied = false;
@@ -379,7 +384,7 @@ fn control_loop(
         // tick, same as `auto`, regardless of the user's chosen mode. Read-only
         // status queries over IPC keep working — temps/fans are cached below
         // unconditionally, whichever branch runs.
-        let auto = state.auto || !entitled;
+        let auto = state.auto || !state.entitled;
         let critical = state.config.critical_temp_c;
 
         let temps = provider.temperatures().unwrap_or_default();
@@ -395,17 +400,30 @@ fn control_loop(
 
         if auto {
             // Per-fan overrides still apply on top of the global "auto" mode
-            // (e.g. pin one fan manually while the rest follow the OS) — so,
-            // unlike before per-fan overrides existed, this can't skip
-            // reasserting once `auto_applied` is true.
+            // (e.g. pin one fan manually while the rest follow the OS) — but
+            // only when entitled: overrides are the same paid feature as
+            // hold/profile/rules, just applied per-fan, and `!entitled`
+            // forcing `auto` true must not leave a back door into it. Even
+            // when entitled, an override never survives a critical
+            // temperature — `effective_duty` forces the fan to 100% exactly
+            // like the non-auto branch below does.
+            let critical_now = hottest >= critical;
             for id in fan_ids {
-                match state.fan_overrides.get(id) {
-                    Some(&pct) => provider.set_fan_duty(id, pct)?,
-                    None => provider.set_fan_auto(id)?,
+                let has_override = state.entitled && state.fan_overrides.contains_key(id);
+                let result = if has_override {
+                    provider.set_fan_duty(
+                        id,
+                        effective_duty(&state.fan_overrides, id, 100, critical_now),
+                    )
+                } else {
+                    provider.set_fan_auto(id)
+                };
+                if let Err(e) = result {
+                    eprintln!("peterfand: fan {id} control error: {e}");
                 }
             }
             if !auto_applied {
-                if !entitled {
+                if !state.entitled {
                     println!("peterfand: trial expired -> auto (OS-managed)");
                 } else {
                     println!("peterfand: auto (OS-managed)");
@@ -448,7 +466,9 @@ fn control_loop(
             let critical_now = hottest >= critical;
             for id in fan_ids {
                 let effective = effective_duty(&state.fan_overrides, id, duty, critical_now);
-                provider.set_fan_duty(id, effective)?;
+                if let Err(e) = provider.set_fan_duty(id, effective) {
+                    eprintln!("peterfand: fan {id} control error: {e}");
+                }
             }
             let src = if state.held_duty.is_some() {
                 "hold"
@@ -590,8 +610,11 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             let pct = parts.next().and_then(|s| s.parse::<u8>().ok());
             match (id, pct) {
                 (Some(id), Some(pct)) => {
-                    let d = pct.min(100);
                     let mut s = shared.lock().expect("state poisoned");
+                    if !s.entitled {
+                        return "error: fan control requires a license or active trial".into();
+                    }
+                    let d = pct.min(100);
                     s.fan_overrides.insert(id.clone(), d);
                     save_state(&s);
                     APPLY_NOW.store(true, Ordering::Relaxed);
@@ -780,5 +803,40 @@ mod tests {
         let toml_str = "mode = \"auto\"\n";
         let back: SavedState = toml::from_str(toml_str).expect("deserializes");
         assert!(back.fan_overrides.is_empty());
+    }
+
+    fn test_state(entitled: bool) -> Arc<Mutex<State>> {
+        Arc::new(Mutex::new(State {
+            profile: Profile::Balanced,
+            held_duty: None,
+            fan_overrides: std::collections::HashMap::new(),
+            auto: false,
+            manual: false,
+            backend: "mock".to_string(),
+            config: peterfan_core::config::Config::default(),
+            last_temps: Vec::new(),
+            last_fans: Vec::new(),
+            last_power_w: None,
+            entitled,
+        }))
+    }
+
+    #[test]
+    fn fanhold_is_refused_when_not_entitled() {
+        let shared = test_state(false);
+        let reply = handle_command("fanhold fan.left 30", &shared);
+        assert!(reply.starts_with("error:"), "unexpected reply: {reply}");
+        assert!(shared.lock().unwrap().fan_overrides.is_empty());
+    }
+
+    #[test]
+    fn fanhold_succeeds_when_entitled() {
+        let shared = test_state(true);
+        let reply = handle_command("fanhold fan.left 30", &shared);
+        assert!(reply.starts_with("ok "), "unexpected reply: {reply}");
+        assert_eq!(
+            shared.lock().unwrap().fan_overrides.get("fan.left"),
+            Some(&30)
+        );
     }
 }

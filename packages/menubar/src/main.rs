@@ -592,13 +592,24 @@ fn main() {
                     app.entitlement = entitlement;
                     *STATUS.lock().expect("status poisoned") = msg;
                 } else if let Some(json) = c.strip_prefix("savecurve:") {
-                    *STATUS.lock().expect("status poisoned") = "saving curve…".into();
-                    let provider = std::sync::Arc::clone(&app.provider);
-                    let json = json.to_string();
-                    std::thread::spawn(move || {
-                        let status = save_custom_curve(provider.as_ref(), &json);
-                        *STATUS.lock().expect("status poisoned") = status;
-                    });
+                    // A custom curve is persistent fan control, same paid
+                    // feature as the fan cards it's a sibling of — the JS
+                    // side hides the editor once the trial expires, but that
+                    // only stops the button; without this check a raw
+                    // `savecurve:` IPC message would still bypass the
+                    // paywall entirely.
+                    if !app.entitlement.allowed() {
+                        *STATUS.lock().expect("status poisoned") =
+                            "error: fan control requires a license or active trial".into();
+                    } else {
+                        *STATUS.lock().expect("status poisoned") = "saving curve…".into();
+                        let provider = std::sync::Arc::clone(&app.provider);
+                        let json = json.to_string();
+                        std::thread::spawn(move || {
+                            let status = save_custom_curve(provider.as_ref(), &json);
+                            *STATUS.lock().expect("status poisoned") = status;
+                        });
+                    }
                 } else if c == "enablefancontrol" {
                     // Same admin-prompt install the right-click menu item
                     // triggers — exposed here too so the "update the daemon"
@@ -1658,7 +1669,25 @@ fn set_menubar_text(tray: &TrayIcon, text: &str) {
 /// Whether an `execute_control`/`apply_local` result string represents
 /// success — both use these exact prefixes/substrings by construction.
 fn control_result_is_ok(result: &str) -> bool {
-    result.starts_with("daemon:") || result.contains("applied")
+    if let Some(reply) = result.strip_prefix("daemon:") {
+        // The daemon's own reply is forwarded verbatim after this prefix
+        // (see `execute_control`) — an incompatible/older daemon can reply
+        // "error: unknown command" here, which still starts with "daemon:"
+        // and must not be reported as success just because *a* reply came
+        // back. Mirror the popover's own error-detection wording.
+        let lower = reply.to_lowercase();
+        return ![
+            "error",
+            "invalid",
+            "unknown",
+            "failed",
+            "needs root",
+            "needs at least",
+        ]
+        .iter()
+        .any(|kw| lower.contains(kw));
+    }
+    result.contains("applied")
 }
 
 /// Send SIGTERM to a process by PID, from the "×" button on a Top Processes
@@ -2341,7 +2370,7 @@ window.__pf={
    if(note){note.style.display='';note.textContent='Fan control unavailable on this Mac — showing live RPM only.';}
    var fc=document.getElementById('fan-cards');if(fc)fc.innerHTML='';
  }
- if(SHOW_CURVE_EDITOR==='1'){
+ if(SHOW_CURVE_EDITOR==='1'&&d.can_control){
    var ces=document.getElementById('curve-editor-section');
    if(ces)ces.style.display='';
    if(d.curve_points){
@@ -2350,6 +2379,12 @@ window.__pf={
    }
    initCurveEditor();
    drawCurveEditor();
+ } else {
+   // Persistent custom curves are the same paid feature as fan cards —
+   // hide the editor once the trial expires so it can't be used as a
+   // side door around the ctl-note paywall message above.
+   var ces2=document.getElementById('curve-editor-section');
+   if(ces2)ces2.style.display='none';
  }
  reportHeight();
 }};
@@ -2800,5 +2835,15 @@ mod tests {
         assert!(apply_local(provider.as_ref(), "auto").contains("applied locally"));
         assert!(apply_local(provider.as_ref(), "profile:balanced").contains("applied locally"));
         assert_eq!(apply_local(provider.as_ref(), "bogus"), "unknown command");
+    }
+
+    #[test]
+    fn control_result_is_ok_rejects_daemon_error_replies() {
+        // An older/incompatible daemon still replies with a "daemon:" prefix
+        // even when the command itself failed — that must not read as success.
+        assert!(!control_result_is_ok("daemon: error: unknown command"));
+        assert!(!control_result_is_ok("daemon: invalid percent"));
+        assert!(control_result_is_ok("daemon: ok auto (mock)"));
+        assert!(control_result_is_ok("applied locally"));
     }
 }
