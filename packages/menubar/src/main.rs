@@ -492,6 +492,17 @@ fn clear_daemon_version_cache() {
         .expect("daemon version cache poisoned") = None;
 }
 
+fn clear_daemon_update_prompt_state(cfg: &mut peterfan_core::config::Config) {
+    cfg.menubar.daemon_update_prompt_dismissed_for = None;
+    cfg.menubar.daemon_update_prompt_snoozed_until_unix = None;
+}
+
+fn persist_clear_daemon_update_prompt_state() {
+    let mut cfg = peterfan_platform::config::load();
+    clear_daemon_update_prompt_state(&mut cfg);
+    let _ = peterfan_platform::config::save(&cfg);
+}
+
 fn active_profile_from_mode(mode: &str) -> Option<&str> {
     let mode = mode.split_whitespace().next().unwrap_or(mode);
     mode.strip_prefix("manual:")
@@ -2090,6 +2101,7 @@ fn install_fan_control() {
     let (ok, message) = match peterfan_platform::daemon_install::install(false) {
         Ok(InstallOutcome::Installed) => {
             clear_daemon_version_cache();
+            persist_clear_daemon_update_prompt_state();
             if updating_existing {
                 (
                     true,
@@ -3481,6 +3493,21 @@ mod tests {
         cfg.menubar.daemon_update_prompt_dismissed_for = Some("1.2.3".to_string());
         assert!(!should_prompt_stale_daemon_update(&cfg, "1.2.3", 1_501));
         assert!(should_prompt_stale_daemon_update(&cfg, "1.2.4", 1_501));
+    }
+
+    #[test]
+    fn clearing_daemon_prompt_state_removes_dismiss_and_snooze() {
+        let mut cfg = peterfan_core::config::Config::default();
+        cfg.menubar.daemon_update_prompt_dismissed_for = Some("1.2.3".to_string());
+        cfg.menubar.daemon_update_prompt_snoozed_until_unix = Some(1_500);
+
+        clear_daemon_update_prompt_state(&mut cfg);
+
+        assert!(cfg.menubar.daemon_update_prompt_dismissed_for.is_none());
+        assert!(cfg
+            .menubar
+            .daemon_update_prompt_snoozed_until_unix
+            .is_none());
     }
 
     #[test]
