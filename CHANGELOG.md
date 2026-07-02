@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.19] — Setup 상태 버전 표시 개선
+
 ### Changed
 - **정상 상태에서도 앱/데몬 버전 표시** — Setup 상태 줄이 준비 완료일 때도
   앱 버전과 설치된 팬 제어 데몬 버전을 함께 보여줘, 둘이 맞는지 바로 확인할
