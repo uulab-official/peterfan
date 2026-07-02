@@ -33,7 +33,28 @@ use peterfan_core::{HardwareProvider, SystemMonitor};
 const HISTORY_LEN: usize = 120;
 
 fn main() -> Result<()> {
-    let use_mock = std::env::args().any(|a| a == "--mock");
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("peterfan-tui {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "peterfan-tui {}\n\n\
+             Live terminal system dashboard (CPU, memory, disk, network, \
+             battery, temps, fans, processes).\n\n\
+             USAGE:\n    peterfan-tui [OPTIONS]\n\n\
+             OPTIONS:\n    \
+             --mock          Use simulated hardware instead of real sensors\n    \
+             --version, -V   Print version and exit\n    \
+             --help, -h      Print this help and exit\n\n\
+             Keys once running: q/Esc quit · 1-5 apply profile · a auto · \
+             r rules · h hold %",
+            env!("CARGO_PKG_VERSION")
+        );
+        return Ok(());
+    }
+    let use_mock = args.iter().any(|a| a == "--mock");
     let monitor: Box<dyn SystemMonitor> = if use_mock {
         peterfan_platform::mock_monitor()
     } else {
@@ -96,8 +117,7 @@ fn run(
 
         // Query daemon status; fall back to checking local control capability.
         let daemon_st = ipc_status();
-        let can_control =
-            !daemon_st.is_empty() || provider.capabilities().control_fans;
+        let can_control = !daemon_st.is_empty() || provider.capabilities().control_fans;
 
         let fan_status = if let Some(msg) = pending_msg.take() {
             msg
@@ -129,8 +149,8 @@ fn run(
         let poll_ms = if hold_input.is_some() { 100 } else { 1000 };
         if event::poll(Duration::from_millis(poll_ms))? {
             if let Event::Key(key) = event::read()? {
-                let ctrl_c = key.code == KeyCode::Char('c')
-                    && key.modifiers.contains(KeyModifiers::CONTROL);
+                let ctrl_c =
+                    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
 
                 // Handle hold-input mode first.
                 if hold_input.is_some() {
@@ -222,7 +242,9 @@ fn handle_fan_key(key: KeyCode, provider: &dyn HardwareProvider) -> Option<Strin
                 .into_iter()
                 .filter(|f| f.controllable)
                 .collect();
-            let ok = fans.iter().all(|f| provider.set_fan_duty(&f.id, duty).is_ok());
+            let ok = fans
+                .iter()
+                .all(|f| provider.set_fan_duty(&f.id, duty).is_ok());
             return Some(if ok {
                 format!("→ {name} ({duty}%)")
             } else {
@@ -608,10 +630,7 @@ fn render_footer(f: &mut Frame, area: Rect, d: &Dashboard) {
         "q / Esc: quit   ·   refreshing every 1s"
     };
     f.render_widget(
-        Paragraph::new(Span::styled(
-            text,
-            Style::default().fg(Color::DarkGray),
-        )),
+        Paragraph::new(Span::styled(text, Style::default().fg(Color::DarkGray))),
         area,
     );
 }

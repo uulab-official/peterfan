@@ -23,6 +23,7 @@
 pub mod config;
 pub mod curve;
 pub mod error;
+pub mod license;
 pub mod metrics;
 pub mod monitor;
 pub mod profile;

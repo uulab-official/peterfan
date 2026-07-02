@@ -32,6 +32,13 @@ use peterfan_core::{HardwareProvider, SystemMonitor};
 
 /// Set by the signal handler; the control loop checks it and exits cleanly.
 static STOP: AtomicBool = AtomicBool::new(false);
+/// Set by the IPC handler whenever a command changes the fan-control mode
+/// (auto/rules/profile/hold). The control loop's sleep checks this every
+/// 200ms and wakes early so a "Max" click (say) is applied within a couple
+/// hundred ms instead of waiting out the rest of the multi-second tick
+/// interval — the interval is for periodic temperature re-evaluation, not
+/// for how long a user-issued command should take to land.
+static APPLY_NOW: AtomicBool = AtomicBool::new(false);
 
 // ── State persistence ────────────────────────────────────────────────────────
 
@@ -110,6 +117,13 @@ struct State {
     /// Live copy of the config, refreshed by `reload`. The base profile and
     /// automation rules are read from here each control-loop tick.
     config: peterfan_core::config::Config,
+    /// Most recent temperature readings from the last control-loop tick.
+    /// Used by the `temps` IPC command so the CLI can skip SMC init.
+    last_temps: Vec<peterfan_core::types::TempSensor>,
+    /// Most recent fan states from the last control-loop tick.
+    last_fans: Vec<peterfan_core::types::Fan>,
+    /// Most recent power draw in watts.
+    last_power_w: Option<f32>,
 }
 
 #[derive(Parser)]
@@ -144,10 +158,48 @@ fn main() {
     }
 }
 
+/// Seconds since the Unix epoch, or 0 if the system clock is before 1970.
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 fn run(cli: Cli) -> Result<()> {
     // Resolve settings: explicit flags win, otherwise fall back to the config
     // file, otherwise the built-in defaults.
-    let cfg = peterfan_platform::config::load();
+    let mut cfg = peterfan_platform::config::load();
+
+    // Persistent fan curve control is the paid feature; read-only commands
+    // (the CLI's `temps`/`status`/etc.) never check this. Shares its trial
+    // clock with the menu-bar app via the same config file.
+    let now = now_unix();
+    if cfg.license.first_run_unix.is_none() {
+        cfg.license.first_run_unix = Some(now);
+        let _ = peterfan_platform::config::save(&cfg);
+    }
+    let entitlement = peterfan_core::license::check_entitlement(
+        cfg.license.key.as_deref(),
+        cfg.license.first_run_unix,
+        now,
+    );
+    let entitled = entitlement.allowed();
+    match &entitlement {
+        peterfan_core::license::Entitlement::Licensed { email } => {
+            println!("peterfand: licensed to {email}");
+        }
+        peterfan_core::license::Entitlement::Trial { days_left } => {
+            println!("peterfand: trial — {days_left} day(s) left");
+        }
+        peterfan_core::license::Entitlement::TrialExpired => {
+            println!(
+                "peterfand: trial expired — fans will stay on automatic control. \
+                 Run `peterfan license activate <key>` to restore persistent control."
+            );
+        }
+    }
+
     let profile = match &cli.profile {
         Some(name) => {
             Profile::parse(name).ok_or_else(|| anyhow::anyhow!("unknown profile '{name}'"))?
@@ -202,6 +254,9 @@ fn run(cli: Cli) -> Result<()> {
             manual: false,
             backend: provider.name().to_string(),
             config: resolved_cfg,
+            last_temps: Vec::new(),
+            last_fans: Vec::new(),
+            last_power_w: None,
         };
         // Restore the last user-chosen mode so a reboot doesn't reset fan settings.
         if let Some(saved) = load_saved_state() {
@@ -264,6 +319,7 @@ fn run(cli: Cli) -> Result<()> {
             profile,
             &fan_ids,
             cli.once,
+            entitled,
             &shared,
         )
     }));
@@ -292,6 +348,7 @@ fn control_loop(
     base: Profile,
     fan_ids: &[String],
     once: bool,
+    entitled: bool,
     shared: &Arc<Mutex<State>>,
 ) -> Result<()> {
     let mut auto_applied = false;
@@ -304,20 +361,38 @@ fn control_loop(
         let state = shared.lock().expect("state poisoned").clone();
         // Read interval/critical from live config so `reload` takes effect immediately.
         let interval = state.config.interval_secs.max(1);
+        // Trial expired and no license: fall back to automatic control every
+        // tick, same as `auto`, regardless of the user's chosen mode. Read-only
+        // status queries over IPC keep working — temps/fans are cached below
+        // unconditionally, whichever branch runs.
+        let auto = state.auto || !entitled;
         let critical = state.config.critical_temp_c;
 
-        if state.auto {
+        let temps = provider.temperatures().unwrap_or_default();
+        let fans_now = provider.fans().unwrap_or_default();
+        let power_now = provider.power_watts();
+        {
+            let mut s = shared.lock().expect("state poisoned");
+            s.last_temps = temps.clone();
+            s.last_fans = fans_now.clone();
+            s.last_power_w = power_now;
+        }
+        let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+
+        if auto {
             if !auto_applied {
                 for id in fan_ids {
                     provider.set_fan_auto(id)?;
                 }
-                println!("peterfand: auto (OS-managed)");
+                if !entitled {
+                    println!("peterfand: trial expired -> auto (OS-managed)");
+                } else {
+                    println!("peterfand: auto (OS-managed)");
+                }
                 auto_applied = true;
             }
         } else {
             auto_applied = false;
-            let temps = provider.temperatures().unwrap_or_default();
-            let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
 
             // Choose the profile: a manual (IPC) choice wins; otherwise the
             // first matching automation rule; otherwise the base profile.
@@ -344,7 +419,10 @@ fn control_loop(
                 (d, format!("hold:{d}%"))
             } else {
                 // Use config.curve_for() so Profile::Custom resolves to the user-defined curve.
-                (state.config.curve_for(profile).duty_at(hottest), profile.as_str().into())
+                (
+                    state.config.curve_for(profile).duty_at(hottest),
+                    profile.as_str().into(),
+                )
             };
             for id in fan_ids {
                 provider.set_fan_duty(id, duty)?;
@@ -382,11 +460,16 @@ fn control_loop(
         if once {
             break;
         }
-        // Sleep in small slices so a signal stops us promptly.
+        // Sleep in small slices so a signal stops us promptly, and so a
+        // freshly-issued command (APPLY_NOW) wakes us well before the rest
+        // of a multi-second interval elapses.
         let mut slept = 0u64;
         while slept < interval * 1000 && !STOP.load(Ordering::Relaxed) {
             sleep(Duration::from_millis(200));
             slept += 200;
+            if APPLY_NOW.swap(false, Ordering::Relaxed) {
+                break;
+            }
         }
     }
     Ok(())
@@ -433,6 +516,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             s.auto = true;
             s.held_duty = None;
             save_state(&s);
+            APPLY_NOW.store(true, Ordering::Relaxed);
             format!("ok auto ({backend})")
         }
         // Hand control back to the automation rules (clear manual override).
@@ -442,6 +526,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             s.auto = false;
             s.held_duty = None;
             save_state(&s);
+            APPLY_NOW.store(true, Ordering::Relaxed);
             format!("ok rules ({backend})")
         }
         Some("profile") => match parts.next().and_then(Profile::parse) {
@@ -452,6 +537,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 s.held_duty = None;
                 s.manual = true;
                 save_state(&s);
+                APPLY_NOW.store(true, Ordering::Relaxed);
                 format!("ok {} ({backend})", p.as_str())
             }
             None => "error: unknown profile".into(),
@@ -465,6 +551,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 s.auto = false;
                 s.manual = true;
                 save_state(&s);
+                APPLY_NOW.store(true, Ordering::Relaxed);
                 format!("ok hold:{d}% ({backend})")
             }
             None => "error: hold requires a percent 0-100".into(),
@@ -481,6 +568,30 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 format!("rules:{}", s.profile.as_str())
             };
             format!("ok {mode} ({backend})")
+        }
+        // Return the last-cached temps + fans as compact JSON.
+        // The CLI uses this to skip SMC init (saves ~350ms per invocation).
+        Some("temps") => {
+            let s = shared.lock().expect("state poisoned");
+            let mode = if s.auto {
+                "auto".to_string()
+            } else if let Some(d) = s.held_duty {
+                format!("hold:{d}%")
+            } else if s.manual {
+                format!("manual:{}", s.profile.as_str())
+            } else {
+                format!("rules:{}", s.profile.as_str())
+            };
+            match serde_json::to_string(&serde_json::json!({
+                "temps": s.last_temps,
+                "fans": s.last_fans,
+                "power_w": s.last_power_w,
+                "mode": mode,
+                "backend": s.backend,
+            })) {
+                Ok(json) => format!("ok {json}"),
+                Err(_) => "error: serialization failed".into(),
+            }
         }
         Some("reload") => {
             let new_cfg = peterfan_platform::config::load();

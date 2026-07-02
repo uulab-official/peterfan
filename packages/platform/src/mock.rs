@@ -101,6 +101,7 @@ impl HardwareProvider for MockProvider {
         let gpu = 38.0 + Self::wobble(0.4) * 26.0; // 38..64
         let ram = 36.0 + Self::wobble(0.7) * 8.0; // 36..44
         let ssd = 34.0 + Self::wobble(0.2) * 6.0; // 34..40
+        let batt = 28.0 + Self::wobble(0.55) * 6.0; // 28..34
         Ok(vec![
             TempSensor {
                 id: "cpu.package".into(),
@@ -125,6 +126,12 @@ impl HardwareProvider for MockProvider {
                 label: "NVMe SSD".into(),
                 kind: SensorKind::Storage,
                 value: Celsius(ssd),
+            },
+            TempSensor {
+                id: "battery".into(),
+                label: "Battery".into(),
+                kind: SensorKind::Battery,
+                value: Celsius(batt),
             },
         ])
     }

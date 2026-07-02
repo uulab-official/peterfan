@@ -18,13 +18,16 @@ use clap::{CommandFactory, Parser, Subcommand};
 use owo_colors::OwoColorize;
 
 use peterfan_core::error::CoreError;
+use peterfan_core::license::{self, Entitlement, LicenseStatus};
 use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
 use peterfan_core::types::{Fan, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 /// Delay between the two metric samples; usage % and network rates are deltas.
-const SAMPLE_MS: u64 = 300;
+/// 150 ms is the sweet spot: accurate enough for ≥1% CPU granularity, but
+/// fast enough to feel instant. Anything below 100 ms gives noisy readings.
+const SAMPLE_MS: u64 = 150;
 
 #[derive(Parser)]
 #[command(
@@ -196,6 +199,65 @@ enum Command {
     },
     /// Check for a newer version on GitHub.
     Update,
+    /// Watch metrics and send a desktop notification when a threshold is exceeded.
+    /// Run with no args to use saved thresholds from config.
+    /// Subcommands: `install` (LaunchAgent), `status`, `remove`.
+    Alert {
+        /// Alert when CPU usage exceeds this percent (0-100).
+        #[arg(long)]
+        cpu: Option<f32>,
+        /// Alert when memory usage exceeds this percent (0-100).
+        #[arg(long, alias = "mem")]
+        memory: Option<f32>,
+        /// Alert when the hottest sensor exceeds this temperature in °C.
+        #[arg(long)]
+        temp: Option<f32>,
+        /// Check interval in seconds.
+        #[arg(long, short)]
+        interval: Option<u64>,
+        /// Seconds to suppress repeated alerts for the same metric.
+        #[arg(long)]
+        cooldown: Option<u64>,
+        /// Check once and exit — exit code 1 if any threshold exceeded (for cron/scripts).
+        #[arg(long)]
+        once: bool,
+        /// Save these thresholds to config so `peterfan alert` uses them by default.
+        #[arg(long)]
+        save: bool,
+        #[command(subcommand)]
+        sub: Option<AlertAction>,
+    },
+    /// Manage your PeterFan license (the menu-bar app and persistent fan
+    /// control need one after the free trial; every other command stays free).
+    /// With no subcommand, shows current trial/license status.
+    License {
+        #[command(subcommand)]
+        sub: Option<LicenseAction>,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+enum LicenseAction {
+    /// Show trial days remaining or the active license's email/expiry.
+    Status,
+    /// Save a `PFAN1-...` license key.
+    Activate { key: String },
+    /// Remove the saved license key (falls back to the trial clock).
+    Deactivate,
+}
+
+#[derive(Subcommand, Clone)]
+enum AlertAction {
+    /// Install a user LaunchAgent that runs `peterfan alert` at login.
+    Install {
+        /// Path to the peterfan binary (default: this binary).
+        #[arg(long)]
+        binary: Option<String>,
+    },
+    /// Show whether the alert LaunchAgent is installed.
+    Status,
+    /// Remove the alert LaunchAgent.
+    Remove,
 }
 
 #[derive(Subcommand, Clone)]
@@ -211,9 +273,7 @@ enum ProfileAction {
         points: String,
     },
     /// Remove a custom curve by name.
-    Delete {
-        name: String,
-    },
+    Delete { name: String },
     /// List all custom curves defined in the config.
     List,
 }
@@ -301,7 +361,8 @@ enum LoginItemAction {
         /// Path to peterfan-menubar binary (default: sibling of this binary).
         #[arg(long)]
         binary: Option<String>,
-        /// What to show in the menu bar: cpu (default), temp, fan.
+        /// What to show in the menu bar: cpu (default), memory, temp, fan, network.
+        /// Can also be changed later from the menu-bar item's right-click menu.
         #[arg(long, default_value = "cpu")]
         metric: String,
     },
@@ -362,8 +423,8 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Top { mem, count } => cmd_top(mock, json, mem, count),
         Command::Battery => cmd_battery(mock, json),
         Command::System => cmd_system(mock, json),
-        Command::Temps => cmd_temps(provider(mock).as_ref(), json),
-        Command::Fans => cmd_fans(provider(mock).as_ref(), json),
+        Command::Temps => cmd_temps(mock, json),
+        Command::Fans => cmd_fans(mock, json),
         Command::Fan { action } => cmd_fan(provider(mock).as_ref(), action, json),
         Command::Profile { name, sub } => {
             if let Some(action) = sub {
@@ -395,171 +456,47 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::UninstallDaemon { dry_run } => cmd_uninstall_daemon(dry_run),
         Command::Watch { interval } => cmd_watch(mock, interval),
         Command::Update => cmd_update(),
+        Command::Alert {
+            cpu,
+            memory,
+            temp,
+            interval,
+            cooldown,
+            once,
+            save,
+            sub,
+        } => cmd_alert(mock, cpu, memory, temp, interval, cooldown, once, save, sub),
+        Command::License { sub } => cmd_license(json, sub.unwrap_or(LicenseAction::Status)),
     }
-}
-
-/// LaunchDaemon label + paths (kept in sync with `packaging/…plist`).
-const DAEMON_LABEL: &str = "com.uulab.peterfan.daemon";
-
-/// The LaunchDaemon plist, generated so the install needs no extra files.
-fn daemon_plist() -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>{DAEMON_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/peterfand</string>
-    <string>--profile</string><string>balanced</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/var/log/peterfand.log</string>
-  <key>StandardErrorPath</key><string>/var/log/peterfand.err</string>
-</dict>
-</plist>
-"#
-    )
-}
-
-/// Find the `peterfand` binary shipped next to this `peterfan` executable.
-#[cfg(target_os = "macos")]
-fn find_peterfand() -> Result<std::path::PathBuf> {
-    let mut cands = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            cands.push(dir.join("peterfand"));
-        }
-    }
-    cands.push(std::path::PathBuf::from("./peterfand"));
-    cands.push(std::path::PathBuf::from("target/release/peterfand"));
-    cands.into_iter().find(|p| p.exists()).ok_or_else(|| {
-        anyhow::anyhow!("peterfand not found next to peterfan (it ships in the same archive)")
-    })
-}
-
-/// Run a privileged shell script via one macOS admin-password GUI prompt.
-#[cfg(target_os = "macos")]
-fn run_privileged(script: &str, dry_run: bool) -> Result<()> {
-    let path = std::env::temp_dir().join("peterfan-daemon-install.sh");
-    if path.to_string_lossy().contains('\'') {
-        anyhow::bail!("temp path contains a quote; aborting");
-    }
-    std::fs::write(&path, script)?;
-    let apple = format!(
-        "do shell script \"/bin/bash '{}'\" with administrator privileges",
-        path.display()
-    );
-    if dry_run {
-        println!(
-            "--- script ({}) ---\n{script}\n--- osascript ---\n{apple}",
-            path.display()
-        );
-        return Ok(());
-    }
-    let status = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(&apple)
-        .status()?;
-    let _ = std::fs::remove_file(&path);
-    if !status.success() {
-        anyhow::bail!("privileged step was cancelled or failed");
-    }
-    Ok(())
-}
-
-const LOGIN_ITEM_LABEL: &str = "dev.peterfan.menubar";
-const LOGIN_ITEM_BINARY: &str = "peterfan-menubar";
-
-fn login_item_plist_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h: std::path::PathBuf| {
-        h.join("Library")
-            .join("LaunchAgents")
-            .join(format!("{LOGIN_ITEM_LABEL}.plist"))
-    })
-}
-
-fn find_menubar_binary(override_path: Option<&str>) -> Result<std::path::PathBuf> {
-    if let Some(p) = override_path {
-        let path = std::path::PathBuf::from(p);
-        if path.exists() {
-            return Ok(path);
-        }
-        anyhow::bail!("binary not found at '{p}'");
-    }
-    // Look next to the current executable.
-    if let Ok(exe) = std::env::current_exe() {
-        let sibling = exe.parent().map(|d| d.join(LOGIN_ITEM_BINARY));
-        if let Some(s) = sibling.filter(|p| p.exists()) {
-            return Ok(s);
-        }
-    }
-    // Fall back to $PATH.
-    if let Ok(out) = std::process::Command::new("which")
-        .arg(LOGIN_ITEM_BINARY)
-        .output()
-    {
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !s.is_empty() {
-            return Ok(std::path::PathBuf::from(s));
-        }
-    }
-    anyhow::bail!(
-        "could not find '{LOGIN_ITEM_BINARY}' — use --binary <path> to specify its location"
-    )
-}
-
-fn login_item_plist(bin: &std::path::Path, metric: &str) -> String {
-    let metric_arg = if metric == "cpu" {
-        String::new()
-    } else {
-        format!("\n    <string>--metric</string>\n    <string>{metric}</string>")
-    };
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>       <string>{LOGIN_ITEM_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{}</string>{metric_arg}
-  </array>
-  <key>RunAtLoad</key>   <true/>
-  <key>KeepAlive</key>   <false/>
-  <key>StandardOutPath</key> <string>/tmp/peterfan-menubar.log</string>
-  <key>StandardErrorPath</key> <string>/tmp/peterfan-menubar.log</string>
-</dict>
-</plist>
-"#,
-        bin.display()
-    )
 }
 
 #[cfg(target_os = "macos")]
 fn cmd_login_item(action: LoginItemAction) -> Result<()> {
     use owo_colors::OwoColorize;
-    let plist_path =
-        login_item_plist_path().ok_or_else(|| anyhow::anyhow!("could not determine home dir"))?;
+    use peterfan_platform::login_item;
 
     match action {
         LoginItemAction::Status => {
-            if plist_path.exists() {
-                let content = std::fs::read_to_string(&plist_path).unwrap_or_default();
+            let Some(path) = login_item::plist_path() else {
+                anyhow::bail!("could not determine home directory");
+            };
+            if path.exists() {
+                let content = std::fs::read_to_string(&path).unwrap_or_default();
                 let bin_line = content
                     .lines()
                     .skip_while(|l| !l.contains("ProgramArguments"))
                     .nth(2)
-                    .map(|l| l.trim().trim_start_matches("<string>").trim_end_matches("</string>"))
+                    .map(|l| {
+                        l.trim()
+                            .trim_start_matches("<string>")
+                            .trim_end_matches("</string>")
+                    })
                     .unwrap_or("?");
                 println!(
                     "  {} login item installed\n  binary: {}\n  plist:  {}",
                     "✓".green(),
                     bin_line.bold(),
-                    plist_path.display()
+                    path.display()
                 );
             } else {
                 println!(
@@ -569,37 +506,22 @@ fn cmd_login_item(action: LoginItemAction) -> Result<()> {
             }
         }
         LoginItemAction::Install { binary, metric } => {
-            let bin = find_menubar_binary(binary.as_deref())?;
-            if let Some(dir) = plist_path.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            std::fs::write(&plist_path, login_item_plist(&bin, &metric))?;
-            // Load it immediately so the user doesn't have to log out/in.
-            let _ = std::process::Command::new("launchctl")
-                .args(["load", "-w", plist_path.to_str().unwrap_or("")])
-                .status();
+            let (bin, path) =
+                login_item::install(binary.as_deref(), &metric).map_err(|e| anyhow::anyhow!(e))?;
             println!(
                 "  {} login item installed\n  binary: {}\n  plist:  {}\n  {} peterfan-menubar will start at login",
                 "✓".green(),
                 bin.display().bold(),
-                plist_path.display(),
+                path.display(),
                 "→".dimmed()
             );
         }
         LoginItemAction::Remove => {
-            if !plist_path.exists() {
+            if !login_item::remove().map_err(|e| anyhow::anyhow!(e))? {
                 println!("  {} login item is not installed", "—".dimmed());
                 return Ok(());
             }
-            let _ = std::process::Command::new("launchctl")
-                .args(["unload", "-w", plist_path.to_str().unwrap_or("")])
-                .status();
-            std::fs::remove_file(&plist_path)?;
-            println!(
-                "  {} login item removed  ({})",
-                "✓".green(),
-                plist_path.display()
-            );
+            println!("  {} login item removed", "✓".green());
         }
     }
     Ok(())
@@ -611,68 +533,51 @@ fn cmd_login_item(action: LoginItemAction) -> Result<()> {
     anyhow::bail!("login-item is only supported on macOS")
 }
 
-const NEWSYSLOG_CONF: &str = "/etc/newsyslog.d/peterfand.conf";
-const NEWSYSLOG_BODY: &str = "\
-# PeterFan daemon log rotation (rotate at 1 MB, keep 5 compressed archives)\n\
-/var/log/peterfand.log  root:wheel  644  5  1024  *  J\n\
-/var/log/peterfand.err  root:wheel  644  3   512  *  J\n";
-
 #[cfg(target_os = "macos")]
 fn cmd_install_daemon(dry_run: bool) -> Result<()> {
-    let bin = find_peterfand()?;
-    let plist_dst = format!("/Library/LaunchDaemons/{DAEMON_LABEL}.plist");
-    let script = format!(
-        "set -e\n\
-         install -m 755 '{bin}' /usr/local/bin/peterfand\n\
-         cat > '{plist_dst}' <<'PLIST'\n{plist}PLIST\n\
-         chown root:wheel '{plist_dst}'\n\
-         chmod 644 '{plist_dst}'\n\
-         launchctl bootout system '{plist_dst}' 2>/dev/null || true\n\
-         launchctl bootstrap system '{plist_dst}'\n\
-         mkdir -p /etc/newsyslog.d\n\
-         printf '%s' '{newsyslog}' > {newsyslog_conf}\n\
-         chmod 644 {newsyslog_conf}\n",
-        bin = bin.display(),
-        plist = daemon_plist(),
-        newsyslog = NEWSYSLOG_BODY,
-        newsyslog_conf = NEWSYSLOG_CONF,
-    );
+    use peterfan_platform::daemon_install::InstallOutcome;
     println!(
         "Installing the PeterFan fan-control daemon as root.\n\
          macOS will ask for your password once — after that the menu-bar app and \
          `peterfan fan …` work without sudo (just like Macs Fan Control)."
     );
-    run_privileged(&script, dry_run)?;
-    if dry_run {
-        return Ok(());
+    match peterfan_platform::daemon_install::install(dry_run) {
+        Ok(InstallOutcome::DryRun(script)) => {
+            println!("{script}");
+            Ok(())
+        }
+        Ok(InstallOutcome::Installed) => {
+            println!("{}", "✓ daemon installed and running (root)".green());
+            println!("  logs at /var/log/peterfand.log (rotated at 1 MB, 5 archives)");
+            Ok(())
+        }
+        Ok(InstallOutcome::InstalledButUnreachable) => {
+            println!(
+                "{}",
+                "installed, but the daemon isn't answering yet — check /var/log/peterfand.err"
+                    .yellow()
+            );
+            Ok(())
+        }
+        Err(e) => anyhow::bail!(e),
     }
-    std::thread::sleep(Duration::from_millis(800));
-    if peterfan_platform::daemon_reachable() {
-        println!("{}", "✓ daemon installed and running (root)".green());
-        println!("  logs at /var/log/peterfand.log (rotated at 1 MB, 5 archives)");
-    } else {
-        println!(
-            "{}",
-            "installed, but the daemon isn't answering yet — check /var/log/peterfand.err".yellow()
-        );
-    }
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
 fn cmd_uninstall_daemon(dry_run: bool) -> Result<()> {
-    let plist_dst = format!("/Library/LaunchDaemons/{DAEMON_LABEL}.plist");
-    let script = format!(
-        "launchctl bootout system '{plist_dst}' 2>/dev/null || true\n\
-         rm -f '{plist_dst}' /usr/local/bin/peterfand\n\
-         rm -f {NEWSYSLOG_CONF}\n"
-    );
+    use peterfan_platform::daemon_install::InstallOutcome;
     println!("Removing the PeterFan fan-control daemon (one admin prompt)…");
-    run_privileged(&script, dry_run)?;
-    if !dry_run {
-        println!("{}", "✓ daemon removed".green());
+    match peterfan_platform::daemon_install::uninstall(dry_run) {
+        Ok(InstallOutcome::DryRun(script)) => {
+            println!("{script}");
+            Ok(())
+        }
+        Ok(_) => {
+            println!("{}", "✓ daemon removed".green());
+            Ok(())
+        }
+        Err(e) => anyhow::bail!(e),
     }
-    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1186,7 +1091,27 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
             "profile" => cfg.profile.as_str().to_string(),
             "interval" | "interval_secs" => cfg.interval_secs.to_string(),
             "critical" | "critical_temp_c" => format!("{:.0}", cfg.critical_temp_c),
-            _ => anyhow::bail!("unknown key '{key}'; valid keys: profile, interval, critical"),
+            "alert.cpu" | "alert.cpu_pct" => cfg
+                .alert
+                .cpu_pct
+                .map(|v| format!("{v}"))
+                .unwrap_or_else(|| "(not set)".into()),
+            "alert.memory" | "alert.memory_pct" => cfg
+                .alert
+                .memory_pct
+                .map(|v| format!("{v}"))
+                .unwrap_or_else(|| "(not set)".into()),
+            "alert.temp" | "alert.temp_c" => cfg
+                .alert
+                .temp_c
+                .map(|v| format!("{v}"))
+                .unwrap_or_else(|| "(not set)".into()),
+            "alert.cooldown" | "alert.cooldown_secs" => cfg.alert.cooldown_secs.to_string(),
+            "alert.interval" | "alert.interval_secs" => cfg.alert.interval_secs.to_string(),
+            _ => anyhow::bail!(
+                "unknown key '{key}'; valid keys: profile, interval, critical, \
+                 alert.cpu, alert.memory, alert.temp, alert.cooldown, alert.interval"
+            ),
         };
         if json {
             println!(
@@ -1218,7 +1143,39 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
                     .parse::<f32>()
                     .map_err(|_| anyhow::anyhow!("critical must be a number"))?;
             }
-            _ => anyhow::bail!("unknown key '{key}'; valid keys: profile, interval, critical"),
+            "alert.cpu" | "alert.cpu_pct" => {
+                cfg.alert.cpu_pct = Some(
+                    val.parse::<f32>()
+                        .map_err(|_| anyhow::anyhow!("alert.cpu must be a number"))?,
+                );
+            }
+            "alert.memory" | "alert.memory_pct" => {
+                cfg.alert.memory_pct = Some(
+                    val.parse::<f32>()
+                        .map_err(|_| anyhow::anyhow!("alert.memory must be a number"))?,
+                );
+            }
+            "alert.temp" | "alert.temp_c" => {
+                cfg.alert.temp_c = Some(
+                    val.parse::<f32>()
+                        .map_err(|_| anyhow::anyhow!("alert.temp must be a number"))?,
+                );
+            }
+            "alert.cooldown" | "alert.cooldown_secs" => {
+                cfg.alert.cooldown_secs = val
+                    .parse::<u64>()
+                    .map_err(|_| anyhow::anyhow!("alert.cooldown must be a number"))?;
+            }
+            "alert.interval" | "alert.interval_secs" => {
+                cfg.alert.interval_secs = val
+                    .parse::<u64>()
+                    .map_err(|_| anyhow::anyhow!("alert.interval must be a number"))?
+                    .max(1);
+            }
+            _ => anyhow::bail!(
+                "unknown key '{key}'; valid keys: profile, interval, critical, \
+                 alert.cpu, alert.memory, alert.temp, alert.cooldown, alert.interval"
+            ),
         }
         let p = peterfan_platform::config::save(&cfg)
             .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
@@ -1264,6 +1221,138 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
                 "  ⚠ invalid"
             };
             println!("    {:<16} → {}{}", r.when, r.profile.as_str(), ok.yellow());
+        }
+    }
+    if !cfg.alert.is_empty() {
+        println!("  {}", "Alert:".dimmed());
+        if let Some(c) = cfg.alert.cpu_pct {
+            println!("    cpu  > {c}%");
+        }
+        if let Some(m) = cfg.alert.memory_pct {
+            println!("    mem  > {m}%");
+        }
+        if let Some(t) = cfg.alert.temp_c {
+            println!("    temp > {t}°C");
+        }
+        println!(
+            "    interval {}s · cooldown {}s",
+            cfg.alert.interval_secs, cfg.alert.cooldown_secs
+        );
+    }
+    Ok(())
+}
+
+/// Seconds since the Unix epoch, or 0 if the system clock is before 1970.
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Format Unix seconds as `YYYY-MM-DD` (UTC), with no date-library dependency —
+/// the civil-from-days algorithm (Howard Hinnant, public domain).
+fn format_unix_date(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn cmd_license(json: bool, action: LicenseAction) -> Result<()> {
+    let mut cfg = peterfan_platform::config::load();
+    let now = now_unix();
+
+    match action {
+        LicenseAction::Status => {
+            let entitlement = license::check_entitlement(
+                cfg.license.key.as_deref(),
+                cfg.license.first_run_unix,
+                now,
+            );
+            if json {
+                let val = match &entitlement {
+                    Entitlement::Licensed { email } => {
+                        serde_json::json!({"status": "licensed", "email": email})
+                    }
+                    Entitlement::Trial { days_left } => {
+                        serde_json::json!({"status": "trial", "days_left": days_left})
+                    }
+                    Entitlement::TrialExpired => serde_json::json!({"status": "trial_expired"}),
+                };
+                println!("{}", serde_json::to_string_pretty(&val)?);
+                return Ok(());
+            }
+            println!("{}", render::heading("License"));
+            match &entitlement {
+                Entitlement::Licensed { email } => {
+                    print_kv("Status", &format!("licensed — {email}"));
+                }
+                Entitlement::Trial { days_left } => {
+                    print_kv("Status", &format!("free trial — {days_left} day(s) left"));
+                    println!(
+                        "  {}",
+                        "activate with: peterfan license activate <key>".dimmed()
+                    );
+                }
+                Entitlement::TrialExpired => {
+                    print_kv("Status", "trial expired");
+                    println!(
+                        "  {}",
+                        "the menu-bar app and persistent fan control need a license now.".yellow()
+                    );
+                    println!(
+                        "  {}",
+                        "every other command (status, temps, fan set, …) stays free.".dimmed()
+                    );
+                }
+            }
+        }
+        LicenseAction::Activate { key } => match license::verify_key(&key, now) {
+            LicenseStatus::Valid { email, expires } => {
+                cfg.license.key = Some(key);
+                peterfan_platform::config::save(&cfg)
+                    .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "status": "activated", "email": email, "expires": expires,
+                        }))?
+                    );
+                } else {
+                    println!("  {} licensed to {}", "✓".green(), email.bold());
+                    match expires {
+                        Some(exp) => println!("  expires: {}", format_unix_date(exp)),
+                        None => println!("  {}", "lifetime license".dimmed()),
+                    }
+                }
+            }
+            LicenseStatus::Expired { email, expired_at } => {
+                anyhow::bail!(
+                    "license for {email} expired on {} — you'll need a new key",
+                    format_unix_date(expired_at)
+                );
+            }
+            LicenseStatus::Invalid(reason) => {
+                anyhow::bail!("invalid license key: {reason}");
+            }
+        },
+        LicenseAction::Deactivate => {
+            cfg.license.key = None;
+            peterfan_platform::config::save(&cfg)
+                .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+            if !json {
+                println!("  {} license removed — trial clock resumes", "✓".green());
+            }
         }
     }
     Ok(())
@@ -1491,7 +1580,21 @@ fn provider(mock: bool) -> Box<dyn HardwareProvider> {
     }
 }
 
-/// A monitor sampled twice across [`SAMPLE_MS`] so usage % and rates are valid.
+/// Single-refresh monitor — no delta sleep. Use for instantaneous values:
+/// memory, battery, system info. NOT for CPU%, I/O rates, net rates.
+/// Uses the quick backend (skips process/disk/network scan) for ~10x speedup.
+fn instant_monitor(mock: bool) -> Box<dyn SystemMonitor> {
+    let mut m = if mock {
+        peterfan_platform::mock_monitor()
+    } else {
+        peterfan_platform::quick_monitor()
+    };
+    m.refresh();
+    m
+}
+
+/// Double-refresh monitor across [`SAMPLE_MS`] — required for delta metrics:
+/// CPU usage %, disk I/O rates, network throughput rates, top process CPU%.
 fn sampled_monitor(mock: bool) -> Box<dyn SystemMonitor> {
     let mut m = if mock {
         peterfan_platform::mock_monitor()
@@ -1502,6 +1605,25 @@ fn sampled_monitor(mock: bool) -> Box<dyn SystemMonitor> {
     std::thread::sleep(Duration::from_millis(SAMPLE_MS));
     m.refresh();
     m
+}
+
+/// Returns a double-sampled monitor and hardware provider whose initializations
+/// run concurrently — the provider init overlaps the SAMPLE_MS sleep, so the
+/// total wall-clock time is max(SAMPLE_MS, provider_init) instead of the sum.
+///
+/// Safe because `HardwareProvider: Send + Sync`.
+fn sampled_monitor_and_provider(mock: bool) -> (Box<dyn SystemMonitor>, Box<dyn HardwareProvider>) {
+    let prov_handle = std::thread::spawn(move || provider(mock));
+    let mut m = if mock {
+        peterfan_platform::mock_monitor()
+    } else {
+        peterfan_platform::system_monitor()
+    };
+    m.refresh();
+    std::thread::sleep(Duration::from_millis(SAMPLE_MS));
+    m.refresh();
+    let prov = prov_handle.join().unwrap_or_else(|_| provider(mock));
+    (m, prov)
 }
 
 // ---------------------------------------------------------------------------
@@ -1546,7 +1668,7 @@ fn cmd_cpu(mock: bool, json: bool) -> Result<()> {
 }
 
 fn cmd_memory(mock: bool, json: bool) -> Result<()> {
-    let m = sampled_monitor(mock);
+    let m = instant_monitor(mock);
     let mem = m.memory();
     if json {
         println!("{}", serde_json::to_string_pretty(&mem)?);
@@ -1639,7 +1761,7 @@ fn cmd_top(mock: bool, json: bool, mem: bool, count: usize) -> Result<()> {
 }
 
 fn cmd_battery(mock: bool, json: bool) -> Result<()> {
-    let m = sampled_monitor(mock);
+    let m = instant_monitor(mock);
     let batt = m.battery();
     if json {
         println!("{}", serde_json::to_string_pretty(&batt)?);
@@ -1654,7 +1776,7 @@ fn cmd_battery(mock: bool, json: bool) -> Result<()> {
 }
 
 fn cmd_system(mock: bool, json: bool) -> Result<()> {
-    let m = sampled_monitor(mock);
+    let m = instant_monitor(mock);
     let info = m.system_info();
     if json {
         println!("{}", serde_json::to_string_pretty(&info)?);
@@ -1670,21 +1792,28 @@ fn cmd_system(mock: bool, json: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_status_compact(mock: bool, json: bool) -> Result<()> {
-    let m = sampled_monitor(mock);
-    let provider = provider(mock);
+    // daemon_sensors() gives temps + fans + mode in one IPC call — no second roundtrip.
+    let daemon_s = if !mock { daemon_sensors() } else { None };
+    let m = if daemon_s.is_some() {
+        // Skip provider init and sampling; we have temps from the daemon.
+        instant_monitor(mock)
+    } else {
+        sampled_monitor(mock)
+    };
     let cpu = m.cpu();
     let mem = m.memory();
-    let temps = provider.temperatures().unwrap_or_default();
-    let fans = provider.fans().unwrap_or_default();
+    let (temps, fans, daemon) = if let Some(ds) = daemon_s {
+        (ds.temps, ds.fans, ds.daemon_mode)
+    } else {
+        let prov = provider(mock);
+        (
+            prov.temperatures().unwrap_or_default(),
+            prov.fans().unwrap_or_default(),
+            None,
+        )
+    };
     let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
     let fastest = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
-    let daemon = ipc_send("status")
-        .as_deref()
-        .and_then(|r| r.strip_prefix("ok "))
-        .map(|s| {
-            // Strip the backend qualifier: "hold:80% (macos)" → "hold:80%"
-            s.split_once(" (").map_or(s, |(mode, _)| mode).to_string()
-        });
 
     if json {
         println!(
@@ -1722,8 +1851,23 @@ fn cmd_status_compact(mock: bool, json: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_status(mock: bool, json: bool) -> Result<()> {
-    let m = sampled_monitor(mock);
-    let provider = provider(mock);
+    // When the daemon has cached thermals, we can skip hardware provider init
+    // entirely and run only the system monitor (150 ms sample window).
+    // When the daemon is absent, we parallelise provider init with the sample.
+    let daemon_s = if !mock { daemon_sensors() } else { None };
+
+    let (m, sensors, thermal_backend, power_w) = if let Some(ds) = daemon_s {
+        let m = sampled_monitor(mock);
+        let backend = ds.daemon_backend.clone().unwrap_or_else(|| "daemon".into());
+        let pw = ds.daemon_power_w;
+        (m, ds, backend, pw)
+    } else {
+        let (m, prov) = sampled_monitor_and_provider(mock);
+        let backend = prov.name().to_string();
+        let pw = prov.power_watts();
+        let s = read_sensors(prov.as_ref())?;
+        (m, s, backend, pw)
+    };
 
     let info = m.system_info();
     let cpu = m.cpu();
@@ -1732,12 +1876,11 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
     let mut nets = m.networks();
     nets.sort_by(|a, b| (b.rx_total + b.tx_total).cmp(&(a.rx_total + a.tx_total)));
     let battery = m.battery();
-    let sensors = read_sensors(provider.as_ref())?;
 
     if json {
         let value = serde_json::json!({
             "metrics_backend": m.name(),
-            "thermal_backend": provider.name(),
+            "thermal_backend": thermal_backend,
             "simulated_sensors": sensors.simulated,
             "system": info,
             "cpu": cpu,
@@ -1764,7 +1907,7 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
     println!(
         "{} {}  ·  {}  ·  up {}",
         "backend:".dimmed(),
-        format!("{} + {}", m.name(), provider.name()).bold(),
+        format!("{} + {}", m.name(), thermal_backend).bold(),
         os.dimmed(),
         render::duration(info.uptime_secs).dimmed()
     );
@@ -1839,22 +1982,12 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
     println!("{}", render::heading("Fans"));
     print_fans(&sensors.fans);
 
-    // Show daemon status below fans if reachable.
-    if !mock {
-        if let Some(daemon_st) = ipc_send("status")
-            .as_deref()
-            .and_then(|r| r.strip_prefix("ok "))
-            .map(str::to_string)
-        {
-            println!(
-                "  {} {}",
-                "fan daemon:".dimmed(),
-                daemon_st.bold()
-            );
-        }
+    // Daemon mode is already in sensor data — no extra IPC round-trip needed.
+    if let Some(ref mode) = sensors.daemon_mode {
+        println!("  {} {}", "fan daemon:".dimmed(), mode.bold());
     }
 
-    if let Some(w) = provider.power_watts() {
+    if let Some(w) = power_w {
         println!();
         println!(
             "{} {}",
@@ -1870,11 +2003,17 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
 // Thermal commands (HardwareProvider)
 // ---------------------------------------------------------------------------
 
-/// Sensor readings plus whether they came from the simulated backend.
+/// Sensor readings plus context supplied by the daemon cache (if available).
 struct Sensors {
     temps: Vec<TempSensor>,
     fans: Vec<Fan>,
     simulated: bool,
+    /// Daemon fan-control mode, e.g. "rules:balanced" — set when data came from IPC.
+    daemon_mode: Option<String>,
+    /// Daemon-reported power draw in watts.
+    daemon_power_w: Option<f32>,
+    /// Daemon backend name, e.g. "macos".
+    daemon_backend: Option<String>,
 }
 
 /// Read temps + fans, transparently falling back to the mock backend (and
@@ -1886,6 +2025,9 @@ fn read_sensors(provider: &dyn HardwareProvider) -> Result<Sensors> {
             temps: provider.temperatures()?,
             fans: provider.fans()?,
             simulated: false,
+            daemon_mode: None,
+            daemon_power_w: None,
+            daemon_backend: None,
         });
     }
     let mock = peterfan_platform::mock();
@@ -1893,6 +2035,9 @@ fn read_sensors(provider: &dyn HardwareProvider) -> Result<Sensors> {
         temps: mock.temperatures()?,
         fans: mock.fans()?,
         simulated: true,
+        daemon_mode: None,
+        daemon_power_w: None,
+        daemon_backend: None,
     })
 }
 
@@ -1905,8 +2050,18 @@ fn simulated_note() -> String {
     )
 }
 
-fn cmd_temps(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
-    let sensors = read_sensors(provider)?;
+fn cmd_temps(mock: bool, json: bool) -> Result<()> {
+    let sensors = if !mock {
+        if let Some(ds) = daemon_sensors() {
+            ds
+        } else {
+            let prov = provider(mock);
+            read_sensors(prov.as_ref())?
+        }
+    } else {
+        let prov = provider(mock);
+        read_sensors(prov.as_ref())?
+    };
     if json {
         println!("{}", serde_json::to_string_pretty(&sensors.temps)?);
         return Ok(());
@@ -1918,12 +2073,19 @@ fn cmd_temps(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_fans(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
-    let sensors = read_sensors(provider)?;
-    let daemon_mode = ipc_send("status")
-        .as_deref()
-        .and_then(|r| r.strip_prefix("ok "))
-        .map(str::to_string);
+fn cmd_fans(mock: bool, json: bool) -> Result<()> {
+    let sensors = if !mock {
+        if let Some(ds) = daemon_sensors() {
+            ds
+        } else {
+            let prov = provider(mock);
+            read_sensors(prov.as_ref())?
+        }
+    } else {
+        let prov = provider(mock);
+        read_sensors(prov.as_ref())?
+    };
+    let daemon_mode = sensors.daemon_mode.clone();
     if json {
         let val = serde_json::json!({
             "fans": sensors.fans,
@@ -1935,7 +2097,7 @@ fn cmd_fans(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
     if sensors.simulated {
         println!("{}", simulated_note());
     }
-    if let Some(mode) = &daemon_mode {
+    if let Some(ref mode) = daemon_mode {
         println!("  {} daemon: {}", "•".cyan(), mode.bold());
     }
     print_fans(&sensors.fans);
@@ -2172,11 +2334,18 @@ fn cmd_fan_status(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
     println!("{}", render::heading("Fan control status"));
     print_kv(
         "Control",
-        if can_control { "available" } else { "unavailable (read-only backend)" },
+        if can_control {
+            "available"
+        } else {
+            "unavailable (read-only backend)"
+        },
     );
     match &daemon_mode {
         Some(mode) => print_kv("Daemon mode", mode),
-        None => print_kv("Daemon", "not running — install with `peterfan install-daemon`"),
+        None => print_kv(
+            "Daemon",
+            "not running — install with `peterfan install-daemon`",
+        ),
     }
     println!();
     println!("{}", render::heading("Fans"));
@@ -2302,10 +2471,18 @@ fn list_profiles(json: bool) -> Result<()> {
         println!("  {:<14} {}", p.as_str().bold(), p.description().dimmed());
     }
     if cfg.custom_curve.is_some() {
-        println!("  {:<14} {}", "custom".bold().cyan(), "User-defined curve  →  `peterfan curve custom`".dimmed());
+        println!(
+            "  {:<14} {}",
+            "custom".bold().cyan(),
+            "User-defined curve  →  `peterfan curve custom`".dimmed()
+        );
     }
     for name in cfg.named_curves.keys() {
-        println!("  {:<14} {}", name.bold().cyan(), "Named custom curve  →  `peterfan profile list`".dimmed());
+        println!(
+            "  {:<14} {}",
+            name.bold().cyan(),
+            "Named custom curve  →  `peterfan profile list`".dimmed()
+        );
     }
     println!();
     println!(
@@ -2365,7 +2542,7 @@ fn cmd_curve(name: Option<String>, json: bool) -> Result<()> {
 
 fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     let provider = provider(mock);
-    let monitor = sampled_monitor(mock);
+    let monitor = instant_monitor(mock);
     let caps = provider.capabilities();
     let mcaps = monitor.capabilities();
     let elevated = is_elevated();
@@ -2478,20 +2655,19 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             println!("{}", render::heading("Setup"));
 
             // ── LaunchDaemon ──────────────────────────────────────────────
-            let plist_exists = std::path::Path::new(
-                "/Library/LaunchDaemons/com.uulab.peterfan.daemon.plist",
-            )
-            .exists();
+            let plist_exists =
+                std::path::Path::new("/Library/LaunchDaemons/com.uulab.peterfan.daemon.plist")
+                    .exists();
             print_check("LaunchDaemon plist installed", plist_exists);
             if plist_exists {
-                // Check if launchd has actually loaded it.
-                let loaded = std::process::Command::new("launchctl")
-                    .args(["list", "com.uulab.peterfan.daemon"])
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
-                print_check("  launchd loaded", loaded);
-                if !loaded && plist_exists {
+                // `launchctl list <label>` only sees jobs in the *caller's*
+                // launchd domain — an unprivileged `peterfan doctor` can never
+                // see a system-domain LaunchDaemon there, so that check always
+                // reported "not loaded" even when the daemon was fine. The
+                // actual IPC reachability check above is the real ground
+                // truth (and already ran), so reuse it instead of guessing.
+                print_check("  daemon responding over IPC", daemon);
+                if !daemon {
                     println!(
                         "    {} run `peterfan install-daemon` to reload",
                         "→".dimmed()
@@ -2505,8 +2681,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             }
 
             // ── Menubar login item ────────────────────────────────────────
-            let login_item_installed =
-                login_item_plist_path().is_some_and(|p| p.exists());
+            let login_item_installed = peterfan_platform::login_item::is_installed();
             print_check("menubar login item installed", login_item_installed);
             if !login_item_installed {
                 println!(
@@ -2555,9 +2730,8 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             }
 
             // ── Daemon state file ─────────────────────────────────────────
-            let state_file = std::path::Path::new(
-                "/Library/Application Support/peterfand/state.toml",
-            );
+            let state_file =
+                std::path::Path::new("/Library/Application Support/peterfand/state.toml");
             if state_file.exists() {
                 let content = std::fs::read_to_string(state_file).unwrap_or_default();
                 let mode = content
@@ -2567,7 +2741,10 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                     .unwrap_or("?");
                 print_kv("  daemon state file", &format!("present (mode = {mode})"));
             } else {
-                print_kv("  daemon state file", "absent (reboot will use config profile)");
+                print_kv(
+                    "  daemon state file",
+                    "absent (reboot will use config profile)",
+                );
             }
 
             // ── Log file ──────────────────────────────────────────────────
@@ -2584,13 +2761,18 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                         }
                     })
                     .unwrap_or_else(|| "?".into());
-                let newsyslog_ok = std::path::Path::new(NEWSYSLOG_CONF).exists();
+                let newsyslog_ok =
+                    std::path::Path::new(peterfan_platform::daemon_install::NEWSYSLOG_CONF)
+                        .exists();
                 let rotation: &str = if newsyslog_ok {
                     "rotation configured"
                 } else {
                     "no rotation — run `peterfan install-daemon`"
                 };
-                print_kv("  daemon log", &format!("{DAEMON_LOG} ({size}, {rotation})"));
+                print_kv(
+                    "  daemon log",
+                    &format!("{DAEMON_LOG} ({size}, {rotation})"),
+                );
             } else {
                 print_kv("  daemon log", "absent (daemon not yet started)");
             }
@@ -2756,6 +2938,36 @@ fn hottest_temp(temps: &[TempSensor]) -> f32 {
         .max(0.0)
 }
 
+/// Try to get temperature and fan data from the running daemon's cache via IPC.
+/// Returns `None` when the daemon is not running or has no cached readings yet.
+/// When successful, the CLI can skip SMC initialisation entirely (~170 ms saved).
+/// The returned Sensors also carries daemon_mode, daemon_power_w, and daemon_backend
+/// so callers avoid a second `status` IPC round-trip.
+#[cfg(unix)]
+fn daemon_sensors() -> Option<Sensors> {
+    let reply = ipc_send("temps")?;
+    let json_str = reply.strip_prefix("ok ")?;
+    let v: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let temps: Vec<TempSensor> = serde_json::from_value(v["temps"].clone()).ok()?;
+    let fans: Vec<peterfan_core::types::Fan> = serde_json::from_value(v["fans"].clone()).ok()?;
+    // Only return a hit when we have at least some real data.
+    if temps.is_empty() && fans.is_empty() {
+        return None;
+    }
+    Some(Sensors {
+        temps,
+        fans,
+        simulated: false,
+        daemon_mode: v["mode"].as_str().map(str::to_string),
+        daemon_power_w: v["power_w"].as_f64().map(|f| f as f32),
+        daemon_backend: v["backend"].as_str().map(str::to_string),
+    })
+}
+#[cfg(not(unix))]
+fn daemon_sensors() -> Option<Sensors> {
+    None
+}
+
 /// Whether the process is running with elevated privileges.
 #[cfg(unix)]
 fn is_elevated() -> bool {
@@ -2783,10 +2995,17 @@ fn cmd_profile_action(json: bool, action: ProfileAction) -> Result<()> {
                 .split(',')
                 .map(|s| {
                     let s = s.trim();
-                    let (t, d) = s.split_once(':')
+                    let (t, d) = s
+                        .split_once(':')
                         .ok_or_else(|| anyhow::anyhow!("invalid point '{s}' — use temp:duty"))?;
-                    let temp: f32 = t.trim().parse().map_err(|_| anyhow::anyhow!("bad temp '{}'", t.trim()))?;
-                    let duty: f32 = d.trim().parse().map_err(|_| anyhow::anyhow!("bad duty '{}'", d.trim()))?;
+                    let temp: f32 = t
+                        .trim()
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("bad temp '{}'", t.trim()))?;
+                    let duty: f32 = d
+                        .trim()
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("bad duty '{}'", d.trim()))?;
                     Ok::<_, anyhow::Error>([temp, duty])
                 })
                 .collect::<Result<_>>()?;
@@ -2795,11 +3014,16 @@ fn cmd_profile_action(json: bool, action: ProfileAction) -> Result<()> {
                 anyhow::bail!("a curve needs at least 2 points");
             }
             // Validate by building a FanCurve.
-            let pts: Vec<CurvePoint> = raw.iter().map(|&[t, d]| CurvePoint::new(t, d as u8)).collect();
+            let pts: Vec<CurvePoint> = raw
+                .iter()
+                .map(|&[t, d]| CurvePoint::new(t, d as u8))
+                .collect();
             peterfan_core::curve::FanCurve::new(pts)
                 .map_err(|e| anyhow::anyhow!("invalid curve: {e}"))?;
 
-            let curve = CustomCurveConfig { points: raw.clone() };
+            let curve = CustomCurveConfig {
+                points: raw.clone(),
+            };
             let mut cfg = peterfan_platform::config::load();
 
             if name == "custom" {
@@ -2818,8 +3042,17 @@ fn cmd_profile_action(json: bool, action: ProfileAction) -> Result<()> {
                     raw.len(),
                     path.display()
                 );
-                println!("  Points: {}", raw.iter().map(|&[t, d]| format!("{t:.0}°C→{d:.0}%")).collect::<Vec<_>>().join("  "));
-                println!("  Use with: {}", format!("peterfan config --set profile {name}").cyan());
+                println!(
+                    "  Points: {}",
+                    raw.iter()
+                        .map(|&[t, d]| format!("{t:.0}°C→{d:.0}%"))
+                        .collect::<Vec<_>>()
+                        .join("  ")
+                );
+                println!(
+                    "  Use with: {}",
+                    format!("peterfan config --set profile {name}").cyan()
+                );
             }
             notify_daemon_reload(json);
         }
@@ -2857,15 +3090,27 @@ fn cmd_profile_action(json: bool, action: ProfileAction) -> Result<()> {
             }
             println!("{}", render::heading("Custom Curves"));
             if cfg.custom_curve.is_none() && cfg.named_curves.is_empty() {
-                println!("  (none — use `peterfan profile create <name> --points \"30:20,60:50,...\"`)");
+                println!(
+                    "  (none — use `peterfan profile create <name> --points \"30:20,60:50,...\"`)"
+                );
                 return Ok(());
             }
             if let Some(cc) = &cfg.custom_curve {
-                let pts_str = cc.points.iter().map(|&[t, d]| format!("{t:.0}°C→{d:.0}%")).collect::<Vec<_>>().join("  ");
+                let pts_str = cc
+                    .points
+                    .iter()
+                    .map(|&[t, d]| format!("{t:.0}°C→{d:.0}%"))
+                    .collect::<Vec<_>>()
+                    .join("  ");
                 println!("  {} custom  {}", "●".cyan(), pts_str.dimmed());
             }
             for (name, cc) in &cfg.named_curves {
-                let pts_str = cc.points.iter().map(|&[t, d]| format!("{t:.0}°C→{d:.0}%")).collect::<Vec<_>>().join("  ");
+                let pts_str = cc
+                    .points
+                    .iter()
+                    .map(|&[t, d]| format!("{t:.0}°C→{d:.0}%"))
+                    .collect::<Vec<_>>()
+                    .join("  ");
                 println!("  {} {:<12}  {}", "●".cyan(), name.bold(), pts_str.dimmed());
             }
         }
@@ -2944,12 +3189,7 @@ fn cmd_watch(mock: bool, interval_secs: u64) -> Result<()> {
 
         let line = format!(
             "CPU {}  MEM {:.0}%  {}  {} RPM{}{}   ",
-            cpu_color,
-            mem.used_percent,
-            temp_color,
-            fastest_rpm,
-            power_part,
-            mode_part,
+            cpu_color, mem.used_percent, temp_color, fastest_rpm, power_part, mode_part,
         );
 
         print!("\r{line}");
@@ -2977,52 +3217,460 @@ fn cmd_update() -> Result<()> {
     print!("Current: v{current}  Checking GitHub…");
     let _ = std::io::Write::flush(&mut std::io::stdout());
 
-    let out = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "--max-time",
-            "8",
-            "-H",
-            "User-Agent: peterfan-cli",
-            "https://api.github.com/repos/uulab/peterfan/releases/latest",
-        ])
-        .output();
-
+    let result = peterfan_platform::updater::fetch_latest_release();
     print!("\r");
     let _ = std::io::Write::flush(&mut std::io::stdout());
 
-    let body = match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
-        Ok(o) => {
-            let err = String::from_utf8_lossy(&o.stderr);
-            println!("  {} curl error: {err}", "✗".red());
-            return Ok(());
-        }
+    let release = match result {
+        Ok(r) => r,
         Err(e) => {
-            println!("  {} curl not found: {e}", "✗".red());
+            println!("  {} could not check for updates: {e}", "✗".red());
             return Ok(());
         }
     };
 
-    let val: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|_| anyhow::anyhow!("unexpected response from GitHub"))?;
-
-    let latest = val["tag_name"]
-        .as_str()
-        .unwrap_or("unknown")
-        .trim_start_matches('v');
-
     print_kv("Current version", &format!("v{current}"));
-    print_kv("Latest version ", &format!("v{latest}"));
+    print_kv("Latest version ", &format!("v{}", release.version));
 
-    if current == latest {
-        println!("  {} already up to date", "✓".green());
-    } else {
+    if peterfan_platform::updater::is_newer(current, &release.version) {
         println!(
             "\n  {} Update available → {}",
             "→".cyan(),
-            "cargo install peterfan".bold()
+            release.html_url.bold()
         );
+        if let Some(url) = &release.asset_url {
+            println!("  {}", url.dimmed());
+        }
+    } else {
+        println!("  {} already up to date", "✓".green());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `peterfan alert` — 임계값 초과 시 데스크탑 알림
+// ---------------------------------------------------------------------------
+
+/// Send a desktop notification. Tries osascript on macOS, notify-send on Linux,
+/// and falls back to stderr on Windows or if both tools are absent.
+fn send_notification(title: &str, body: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display notification {:?} with title {:?} sound name \"Funk\"",
+            body, title
+        );
+        let _ = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .status();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .args(["-u", "critical", title, body])
+            .status();
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime]; \
+             $t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
+             $t.SelectSingleNode('//text[@id=\"1\"]').InnerText = '{title}'; \
+             $t.SelectSingleNode('//text[@id=\"2\"]').InnerText = '{body}'; \
+             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('PeterFan').Show([Windows.UI.Notifications.ToastNotification]::new($t))"
+        );
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .status();
+        return;
+    }
+    // Fallback for other Unix platforms (FreeBSD, etc.) — write to stderr.
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    eprintln!("[peterfan alert] {title}: {body}");
+}
+
+// Each parameter is an independent `peterfan alert` CLI flag; splitting them
+// into a struct would just move the same fields elsewhere for no clarity gain.
+#[allow(clippy::too_many_arguments)]
+fn cmd_alert(
+    mock: bool,
+    cpu_flag: Option<f32>,
+    mem_flag: Option<f32>,
+    temp_flag: Option<f32>,
+    interval_flag: Option<u64>,
+    cooldown_flag: Option<u64>,
+    once: bool,
+    save: bool,
+    sub: Option<AlertAction>,
+) -> Result<()> {
+    // Subcommand: install / status / remove LaunchAgent.
+    if let Some(action) = sub {
+        return cmd_alert_agent(action);
+    }
+
+    // Merge CLI flags with config defaults.
+    let cfg = peterfan_platform::config::load();
+    let alert_cfg = &cfg.alert;
+    let cpu_thresh = cpu_flag.or(alert_cfg.cpu_pct);
+    let mem_thresh = mem_flag.or(alert_cfg.memory_pct);
+    let temp_thresh = temp_flag.or(alert_cfg.temp_c);
+    let interval = interval_flag.unwrap_or(alert_cfg.interval_secs).max(1);
+    let cooldown = cooldown_flag.unwrap_or(alert_cfg.cooldown_secs);
+
+    if cpu_thresh.is_none() && mem_thresh.is_none() && temp_thresh.is_none() {
+        anyhow::bail!(
+            "no thresholds set — specify at least one of --cpu, --memory, --temp\n\
+             or save defaults:  peterfan alert --cpu 85 --temp 90 --save\n\
+             Example:           peterfan alert --cpu 85 --temp 90"
+        );
+    }
+
+    // --save: write thresholds back to config, then exit.
+    if save {
+        let mut cfg_mut = cfg.clone();
+        if let Some(v) = cpu_flag {
+            cfg_mut.alert.cpu_pct = Some(v);
+        }
+        if let Some(v) = mem_flag {
+            cfg_mut.alert.memory_pct = Some(v);
+        }
+        if let Some(v) = temp_flag {
+            cfg_mut.alert.temp_c = Some(v);
+        }
+        if let Some(v) = interval_flag {
+            cfg_mut.alert.interval_secs = v;
+        }
+        if let Some(v) = cooldown_flag {
+            cfg_mut.alert.cooldown_secs = v;
+        }
+        let path = peterfan_platform::config::save(&cfg_mut)
+            .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+        println!(
+            "  {} alert thresholds saved  ({})",
+            "✓".green(),
+            path.display()
+        );
+        if let Some(c) = cfg_mut.alert.cpu_pct {
+            println!("  cpu  > {c}%");
+        }
+        if let Some(m) = cfg_mut.alert.memory_pct {
+            println!("  mem  > {m}%");
+        }
+        if let Some(t) = cfg_mut.alert.temp_c {
+            println!("  temp > {t}°C");
+        }
+        println!("  Run `peterfan alert` to start monitoring with these thresholds.");
+        return Ok(());
+    }
+
+    run_alert_loop(
+        mock,
+        cpu_thresh,
+        mem_thresh,
+        temp_thresh,
+        interval,
+        cooldown,
+        once,
+    )
+}
+
+fn run_alert_loop(
+    mock: bool,
+    cpu_thresh: Option<f32>,
+    mem_thresh: Option<f32>,
+    temp_thresh: Option<f32>,
+    interval: u64,
+    cooldown: u64,
+    once: bool,
+) -> Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+
+    if !once {
+        println!(
+            "{} {}",
+            render::heading("PeterFan Alert"),
+            "Ctrl-C to stop".dimmed()
+        );
+        if let Some(c) = cpu_thresh {
+            println!("  {} CPU  > {c}%", "•".cyan());
+        }
+        if let Some(m) = mem_thresh {
+            println!("  {} MEM  > {m}%", "•".cyan());
+        }
+        if let Some(t) = temp_thresh {
+            println!("  {} TEMP > {t}°C", "•".cyan());
+        }
+        println!("  cooldown {cooldown}s  ·  interval {interval}s");
+        println!();
+    }
+
+    static STOP: AtomicBool = AtomicBool::new(false);
+    #[cfg(unix)]
+    {
+        extern "C" fn on_sig(_: libc::c_int) {
+            STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        unsafe {
+            libc::signal(libc::SIGINT, on_sig as *const () as libc::sighandler_t);
+        }
+    }
+
+    let mut last_cpu: Option<Instant> = None;
+    let mut last_mem: Option<Instant> = None;
+    let mut last_temp: Option<Instant> = None;
+
+    let prov = provider(mock);
+    let mut mon: Box<dyn peterfan_core::SystemMonitor> = if mock {
+        peterfan_platform::mock_monitor()
+    } else {
+        peterfan_platform::system_monitor()
+    };
+
+    let cooldown_dur = Duration::from_secs(cooldown);
+    let mut any_triggered = false;
+
+    loop {
+        if STOP.load(Ordering::Relaxed) {
+            break;
+        }
+
+        mon.refresh();
+        let cpu_val = mon.cpu().usage_percent;
+        let mem_val = mon.memory().used_percent;
+        let temp_val = prov
+            .temperatures()
+            .unwrap_or_default()
+            .iter()
+            .map(|t| t.value.0)
+            .fold(0.0_f32, f32::max);
+
+        let now = Instant::now();
+
+        macro_rules! check {
+            ($thresh:expr, $val:expr, $last:expr, $metric:literal, $unit:literal) => {
+                if let Some(thresh) = $thresh {
+                    if $val > thresh {
+                        let in_cooldown =
+                            $last.is_some_and(|t: Instant| now.duration_since(t) < cooldown_dur);
+                        if !in_cooldown {
+                            let msg = format!(
+                                "{} is {:.1}{} (threshold: {}{})",
+                                $metric, $val, $unit, thresh, $unit
+                            );
+                            if once {
+                                println!("  {} {}", "!".red().bold(), msg.red());
+                            } else {
+                                println!("\r  {} alert: {}   ", "!".red().bold(), msg.red());
+                                send_notification("PeterFan Alert", &msg);
+                            }
+                            $last = Some(now);
+                            any_triggered = true;
+                        }
+                    }
+                }
+            };
+        }
+
+        check!(cpu_thresh, cpu_val, last_cpu, "CPU", "%");
+        check!(mem_thresh, mem_val, last_mem, "Memory", "%");
+        check!(temp_thresh, temp_val, last_temp, "Temperature", "°C");
+
+        if once {
+            break;
+        }
+
+        let cpu_col = if cpu_val >= cpu_thresh.unwrap_or(f32::MAX) {
+            format!("{:.0}%", cpu_val).red().to_string()
+        } else {
+            format!("{:.0}%", cpu_val).green().to_string()
+        };
+        let mem_col = if mem_val >= mem_thresh.unwrap_or(f32::MAX) {
+            format!("{:.0}%", mem_val).red().to_string()
+        } else {
+            format!("{:.0}%", mem_val).green().to_string()
+        };
+        let temp_col = if temp_val >= temp_thresh.unwrap_or(f32::MAX) {
+            format!("{:.0}°C", temp_val).red().to_string()
+        } else {
+            format!("{:.0}°C", temp_val).green().to_string()
+        };
+        print!(
+            "\r  watching  CPU {}  MEM {}  TEMP {}   ",
+            cpu_col, mem_col, temp_col
+        );
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+
+        let step = Duration::from_millis(200);
+        let total = Duration::from_secs(interval);
+        let mut elapsed = Duration::ZERO;
+        while elapsed < total && !STOP.load(Ordering::Relaxed) {
+            std::thread::sleep(step);
+            elapsed += step;
+        }
+    }
+
+    if !once {
+        println!();
+    }
+    if once && any_triggered {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `peterfan alert install/status/remove` — user LaunchAgent
+// ---------------------------------------------------------------------------
+
+const ALERT_AGENT_LABEL: &str = "dev.peterfan.alert";
+
+fn alert_agent_plist_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|h| {
+        h.join("Library")
+            .join("LaunchAgents")
+            .join(format!("{ALERT_AGENT_LABEL}.plist"))
+    })
+}
+
+fn alert_agent_plist(bin: &std::path::Path, cfg: &peterfan_core::config::AlertConfig) -> String {
+    let mut args = format!(
+        "\n    <string>{}</string>\n    <string>alert</string>",
+        bin.display()
+    );
+    if let Some(c) = cfg.cpu_pct {
+        args.push_str(&format!(
+            "\n    <string>--cpu</string>\n    <string>{c}</string>"
+        ));
+    }
+    if let Some(m) = cfg.memory_pct {
+        args.push_str(&format!(
+            "\n    <string>--memory</string>\n    <string>{m}</string>"
+        ));
+    }
+    if let Some(t) = cfg.temp_c {
+        args.push_str(&format!(
+            "\n    <string>--temp</string>\n    <string>{t}</string>"
+        ));
+    }
+    args.push_str(&format!(
+        "\n    <string>--interval</string>\n    <string>{}</string>",
+        cfg.interval_secs
+    ));
+    args.push_str(&format!(
+        "\n    <string>--cooldown</string>\n    <string>{}</string>",
+        cfg.cooldown_secs
+    ));
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>           <string>{ALERT_AGENT_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>{args}
+  </array>
+  <key>RunAtLoad</key>       <true/>
+  <key>KeepAlive</key>       <true/>
+  <key>StandardOutPath</key> <string>/tmp/peterfan-alert.log</string>
+  <key>StandardErrorPath</key><string>/tmp/peterfan-alert.log</string>
+</dict>
+</plist>
+"#
+    )
+}
+
+fn cmd_alert_agent(action: AlertAction) -> Result<()> {
+    let plist_path =
+        alert_agent_plist_path().ok_or_else(|| anyhow::anyhow!("could not determine home dir"))?;
+
+    match action {
+        AlertAction::Status => {
+            if plist_path.exists() {
+                let loaded = std::process::Command::new("launchctl")
+                    .args(["list", ALERT_AGENT_LABEL])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                println!(
+                    "  {} alert agent installed{}",
+                    "✓".green(),
+                    if loaded {
+                        " (running)"
+                    } else {
+                        " (not loaded)"
+                    }
+                );
+                println!("  plist: {}", plist_path.display());
+                println!("  log:   /tmp/peterfan-alert.log");
+            } else {
+                println!(
+                    "  {} alert agent not installed — run `peterfan alert install`",
+                    "✗".yellow()
+                );
+                println!("  Tip: set thresholds first: peterfan alert --cpu 85 --temp 90 --save");
+            }
+        }
+        AlertAction::Install { binary } => {
+            let cfg = peterfan_platform::config::load();
+            if cfg.alert.is_empty() {
+                anyhow::bail!(
+                    "no alert thresholds in config — save them first:\n\
+                     peterfan alert --cpu 85 --temp 90 --save"
+                );
+            }
+            let bin = peterfan_platform::login_item::find_menubar_binary(binary.as_deref())
+                .map_err(|e| anyhow::anyhow!(e))
+                .or_else(|_| {
+                    std::env::current_exe().map_err(|e| anyhow::anyhow!("cannot find self: {e}"))
+                })
+                .unwrap_or_else(|_| std::path::PathBuf::from("peterfan"));
+            if let Some(dir) = plist_path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&plist_path, alert_agent_plist(&bin, &cfg.alert))?;
+            let _ = std::process::Command::new("launchctl")
+                .args(["load", "-w", plist_path.to_str().unwrap_or("")])
+                .status();
+            println!(
+                "  {} alert agent installed\n  binary: {}\n  plist:  {}",
+                "✓".green(),
+                bin.display().bold(),
+                plist_path.display()
+            );
+            let alert = &cfg.alert;
+            if let Some(c) = alert.cpu_pct {
+                println!("  cpu  > {c}%");
+            }
+            if let Some(m) = alert.memory_pct {
+                println!("  mem  > {m}%");
+            }
+            if let Some(t) = alert.temp_c {
+                println!("  temp > {t}°C");
+            }
+            println!(
+                "  {} peterfan will alert at login automatically",
+                "→".dimmed()
+            );
+        }
+        AlertAction::Remove => {
+            if !plist_path.exists() {
+                println!("  {} alert agent is not installed", "—".dimmed());
+                return Ok(());
+            }
+            let _ = std::process::Command::new("launchctl")
+                .args(["unload", "-w", plist_path.to_str().unwrap_or("")])
+                .status();
+            std::fs::remove_file(&plist_path)?;
+            println!(
+                "  {} alert agent removed  ({})",
+                "✓".green(),
+                plist_path.display()
+            );
+        }
     }
     Ok(())
 }

@@ -137,6 +137,26 @@ impl HardwareProvider for MacosProvider {
             });
         }
 
+        // Battery pack temperature (the gas-gauge IC reports one reading per
+        // cell; average them). Real on Apple Silicon laptops — verified against
+        // plausible values (high 20s to low 30s °C at idle) on an M3 Max.
+        let batt: Vec<f32> = hid
+            .iter()
+            .filter(|(n, _)| {
+                n.to_lowercase().contains("gas gauge") || n.to_lowercase().contains("battery")
+            })
+            .map(|(_, t)| *t)
+            .collect();
+        if !batt.is_empty() {
+            let avg = batt.iter().sum::<f32>() / batt.len() as f32;
+            temps.push(TempSensor {
+                id: "battery".into(),
+                label: "Battery".into(),
+                kind: SensorKind::Battery,
+                value: Celsius(avg),
+            });
+        }
+
         let mut smc = Smc::connect().map_err(|e| CoreError::Hardware(format!("SMC: {e:?}")))?;
 
         // Ambient/board SMC sensors (id, label, kind, °C); zeros filtered below.

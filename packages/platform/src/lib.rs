@@ -13,11 +13,16 @@
 //! force the simulated one.
 
 pub mod config;
+#[cfg(target_os = "macos")]
+pub mod daemon_install;
 #[cfg(unix)]
 pub mod ipc;
+#[cfg(target_os = "macos")]
+pub mod login_item;
 pub mod mock;
 pub mod mock_monitor;
 pub mod system;
+pub mod updater;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -88,6 +93,13 @@ pub fn mock() -> Box<dyn HardwareProvider> {
 /// Return the real cross-platform system-metrics monitor (`sysinfo`-backed).
 pub fn system_monitor() -> Box<dyn SystemMonitor> {
     Box::new(system::SysinfoMonitor::new())
+}
+
+/// Return a light-weight monitor that skips process enumeration and disk/network
+/// I/O on each refresh — suitable for commands that only need CPU% or memory.
+/// About 150 ms faster per refresh on macOS than `system_monitor()`.
+pub fn quick_monitor() -> Box<dyn SystemMonitor> {
+    Box::new(system::SysinfoMonitor::new_quick())
 }
 
 /// Return the simulated system-metrics monitor (`peterfan --mock`).

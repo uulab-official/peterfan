@@ -28,6 +28,7 @@ pub enum SensorKind {
     Memory,
     Storage,
     Mainboard,
+    Battery,
     Other,
 }
 
@@ -40,6 +41,7 @@ impl SensorKind {
             SensorKind::Memory => "RAM",
             SensorKind::Storage => "SSD",
             SensorKind::Mainboard => "MB",
+            SensorKind::Battery => "BATT",
             SensorKind::Other => "—",
         }
     }

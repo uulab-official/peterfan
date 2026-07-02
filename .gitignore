@@ -1,5 +1,7 @@
 # Rust
 /target
+# Standalone tools excluded from the workspace build their own target dirs.
+tools/*/target/
 **/*.rs.bk
 Cargo.lock.orig
 

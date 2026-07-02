@@ -8,14 +8,15 @@ members = [
     "packages/menubar",
     "packages/daemon",
 ]
-# Icon generator is a standalone dev tool, not part of the product build.
-exclude = ["tools/icongen"]
+# Standalone dev tools, not part of the product build (and, for the license
+# keygen, never shipped — it holds the offline signing logic).
+exclude = ["tools/icongen", "tools/license-keygen"]
 
 # Crates that are part of the long-term layout but not yet scaffolded
 # (see docs/ROADMAP.md): packages/daemon, apps/desktop.
 
 [workspace.package]
-version = "1.2.1"
+version = "1.20.0"
 edition = "2021"
 license = "MIT"
 authors = ["PeterFan contributors"]
@@ -44,6 +45,8 @@ core-foundation = "0.10"
 core-foundation-sys = "0.8"
 toml = "0.8"
 dirs = "6"
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+base64 = "0.22"
 
 [profile.release]
 lto = "thin"

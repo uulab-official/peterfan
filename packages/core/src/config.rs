@@ -47,6 +47,212 @@ impl CustomCurveConfig {
 /// ```
 pub type NamedCurves = BTreeMap<String, CustomCurveConfig>;
 
+/// Threshold settings for `peterfan alert` — stored in the `[alert]` config section.
+///
+/// ```toml
+/// [alert]
+/// cpu_pct   = 85.0   # alert when CPU usage % exceeds this
+/// memory_pct = 90.0  # alert when memory usage % exceeds this
+/// temp_c    = 88.0   # alert when hottest sensor °C exceeds this
+/// cooldown_secs = 300
+/// interval_secs = 10
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AlertConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_pct: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_pct: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_c: Option<f32>,
+    pub cooldown_secs: u64,
+    pub interval_secs: u64,
+}
+
+impl Default for AlertConfig {
+    fn default() -> Self {
+        Self {
+            cpu_pct: None,
+            memory_pct: None,
+            temp_c: None,
+            cooldown_secs: 300,
+            interval_secs: 10,
+        }
+    }
+}
+
+impl AlertConfig {
+    pub fn is_empty(&self) -> bool {
+        self.cpu_pct.is_none() && self.memory_pct.is_none() && self.temp_c.is_none()
+    }
+}
+
+/// Licensing state. The CLI's read-only commands (`temps`, `status`, …) never
+/// check this — only the menu-bar app and the daemon's persistent fan control
+/// gate on it, after a free trial. See [`crate::license`] for key format.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LicenseConfig {
+    /// A `PFAN1-...` key entered via `peterfan license activate <key>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// Unix seconds of first launch, used to compute the trial countdown.
+    /// Set once and never overwritten.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_run_unix: Option<u64>,
+}
+
+impl LicenseConfig {
+    pub fn is_empty(&self) -> bool {
+        self.key.is_none() && self.first_run_unix.is_none()
+    }
+}
+
+/// Which live metric the menu-bar item shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MenubarMetric {
+    #[default]
+    Cpu,
+    Memory,
+    Temp,
+    Fan,
+    Network,
+}
+
+impl MenubarMetric {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "cpu" => Some(Self::Cpu),
+            "memory" | "mem" => Some(Self::Memory),
+            "temp" | "temperature" => Some(Self::Temp),
+            "fan" | "rpm" => Some(Self::Fan),
+            "network" | "net" => Some(Self::Network),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Memory => "memory",
+            Self::Temp => "temp",
+            Self::Fan => "fan",
+            Self::Network => "network",
+        }
+    }
+}
+
+/// How the menu-bar item renders the chosen metric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MenubarDisplay {
+    /// Text only, e.g. "42%" — the lightest, most compact look.
+    Number,
+    /// Colored bar-chart sparkline icon only, no text.
+    Graph,
+    /// Sparkline icon plus text (default — matches iStat's combined style).
+    #[default]
+    Both,
+}
+
+impl MenubarDisplay {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "number" | "text" => Some(Self::Number),
+            "graph" => Some(Self::Graph),
+            "both" => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Number => "number",
+            Self::Graph => "graph",
+            Self::Both => "both",
+        }
+    }
+}
+
+/// UI language for the menu-bar app (native menu labels + popover text).
+/// `System` resolves from the `LANG`/`LC_ALL` environment variable at
+/// startup; the explicit variants are a user override, persisted so it
+/// survives a relaunch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    #[default]
+    System,
+    English,
+    Korean,
+}
+
+impl Language {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "system" => Some(Self::System),
+            "english" | "en" => Some(Self::English),
+            "korean" | "ko" | "한국어" => Some(Self::Korean),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::English => "english",
+            Self::Korean => "korean",
+        }
+    }
+
+    /// Resolve `System` against the environment; explicit choices pass through.
+    pub fn resolve(self) -> ResolvedLanguage {
+        match self {
+            Self::English => ResolvedLanguage::En,
+            Self::Korean => ResolvedLanguage::Ko,
+            Self::System => {
+                let env_lang = std::env::var("LANG").unwrap_or_default();
+                if env_lang.to_ascii_lowercase().starts_with("ko") {
+                    ResolvedLanguage::Ko
+                } else {
+                    ResolvedLanguage::En
+                }
+            }
+        }
+    }
+}
+
+/// The concrete language to render, after resolving [`Language::System`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedLanguage {
+    En,
+    Ko,
+}
+
+/// Menu-bar item appearance, persisted so it survives a relaunch.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MenubarConfig {
+    pub metric: MenubarMetric,
+    pub display: MenubarDisplay,
+    /// User picked "Don't Ask Again" on the first-run fan-control setup
+    /// prompt — stop offering it automatically (still reachable via the
+    /// right-click menu).
+    pub setup_prompt_dismissed: bool,
+    pub language: Language,
+}
+
+impl MenubarConfig {
+    pub fn is_default(&self) -> bool {
+        self.metric == MenubarMetric::Cpu
+            && self.display == MenubarDisplay::Both
+            && !self.setup_prompt_dismissed
+            && self.language == Language::System
+    }
+}
+
 /// PeterFan settings, with sensible defaults for every field. Missing fields in
 /// a partial config file fall back to [`Config::default`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +272,15 @@ pub struct Config {
     /// Named user-defined curves; keys are valid profile names in rules.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub named_curves: NamedCurves,
+    /// Alert thresholds for `peterfan alert`.
+    #[serde(default, skip_serializing_if = "AlertConfig::is_empty")]
+    pub alert: AlertConfig,
+    /// License key + trial start, for the menu-bar app and daemon.
+    #[serde(default, skip_serializing_if = "LicenseConfig::is_empty")]
+    pub license: LicenseConfig,
+    /// Menu-bar item appearance (metric shown + number/graph/both style).
+    #[serde(default, skip_serializing_if = "MenubarConfig::is_default")]
+    pub menubar: MenubarConfig,
 }
 
 impl Default for Config {
@@ -77,6 +292,9 @@ impl Default for Config {
             rules: Vec::new(),
             custom_curve: None,
             named_curves: BTreeMap::new(),
+            alert: AlertConfig::default(),
+            license: LicenseConfig::default(),
+            menubar: MenubarConfig::default(),
         }
     }
 }
@@ -233,6 +451,40 @@ mod tests {
         assert!(cfg.rules.is_empty());
         let back = Config::from_toml(&cfg.to_toml()).unwrap();
         assert_eq!(back.profile, Profile::Gaming);
+    }
+
+    #[test]
+    fn menubar_config_roundtrips_and_omits_when_default() {
+        let mut cfg = Config::default();
+        assert!(!cfg.to_toml().contains("[menubar]"));
+
+        cfg.menubar.metric = MenubarMetric::Network;
+        cfg.menubar.display = MenubarDisplay::Graph;
+        let toml = cfg.to_toml();
+        assert!(toml.contains("[menubar]"));
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(back.menubar.metric, MenubarMetric::Network);
+        assert_eq!(back.menubar.display, MenubarDisplay::Graph);
+    }
+
+    #[test]
+    fn language_resolves_explicit_choices_and_system_env() {
+        assert_eq!(Language::English.resolve(), ResolvedLanguage::En);
+        assert_eq!(Language::Korean.resolve(), ResolvedLanguage::Ko);
+        // `System` depends on $LANG — just check it doesn't panic and picks
+        // one of the two, since CI's locale is out of our control.
+        let resolved = Language::System.resolve();
+        assert!(resolved == ResolvedLanguage::En || resolved == ResolvedLanguage::Ko);
+    }
+
+    #[test]
+    fn language_roundtrips_through_config_toml() {
+        let mut cfg = Config::default();
+        cfg.menubar.language = Language::Korean;
+        let toml = cfg.to_toml();
+        assert!(toml.contains("[menubar]"));
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(back.menubar.language, Language::Korean);
     }
 
     #[test]

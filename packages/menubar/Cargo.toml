@@ -19,3 +19,6 @@ tray-icon = { workspace = true }
 tao = { workspace = true }
 wry = "0.55.1"
 serde_json = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

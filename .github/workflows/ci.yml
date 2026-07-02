@@ -40,3 +40,9 @@ jobs:
 
       - name: Tests
         run: cargo test --all --all-features
+
+      - name: Build release binaries
+        run: cargo build --release
+
+      - name: Smoke test (process lifecycle, --mock commands, JSON validity)
+        run: scripts/smoke-test.sh

@@ -1,83 +1,250 @@
 name: Release
 
-# On every version tag (v*), build the binaries for each platform and attach
-# them to the matching GitHub Release. Trigger by pushing a tag:
-#   git tag -a v0.5.0 -m "..." && git push origin v0.5.0
-# or run manually from the Actions tab (workflow_dispatch) for a given tag.
+# 버전 태그(v*) 푸시 시 각 플랫폼 바이너리를 빌드하고 GitHub Release에 첨부.
+# Universal macOS 바이너리(arm64+x86_64 lipo), SHA256 체크섬, CHANGELOG 자동 추출 포함.
+#
+# 릴리즈 만들기:
+#   git tag -a v1.2.1 -m "..." && git push origin v1.2.1
+# 또는 Actions 탭 → Release → Run workflow
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.2.1)"
+        required: true
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
-    name: ${{ matrix.label }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-14
-            target: aarch64-apple-darwin
-            label: macOS (Apple Silicon)
-            archive: tar.gz
-          - os: macos-13
-            target: x86_64-apple-darwin
-            label: macOS (Intel)
-            archive: tar.gz
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            label: Windows (x64)
-            archive: zip
+  # ── 1. CHANGELOG에서 이번 버전의 릴리즈 노트를 추출 ────────────────────────
+  release-notes:
+    name: Extract release notes
+    runs-on: ubuntu-latest
+    outputs:
+      notes: ${{ steps.extract.outputs.notes }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --bins
-
-      - name: Package (Unix)
-        if: matrix.archive == 'tar.gz'
+      - name: Extract from CHANGELOG.md
+        id: extract
         shell: bash
         run: |
-          NAME="peterfan-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir -p "dist/$NAME"
-          cp target/${{ matrix.target }}/release/peterfan \
-             target/${{ matrix.target }}/release/peterfan-tui \
-             target/${{ matrix.target }}/release/peterfan-menubar \
-             target/${{ matrix.target }}/release/peterfand \
-             "dist/$NAME/"
-          cp README.md LICENSE CHANGELOG.md "dist/$NAME/"
-          # macOS: also include a double-clickable PeterFan.app menu-bar bundle.
-          VERSION="${GITHUB_REF_NAME#v}" bash scripts/bundle-macos.sh \
-            "target/${{ matrix.target }}/release/peterfan-menubar" "dist/$NAME"
-          tar -czf "dist/$NAME.tar.gz" -C dist "$NAME"
-          echo "ASSET=dist/$NAME.tar.gz" >> "$GITHUB_ENV"
+          VERSION="${{ steps.version.outputs.version }}"
+          # Strip leading 'v' for CHANGELOG heading match
+          VER="${VERSION#v}"
+          # Extract the section between ## [VER] and the next ## [
+          NOTES=$(awk "/^## \[$VER\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+          if [ -z "$NOTES" ]; then
+            NOTES="See CHANGELOG.md for details."
+          fi
+          # Store multiline output
+          {
+            echo "notes<<EOF_NOTES"
+            echo "$NOTES"
+            echo "EOF_NOTES"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Package (Windows)
-        if: matrix.archive == 'zip'
+  # ── 2. macOS Apple Silicon ─────────────────────────────────────────────────
+  build-macos-arm:
+    name: Build macOS arm64
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-arm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-arm-
+      - name: Build
+        run: cargo build --release --target aarch64-apple-darwin --bins
+      - name: Upload arm64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bins-arm64
+          path: |
+            target/aarch64-apple-darwin/release/peterfan
+            target/aarch64-apple-darwin/release/peterfan-tui
+            target/aarch64-apple-darwin/release/peterfan-menubar
+            target/aarch64-apple-darwin/release/peterfand
+
+  # ── 3. macOS Intel ─────────────────────────────────────────────────────────
+  build-macos-x86:
+    name: Build macOS x86_64
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-x86-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-x86-
+      - name: Build
+        run: cargo build --release --target x86_64-apple-darwin --bins
+      - name: Upload x86_64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bins-x86_64
+          path: |
+            target/x86_64-apple-darwin/release/peterfan
+            target/x86_64-apple-darwin/release/peterfan-tui
+            target/x86_64-apple-darwin/release/peterfan-menubar
+            target/x86_64-apple-darwin/release/peterfand
+
+  # ── 4. Universal macOS 바이너리 + .app 번들 ───────────────────────────────
+  package-macos:
+    name: Package macOS Universal
+    needs: [release-notes, build-macos-arm, build-macos-x86]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: bins-arm64
+          path: bins/arm64
+
+      - name: Download x86_64
+        uses: actions/download-artifact@v4
+        with:
+          name: bins-x86_64
+          path: bins/x86_64
+
+      - name: Create Universal binaries (lipo)
+        run: |
+          mkdir -p bins/universal
+          for bin in peterfan peterfan-tui peterfan-menubar peterfand; do
+            lipo -create \
+              "bins/arm64/$bin" \
+              "bins/x86_64/$bin" \
+              -output "bins/universal/$bin"
+            chmod +x "bins/universal/$bin"
+          done
+
+      - name: Assemble archive
+        shell: bash
+        run: |
+          VERSION="${{ needs.release-notes.outputs.version }}"
+          VER="${VERSION#v}"
+          NAME="peterfan-${VERSION}-universal-apple-darwin"
+          mkdir -p "dist/$NAME"
+          cp bins/universal/* "dist/$NAME/"
+          cp README.md LICENSE CHANGELOG.md "dist/$NAME/"
+          # Ad-hoc sign the loose CLI binaries too (no Apple Developer account
+          # needed) — otherwise running `./peterfan` after downloading trips
+          # the same quarantine/Gatekeeper friction as an unsigned .app.
+          for bin in peterfan peterfan-tui peterfand; do
+            codesign --force --sign - "dist/$NAME/$bin"
+          done
+          # .app bundle (bundle-macos.sh ad-hoc signs it internally)
+          VERSION="${VER}" bash scripts/bundle-macos.sh \
+            "bins/universal/peterfan-menubar" "dist/$NAME"
+          tar -czf "dist/${NAME}.tar.gz" -C dist "$NAME"
+          echo "ASSET=dist/${NAME}.tar.gz" >> "$GITHUB_ENV"
+          echo "ASSET_NAME=${NAME}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload macOS universal archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-universal
+          path: ${{ env.ASSET }}
+
+  # ── 5. Windows ─────────────────────────────────────────────────────────────
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-x64-
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-msvc --bins
+      - name: Package
         shell: pwsh
         run: |
-          $name = "peterfan-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          $name = "peterfan-${{ github.ref_name }}-x86_64-pc-windows-msvc"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/peterfan.exe" "dist/$name/"
-          Copy-Item "target/${{ matrix.target }}/release/peterfan-tui.exe" "dist/$name/"
-          Copy-Item "target/${{ matrix.target }}/release/peterfan-menubar.exe" "dist/$name/"
-          Copy-Item "target/${{ matrix.target }}/release/peterfand.exe" "dist/$name/"
+          foreach ($b in @("peterfan","peterfan-tui","peterfan-menubar","peterfand")) {
+            Copy-Item "target/x86_64-pc-windows-msvc/release/$b.exe" "dist/$name/"
+          }
           Copy-Item README.md, LICENSE, CHANGELOG.md "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
           "ASSET=dist/$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Upload Windows archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: ${{ env.ASSET }}
 
-      - name: Attach to release
+  # ── 6. GitHub Release 생성 + 체크섬 첨부 ─────────────────────────────────
+  publish:
+    name: Publish GitHub Release
+    needs: [release-notes, package-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        working-directory: dist
+        run: |
+          sha256sum *.tar.gz *.zip 2>/dev/null | tee checksums.txt || true
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ASSET }}
-          fail_on_unmatched_files: true
+          tag_name: ${{ needs.release-notes.outputs.version }}
+          name: "PeterFan ${{ needs.release-notes.outputs.version }}"
+          body: ${{ needs.release-notes.outputs.notes }}
+          draft: false
+          prerelease: ${{ contains(needs.release-notes.outputs.version, '-') }}
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          fail_on_unmatched_files: false

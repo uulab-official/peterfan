@@ -39,18 +39,46 @@ pub struct SysinfoMonitor {
     last_refresh: Option<Instant>,
     battery_mgr: Option<battery::Manager>,
     has_battery: bool,
+    /// When true, `refresh()` skips processes, disks, and network I/O — used by
+    /// commands that only need CPU% or memory (saves ~150 ms on macOS).
+    quick: bool,
 }
 
 impl SysinfoMonitor {
     pub fn new() -> Self {
-        let sys = System::new_with_specifics(
+        Self::new_inner(false)
+    }
+
+    /// Light-weight variant: skips process enumeration and disk/network I/O on
+    /// each refresh. Suitable for `memory`, `battery`, `system`, `doctor` — any
+    /// command that does not need per-process data or I/O rates.
+    pub fn new_quick() -> Self {
+        Self::new_inner(true)
+    }
+
+    fn new_inner(quick: bool) -> Self {
+        let rk = if quick {
+            // Quick mode: skip process enumeration entirely (saves ~150 ms on macOS).
             RefreshKind::nothing()
                 .with_cpu(sysinfo::CpuRefreshKind::everything())
                 .with_memory(MemoryRefreshKind::everything())
-                .with_processes(ProcessRefreshKind::everything()),
-        );
-        let disks = Disks::new_with_refreshed_list();
-        let networks = Networks::new_with_refreshed_list();
+        } else {
+            RefreshKind::nothing()
+                .with_cpu(sysinfo::CpuRefreshKind::everything())
+                .with_memory(MemoryRefreshKind::everything())
+                .with_processes(ProcessRefreshKind::everything())
+        };
+        let sys = System::new_with_specifics(rk);
+        let disks = if quick {
+            Disks::new()
+        } else {
+            Disks::new_with_refreshed_list()
+        };
+        let networks = if quick {
+            Networks::new()
+        } else {
+            Networks::new_with_refreshed_list()
+        };
 
         let battery_mgr = battery::Manager::new().ok();
         let has_battery = battery_mgr
@@ -68,6 +96,7 @@ impl SysinfoMonitor {
             last_refresh: None,
             battery_mgr,
             has_battery,
+            quick,
         }
     }
 }
@@ -104,37 +133,38 @@ impl SystemMonitor for SysinfoMonitor {
         self.sys.refresh_cpu_all();
         self.sys
             .refresh_memory_specifics(MemoryRefreshKind::everything());
-        self.sys.refresh_processes(ProcessesToUpdate::All, true);
 
-        self.disks.refresh(true);
-        self.networks.refresh(true);
+        if !self.quick {
+            self.sys.refresh_processes(ProcessesToUpdate::All, true);
+            self.disks.refresh(true);
+            self.networks.refresh(true);
 
-        if elapsed > 0.0 {
-            let mut net = HashMap::new();
-            for (name, data) in self.networks.iter() {
-                // received()/transmitted() are bytes since the previous refresh.
-                net.insert(
-                    name.clone(),
-                    (
-                        data.received() as f64 / elapsed,
-                        data.transmitted() as f64 / elapsed,
-                    ),
-                );
+            if elapsed > 0.0 {
+                let mut net = HashMap::new();
+                for (name, data) in self.networks.iter() {
+                    net.insert(
+                        name.clone(),
+                        (
+                            data.received() as f64 / elapsed,
+                            data.transmitted() as f64 / elapsed,
+                        ),
+                    );
+                }
+                self.net_rates = net;
+
+                let mut disk = HashMap::new();
+                for d in self.disks.iter() {
+                    let u = d.usage();
+                    disk.insert(
+                        d.name().to_string_lossy().into_owned(),
+                        (
+                            u.read_bytes as f64 / elapsed,
+                            u.written_bytes as f64 / elapsed,
+                        ),
+                    );
+                }
+                self.disk_rates = disk;
             }
-            self.net_rates = net;
-
-            let mut disk = HashMap::new();
-            for d in self.disks.iter() {
-                let u = d.usage();
-                disk.insert(
-                    d.name().to_string_lossy().into_owned(),
-                    (
-                        u.read_bytes as f64 / elapsed,
-                        u.written_bytes as f64 / elapsed,
-                    ),
-                );
-            }
-            self.disk_rates = disk;
         }
         self.last_refresh = Some(now);
     }
