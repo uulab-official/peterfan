@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.25.0] — 상세 창에 시각적 팬 커브 에디터 추가
+
+### Added
+- **팬 커브를 직접 그려서 저장** — 상세 창(Detailed Window) 전용으로,
+  온도(x축) vs 팬 duty%(y축) 그래프에서 점을 드래그해 곡선 모양을
+  바꾸고, 빈 공간을 클릭해 점을 추가하고, "Remove Point"로 마지막으로
+  건드린 점을 삭제할 수 있음. "Save & Apply"를 누르면 `custom_curve`로
+  저장되고 daemon이 살아있으면 즉시 reload + Custom 프로파일로 전환,
+  daemon이 없으면 한 번 직접 적용(지속 재적용은 daemon 몫). "Reset"으로
+  마지막 저장 상태로 되돌리기 가능. 팝오버에는 포함하지 않음 — 방금
+  단순화한 팝오버를 다시 복잡하게 만들지 않기 위해 이 기능은 상세 창
+  전용으로 뺌.
+
 ## [1.24.0] — 팝오버 Fan control 섹션 단순화 + README 정리/다국어
 
 ### Changed

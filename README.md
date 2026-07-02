@@ -49,7 +49,7 @@ build-from-source instructions.
 
 ## Status
 
-**Beta — v1.24.0.** Actively developed; this table reflects what's actually shipped:
+**Beta — v1.25.0.** Actively developed; this table reflects what's actually shipped:
 
 | Area | State |
 | --- | --- |
@@ -65,7 +65,7 @@ build-from-source instructions.
 | Fan **control** | ⚙️ SMC writes, **needs root** (`sudo peterfan fan set N` or the daemon). `fan set` **verifies by reading RPM back** so you get a real ✓/✗, not a fake "ok". Confirmed on Intel; on Apple Silicon it's attempted and verified (some models' firmware may ignore it) |
 | CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`/`serve`/`benchmark`/`log`/`alert`/`license`/`completions`, global `--watch` & `--json` | ✅ runnable |
 | TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes + temps/fans/power | ✅ runnable |
-| **Menu-bar app** — sparkline graph icon (number/graph/both, your choice), hover tooltip with a quick summary, popover dashboard with 2m/1h/1d history charts (hover for exact value + avg/peak), **per-fan Auto/Manual control with an RPM slider bounded to that fan's real range**, profile/Auto/Rules control, quit-process from Top Processes, English/한국어, a separate resizable Detail Window, light/dark mode | ✅ runnable |
+| **Menu-bar app** — sparkline graph icon (number/graph/both, your choice), hover tooltip with a quick summary, popover dashboard with 2m/1h/1d history charts (hover for exact value + avg/peak), **per-fan Auto/Manual control with an RPM slider bounded to that fan's real range**, profile/Auto/Rules control, quit-process from Top Processes, English/한국어, a separate resizable Detail Window **with a drag-to-edit visual fan curve editor**, light/dark mode | ✅ runnable |
 | **Daemon** (`peterfand`) — continuous curve + restore-on-exit + critical-temp override + IPC server; LaunchDaemon install | ✅ runnable |
 | **Self-update** — menu-bar "Check for Updates…" (and `peterfan update`) checks GitHub Releases and installs in place | ✅ runnable |
 | **Local HTTP API** (`peterfan serve`) — JSON metrics + control for integrations | ✅ runnable |
@@ -187,7 +187,7 @@ Once installed, the binary is simply `peterfan`.
 ### Example: `peterfan status`
 
 ```text
-PeterFan v1.24.0
+PeterFan v1.25.0
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max

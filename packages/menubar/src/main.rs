@@ -33,7 +33,9 @@ use tray_icon::{
 };
 use wry::{WebView, WebViewBuilder};
 
-use peterfan_core::config::{Language, MenubarDisplay, MenubarMetric, ResolvedLanguage};
+use peterfan_core::config::{
+    CustomCurveConfig, Language, MenubarDisplay, MenubarMetric, ResolvedLanguage,
+};
 use peterfan_core::error::CoreError;
 use peterfan_core::license::{self, Entitlement};
 use peterfan_core::metrics::ProcSort;
@@ -327,6 +329,65 @@ fn save_language(language: Language) {
     let _ = peterfan_platform::config::save(&cfg);
 }
 
+/// Save a hand-drawn fan curve from the Detail Window's curve editor and
+/// switch to it. `points_json` is a JSON array of `[temp_c, duty_percent]`
+/// pairs, e.g. `[[30,20],[60,50],[90,100]]`.
+/// Parse and validate the curve editor's JSON payload — pure, no I/O, so it's
+/// safe to unit-test without touching the real (on-disk) config that
+/// `save_custom_curve` reads and writes.
+fn parse_curve_points(points_json: &str) -> Result<CustomCurveConfig, String> {
+    let raw: Vec<[f32; 2]> = serde_json::from_str(points_json).map_err(|_| "invalid curve data")?;
+    if raw.len() < 2 {
+        return Err("a curve needs at least 2 points".into());
+    }
+    let curve = CustomCurveConfig {
+        points: raw.into_iter().map(|[t, d]| [t, d.min(100.0)]).collect(),
+    };
+    if curve.to_fan_curve().is_none() {
+        return Err("invalid curve".into());
+    }
+    Ok(curve)
+}
+
+fn save_custom_curve(provider: &dyn HardwareProvider, points_json: &str) -> String {
+    let curve = match parse_curve_points(points_json) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    let fan_curve = curve
+        .to_fan_curve()
+        .expect("validated by parse_curve_points");
+    let mut cfg = peterfan_platform::config::load();
+    cfg.custom_curve = Some(curve);
+    if peterfan_platform::config::save(&cfg).is_err() {
+        return "failed to save curve".into();
+    }
+    // Prefer the daemon (it re-applies continuously as temps change); fall
+    // back to one direct write so the change is felt immediately even
+    // without a daemon, same "best effort, no persistent loop" contract as
+    // every other local-fallback path in this file.
+    #[cfg(unix)]
+    if peterfan_platform::ipc::send_command("reload").is_some() {
+        let _ = peterfan_platform::ipc::send_command("profile custom");
+        return "custom curve saved".into();
+    }
+    if provider.capabilities().control_fans {
+        let hot = provider
+            .temperatures()
+            .unwrap_or_default()
+            .iter()
+            .map(|t| t.value.0)
+            .fold(0.0_f32, f32::max);
+        let duty = fan_curve.duty_at(hot);
+        for fan in provider.fans().unwrap_or_default() {
+            if fan.controllable {
+                let _ = provider.set_fan_duty(&fan.id, duty);
+            }
+        }
+    }
+    "custom curve saved".into()
+}
+
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -534,6 +595,14 @@ fn main() {
                     let (entitlement, msg) = activate_license(key);
                     app.entitlement = entitlement;
                     *STATUS.lock().expect("status poisoned") = msg;
+                } else if let Some(json) = c.strip_prefix("savecurve:") {
+                    *STATUS.lock().expect("status poisoned") = "saving curve…".into();
+                    let provider = std::sync::Arc::clone(&app.provider);
+                    let json = json.to_string();
+                    std::thread::spawn(move || {
+                        let status = save_custom_curve(provider.as_ref(), &json);
+                        *STATUS.lock().expect("status poisoned") = status;
+                    });
                 } else {
                     // Hardware I/O (SMC calls) can take hundreds of ms,
                     // especially while failing (no daemon, no root) — run it
@@ -942,7 +1011,7 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
     };
 
     match WebViewBuilder::new()
-        .with_html(dashboard_html(app.language.resolve()))
+        .with_html(dashboard_html(app.language.resolve(), false))
         .with_transparent(true)
         .with_ipc_handler(|req| {
             let body = req.body();
@@ -959,9 +1028,9 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
                     .lock()
                     .expect("pending poisoned")
                     .push(cmd.to_string());
-            } else if body.starts_with("license:") {
-                // Keep the "license:" prefix so the drain loop can tell it
-                // apart from a daemon control command.
+            } else if body.starts_with("license:") || body.starts_with("savecurve:") {
+                // Keep the prefix so the drain loop can tell these apart
+                // from a daemon control command.
                 PENDING
                     .lock()
                     .expect("pending poisoned")
@@ -1019,7 +1088,7 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
     };
 
     match WebViewBuilder::new()
-        .with_html(dashboard_html(app.language.resolve()))
+        .with_html(dashboard_html(app.language.resolve(), true))
         .with_ipc_handler(|req| {
             let body = req.body();
             // Same command surface as the popover, minus "h:" — a resizable
@@ -1362,6 +1431,17 @@ fn update(app: &mut App) {
         (ResolvedLanguage::En, Entitlement::TrialExpired) => ("Trial expired".to_string(), true),
     };
     let chart_range = ChartRange::from_u8(CHART_RANGE.load(Ordering::Relaxed));
+    // Seeds the Detail Window's curve editor: the user's saved custom curve
+    // if there is one, otherwise Balanced's points as a reasonable starting
+    // shape to tweak rather than an empty canvas.
+    let curve_points: Vec<[f32; 2]> = peterfan_platform::config::load()
+        .custom_curve
+        .and_then(|c| c.to_fan_curve())
+        .unwrap_or_else(|| Profile::Balanced.default_curve())
+        .points()
+        .iter()
+        .map(|p| [p.temp_c, p.duty_percent as f32])
+        .collect();
 
     let payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
@@ -1417,6 +1497,7 @@ fn update(app: &mut App) {
         "license_line": license_line,
         "trial_expired": trial_expired,
         "buy_url": BUY_URL,
+        "curve_points": curve_points,
     });
     let script = format!("window.__pf&&window.__pf.update({payload})");
     if app.popover_visible {
@@ -1959,12 +2040,14 @@ fn make_ring_icon() -> Icon {
 /// exact `>Label<`/string match — cheap, and safe because each source string
 /// only ever appears where a translation actually belongs (verified by hand,
 /// covered by `dashboard_html_translates_known_labels` below).
-fn dashboard_html(lang: ResolvedLanguage) -> String {
+fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
     let lang_tag = match lang {
         ResolvedLanguage::En => "en",
         ResolvedLanguage::Ko => "ko",
     };
-    let html = DASHBOARD_HTML_EN.replace("__LANG__", lang_tag);
+    let html = DASHBOARD_HTML_EN
+        .replace("__LANG__", lang_tag)
+        .replace("__SHOWCURVE__", if show_curve_editor { "1" } else { "0" });
     match lang {
         ResolvedLanguage::En => html,
         ResolvedLanguage::Ko => html
@@ -1981,6 +2064,14 @@ fn dashboard_html(lang: ResolvedLanguage) -> String {
             .replace(">Activate<", ">활성화<")
             .replace("Open Detailed Window…", "상세 창 열기…")
             .replace(">Quit PeterFan<", ">PeterFan 종료<")
+            .replace(">Fan Curve<", ">팬 커브<")
+            .replace(">Reset<", ">초기화<")
+            .replace(">Remove Point<", ">점 삭제<")
+            .replace(">Save &amp; Apply<", ">저장 및 적용<")
+            .replace(
+                "Drag points to reshape. Click empty space to add a point.",
+                "점을 드래그해서 모양을 바꾸세요. 빈 공간을 클릭하면 점이 추가됩니다.",
+            )
             .replace(
                 "Tip: run peterfan install-daemon once for persistent control at boot.",
                 "팁: peterfan install-daemon을 한 번 실행하면 부팅 시에도 설정이 유지됩니다.",
@@ -2046,6 +2137,11 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .fan-rpm-row input[type=range]{-webkit-appearance:none;height:3px;border-radius:99px;background:var(--track);outline:none;cursor:pointer;}
 .fan-rpm-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;}
 .ctl-note{font-size:10.5px;color:var(--dim);line-height:1.5;margin-top:6px;}
+#curve-canvas{width:100%;height:120px;display:block;border-radius:6px;background:var(--track);cursor:crosshair;touch-action:none;margin-top:8px;}
+.curve-actions{display:flex;gap:6px;margin-top:8px;}
+.curve-actions button{flex:1;background:var(--chip-bg);border:1px solid transparent;color:var(--text);font:inherit;font-size:10px;font-weight:600;padding:6px 4px;border-radius:7px;cursor:pointer;transition:background .15s;}
+.curve-actions button:hover{background:var(--chip-hover);}
+.curve-actions button.primary{background:rgba(91,157,255,.22);border-color:rgba(91,157,255,.5);color:var(--accent);}
 .chart{width:100%;height:28px;display:block;margin-top:8px;border-radius:4px;cursor:crosshair;}
 .chart-tip{position:fixed;pointer-events:none;background:rgba(20,20,22,.92);color:#fff;font-size:9.5px;font-weight:600;padding:3px 7px;border-radius:5px;display:none;z-index:999;white-space:nowrap;font-variant-numeric:tabular-nums;}
 .chart-stats{font-size:9px;color:var(--dim);text-align:right;margin-top:3px;font-variant-numeric:tabular-nums;}
@@ -2079,6 +2175,17 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="fan-cards" id="fan-cards"></div>
 <div class="ctl-note" id="ctl-note" style="display:none"></div>
 </div>
+
+<div class="row" id="curve-editor-section" style="display:none;border-bottom:1px solid var(--line)"><span class="ic"><svg viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 9-9"/><path d="M3 21h18"/></svg></span>
+<div class="content"><div class="head"><span class="name">Fan Curve</span></div>
+<canvas id="curve-canvas"></canvas>
+<div class="sub" id="curve-hint">Drag points to reshape. Click empty space to add a point.</div>
+<div class="curve-actions">
+<button onclick="resetCurve()">Reset</button>
+<button onclick="removeCurvePoint()">Remove Point</button>
+<button class="primary" onclick="saveCurve()">Save &amp; Apply</button>
+</div>
+</div></div>
 
 <div class="row"><span class="ic"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>
 <div class="content"><div class="head"><span class="name">CPU</span><span class="val" id="cpu-val">—</span></div>
@@ -2137,6 +2244,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="chart-tip" id="chart-tip"></div>
 <script>
 var LANG='__LANG__';
+var SHOW_CURVE_EDITOR='__SHOWCURVE__';
 window.__pf={
  update:function(d){
  function cls(p){return p<50?'g':p<80?'y':'r';}
@@ -2194,6 +2302,16 @@ window.__pf={
    set('ctl-status','unavailable');
    if(note){note.style.display='';note.textContent='Fan control unavailable on this Mac — showing live RPM only.';}
    var fc=document.getElementById('fan-cards');if(fc)fc.innerHTML='';
+ }
+ if(SHOW_CURVE_EDITOR==='1'){
+   var ces=document.getElementById('curve-editor-section');
+   if(ces)ces.style.display='';
+   if(d.curve_points){
+     CURVE_POINTS_SAVED=d.curve_points.map(function(p){return p.slice();});
+     if(CURVE_POINTS===null)CURVE_POINTS=CURVE_POINTS_SAVED.map(function(p){return p.slice();});
+   }
+   initCurveEditor();
+   drawCurveEditor();
  }
  reportHeight();
 }};
@@ -2269,6 +2387,88 @@ function renderFanCards(fans){
   Array.prototype.slice.call(container.children).forEach(function(c){
     if(!seen[c.getAttribute('data-fan-id')])c.remove();
   });
+}
+// Detail-Window-only visual fan curve editor. `CURVE_POINTS` is the working
+// copy the user is editing; `CURVE_POINTS_SAVED` mirrors whatever's actually
+// saved server-side, refreshed every tick but never used to clobber
+// `CURVE_POINTS` mid-edit — only `resetCurve()` pulls from it explicitly.
+var CURVE_POINTS=null, CURVE_POINTS_SAVED=null, CURVE_DRAG=-1, CURVE_LAST=-1;
+var CURVE_TMIN=0, CURVE_TMAX=100;
+function curveScale(cv){
+  var w=cv.clientWidth||300;
+  return {w:w, h:120, px:function(t){return (t-CURVE_TMIN)/(CURVE_TMAX-CURVE_TMIN)*w;}, py:function(d){return 120-(d/100)*120;}};
+}
+function drawCurveEditor(){
+  var cv=document.getElementById('curve-canvas');
+  if(!cv||!CURVE_POINTS)return;
+  var s=curveScale(cv);
+  if(cv.width!==s.w)cv.width=s.w;
+  if(cv.height!==s.h)cv.height=s.h;
+  var ctx=cv.getContext('2d');
+  ctx.clearRect(0,0,s.w,s.h);
+  ctx.strokeStyle='rgba(127,136,150,.15)';ctx.lineWidth=1;
+  [25,50,75].forEach(function(g){var y=s.py(g);ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(s.w,y);ctx.stroke();});
+  var sorted=CURVE_POINTS.slice().sort(function(a,b){return a[0]-b[0];});
+  ctx.beginPath();
+  sorted.forEach(function(p,i){var x=s.px(p[0]),y=s.py(p[1]);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});
+  ctx.strokeStyle='#5b9dff';ctx.lineWidth=1.5;ctx.stroke();
+  sorted.forEach(function(p){
+    ctx.beginPath();ctx.arc(s.px(p[0]),s.py(p[1]),4,0,Math.PI*2);
+    ctx.fillStyle='#5b9dff';ctx.fill();
+  });
+}
+function curveEventToPoint(cv,e){
+  var rect=cv.getBoundingClientRect();
+  var t=CURVE_TMIN+((e.clientX-rect.left)/rect.width)*(CURVE_TMAX-CURVE_TMIN);
+  var d=100-((e.clientY-rect.top)/rect.height)*100;
+  return [Math.max(CURVE_TMIN,Math.min(CURVE_TMAX,Math.round(t))),Math.max(0,Math.min(100,Math.round(d)))];
+}
+function findNearestCurvePoint(cv,e){
+  var rect=cv.getBoundingClientRect();
+  var mx=e.clientX-rect.left, my=e.clientY-rect.top;
+  var best=-1,bestDist=14;
+  CURVE_POINTS.forEach(function(p,i){
+    var x=(p[0]-CURVE_TMIN)/(CURVE_TMAX-CURVE_TMIN)*rect.width;
+    var y=(1-p[1]/100)*rect.height;
+    var dist=Math.sqrt((x-mx)*(x-mx)+(y-my)*(y-my));
+    if(dist<bestDist){bestDist=dist;best=i;}
+  });
+  return best;
+}
+function initCurveEditor(){
+  var cv=document.getElementById('curve-canvas');
+  if(!cv||cv.dataset.bound)return;
+  cv.dataset.bound='1';
+  cv.addEventListener('mousedown',function(e){
+    var idx=findNearestCurvePoint(cv,e);
+    if(idx===-1&&CURVE_POINTS.length<8){
+      CURVE_POINTS.push(curveEventToPoint(cv,e));
+      idx=CURVE_POINTS.length-1;
+      drawCurveEditor();
+    }
+    CURVE_DRAG=idx;CURVE_LAST=idx;
+  });
+  cv.addEventListener('mousemove',function(e){
+    if(CURVE_DRAG<0)return;
+    CURVE_POINTS[CURVE_DRAG]=curveEventToPoint(cv,e);
+    drawCurveEditor();
+  });
+  window.addEventListener('mouseup',function(){CURVE_DRAG=-1;});
+}
+function resetCurve(){
+  if(CURVE_POINTS_SAVED)CURVE_POINTS=CURVE_POINTS_SAVED.map(function(p){return p.slice();});
+  drawCurveEditor();
+}
+function removeCurvePoint(){
+  if(!CURVE_POINTS||CURVE_POINTS.length<=2)return;
+  var idx=(CURVE_LAST>=0&&CURVE_LAST<CURVE_POINTS.length)?CURVE_LAST:CURVE_POINTS.length-1;
+  CURVE_POINTS.splice(idx,1);
+  CURVE_LAST=-1;
+  drawCurveEditor();
+}
+function saveCurve(){
+  if(!CURVE_POINTS||CURVE_POINTS.length<2)return;
+  window.ipc.postMessage('savecurve:'+JSON.stringify(CURVE_POINTS));
 }
 function toggleLicForm(){var f=document.getElementById('lic-form');if(f)f.classList.toggle('show');}
 function setChartRange(r){
@@ -2407,13 +2607,14 @@ mod tests {
 
     #[test]
     fn dashboard_html_translates_known_labels() {
-        let en = dashboard_html(ResolvedLanguage::En);
+        let en = dashboard_html(ResolvedLanguage::En, true);
         assert!(en.contains(">Fan control<"));
         assert!(en.contains(">Quit PeterFan<"));
         assert!(en.contains("var LANG='en';"));
         assert!(!en.contains("__LANG__"));
+        assert!(!en.contains("__SHOWCURVE__"));
 
-        let ko = dashboard_html(ResolvedLanguage::Ko);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
         assert!(ko.contains(">팬 제어<"));
         assert!(ko.contains(">PeterFan 종료<"));
         // Auto/Manual per-fan card labels are rendered by JS at runtime
@@ -2422,6 +2623,9 @@ mod tests {
         assert!(ko.contains("'자동':'Auto'"));
         assert!(ko.contains("var LANG='ko';"));
         assert!(!ko.contains("__LANG__"));
+        assert!(!ko.contains("__SHOWCURVE__"));
+        assert!(en.contains("var SHOW_CURVE_EDITOR='1';"));
+        assert!(ko.contains("var SHOW_CURVE_EDITOR='0';"));
         // Nothing English-only should survive the swap for the labels we
         // actually translate.
         assert!(!ko.contains(">Fan control<"));
@@ -2450,6 +2654,41 @@ mod tests {
         // directly, since it's a real, deliberate difference between curves.
         assert_eq!(Profile::Silent.default_curve().duty_at(200.0), 70);
         assert_eq!(Profile::Maximum.default_curve().duty_at(200.0), 100);
+    }
+
+    #[test]
+    fn parse_curve_points_accepts_a_valid_curve() {
+        let curve = parse_curve_points("[[30,20],[60,50],[90,100]]").unwrap();
+        assert_eq!(
+            curve.points,
+            vec![[30.0, 20.0], [60.0, 50.0], [90.0, 100.0]]
+        );
+    }
+
+    #[test]
+    fn parse_curve_points_clamps_duty_over_100() {
+        let curve = parse_curve_points("[[30,20],[60,150]]").unwrap();
+        assert_eq!(curve.points[1], [60.0, 100.0]);
+    }
+
+    #[test]
+    fn parse_curve_points_rejects_fewer_than_two_points() {
+        assert_eq!(
+            parse_curve_points("[[30,20]]").unwrap_err(),
+            "a curve needs at least 2 points"
+        );
+        assert_eq!(
+            parse_curve_points("[]").unwrap_err(),
+            "a curve needs at least 2 points"
+        );
+    }
+
+    #[test]
+    fn parse_curve_points_rejects_malformed_json() {
+        assert_eq!(
+            parse_curve_points("not json").unwrap_err(),
+            "invalid curve data"
+        );
     }
 
     #[test]
