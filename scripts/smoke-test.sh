@@ -176,6 +176,27 @@ if [[ "$(uname)" == "Darwin" && -f scripts/bundle-macos.sh ]]; then
     else
         fail "PeterFan.app is NOT signed — downloaded copies will show 'is damaged and can't be opened' instead of the friendlier 'unidentified developer' prompt"
     fi
+
+    if [[ -f scripts/make-dmg.sh ]]; then
+        echo "== .dmg must build and contain the app + an Applications shortcut =="
+        if scripts/make-dmg.sh "$TMP_BUNDLE_DIR/PeterFan.app" "$TMP_BUNDLE_DIR/PeterFan.dmg" >/dev/null 2>&1; then
+            MOUNT_DIR=$(mktemp -d)
+            if hdiutil attach "$TMP_BUNDLE_DIR/PeterFan.dmg" -nobrowse -mountpoint "$MOUNT_DIR" >/dev/null 2>&1; then
+                if [[ -d "$MOUNT_DIR/PeterFan.app" && -L "$MOUNT_DIR/Applications" ]]; then
+                    pass "PeterFan.dmg mounts with PeterFan.app + Applications shortcut"
+                else
+                    fail "PeterFan.dmg is missing the app bundle or the Applications shortcut"
+                fi
+                hdiutil detach "$MOUNT_DIR" >/dev/null 2>&1
+            else
+                fail "PeterFan.dmg built but failed to mount"
+            fi
+            rmdir "$MOUNT_DIR" 2>/dev/null
+        else
+            fail "scripts/make-dmg.sh failed to build a .dmg from the bundled app"
+        fi
+    fi
+
     rm -rf "$TMP_BUNDLE_DIR"
 fi
 

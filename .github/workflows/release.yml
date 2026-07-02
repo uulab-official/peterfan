@@ -172,11 +172,24 @@ jobs:
           echo "ASSET=dist/${NAME}.tar.gz" >> "$GITHUB_ENV"
           echo "ASSET_NAME=${NAME}.tar.gz" >> "$GITHUB_ENV"
 
+      - name: Build .dmg (drag-to-Applications installer, no Terminal needed)
+        shell: bash
+        run: |
+          VERSION="${{ needs.release-notes.outputs.version }}"
+          NAME="peterfan-${VERSION}-universal-apple-darwin"
+          bash scripts/make-dmg.sh "dist/$NAME/PeterFan.app" "dist/PeterFan-${VERSION}.dmg"
+
       - name: Upload macOS universal archive
         uses: actions/upload-artifact@v4
         with:
           name: release-macos-universal
           path: ${{ env.ASSET }}
+
+      - name: Upload macOS .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-dmg
+          path: dist/PeterFan-*.dmg
 
   # ── 5. Windows ─────────────────────────────────────────────────────────────
   build-windows:
@@ -233,7 +246,7 @@ jobs:
       - name: Generate SHA256 checksums
         working-directory: dist
         run: |
-          sha256sum *.tar.gz *.zip 2>/dev/null | tee checksums.txt || true
+          sha256sum *.tar.gz *.zip *.dmg 2>/dev/null | tee checksums.txt || true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -246,5 +259,6 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.dmg
             dist/checksums.txt
           fail_on_unmatched_files: false

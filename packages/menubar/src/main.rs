@@ -7,6 +7,13 @@
 //! the popover. Runs as an accessory app (no Dock icon). `--mock` uses the
 //! simulated machine.
 
+// The popover's `update()` payload is one large `serde_json::json!` object —
+// each field the dashboard reads adds another layer to the macro's expansion,
+// and that payload has grown past the default limit (128) over the course of
+// many feature additions. Bumping this is the standard fix (recommended by
+// rustc's own error message), not a workaround for a real problem.
+#![recursion_limit = "256"]
+
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -704,6 +711,17 @@ fn main() {
 
 fn build_tray(app: &mut App) {
     let s = strings(app.language.resolve());
+    // For labeling the Fan Speed % presets with their RPM equivalent — a
+    // quick read, not a control action, so it's fine to call synchronously
+    // here (same call `update()` already makes every tick).
+    let max_fan_rpm = app
+        .provider
+        .fans()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|f| f.max_rpm)
+        .max()
+        .unwrap_or(0);
 
     // One-time setup: installs the root daemon so fan control works without
     // a terminal or repeated sudo prompts — one macOS admin-password dialog,
@@ -804,10 +822,13 @@ fn build_tray(app: &mut App) {
     let fan_speed_presets: Vec<(String, MenuItem)> = [25u8, 50, 75, 100]
         .into_iter()
         .map(|pct| {
-            (
-                format!("hold:{pct}"),
-                MenuItem::new(format!("{pct}%"), true, None),
-            )
+            let label = if max_fan_rpm > 0 {
+                let rpm = (max_fan_rpm as f32 * pct as f32 / 100.0).round() as u32;
+                format!("{pct}%  (~{rpm} RPM)")
+            } else {
+                format!("{pct}%")
+            };
+            (format!("hold:{pct}"), MenuItem::new(label, true, None))
         })
         .collect();
     for (_, item) in &fan_speed_presets {
@@ -1290,6 +1311,7 @@ fn update(app: &mut App) {
         .collect();
 
     // Fans: every fan listed with its own RPM and a speed bar (rpm / max).
+    let fan_overrides = daemon_fan_overrides();
     let fan_rows: Vec<_> = fans
         .iter()
         .map(|f| {
@@ -1297,7 +1319,23 @@ fn update(app: &mut App) {
                 Some(m) if m > 0 => (f.rpm as f32 / m as f32 * 100.0).clamp(0.0, 100.0),
                 _ => 0.0,
             };
-            serde_json::json!({ "l": f.label, "rpm": format!("{} rpm", f.rpm), "pct": pct })
+            let rpm_text = match f.max_rpm {
+                Some(m) if m > 0 => format!("{} / {m} RPM", f.rpm),
+                _ => format!("{} rpm", f.rpm),
+            };
+            let override_pct = fan_overrides.get(&f.id).copied();
+            serde_json::json!({
+                "id": f.id,
+                "l": f.label,
+                "rpm": rpm_text,
+                "cur_rpm": f.rpm,
+                "min_rpm": f.min_rpm.unwrap_or(0),
+                "max_rpm": f.max_rpm.unwrap_or(0),
+                "pct": pct,
+                "controllable": f.controllable,
+                "manual": override_pct.is_some(),
+                "override_pct": override_pct,
+            })
         })
         .collect();
 
@@ -1329,6 +1367,13 @@ fn update(app: &mut App) {
         (ResolvedLanguage::En, Entitlement::TrialExpired) => ("Trial expired".to_string(), true),
     };
     let chart_range = ChartRange::from_u8(CHART_RANGE.load(Ordering::Relaxed));
+    // Each built-in profile's duty ceiling (the ~flat part of its curve past
+    // the highest defined temperature point) — shown as a "up to X%" hint on
+    // the profile chips, since curves themselves aren't a single number.
+    let profile_max_pct: std::collections::HashMap<&str, u8> = Profile::all()
+        .iter()
+        .map(|p| (p.as_str(), p.default_curve().duty_at(200.0)))
+        .collect();
 
     let payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
@@ -1362,6 +1407,7 @@ fn update(app: &mut App) {
         "fans_text": if fans.len() > 1 { format!("{} fans", fans.len()) } else { fans.first().map(|f| format!("{} rpm", f.rpm)).unwrap_or_default() },
         "fans": fan_rows,
         "max_rpm": max_fan_rpm,
+        "profile_max_pct": profile_max_pct,
         "batt_present": battery.is_some(),
         "batt_pct": battery.as_ref().map(|b| b.charge_percent).unwrap_or(0.0),
         "batt_text": battery.as_ref().map(|b| format!("{:.0}%", b.charge_percent)).unwrap_or_default(),
@@ -1411,6 +1457,25 @@ fn daemon_status_str() -> String {
     String::new()
 }
 
+/// Which fans are currently pinned to a manual duty% by the daemon (fan id ->
+/// duty%) — read fresh each tick so the per-fan Auto/Manual toggle in the
+/// popover reflects reality even after e.g. a daemon restart. Empty (not an
+/// error) when there's no daemon to ask, same as every other daemon-optional
+/// read in this file.
+#[cfg(unix)]
+fn daemon_fan_overrides() -> std::collections::HashMap<String, u8> {
+    peterfan_platform::ipc::send_command("temps")
+        .and_then(|reply| reply.strip_prefix("ok ").map(str::to_string))
+        .and_then(|json_str| serde_json::from_str::<serde_json::Value>(&json_str).ok())
+        .and_then(|v| v.get("fan_overrides").cloned())
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default()
+}
+#[cfg(not(unix))]
+fn daemon_fan_overrides() -> std::collections::HashMap<String, u8> {
+    std::collections::HashMap::new()
+}
+
 /// Run a popover control action (`auto` or `profile:<name>`). Prefers the
 /// running `peterfand` daemon (so the unprivileged app needs no root); falls
 /// back to controlling fans directly if this process happens to have access.
@@ -1420,6 +1485,15 @@ fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
         format!("profile {name}\n")
     } else if let Some(pct) = cmd.strip_prefix("hold:") {
         format!("hold {pct}\n")
+    } else if let Some(rest) = cmd.strip_prefix("fanhold:") {
+        // "fanhold:<fan_id>:<pct>" — split on the LAST colon since fan ids
+        // are dot-separated (e.g. "fan.cpu") but never contain one.
+        match rest.rsplit_once(':') {
+            Some((id, pct)) => format!("fanhold {id} {pct}\n"),
+            None => format!("{cmd}\n"),
+        }
+    } else if let Some(id) = cmd.strip_prefix("fanauto:") {
+        format!("fanauto {id}\n")
     } else {
         format!("{cmd}\n")
     };
@@ -1483,6 +1557,21 @@ fn apply_local(provider: &dyn HardwareProvider, cmd: &str) -> String {
             }
             Err(_) => return "invalid percent".into(),
         }
+    } else if let Some(rest) = cmd.strip_prefix("fanhold:") {
+        // One-shot direct write, same as the other local-fallback branches —
+        // there's no daemon loop here to keep reasserting a per-fan pin.
+        match rest
+            .rsplit_once(':')
+            .and_then(|(id, pct)| pct.parse::<u8>().ok().map(|d| (id.to_string(), d.min(100))))
+        {
+            Some((id, duty)) => (
+                provider.set_fan_duty(&id, duty),
+                format!("{id} hold {duty}%"),
+            ),
+            None => return "fanhold requires <fan_id>:<percent>".into(),
+        }
+    } else if let Some(id) = cmd.strip_prefix("fanauto:") {
+        (provider.set_fan_auto(id), format!("{id} auto"))
     } else {
         return "unknown command".into();
     };
@@ -1970,11 +2059,20 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .chip.auto{background:rgba(48,209,88,.16);color:var(--g);}
 .chip.active{background:rgba(91,157,255,.22);border-color:rgba(91,157,255,.5);color:var(--accent);}
 .chip.auto.active{background:rgba(48,209,88,.28);border-color:rgba(48,209,88,.5);color:var(--g);}
-.hold-row{grid-column:1/-1;display:grid;grid-template-columns:auto 1fr auto auto;gap:7px;align-items:center;margin-top:2px;}
-.hold-row .hl{font-size:10px;color:var(--dim);white-space:nowrap;}
-.hold-row input[type=range]{-webkit-appearance:none;height:3px;border-radius:99px;background:var(--chip-bg);outline:none;cursor:pointer;}
-.hold-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;}
-.hold-row input[type=number]{width:100%;min-width:0;background:var(--chip-bg);border:1px solid var(--panel-border);border-radius:6px;color:var(--text);font:inherit;font-size:10.5px;padding:5px 7px;outline:none;}
+.fan-cards{grid-column:1/-1;display:flex;flex-direction:column;gap:8px;margin-top:2px;}
+.fan-card{background:var(--chip-bg);border-radius:8px;padding:8px 9px;}
+.fan-card-head{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;margin-bottom:5px;}
+.fan-card-head .fn{font-weight:600;}
+.fan-card-head .fv{font-variant-numeric:tabular-nums;color:var(--dim);}
+.fan-bar{height:3px;background:var(--track);border-radius:99px;overflow:hidden;margin-bottom:7px;}
+.fan-bar i{display:block;height:100%;background:var(--accent);border-radius:99px;width:0;transition:width .35s;}
+.fan-seg{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:0;}
+.fan-seg button{background:transparent;border:0;color:var(--dim);font:inherit;font-size:10px;font-weight:600;padding:5px 0;border-radius:6px;cursor:pointer;transition:background .15s,color .15s;}
+.fan-seg button.active{background:var(--panel-bg);color:var(--text);}
+.fan-rpm-row{display:grid;grid-template-columns:auto 1fr auto;gap:7px;align-items:center;margin-top:7px;}
+.fan-rpm-row span{font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.fan-rpm-row input[type=range]{-webkit-appearance:none;height:3px;border-radius:99px;background:var(--track);outline:none;cursor:pointer;}
+.fan-rpm-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;}
 .hold-pct{font-size:10px;font-weight:600;color:var(--accent);width:28px;text-align:right;font-variant-numeric:tabular-nums;}
 .ctl-note{grid-column:1/-1;font-size:10.5px;color:var(--dim);line-height:1.5;}
 .chart{width:100%;height:28px;display:block;margin-top:8px;border-radius:4px;cursor:crosshair;}
@@ -2014,18 +2112,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <button class="chip" id="chip-gaming" onclick="window.ipc.postMessage('cmd:profile:gaming')">Gaming</button>
 <button class="chip" id="chip-performance" onclick="window.ipc.postMessage('cmd:profile:performance')">Perf</button>
 <button class="chip" id="chip-maximum" onclick="window.ipc.postMessage('cmd:profile:maximum')">Max</button>
-<div class="hold-row" id="hold-row">
-  <span class="hl">Hold</span>
-  <input type="range" id="hold-slider" min="0" max="100" value="50" oninput="document.getElementById('hold-pct').textContent=this.value+'%'">
-  <span class="hold-pct" id="hold-pct">50%</span>
-  <button class="chip" id="chip-hold" onclick="applyHold()" style="flex:0 0 auto;padding:6px 9px;">Set</button>
-</div>
-<div class="hold-row" id="hold-rpm-row">
-  <span class="hl">RPM</span>
-  <input type="number" id="hold-rpm-input" min="0" step="50" placeholder="e.g. 2400">
-  <span></span>
-  <button class="chip" id="chip-hold-rpm" onclick="applyHoldRpm()" style="flex:0 0 auto;padding:6px 9px;">Set</button>
-</div>
+<div class="fan-cards" id="fan-cards"></div>
 <div class="ctl-note" id="ctl-note" style="display:none"></div>
 </div>
 
@@ -2129,12 +2216,18 @@ window.__pf={
  if(d.trial_expired&&licForm)licForm.classList.add('show');
  var licToggle=document.getElementById('lic-toggle');
  if(licToggle)licToggle.style.display=d.trial_expired?'none':'';
+ if(d.profile_max_pct){
+   ['silent','balanced','gaming','performance','maximum'].forEach(function(k){
+     var el=document.getElementById('chip-'+k);
+     if(!el)return;
+     var pct=d.profile_max_pct[k];
+     if(pct==null)return;
+     var upTo=LANG==='ko'?'최대 ':'up to ';
+     el.title=MAX_RPM>0?(upTo+pct+'%  (~'+Math.round(MAX_RPM*pct/100)+' RPM)'):(upTo+pct+'%');
+   });
+ }
  var chips=document.querySelectorAll('.chip');
- var holdRow=document.getElementById('hold-row');
- var holdRpmRow=document.getElementById('hold-rpm-row');
  for(var i=0;i<chips.length;i++){chips[i].style.display=d.can_control?'':'none';}
- if(holdRow)holdRow.style.display=d.can_control?'':'none';
- if(holdRpmRow)holdRpmRow.style.display=d.can_control?'':'none';
  var note=document.getElementById('ctl-note');
  if(d.can_control){
    set('ctl-status', d.ctl_status||'');
@@ -2154,29 +2247,86 @@ window.__pf={
    var st=(d.ctl_status||'').toLowerCase();
    var matched=Object.keys(chipMap).find(function(k){return st.startsWith(k);});
    if(matched){var el=document.getElementById(chipMap[matched]);if(el)el.classList.add('active');}
-   // Sync hold slider when daemon is in hold mode.
-   var hm=st.match(/^hold:(\d+)/);
-   if(hm){
-     var sl=document.getElementById('hold-slider');
-     if(sl&&sl!==document.activeElement){sl.value=hm[1];document.getElementById('hold-pct').textContent=hm[1]+'%';}
-     var hc=document.getElementById('chip-hold');if(hc)hc.classList.add('active');
-   }
+   renderFanCards(d.fans);
  } else {
    set('ctl-status','unavailable');
    if(note){note.style.display='';note.textContent='Fan control unavailable on this Mac — showing live RPM only.';}
+   var fc=document.getElementById('fan-cards');if(fc)fc.innerHTML='';
  }
  reportHeight();
 }};
-function applyHold(){var v=document.getElementById('hold-slider').value;window.ipc.postMessage('cmd:hold:'+v);}
-// Fan control is duty%-based under the hood (see HardwareProvider), so an
-// exact-RPM request is converted to the nearest % here using whichever fan
-// spins fastest at 100% — same "hold:<pct>" command the % slider sends.
-function applyHoldRpm(){
-  var inp=document.getElementById('hold-rpm-input');
-  var v=inp&&parseInt(inp.value,10);
-  if(!v||v<0||!MAX_RPM)return;
-  var pct=Math.max(0,Math.min(100,Math.round(v/MAX_RPM*100)));
-  window.ipc.postMessage('cmd:hold:'+pct);
+// One card per controllable fan — independent Auto/Manual toggle + a slider
+// bounded to that fan's own min/max RPM (not a 0-100% abstraction), so you
+// can pin e.g. just the left fan while the right one keeps following the
+// curve. Built once per fan id and updated in place on every tick, so an
+// in-progress slider drag never gets clobbered by the next poll.
+function renderFanCards(fans){
+  var container=document.getElementById('fan-cards');
+  if(!container)return;
+  var seen={};
+  (fans||[]).forEach(function(f){
+    if(!f.controllable)return;
+    seen[f.id]=true;
+    var card=container.querySelector('[data-fan-id="'+f.id+'"]');
+    if(!card){
+      card=document.createElement('div');
+      card.className='fan-card';
+      card.setAttribute('data-fan-id',f.id);
+      card.innerHTML='<div class="fan-card-head"><span class="fn"></span><span class="fv"></span></div>'+
+        '<div class="fan-bar"><i></i></div>'+
+        '<div class="fan-seg"><button class="fa-auto"></button><button class="fa-manual"></button></div>'+
+        '<div class="fan-rpm-row" style="display:none"><span class="fa-min"></span><input type="range"><span class="fa-max"></span></div>';
+      var btnAuto=card.querySelector('.fa-auto');
+      var btnManual=card.querySelector('.fa-manual');
+      btnAuto.textContent=LANG==='ko'?'자동':'Auto';
+      btnManual.textContent=LANG==='ko'?'수동':'Manual';
+      btnAuto.onclick=function(){window.ipc.postMessage('cmd:fanauto:'+f.id);};
+      btnManual.onclick=function(){
+        // Pin right where the fan already is instead of jumping to a
+        // default — read the live % off the card, not this closure's
+        // (potentially stale, first-render-time) copy of `f`.
+        var curPct=Math.round(parseFloat(card.dataset.curPct||'50'));
+        window.ipc.postMessage('cmd:fanhold:'+f.id+':'+curPct);
+        card.querySelector('.fan-rpm-row').style.display='';
+      };
+      var slider=card.querySelector('input[type=range]');
+      slider.addEventListener('input',function(){
+        var v=parseInt(slider.value,10);
+        var useRpm=slider.dataset.useRpm==='1';
+        card.querySelector('.fv').textContent=useRpm?(v+' RPM'):(v+'%');
+      });
+      slider.addEventListener('change',function(){
+        var v=parseInt(slider.value,10);
+        var min=parseInt(slider.min,10),max=parseInt(slider.max,10);
+        var span=max-min;
+        var pct=slider.dataset.useRpm==='1'?(span>0?Math.round((v-min)/span*100):0):v;
+        window.ipc.postMessage('cmd:fanhold:'+f.id+':'+Math.max(0,Math.min(100,pct)));
+      });
+      container.appendChild(card);
+    }
+    var manual=!!f.manual;
+    var useRpm=f.max_rpm>0;
+    card.dataset.curPct=f.pct;
+    card.querySelector('.fn').textContent=f.l;
+    card.querySelector('.fan-bar i').style.width=Math.max(0,Math.min(100,f.pct))+'%';
+    card.querySelector('.fa-auto').classList.toggle('active',!manual);
+    card.querySelector('.fa-manual').classList.toggle('active',manual);
+    card.querySelector('.fa-min').textContent=useRpm?f.min_rpm:'0%';
+    card.querySelector('.fa-max').textContent=useRpm?f.max_rpm:'100%';
+    card.querySelector('.fan-rpm-row').style.display=manual?'':'none';
+    var slider=card.querySelector('input[type=range]');
+    slider.dataset.useRpm=useRpm?'1':'0';
+    slider.min=useRpm?f.min_rpm:0;
+    slider.max=useRpm?Math.max(f.max_rpm,f.min_rpm+1):100;
+    if(slider!==document.activeElement){
+      var targetRpm=useRpm?Math.round(f.min_rpm+(f.max_rpm-f.min_rpm)*f.pct/100):Math.round(f.pct);
+      slider.value=targetRpm;
+      card.querySelector('.fv').textContent=manual?(useRpm?(targetRpm+' RPM'):(targetRpm+'%')):(Math.round(f.pct)+'%');
+    }
+  });
+  Array.prototype.slice.call(container.children).forEach(function(c){
+    if(!seen[c.getAttribute('data-fan-id')])c.remove();
+  });
 }
 function toggleLicForm(){var f=document.getElementById('lic-form');if(f)f.classList.toggle('show');}
 function setChartRange(r){
@@ -2341,9 +2491,21 @@ mod tests {
             assert!(html.contains(r#"id="net-ip""#));
             assert!(html.contains(r#"id="ps-cpu""#));
             assert!(html.contains("quitProcess"));
-            assert!(html.contains("applyHoldRpm"));
-            assert!(html.contains(r#"id="hold-rpm-input""#));
+            assert!(html.contains("renderFanCards"));
+            assert!(html.contains(r#"id="fan-cards""#));
+            assert!(html.contains("cmd:fanhold:"));
+            assert!(html.contains("cmd:fanauto:"));
+            assert!(html.contains("profile_max_pct"));
         }
+    }
+
+    #[test]
+    fn profile_duty_ceilings_match_default_curves() {
+        // Silent is the one built-in profile that doesn't ramp to 100% — the
+        // "up to X%" chip tooltip depends on that distinction actually
+        // showing up, not every profile collapsing to the same number.
+        assert_eq!(Profile::Silent.default_curve().duty_at(200.0), 70);
+        assert_eq!(Profile::Maximum.default_curve().duty_at(200.0), 100);
     }
 
     #[test]

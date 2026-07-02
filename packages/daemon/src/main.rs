@@ -54,6 +54,9 @@ struct SavedState {
     /// Last active profile name (remembered across all modes for "rules" resume).
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<String>,
+    /// Per-fan manual overrides, restored on top of `mode` after a reboot.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    fan_overrides: std::collections::HashMap<String, u8>,
 }
 
 fn state_file_path() -> PathBuf {
@@ -81,6 +84,7 @@ fn save_state(state: &State) {
         },
         hold_pct: state.held_duty,
         profile: Some(state.profile.as_str().to_string()),
+        fan_overrides: state.fan_overrides.clone(),
     };
     if let Ok(s) = toml::to_string(&saved) {
         let path = state_file_path();
@@ -106,6 +110,11 @@ struct State {
     /// When set, fans are held at this fixed duty % (overrides the curve).
     /// Cleared by `auto` / `rules` / `profile` commands.
     held_duty: Option<u8>,
+    /// Per-fan manual overrides (fan id -> duty%), independent of the global
+    /// mode above — e.g. pin just the left fan while the right one keeps
+    /// following the curve. Cleared per-fan by `fanauto <id>`, or all at once
+    /// by any of the global `auto`/`rules`/`profile` commands.
+    fan_overrides: std::collections::HashMap<String, u8>,
     /// When true, fans are handed back to the OS (no curve applied).
     auto: bool,
     /// When true, the profile was set manually (IPC) and overrides automation
@@ -250,6 +259,7 @@ fn run(cli: Cli) -> Result<()> {
         let mut s = State {
             profile,
             held_duty: None,
+            fan_overrides: std::collections::HashMap::new(),
             auto: false,
             manual: false,
             backend: provider.name().to_string(),
@@ -280,6 +290,7 @@ fn run(cli: Cli) -> Result<()> {
                 }
                 _ => {} // "rules" or unknown → keep defaults
             }
+            s.fan_overrides = saved.fan_overrides;
         }
         s
     };
@@ -380,10 +391,17 @@ fn control_loop(
         let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
 
         if auto {
-            if !auto_applied {
-                for id in fan_ids {
-                    provider.set_fan_auto(id)?;
+            // Per-fan overrides still apply on top of the global "auto" mode
+            // (e.g. pin one fan manually while the rest follow the OS) — so,
+            // unlike before per-fan overrides existed, this can't skip
+            // reasserting once `auto_applied` is true.
+            for id in fan_ids {
+                match state.fan_overrides.get(id) {
+                    Some(&pct) => provider.set_fan_duty(id, pct)?,
+                    None => provider.set_fan_auto(id)?,
                 }
+            }
+            if !auto_applied {
                 if !entitled {
                     println!("peterfand: trial expired -> auto (OS-managed)");
                 } else {
@@ -424,8 +442,10 @@ fn control_loop(
                     profile.as_str().into(),
                 )
             };
+            let critical_now = hottest >= critical;
             for id in fan_ids {
-                provider.set_fan_duty(id, duty)?;
+                let effective = effective_duty(&state.fan_overrides, id, duty, critical_now);
+                provider.set_fan_duty(id, effective)?;
             }
             let src = if state.held_duty.is_some() {
                 "hold"
@@ -515,6 +535,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             let mut s = shared.lock().expect("state poisoned");
             s.auto = true;
             s.held_duty = None;
+            s.fan_overrides.clear();
             save_state(&s);
             APPLY_NOW.store(true, Ordering::Relaxed);
             format!("ok auto ({backend})")
@@ -525,6 +546,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             s.manual = false;
             s.auto = false;
             s.held_duty = None;
+            s.fan_overrides.clear();
             save_state(&s);
             APPLY_NOW.store(true, Ordering::Relaxed);
             format!("ok rules ({backend})")
@@ -536,6 +558,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 s.auto = false;
                 s.held_duty = None;
                 s.manual = true;
+                s.fan_overrides.clear();
                 save_state(&s);
                 APPLY_NOW.store(true, Ordering::Relaxed);
                 format!("ok {} ({backend})", p.as_str())
@@ -550,11 +573,41 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 s.held_duty = Some(d);
                 s.auto = false;
                 s.manual = true;
+                s.fan_overrides.clear();
                 save_state(&s);
                 APPLY_NOW.store(true, Ordering::Relaxed);
                 format!("ok hold:{d}% ({backend})")
             }
             None => "error: hold requires a percent 0-100".into(),
+        },
+        // Pin one specific fan to a fixed duty %, independent of the global
+        // mode — the per-fan "Manual" toggle + slider in the UI.
+        Some("fanhold") => {
+            let id = parts.next().map(str::to_string);
+            let pct = parts.next().and_then(|s| s.parse::<u8>().ok());
+            match (id, pct) {
+                (Some(id), Some(pct)) => {
+                    let d = pct.min(100);
+                    let mut s = shared.lock().expect("state poisoned");
+                    s.fan_overrides.insert(id.clone(), d);
+                    save_state(&s);
+                    APPLY_NOW.store(true, Ordering::Relaxed);
+                    format!("ok fanhold:{id}:{d}% ({backend})")
+                }
+                _ => "error: fanhold requires <fan_id> <percent 0-100>".into(),
+            }
+        }
+        // Return one fan to whatever the global mode dictates — the per-fan
+        // "Auto" toggle.
+        Some("fanauto") => match parts.next() {
+            Some(id) => {
+                let mut s = shared.lock().expect("state poisoned");
+                s.fan_overrides.remove(id);
+                save_state(&s);
+                APPLY_NOW.store(true, Ordering::Relaxed);
+                format!("ok fanauto:{id} ({backend})")
+            }
+            None => "error: fanauto requires <fan_id>".into(),
         },
         Some("status") => {
             let s = shared.lock().expect("state poisoned");
@@ -588,6 +641,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 "power_w": s.last_power_w,
                 "mode": mode,
                 "backend": s.backend,
+                "fan_overrides": s.fan_overrides,
             })) {
                 Ok(json) => format!("ok {json}"),
                 Err(_) => "error: serialization failed".into(),
@@ -663,3 +717,65 @@ fn install_signal_handlers() {
 
 #[cfg(not(unix))]
 fn install_signal_handlers() {}
+
+/// The duty% actually written to one fan this tick: a per-fan manual pin
+/// (`overrides`) wins over the globally-computed `duty` — *except* when the
+/// machine is critically hot, where safety always wins regardless of what
+/// any fan is pinned to.
+fn effective_duty(
+    overrides: &std::collections::HashMap<String, u8>,
+    fan_id: &str,
+    duty: u8,
+    critical_now: bool,
+) -> u8 {
+    if critical_now {
+        duty
+    } else {
+        overrides.get(fan_id).copied().unwrap_or(duty)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_duty_prefers_override_when_not_critical() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("fan.left".to_string(), 30u8);
+        assert_eq!(effective_duty(&overrides, "fan.left", 80, false), 30);
+        // No override for this id → falls back to the computed duty.
+        assert_eq!(effective_duty(&overrides, "fan.right", 80, false), 80);
+    }
+
+    #[test]
+    fn effective_duty_ignores_override_when_critical() {
+        // A fan pinned low must not stay low while the machine is overheating.
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("fan.left".to_string(), 10u8);
+        assert_eq!(effective_duty(&overrides, "fan.left", 100, true), 100);
+    }
+
+    #[test]
+    fn saved_state_roundtrips_fan_overrides() {
+        let mut fan_overrides = std::collections::HashMap::new();
+        fan_overrides.insert("fan.cpu".to_string(), 42u8);
+        let saved = SavedState {
+            mode: "hold".to_string(),
+            hold_pct: Some(50),
+            profile: Some("balanced".to_string()),
+            fan_overrides,
+        };
+        let toml_str = toml::to_string(&saved).expect("serializes");
+        let back: SavedState = toml::from_str(&toml_str).expect("deserializes");
+        assert_eq!(back.fan_overrides.get("fan.cpu"), Some(&42));
+    }
+
+    #[test]
+    fn saved_state_without_fan_overrides_still_parses() {
+        // Old state files (written before this field existed) must still load.
+        let toml_str = "mode = \"auto\"\n";
+        let back: SavedState = toml::from_str(toml_str).expect("deserializes");
+        assert!(back.fan_overrides.is_empty());
+    }
+}

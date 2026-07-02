@@ -1,5 +1,7 @@
 # PeterFan
 
+**English** | [한국어](./README.ko.md) | [日本語](./README.ja.md) | [中文](./README.zh.md)
+
 > **The Mac fan controller and system monitor for developers.** A cross-platform
 > fan controller and hardware monitor with a CLI, a TUI, and a macOS menu-bar
 > app — built in Rust.
@@ -29,9 +31,25 @@ working. See [Pricing](#pricing--licensing) below.
 
 ---
 
+## Download for Mac — no Terminal needed
+
+1. **[Download the latest `.dmg`](https://github.com/uulab-official/peterfan/releases/latest)**
+   (under **Assets**, look for `PeterFan-vX.Y.Z.dmg`)
+2. Double-click it to open, then drag **PeterFan.app** onto the
+   **Applications** shortcut
+3. Open **PeterFan** from Applications (or Spotlight) — on first launch,
+   **right-click → Open** to confirm ([why?](#download))
+
+That's it — PeterFan lives quietly in your menu bar. 14-day free trial,
+no account or sign-up required. Prefer the command line, or need Windows?
+See [Download](#download) below for `.tar.gz`/`.zip` archives and
+build-from-source instructions.
+
+---
+
 ## Status
 
-**Beta — v1.9.3.** Actively developed; this table reflects what's actually shipped:
+**Beta — v1.23.0.** Actively developed; this table reflects what's actually shipped:
 
 | Area | State |
 | --- | --- |
@@ -47,8 +65,9 @@ working. See [Pricing](#pricing--licensing) below.
 | Fan **control** | ⚙️ SMC writes, **needs root** (`sudo peterfan fan set N` or the daemon). `fan set` **verifies by reading RPM back** so you get a real ✓/✗, not a fake "ok". Confirmed on Intel; on Apple Silicon it's attempted and verified (some models' firmware may ignore it) |
 | CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`/`serve`/`benchmark`/`log`/`alert`/`license`/`completions`, global `--watch` & `--json` | ✅ runnable |
 | TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes + temps/fans/power | ✅ runnable |
-| **Menu-bar app** — sparkline graph icon (number/graph/both, your choice), popover dashboard with 2-minute history charts per metric, direct Fan Speed presets + profile/Auto/Rules control, light/dark mode | ✅ runnable |
+| **Menu-bar app** — sparkline graph icon (number/graph/both, your choice), hover tooltip with a quick summary, popover dashboard with 2m/1h/1d history charts (hover for exact value + avg/peak), **per-fan Auto/Manual control with an RPM slider bounded to that fan's real range**, profile/Auto/Rules control, quit-process from Top Processes, English/한국어, a separate resizable Detail Window, light/dark mode | ✅ runnable |
 | **Daemon** (`peterfand`) — continuous curve + restore-on-exit + critical-temp override + IPC server; LaunchDaemon install | ✅ runnable |
+| **Self-update** — menu-bar "Check for Updates…" (and `peterfan update`) checks GitHub Releases and installs in place | ✅ runnable |
 | **Local HTTP API** (`peterfan serve`) — JSON metrics + control for integrations | ✅ runnable |
 | Licensing — 14-day trial, Ed25519 offline-verified keys | ✅ implemented (menu-bar app + daemon fan control only) |
 | Desktop GUI (Tauri), plugins | 🗺️ roadmap |
@@ -83,28 +102,39 @@ See [`docs/ROADMAP.md`](./docs/ROADMAP.md) for the full plan.
 ## Download
 
 Prebuilt binaries are attached to each [GitHub Release](https://github.com/uulab-official/peterfan/releases/latest).
-Each macOS archive contains `peterfan` (CLI), `peterfan-tui` (dashboard),
-`peterfan-menubar` (menu-bar binary), **and a double-clickable `PeterFan.app`**
-menu-bar agent. macOS (Apple Silicon + Intel) and Windows builds are produced by
-CI on every tagged release.
+macOS (Apple Silicon + Intel, universal) and Windows builds are produced by CI
+on every tagged release, in two forms:
+
+| Asset | Contains | Best for |
+| --- | --- | --- |
+| `PeterFan-vX.Y.Z.dmg` | Just `PeterFan.app` + an Applications shortcut | Anyone who just wants the menu-bar app — double-click, drag, done |
+| `peterfan-vX.Y.Z-universal-apple-darwin.tar.gz` | `peterfan` (CLI), `peterfan-tui`, `peterfan-menubar`, `peterfand`, **and** `PeterFan.app` | Developers / scripting / anyone who also wants the CLI or TUI |
 
 ```sh
-# macOS (Apple Silicon + Intel, universal binary) — from the Releases page
+# .dmg (menu-bar app only, no Terminal needed)
+open PeterFan-*.dmg
+# → drag PeterFan.app onto the Applications shortcut, then launch it normally
+
+# .tar.gz (CLI + TUI + menu-bar app, for developers)
 tar -xzf peterfan-*-universal-apple-darwin.tar.gz
 cd peterfan-*-universal-apple-darwin
-
-# menu-bar app: drag PeterFan.app to /Applications and double-click it
-open PeterFan.app
-# …or use the CLI / TUI directly
-./peterfan status
+open PeterFan.app          # menu-bar app
+./peterfan status          # …or use the CLI / TUI directly
 ```
 
-The build is ad-hoc signed (no paid Apple Developer account behind it, so it's
+Both are built the same way — the `.dmg` is just the `.app` from inside the
+`.tar.gz`, repackaged as a normal disk image for people who don't want a
+Terminal. Windows gets a `.zip` (CLI/TUI/menu-bar binaries only — no `.exe`
+installer yet).
+
+The app is ad-hoc signed (no paid Apple Developer account behind it, so it's
 not notarized). First launch shows the standard "cannot verify developer"
 prompt — right-click `PeterFan.app` → **Open**, or **System Settings → Privacy
 & Security → Open Anyway**. If macOS still refuses with "is damaged and can't
 be opened," clear the quarantine flag manually: `xattr -dr
 com.apple.quarantine PeterFan.app peterfan*`.
+
+---
 
 ## Enable fan control (one-time)
 
@@ -120,6 +150,8 @@ helper once (you'll get **one macOS password prompt**, no Terminal sudo):
 After that the menu-bar buttons and `peterfan fan …` drive the fans through the
 root helper — no further prompts. Remove it with `peterfan uninstall-daemon`.
 `peterfan fan set N` **verifies by reading RPM back**, so you get a real ✓/✗.
+
+---
 
 ## Build from source
 
@@ -155,7 +187,7 @@ Once installed, the binary is simply `peterfan`.
 ### Example: `peterfan status`
 
 ```text
-PeterFan v1.9.3
+PeterFan v1.23.0
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
@@ -216,6 +248,8 @@ The core depends **only** on the `HardwareProvider` trait. Each platform
 provides one implementation. Adding Linux later means adding one backend — not
 touching the core. Full details in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
 
+---
+
 ## Project layout
 
 ```text
@@ -237,6 +271,8 @@ peterfan/
 └── (planned) apps/desktop (Tauri GUI)
 ```
 
+---
+
 ## Safety
 
 Fan control is hardware-level and can be dangerous if done carelessly. PeterFan's
@@ -250,12 +286,16 @@ design commits to:
   Ctrl-C / SIGTERM / panic, and forces fans to 100% above a critical
   temperature.
 
+---
+
 ## Contributing
 
 This is a young project and a great time to get involved. See
 [`CONTRIBUTING.md`](./CONTRIBUTING.md). The most valuable early contributions are
 **new platform backends** (real SMC reading on macOS, an EC/WMI backend on
 Windows) behind the existing `HardwareProvider` trait.
+
+---
 
 ## License
 
