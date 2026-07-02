@@ -422,6 +422,22 @@ fn active_profile_from_mode(mode: &str) -> Option<&str> {
         .filter(|profile| !profile.is_empty())
 }
 
+fn active_control_mode_from_mode(mode: &str) -> &'static str {
+    let mode = mode.split_whitespace().next().unwrap_or(mode);
+    if mode == "auto" {
+        "auto"
+    } else if mode.starts_with("manual:")
+        || mode.starts_with("rules:")
+        || mode.starts_with("profile:")
+    {
+        "profile"
+    } else if mode.starts_with("hold:") {
+        "hold"
+    } else {
+        ""
+    }
+}
+
 /// Save a hand-drawn fan curve from the Detail Window's curve editor and
 /// switch to it. `points_json` is a JSON array of `[temp_c, duty_percent]`
 /// pairs, e.g. `[[30,20],[60,50],[90,100]]`.
@@ -1532,6 +1548,11 @@ fn update(app: &mut App) {
         .and_then(|v| v.get("mode").and_then(|m| m.as_str()))
         .and_then(active_profile_from_mode)
         .unwrap_or_default();
+    let active_control_mode = daemon_json
+        .as_ref()
+        .and_then(|v| v.get("mode").and_then(|m| m.as_str()))
+        .map(active_control_mode_from_mode)
+        .unwrap_or_default();
     // Without a daemon to ask, fall back to the local shadow state that
     // `apply_local` maintains for its one-shot direct writes.
     let fan_overrides = if daemon_running {
@@ -1654,6 +1675,7 @@ fn update(app: &mut App) {
         "ctl_status": ctl_status,
         "daemon_running": !daemon_st.is_empty(),
         "active_profile": active_profile,
+        "active_control_mode": active_control_mode,
         "fan_setup_needed": !daemon_running && can_control,
         "login_item_installed": login_item,
         "app_version": env!("CARGO_PKG_VERSION"),
@@ -2292,6 +2314,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Set Up<", ">설정<")
             .replace(">Login<", ">자동 실행<")
             .replace(">Update<", ">업데이트<")
+            .replace(">Auto<", ">자동<")
             .replace(">Silent<", ">저소음<")
             .replace(">Balanced<", ">균형<")
             .replace(">Gaming<", ">게임<")
@@ -2367,7 +2390,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .ctl-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;}
 .ctl-head .name{font-size:9.5px;font-weight:600;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;}
 .ctl-status{font-size:10px;color:var(--dim);font-variant-numeric:tabular-nums;}
-.profile-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;margin:3px 0 7px;}
+.profile-strip{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin:3px 0 7px;}
 .profile-strip button{min-width:0;background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:700;padding:4px 2px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s,border-color .15s,opacity .15s;}
 .profile-strip button:hover{background:var(--chip-hover);color:var(--text);}
 .profile-strip button.active{background:rgba(91,157,255,.2);border-color:rgba(91,157,255,.48);color:var(--accent);}
@@ -2446,11 +2469,12 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="ctl" style="border-top:0;border-bottom:1px solid var(--line)">
 <div class="ctl-head"><span class="name">Fan control</span><span class="ctl-status" id="ctl-status"></span></div>
 <div class="profile-strip" id="profile-strip">
-<button data-profile="silent" title="Silent" onclick="setProfile('silent')">Silent</button>
-<button data-profile="balanced" title="Balanced" onclick="setProfile('balanced')">Balanced</button>
-<button data-profile="gaming" title="Gaming" onclick="setProfile('gaming')">Gaming</button>
-<button data-profile="performance" title="Performance" onclick="setProfile('performance')">Performance</button>
-<button data-profile="maximum" title="Maximum" onclick="setProfile('maximum')">Max</button>
+<button data-mode="auto" title="Auto" onclick="setAuto()">Auto</button>
+<button data-mode="profile" data-profile="silent" title="Silent" onclick="setProfile('silent')">Silent</button>
+<button data-mode="profile" data-profile="balanced" title="Balanced" onclick="setProfile('balanced')">Balanced</button>
+<button data-mode="profile" data-profile="gaming" title="Gaming" onclick="setProfile('gaming')">Gaming</button>
+<button data-mode="profile" data-profile="performance" title="Performance" onclick="setProfile('performance')">Performance</button>
+<button data-mode="profile" data-profile="maximum" title="Maximum" onclick="setProfile('maximum')">Max</button>
 </div>
 <div class="fan-cards" id="fan-cards"></div>
 <div class="ctl-note" id="ctl-note" style="display:none"></div>
@@ -2897,14 +2921,21 @@ function setChartRange(r){
 function setProfile(profile){
   window.ipc.postMessage('cmd:profile:'+profile);
 }
+function setAuto(){
+  window.ipc.postMessage('cmd:auto');
+}
 function updateProfileStrip(d){
   var strip=document.getElementById('profile-strip');
   if(!strip)return;
   var enabled=!!d.can_control;
+  var activeMode=d.active_control_mode||'';
+  var activeProfile=d.active_profile||'';
   strip.classList.toggle('disabled',!enabled);
   Array.prototype.slice.call(strip.querySelectorAll('button')).forEach(function(b){
     b.disabled=!enabled;
-    b.classList.toggle('active',enabled&&b.dataset.profile===(d.active_profile||''));
+    var isAuto=b.dataset.mode==='auto'&&activeMode==='auto';
+    var isProfile=b.dataset.mode==='profile'&&activeMode==='profile'&&b.dataset.profile===activeProfile;
+    b.classList.toggle('active',enabled&&(isAuto||isProfile));
   });
 }
 function setProcSort(s){
@@ -3069,6 +3100,7 @@ mod tests {
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
         assert!(ko.contains(">팬 제어<"));
         assert!(ko.contains(">PeterFan 종료<"));
+        assert!(ko.contains(">자동<"));
         assert!(ko.contains(">균형<"));
         // Auto/Manual per-fan card labels are rendered by JS at runtime
         // (LANG==='ko' ? ...), not baked into the static markup — both
@@ -3100,7 +3132,9 @@ mod tests {
             assert!(html.contains(r#"id="fan-cards""#));
             assert!(html.contains(r#"id="profile-strip""#));
             assert!(html.contains("setProfile"));
+            assert!(html.contains("setAuto"));
             assert!(html.contains("updateProfileStrip"));
+            assert!(html.contains("cmd:auto"));
             assert!(html.contains("cmd:profile:"));
             assert!(html.contains(r#"id="setup-row""#));
             assert!(html.contains(r#"id="setup-login""#));
@@ -3126,6 +3160,18 @@ mod tests {
         assert_eq!(active_profile_from_mode("profile:silent"), Some("silent"));
         assert_eq!(active_profile_from_mode("auto"), None);
         assert_eq!(active_profile_from_mode("hold:45%"), None);
+    }
+
+    #[test]
+    fn active_control_mode_from_daemon_mode_handles_known_modes() {
+        assert_eq!(active_control_mode_from_mode("auto"), "auto");
+        assert_eq!(active_control_mode_from_mode("manual:balanced"), "profile");
+        assert_eq!(
+            active_control_mode_from_mode("rules:silent (smc)"),
+            "profile"
+        );
+        assert_eq!(active_control_mode_from_mode("hold:45%"), "hold");
+        assert_eq!(active_control_mode_from_mode(""), "");
     }
 
     #[test]
