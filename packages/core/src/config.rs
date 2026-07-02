@@ -236,7 +236,7 @@ pub enum ResolvedLanguage {
 }
 
 /// Menu-bar item appearance, persisted so it survives a relaunch.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MenubarConfig {
     pub metric: MenubarMetric,
@@ -245,6 +245,10 @@ pub struct MenubarConfig {
     /// prompt — stop offering it automatically (still reachable via the
     /// right-click menu).
     pub setup_prompt_dismissed: bool,
+    /// App version for which the user dismissed the stale-daemon update
+    /// prompt. A future app version can ask again because the bundled helper
+    /// has changed.
+    pub daemon_update_prompt_dismissed_for: Option<String>,
     pub language: Language,
 }
 
@@ -253,6 +257,7 @@ impl MenubarConfig {
         self.metric == MenubarMetric::Cpu
             && self.display == MenubarDisplay::Both
             && !self.setup_prompt_dismissed
+            && self.daemon_update_prompt_dismissed_for.is_none()
             && self.language == Language::System
     }
 }

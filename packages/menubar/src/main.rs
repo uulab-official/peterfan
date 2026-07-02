@@ -746,9 +746,10 @@ fn main() {
                 // (including the real privileged install) would be bogus.
                 if !use_mock {
                     std::thread::spawn(maybe_prompt_first_run_setup);
+                    std::thread::spawn(maybe_prompt_stale_daemon_update);
                     // Staggered a few seconds after the setup prompt so the
-                    // two dialogs (both one-shot, both possible on a fresh
-                    // launch) don't pop on top of each other.
+                    // one-shot setup/daemon-update dialogs don't pop on top
+                    // of the update checker.
                     std::thread::spawn(check_for_updates_on_launch);
                 }
             }
@@ -2172,14 +2173,72 @@ fn maybe_prompt_first_run_setup() {
 #[cfg(not(target_os = "macos"))]
 fn maybe_prompt_first_run_setup() {}
 
+#[cfg(target_os = "macos")]
+fn stale_daemon_version() -> Option<String> {
+    if !peterfan_platform::daemon_reachable() {
+        return None;
+    }
+    let version = installed_daemon_version()?;
+    if version == env!("CARGO_PKG_VERSION") {
+        None
+    } else {
+        Some(version)
+    }
+}
+#[cfg(not(target_os = "macos"))]
+fn stale_daemon_version() -> Option<String> {
+    None
+}
+
+/// After an app update, the bundled helper is new but the root LaunchDaemon
+/// remains whatever was previously installed. Surface that mismatch once per
+/// app version so fan control does not quietly run old logic forever.
+#[cfg(target_os = "macos")]
+fn maybe_prompt_stale_daemon_update() {
+    std::thread::sleep(Duration::from_secs(2));
+    let current = env!("CARGO_PKG_VERSION");
+    let cfg = peterfan_platform::config::load();
+    if cfg.menubar.daemon_update_prompt_dismissed_for.as_deref() == Some(current) {
+        return;
+    }
+    let Some(old_version) = stale_daemon_version() else {
+        return;
+    };
+
+    let message = format!(
+        "PeterFan is v{current}, but the fan-control daemon installed on this Mac is still v{old_version}.\n\nUpdate the daemon now? macOS will ask for your password once."
+    );
+    let script = format!(
+        r#"display dialog {} with title {} buttons {{"Don't Ask Again", "Not Now", "Update Daemon"}} default button "Update Daemon" cancel button "Not Now""#,
+        applescript_quote(&message),
+        applescript_quote("PeterFan — Update Fan Control"),
+    );
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output();
+
+    let Ok(output) = output else { return };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.contains("Update Daemon") {
+        install_fan_control();
+    } else if stdout.contains("Don't Ask Again") {
+        let mut cfg = peterfan_platform::config::load();
+        cfg.menubar.daemon_update_prompt_dismissed_for = Some(current.to_string());
+        let _ = peterfan_platform::config::save(&cfg);
+    }
+}
+#[cfg(not(target_os = "macos"))]
+fn maybe_prompt_stale_daemon_update() {}
+
 /// Silent background check, run once shortly after launch. Only speaks up
 /// (via [`prompt_update_available`]) if a newer release actually exists —
 /// "already up to date" isn't worth interrupting anyone for.
 #[cfg(target_os = "macos")]
 fn check_for_updates_on_launch() {
     // Staggered well past the fan-control setup prompt's own 600ms delay so
-    // the two one-shot dialogs never compete for the user's attention.
-    std::thread::sleep(Duration::from_secs(4));
+    // setup/daemon-update/update dialogs never compete for attention.
+    std::thread::sleep(Duration::from_secs(6));
     if let Ok(release) = peterfan_platform::updater::fetch_latest_release() {
         if peterfan_platform::updater::is_newer(env!("CARGO_PKG_VERSION"), &release.version) {
             prompt_update_available(&release);
