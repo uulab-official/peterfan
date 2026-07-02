@@ -2242,11 +2242,14 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .fan-seg{display:flex;gap:4px;flex:0 0 auto;}
 .fan-seg button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:600;padding:3px 8px;border-radius:5px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s;}
 .fan-seg button.active{background:var(--panel-bg);color:var(--text);border-color:rgba(91,157,255,.4);}
-.fan-rpm-row{display:grid;grid-template-columns:auto 1fr auto;gap:7px;align-items:center;margin-top:5px;transition:opacity .15s;}
+.fan-rpm-row{display:grid;grid-template-columns:auto 1fr auto auto;gap:6px;align-items:center;margin-top:5px;transition:opacity .15s;}
 .fan-rpm-row.inactive{opacity:.35;pointer-events:none;}
 .fan-rpm-row span{font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .fan-rpm-row input[type=range]{-webkit-appearance:none;height:3px;border-radius:99px;background:var(--track);outline:none;cursor:pointer;}
 .fan-rpm-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;}
+.fan-rpm-row input[type=number]{width:44px;background:var(--track);border:1px solid transparent;border-radius:4px;color:var(--text);font:inherit;font-size:9px;font-variant-numeric:tabular-nums;text-align:center;padding:3px 0;-moz-appearance:textfield;}
+.fan-rpm-row input[type=number]::-webkit-inner-spin-button,.fan-rpm-row input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}
+.fan-rpm-row input[type=number]:focus{border-color:var(--accent);outline:none;}
 .ctl-note{font-size:10.5px;color:var(--dim);line-height:1.5;margin-top:6px;}
 .note-fix-btn{margin-top:5px;background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:10px;font-weight:600;padding:5px 10px;border-radius:6px;cursor:pointer;}
 .note-fix-btn:hover{background:rgba(91,157,255,.32);}
@@ -2495,7 +2498,7 @@ function renderFanCards(fans){
       card.innerHTML='<div class="fan-card-head"><span class="fn"></span><span class="fv"></span></div>'+
         '<div class="fan-bar"><i></i></div>'+
         '<div class="fan-bottom"><span class="fan-rpm-text"></span><span class="fan-seg"><button class="fa-auto"></button><button class="fa-manual"></button></span></div>'+
-        '<div class="fan-rpm-row inactive"><span class="fa-min"></span><input type="range"><span class="fa-max"></span></div>';
+        '<div class="fan-rpm-row inactive"><span class="fa-min"></span><input type="range"><input type="number" class="fa-num" inputmode="numeric"><span class="fa-max"></span></div>';
       var btnAuto=card.querySelector('.fa-auto');
       var btnManual=card.querySelector('.fa-manual');
       btnAuto.textContent=LANG==='ko'?'자동':'Auto';
@@ -2510,17 +2513,44 @@ function renderFanCards(fans){
         card.querySelector('.fan-rpm-row').classList.remove('inactive');
       };
       var slider=card.querySelector('input[type=range]');
+      var numInput=card.querySelector('.fa-num');
+      // A drag gesture is too coarse for "I want exactly 2500 RPM" — the
+      // number box lets you type it, while the slider stays for quick
+      // eyeballed adjustments. Both funnel through `commitFanValue` so they
+      // can never send conflicting commands for the same drag/keystroke.
+      function commitFanValue(v){
+        var min=parseInt(slider.min,10),max=parseInt(slider.max,10);
+        v=Math.max(min,Math.min(max,v));
+        slider.value=v;
+        numInput.value=v;
+        var useRpm=slider.dataset.useRpm==='1';
+        card.querySelector('.fv').textContent=useRpm?(v+' RPM'):(v+'%');
+        var span=max-min;
+        var pct=useRpm?(span>0?Math.round((v-min)/span*100):0):v;
+        window.ipc.postMessage('cmd:fanhold:'+f.id+':'+Math.max(0,Math.min(100,pct)));
+      }
       slider.addEventListener('input',function(){
         var v=parseInt(slider.value,10);
+        numInput.value=v;
         var useRpm=slider.dataset.useRpm==='1';
         card.querySelector('.fv').textContent=useRpm?(v+' RPM'):(v+'%');
       });
       slider.addEventListener('change',function(){
-        var v=parseInt(slider.value,10);
-        var min=parseInt(slider.min,10),max=parseInt(slider.max,10);
-        var span=max-min;
-        var pct=slider.dataset.useRpm==='1'?(span>0?Math.round((v-min)/span*100):0):v;
-        window.ipc.postMessage('cmd:fanhold:'+f.id+':'+Math.max(0,Math.min(100,pct)));
+        commitFanValue(parseInt(slider.value,10));
+      });
+      numInput.addEventListener('input',function(){
+        var v=parseInt(numInput.value,10);
+        if(isNaN(v))return;
+        slider.value=Math.max(parseInt(slider.min,10),Math.min(parseInt(slider.max,10),v));
+        var useRpm=slider.dataset.useRpm==='1';
+        card.querySelector('.fv').textContent=useRpm?(v+' RPM'):(v+'%');
+      });
+      numInput.addEventListener('change',function(){
+        var v=parseInt(numInput.value,10);
+        if(!isNaN(v))commitFanValue(v);
+      });
+      numInput.addEventListener('keydown',function(e){
+        if(e.key==='Enter')numInput.blur();
       });
       container.appendChild(card);
     }
@@ -2543,12 +2573,17 @@ function renderFanCards(fans){
     // redraw at a new width, which read as "the graphs randomly changed."
     card.querySelector('.fan-rpm-row').classList.toggle('inactive', !manual);
     var slider=card.querySelector('input[type=range]');
+    var numInput=card.querySelector('.fa-num');
     slider.dataset.useRpm=useRpm?'1':'0';
-    slider.min=useRpm?f.min_rpm:0;
-    slider.max=useRpm?Math.max(f.max_rpm,f.min_rpm+1):100;
-    if(slider!==document.activeElement){
+    slider.min=numInput.min=useRpm?f.min_rpm:0;
+    slider.max=numInput.max=useRpm?Math.max(f.max_rpm,f.min_rpm+1):100;
+    // Skip the live-tick overwrite while the user is mid-edit in either
+    // control — without this, typing into the number box would get
+    // clobbered by the next 1s poll before the "change" event even fires.
+    if(slider!==document.activeElement&&numInput!==document.activeElement){
       var targetRpm=useRpm?Math.round(f.min_rpm+(f.max_rpm-f.min_rpm)*f.pct/100):Math.round(f.pct);
       slider.value=targetRpm;
+      numInput.value=targetRpm;
       card.querySelector('.fv').textContent=manual?(useRpm?(targetRpm+' RPM'):(targetRpm+'%')):(Math.round(f.pct)+'%');
     }
   });
