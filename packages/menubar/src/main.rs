@@ -164,10 +164,10 @@ static STATUS: Mutex<String> = Mutex::new(String::new());
 /// admin-password dialogs.
 static INSTALL_FAN_CONTROL_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// Shadow of `apply_local`'s per-fan pins, consulted only when no daemon is
-/// reachable (`daemon_fan_overrides()` always reports empty in that case,
-/// since it's a daemon IPC query). Without this, pinning a fan via a direct
-/// SMC write leaves the UI reporting "Auto" on the very next tick even
-/// though the fan is genuinely still pinned in hardware.
+/// reachable (`daemon_temps_json()` returns `None` in that case, since it's
+/// a daemon IPC query). Without this, pinning a fan via a direct SMC write
+/// leaves the UI reporting "Auto" on the very next tick even though the fan
+/// is genuinely still pinned in hardware.
 static LOCAL_FAN_OVERRIDES: Mutex<Option<std::collections::HashMap<String, u8>>> = Mutex::new(None);
 
 /// IDs of the tray context-menu items so we can identify them in MenuEvent.
@@ -1409,14 +1409,24 @@ fn update(app: &mut App) {
 
     // Fans: every fan listed with its own RPM and a speed bar (rpm / max).
     // Daemon status: poll every tick so the popover always shows current mode.
-    let daemon_st = daemon_status_str();
+    let daemon_json = daemon_temps_json();
+    let daemon_st = daemon_json
+        .as_ref()
+        .map(|v| {
+            let mode = v.get("mode").and_then(|m| m.as_str()).unwrap_or("");
+            let backend = v.get("backend").and_then(|b| b.as_str()).unwrap_or("");
+            format!("{mode} ({backend})")
+        })
+        .unwrap_or_default();
     let daemon_running = !daemon_st.is_empty();
-    // `daemon_fan_overrides()` is a daemon IPC query — it reports empty both
-    // when there genuinely are no overrides AND when there's no daemon to
-    // ask, so without a daemon fall back to the local shadow state that
+    // Without a daemon to ask, fall back to the local shadow state that
     // `apply_local` maintains for its one-shot direct writes.
     let fan_overrides = if daemon_running {
-        daemon_fan_overrides()
+        daemon_json
+            .as_ref()
+            .and_then(|v| v.get("fan_overrides").cloned())
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default()
     } else {
         local_fan_overrides()
     };
@@ -1548,35 +1558,20 @@ fn update(app: &mut App) {
     }
 }
 
-/// Query the running daemon for its current mode/profile, for the status line.
-/// Returns an empty string when no daemon is reachable.
-fn daemon_status_str() -> String {
-    #[cfg(unix)]
-    if let Some(reply) = peterfan_platform::ipc::send_command("status") {
-        if let Some(rest) = reply.strip_prefix("ok ") {
-            return rest.to_string();
-        }
-    }
-    String::new()
-}
-
-/// Which fans are currently pinned to a manual duty% by the daemon (fan id ->
-/// duty%) — read fresh each tick so the per-fan Auto/Manual toggle in the
-/// popover reflects reality even after e.g. a daemon restart. Empty (not an
-/// error) when there's no daemon to ask, same as every other daemon-optional
-/// read in this file.
+/// Single daemon IPC round-trip for everything the popover needs per tick —
+/// mode/backend (for the status line) and per-fan overrides (for the
+/// Auto/Manual toggle) both live in the "temps" reply already, so there's no
+/// need for a separate "status" query too (that used to double the daemon
+/// IPC traffic every second for a value already present in this payload).
+/// `None` when no daemon is reachable.
 #[cfg(unix)]
-fn daemon_fan_overrides() -> std::collections::HashMap<String, u8> {
-    peterfan_platform::ipc::send_command("temps")
-        .and_then(|reply| reply.strip_prefix("ok ").map(str::to_string))
-        .and_then(|json_str| serde_json::from_str::<serde_json::Value>(&json_str).ok())
-        .and_then(|v| v.get("fan_overrides").cloned())
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default()
+fn daemon_temps_json() -> Option<serde_json::Value> {
+    let reply = peterfan_platform::ipc::send_command("temps")?;
+    serde_json::from_str(reply.strip_prefix("ok ")?).ok()
 }
 #[cfg(not(unix))]
-fn daemon_fan_overrides() -> std::collections::HashMap<String, u8> {
-    std::collections::HashMap::new()
+fn daemon_temps_json() -> Option<serde_json::Value> {
+    None
 }
 
 /// Run a popover control action (`auto` or `profile:<name>`). Prefers the
