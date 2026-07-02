@@ -2190,6 +2190,24 @@ fn stale_daemon_version() -> Option<String> {
     None
 }
 
+fn should_prompt_stale_daemon_update(
+    cfg: &peterfan_core::config::Config,
+    current_version: &str,
+    now_unix: u64,
+) -> bool {
+    if cfg.menubar.daemon_update_prompt_dismissed_for.as_deref() == Some(current_version) {
+        return false;
+    }
+    if cfg
+        .menubar
+        .daemon_update_prompt_snoozed_until_unix
+        .is_some_and(|until| now_unix < until)
+    {
+        return false;
+    }
+    true
+}
+
 /// After an app update, the bundled helper is new but the root LaunchDaemon
 /// remains whatever was previously installed. Surface that mismatch once per
 /// app version so fan control does not quietly run old logic forever.
@@ -2198,7 +2216,7 @@ fn maybe_prompt_stale_daemon_update() {
     std::thread::sleep(Duration::from_secs(2));
     let current = env!("CARGO_PKG_VERSION");
     let cfg = peterfan_platform::config::load();
-    if cfg.menubar.daemon_update_prompt_dismissed_for.as_deref() == Some(current) {
+    if !should_prompt_stale_daemon_update(&cfg, current, now_unix()) {
         return;
     }
     let Some(old_version) = stale_daemon_version() else {
@@ -2248,6 +2266,10 @@ fn maybe_prompt_stale_daemon_update() {
     } else if stdout.contains(dont_ask) {
         let mut cfg = peterfan_platform::config::load();
         cfg.menubar.daemon_update_prompt_dismissed_for = Some(current.to_string());
+        let _ = peterfan_platform::config::save(&cfg);
+    } else if stdout.contains(not_now) {
+        let mut cfg = peterfan_platform::config::load();
+        cfg.menubar.daemon_update_prompt_snoozed_until_unix = Some(now_unix() + 24 * 60 * 60);
         let _ = peterfan_platform::config::save(&cfg);
     }
 }
@@ -3445,6 +3467,20 @@ mod tests {
             false
         )
         .contains("daemon v1.26.8"));
+    }
+
+    #[test]
+    fn stale_daemon_prompt_respects_dismiss_and_snooze() {
+        let mut cfg = peterfan_core::config::Config::default();
+        assert!(should_prompt_stale_daemon_update(&cfg, "1.2.3", 1_000));
+
+        cfg.menubar.daemon_update_prompt_snoozed_until_unix = Some(1_500);
+        assert!(!should_prompt_stale_daemon_update(&cfg, "1.2.3", 1_000));
+        assert!(should_prompt_stale_daemon_update(&cfg, "1.2.3", 1_501));
+
+        cfg.menubar.daemon_update_prompt_dismissed_for = Some("1.2.3".to_string());
+        assert!(!should_prompt_stale_daemon_update(&cfg, "1.2.3", 1_501));
+        assert!(should_prompt_stale_daemon_update(&cfg, "1.2.4", 1_501));
     }
 
     #[test]

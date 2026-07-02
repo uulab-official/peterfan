@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **오래된 데몬 업데이트 프롬프트 24시간 미루기** — 앱 시작 시 뜨는 데몬
+  업데이트 안내에서 `나중에`를 선택하면 하루 동안 자동 팝업을 쉬게 하고,
+  수동 `데몬` 업데이트 버튼은 그대로 유지함.
+
 ## [1.26.16] — Setup 액션 상태 표시 개선
 
 ### Changed
