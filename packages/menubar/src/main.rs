@@ -2205,13 +2205,36 @@ fn maybe_prompt_stale_daemon_update() {
         return;
     };
 
-    let message = format!(
-        "PeterFan is v{current}, but the fan-control daemon installed on this Mac is still v{old_version}.\n\nUpdate the daemon now? macOS will ask for your password once."
-    );
+    let lang = cfg.menubar.language.resolve();
+    let (title, message, dont_ask, not_now, update) = match lang {
+        ResolvedLanguage::Ko => (
+            "PeterFan — 팬 제어 업데이트",
+            format!(
+                "PeterFan 앱은 v{current}이지만, 이 Mac에 설치된 팬 제어 데몬은 아직 v{old_version}입니다.\n\n지금 데몬도 업데이트할까요? macOS가 관리자 암호를 한 번 요청합니다."
+            ),
+            "다시 묻지 않기",
+            "나중에",
+            "데몬 업데이트",
+        ),
+        ResolvedLanguage::En => (
+            "PeterFan — Update Fan Control",
+            format!(
+                "PeterFan is v{current}, but the fan-control daemon installed on this Mac is still v{old_version}.\n\nUpdate the daemon now? macOS will ask for your password once."
+            ),
+            "Don't Ask Again",
+            "Not Now",
+            "Update Daemon",
+        ),
+    };
     let script = format!(
-        r#"display dialog {} with title {} buttons {{"Don't Ask Again", "Not Now", "Update Daemon"}} default button "Update Daemon" cancel button "Not Now""#,
+        r#"display dialog {} with title {} buttons {{{}, {}, {}}} default button {} cancel button {}"#,
         applescript_quote(&message),
-        applescript_quote("PeterFan — Update Fan Control"),
+        applescript_quote(title),
+        applescript_quote(dont_ask),
+        applescript_quote(not_now),
+        applescript_quote(update),
+        applescript_quote(update),
+        applescript_quote(not_now),
     );
     let output = std::process::Command::new("osascript")
         .arg("-e")
@@ -2220,9 +2243,9 @@ fn maybe_prompt_stale_daemon_update() {
 
     let Ok(output) = output else { return };
     let stdout = String::from_utf8_lossy(&output.stdout);
-    if stdout.contains("Update Daemon") {
+    if stdout.contains(update) {
         install_fan_control();
-    } else if stdout.contains("Don't Ask Again") {
+    } else if stdout.contains(dont_ask) {
         let mut cfg = peterfan_platform::config::load();
         cfg.menubar.daemon_update_prompt_dismissed_for = Some(current.to_string());
         let _ = peterfan_platform::config::save(&cfg);
