@@ -574,12 +574,8 @@ fn main() {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                if app
-                    .detail_window
-                    .as_ref()
-                    .is_some_and(|w| w.id() == window_id)
-                {
-                    if let Some(w) = &app.detail_window {
+                if let Some(w) = &app.detail_window {
+                    if w.id() == window_id {
                         w.set_visible(false);
                     }
                 }

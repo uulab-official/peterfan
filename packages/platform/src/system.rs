@@ -300,7 +300,7 @@ impl SystemMonitor for SysinfoMonitor {
                     .partial_cmp(&a.cpu_percent)
                     .unwrap_or(std::cmp::Ordering::Equal)
             }),
-            ProcSort::Memory => procs.sort_by(|a, b| b.memory.cmp(&a.memory)),
+            ProcSort::Memory => procs.sort_by_key(|p| std::cmp::Reverse(p.memory)),
         }
         procs.truncate(limit);
         procs

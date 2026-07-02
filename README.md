@@ -49,7 +49,7 @@ build-from-source instructions.
 
 ## Status
 
-**Beta — v1.25.0.** Actively developed; this table reflects what's actually shipped:
+**Beta — v1.25.2.** Actively developed; this table reflects what's actually shipped:
 
 | Area | State |
 | --- | --- |
@@ -187,7 +187,7 @@ Once installed, the binary is simply `peterfan`.
 ### Example: `peterfan status`
 
 ```text
-PeterFan v1.25.0
+PeterFan v1.25.2
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max

@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.25.2] — Windows 빌드 깨짐 수정 (릴리스가 한 번도 발행된 적 없던 원인)
+
+### Fixed
+- **Windows 크로스 컴파일이 컴파일 자체가 안 되고 있었음** — v1.25.1
+  태그를 만들어 릴리스를 발행하려던 중 발견: `peterfan-cli`/`peterfand`가
+  unix 전용(`#[cfg(unix)]`)이거나 macOS 전용(`#[cfg(target_os =
+  "macos")]`)으로 가려진 `peterfan_platform::ipc`/`login_item` 모듈을
+  아무 조건 없이 참조하고 있어서 Windows 타겟에서 컴파일 자체가
+  실패하고 있었음. release.yml의 publish 단계는 macOS + Windows 빌드가
+  모두 성공해야 실행되는 구조라, **이 프로젝트는 v0.27.1 이후 단 한
+  번도 실제로 GitHub Release가 발행된 적이 없었음** — 매번 조용히
+  실패하고 있었던 것.
+- 관련 사용처를 전부 플랫폼 조건부로 정리 (`notify_daemon_reload`,
+  `cmd_daemon`, doctor의 로그인 항목 체크, alert install의 바이너리
+  탐색, 데몬의 IPC 서버 기동). 실제로 `x86_64-pc-windows-msvc` 타겟으로
+  크로스 컴파일해서 통과 확인.
+- 로컬 Rust 툴체인을 CI와 동일한 최신 stable로 갱신하는 과정에서 새로
+  드러난 clippy 경고 3건(`unnecessary_sort_by` ×3, `collapsible_match`
+  ×1)도 함께 정리 — 로컬 toolchain이 CI보다 오래돼서 그동안 못 잡고
+  있었던 것들.
+
 ## [1.25.1] — 명령 실패를 화면에 표시 (팬별 Manual 버튼 무반응 원인 진단)
 
 ### Fixed

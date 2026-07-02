@@ -1466,6 +1466,8 @@ fn cmd_rule(json: bool, action: RuleAction) -> Result<()> {
 }
 
 /// Signal the running daemon to reload its config. Silent if no daemon is up.
+/// The daemon's control-socket IPC is unix-only (see `peterfan_platform::ipc`).
+#[cfg(unix)]
 fn notify_daemon_reload(json: bool) {
     if let Some(reply) = peterfan_platform::ipc::send_command("reload") {
         if !json {
@@ -1475,9 +1477,12 @@ fn notify_daemon_reload(json: bool) {
         }
     }
 }
+#[cfg(not(unix))]
+fn notify_daemon_reload(_json: bool) {}
 
 const DAEMON_LOG: &str = "/var/log/peterfand.log";
 
+#[cfg(unix)]
 fn cmd_daemon(json: bool, action: DaemonAction) -> Result<()> {
     if let DaemonAction::Log { lines, follow } = action {
         return cmd_daemon_log(json, lines, follow);
@@ -1516,6 +1521,30 @@ fn cmd_daemon(json: bool, action: DaemonAction) -> Result<()> {
                 );
             }
         }
+    }
+    Ok(())
+}
+
+/// The daemon's control-socket IPC (`peterfan_platform::ipc`) is unix-only —
+/// `status`/`reload`/`stop` aren't reachable yet on this platform, but
+/// `log` just tails a file and works everywhere.
+#[cfg(not(unix))]
+fn cmd_daemon(json: bool, action: DaemonAction) -> Result<()> {
+    if let DaemonAction::Log { lines, follow } = action {
+        return cmd_daemon_log(json, lines, follow);
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &serde_json::json!({"error": "daemon IPC not supported on this platform yet"})
+            )?
+        );
+    } else {
+        println!(
+            "  {} daemon IPC not supported on this platform yet",
+            "✗".red()
+        );
     }
     Ok(())
 }
@@ -1722,7 +1751,7 @@ fn cmd_network(mock: bool, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&nets)?);
         return Ok(());
     }
-    nets.sort_by(|a, b| (b.rx_total + b.tx_total).cmp(&(a.rx_total + a.tx_total)));
+    nets.sort_by_key(|n| std::cmp::Reverse(n.rx_total + n.tx_total));
     println!("{}", render::heading("Network"));
     print_networks(nets.iter().filter(|n| n.rx_total + n.tx_total > 0));
     Ok(())
@@ -1874,7 +1903,7 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
     let mem = m.memory();
     let disks = m.disks();
     let mut nets = m.networks();
-    nets.sort_by(|a, b| (b.rx_total + b.tx_total).cmp(&(a.rx_total + a.tx_total)));
+    nets.sort_by_key(|n| std::cmp::Reverse(n.rx_total + n.tx_total));
     let battery = m.battery();
 
     if json {
@@ -2680,14 +2709,17 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                 );
             }
 
-            // ── Menubar login item ────────────────────────────────────────
-            let login_item_installed = peterfan_platform::login_item::is_installed();
-            print_check("menubar login item installed", login_item_installed);
-            if !login_item_installed {
-                println!(
-                    "    {} run `peterfan login-item install` to start at login",
-                    "→".dimmed()
-                );
+            // ── Menubar login item (macOS LaunchAgent only, for now) ────────
+            #[cfg(target_os = "macos")]
+            {
+                let login_item_installed = peterfan_platform::login_item::is_installed();
+                print_check("menubar login item installed", login_item_installed);
+                if !login_item_installed {
+                    println!(
+                        "    {} run `peterfan login-item install` to start at login",
+                        "→".dimmed()
+                    );
+                }
             }
 
             // ── Config file ───────────────────────────────────────────────
@@ -3622,8 +3654,18 @@ fn cmd_alert_agent(action: AlertAction) -> Result<()> {
                      peterfan alert --cpu 85 --temp 90 --save"
                 );
             }
-            let bin = peterfan_platform::login_item::find_menubar_binary(binary.as_deref())
-                .map_err(|e| anyhow::anyhow!(e))
+            // `find_menubar_binary` is macOS-only (it looks next to the .app
+            // bundle); other platforms fall straight through to the
+            // current_exe/"peterfan" fallbacks already in this chain.
+            #[cfg(target_os = "macos")]
+            let found_bin = peterfan_platform::login_item::find_menubar_binary(binary.as_deref())
+                .map_err(|e| anyhow::anyhow!(e));
+            #[cfg(not(target_os = "macos"))]
+            let found_bin: Result<std::path::PathBuf> = {
+                let _ = &binary; // only consulted by find_menubar_binary, above
+                Err(anyhow::anyhow!("not applicable on this platform"))
+            };
+            let bin = found_bin
                 .or_else(|_| {
                     std::env::current_exe().map_err(|e| anyhow::anyhow!("cannot find self: {e}"))
                 })

@@ -307,7 +307,10 @@ fn run(cli: Cli) -> Result<()> {
     let shared = Arc::new(Mutex::new(initial_state));
 
     // IPC server (so the menu-bar app can switch profile / go auto without
-    // root). Not started for one-shot runs.
+    // root). Not started for one-shot runs. Unix-only for now (see
+    // `spawn_ipc_server`) — on Windows the daemon still runs and applies its
+    // curve, it just isn't remotely controllable yet.
+    #[cfg(unix)]
     if !cli.once {
         spawn_ipc_server(Arc::clone(&shared));
     }
