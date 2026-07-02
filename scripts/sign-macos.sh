@@ -33,7 +33,18 @@ fi
 
 sign_path() {
   local path="$1"
-  codesign "${CODE_SIGN_ARGS[@]}" "$path"
+  local attempt
+  for attempt in 1 2 3; do
+    if codesign "${CODE_SIGN_ARGS[@]}" "$path"; then
+      return 0
+    fi
+    if [[ "$attempt" == "3" ]]; then
+      break
+    fi
+    echo "codesign failed for $path; retrying in ${attempt}s..." >&2
+    sleep "$attempt"
+  done
+  return 1
 }
 
 if [[ -d "$TARGET" && "$TARGET" == *.app ]]; then

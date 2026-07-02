@@ -45,7 +45,16 @@ hdiutil create \
 
 IDENTITY="${PETERFAN_SIGN_IDENTITY:-${MACOS_SIGN_IDENTITY:-}}"
 if [[ -n "$IDENTITY" && "$IDENTITY" != "-" ]] && command -v codesign >/dev/null 2>&1; then
-  codesign --force --sign "$IDENTITY" --timestamp "$OUT"
+  for attempt in 1 2 3; do
+    if codesign --force --sign "$IDENTITY" --timestamp "$OUT"; then
+      break
+    fi
+    if [[ "$attempt" == "3" ]]; then
+      exit 1
+    fi
+    echo "codesign timestamp failed for $OUT; retrying in ${attempt}s..." >&2
+    sleep "$attempt"
+  done
 fi
 
 echo "built $OUT"
