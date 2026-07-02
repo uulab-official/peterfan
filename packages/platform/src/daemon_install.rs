@@ -8,7 +8,8 @@
 use std::path::PathBuf;
 
 /// LaunchDaemon label + paths (kept in sync with `packaging/…plist`).
-pub const DAEMON_LABEL: &str = "com.uulab.peterfan.daemon";
+pub const DAEMON_LABEL: &str = "kr.co.uulab.peterfan.daemon";
+pub const LEGACY_DAEMON_LABEL: &str = "com.uulab.peterfan.daemon";
 
 pub const NEWSYSLOG_CONF: &str = "/etc/newsyslog.d/peterfand.conf";
 const NEWSYSLOG_BODY: &str = "\
@@ -109,10 +110,27 @@ pub enum InstallOutcome {
 /// `peterfand` wasn't found next to this binary — genuine failures.
 pub fn install(dry_run: bool) -> Result<InstallOutcome, String> {
     let bin = find_peterfand()?;
+    let staged_bin = std::env::temp_dir().join(format!("peterfand-install-{}", std::process::id()));
+    if !dry_run {
+        std::fs::copy(&bin, &staged_bin).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&staged_bin)
+                .map_err(|e| e.to_string())?
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&staged_bin, perms).map_err(|e| e.to_string())?;
+        }
+    }
     let plist_dst = format!("/Library/LaunchDaemons/{DAEMON_LABEL}.plist");
+    let legacy_plist_dst = format!("/Library/LaunchDaemons/{LEGACY_DAEMON_LABEL}.plist");
     let script = format!(
         "set -e\n\
-         install -m 755 '{bin}' /usr/local/bin/peterfand\n\
+         launchctl bootout system '{legacy_plist_dst}' 2>/dev/null || true\n\
+         rm -f '{legacy_plist_dst}'\n\
+         install -m 755 '{staged_bin}' /usr/local/bin/peterfand\n\
+         rm -f '{staged_bin}'\n\
          cat > '{plist_dst}' <<'PLIST'\n{plist}PLIST\n\
          chown root:wheel '{plist_dst}'\n\
          chmod 644 '{plist_dst}'\n\
@@ -121,12 +139,19 @@ pub fn install(dry_run: bool) -> Result<InstallOutcome, String> {
          mkdir -p /etc/newsyslog.d\n\
          printf '%s' '{newsyslog}' > {newsyslog_conf}\n\
          chmod 644 {newsyslog_conf}\n",
-        bin = bin.display(),
+        staged_bin = staged_bin.display(),
         plist = daemon_plist(),
+        legacy_plist_dst = legacy_plist_dst,
         newsyslog = NEWSYSLOG_BODY,
         newsyslog_conf = NEWSYSLOG_CONF,
     );
-    let dry_run_output = run_privileged(&script, dry_run)?;
+    let dry_run_output = match run_privileged(&script, dry_run) {
+        Ok(out) => out,
+        Err(e) => {
+            let _ = std::fs::remove_file(&staged_bin);
+            return Err(e);
+        }
+    };
     if dry_run {
         return Ok(InstallOutcome::DryRun(dry_run_output));
     }
@@ -142,9 +167,11 @@ pub fn install(dry_run: bool) -> Result<InstallOutcome, String> {
 /// password dialog. `Err` means the user cancelled or the script failed.
 pub fn uninstall(dry_run: bool) -> Result<InstallOutcome, String> {
     let plist_dst = format!("/Library/LaunchDaemons/{DAEMON_LABEL}.plist");
+    let legacy_plist_dst = format!("/Library/LaunchDaemons/{LEGACY_DAEMON_LABEL}.plist");
     let script = format!(
         "launchctl bootout system '{plist_dst}' 2>/dev/null || true\n\
-         rm -f '{plist_dst}' /usr/local/bin/peterfand\n\
+         launchctl bootout system '{legacy_plist_dst}' 2>/dev/null || true\n\
+         rm -f '{plist_dst}' '{legacy_plist_dst}' /usr/local/bin/peterfand\n\
          rm -f {NEWSYSLOG_CONF}\n"
     );
     let dry_run_output = run_privileged(&script, dry_run)?;

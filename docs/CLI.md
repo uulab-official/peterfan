@@ -191,13 +191,21 @@ peterfan watch -i 1         # 1초마다 갱신
 peterfan watch --interval 5
 ```
 
-### `update` — 버전 확인
+### `update` — 버전 확인 / macOS 앱 OTA 업데이트
 
-GitHub 최신 릴리즈와 현재 버전을 비교해 업데이트 여부를 안내.
+GitHub 최신 릴리즈와 현재 버전을 비교해 업데이트 여부를 안내합니다.
+macOS에서 `PeterFan.app` 내부 실행 파일로 실행 중이면 `--install`로 앱을
+다운로드, 검증, 교체, 재실행하는 OTA 업데이트를 큐에 넣을 수 있습니다.
 
 ```bash
 peterfan update
+peterfan update --open
+peterfan update --install
+peterfan --json update
 ```
+
+OTA 설치 전 다운로드된 `PeterFan.app`은 code signature, stapled
+notarization ticket, Gatekeeper 평가를 통과해야 합니다.
 
 ### `log` — continuous metrics stream
 

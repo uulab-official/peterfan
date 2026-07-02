@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.uulab.peterfan.daemon</string>
+  <string>kr.co.uulab.peterfan.daemon</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/peterfand</string>

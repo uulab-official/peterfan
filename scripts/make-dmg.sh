@@ -11,6 +11,9 @@
 
 set -euo pipefail
 
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/load-env.sh"
+
 APP="${1:-dist/PeterFan.app}"
 OUT="${2:-dist/PeterFan.dmg}"
 
@@ -25,7 +28,24 @@ trap 'rm -rf "$STAGING"' EXIT
 cp -R "$APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
 
+FIXER="scripts/dmg-fix-gatekeeper.command"
+if [[ -f "$FIXER" ]]; then
+  cp "$FIXER" "$STAGING/Open PeterFan if macOS blocks it.command"
+  chmod +x "$STAGING/Open PeterFan if macOS blocks it.command"
+fi
+
 rm -f "$OUT"
-hdiutil create -volname "PeterFan" -srcfolder "$STAGING" -ov -format UDZO "$OUT" >/dev/null
+hdiutil create \
+  -volname "PeterFan" \
+  -fs HFS+ \
+  -srcfolder "$STAGING" \
+  -ov \
+  -format UDZO \
+  "$OUT" >/dev/null
+
+IDENTITY="${PETERFAN_SIGN_IDENTITY:-${MACOS_SIGN_IDENTITY:-}}"
+if [[ -n "$IDENTITY" && "$IDENTITY" != "-" ]] && command -v codesign >/dev/null 2>&1; then
+  codesign --force --sign "$IDENTITY" --timestamp "$OUT"
+fi
 
 echo "built $OUT"

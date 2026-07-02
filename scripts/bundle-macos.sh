@@ -11,20 +11,19 @@
 # LSUIElement=true makes it an "accessory" app: a menu-bar item with no Dock
 # icon.
 #
-# The bundle is ad-hoc signed (no Apple Developer account needed/possible
-# here) — this doesn't pass notarization, but it changes what a downloaded
-# copy shows on first launch: WITHOUT any signature, quarantined + unsigned
-# reads to modern Gatekeeper as "is damaged and can't be opened" (no visible
-# bypass — technically fixable with `xattr -cr`, but that reads as broken,
-# not "untrusted"). Ad-hoc signed + quarantined instead shows the standard
-# "cannot verify developer" prompt, which has a one-click bypass (right-click
-# → Open, or System Settings → Privacy & Security → Open Anyway).
+# The bundle is signed at the end. By default this is ad-hoc so local/fork
+# builds still work; set PETERFAN_SIGN_IDENTITY to a Developer ID Application
+# identity to produce a notarization-ready distribution build.
 
 set -euo pipefail
+
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/load-env.sh"
 
 BIN="${1:-target/release/peterfan-menubar}"
 OUTDIR="${2:-dist}"
 VERSION="${VERSION:-0.0.0}"
+BUNDLE_ID="${PETERFAN_BUNDLE_ID:-kr.co.uulab.peterfan}"
 APP="$OUTDIR/PeterFan.app"
 
 if [[ ! -x "$BIN" ]]; then
@@ -62,7 +61,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>PeterFan</string>
   <key>CFBundleDisplayName</key><string>PeterFan</string>
-  <key>CFBundleIdentifier</key><string>com.uulab.peterfan</string>
+  <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
   <key>CFBundleExecutable</key><string>PeterFan</string>
 ${ICON_LINE}
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -81,11 +80,11 @@ if command -v plutil >/dev/null 2>&1; then
   plutil -lint "$APP/Contents/Info.plist" >/dev/null
 fi
 
-# Ad-hoc sign (see note above). Best-effort: codesign is macOS-only and this
-# script may run in cross-platform CI contexts that lack it.
+# Sign the bundle. Best-effort: codesign is macOS-only and this script may run
+# in cross-platform CI contexts that lack it.
 if command -v codesign >/dev/null 2>&1; then
-  codesign --force --deep --sign - "$APP" 2>&1 | sed 's/^/  codesign: /' || \
-    echo "warning: ad-hoc codesign failed — bundle will still work but Gatekeeper's first-launch warning will be more scary" >&2
+  scripts/sign-macos.sh "$APP" 2>&1 | sed 's/^/  codesign: /' || \
+    echo "warning: codesign failed — bundle will still work locally but downloaded copies will trigger Gatekeeper friction" >&2
 fi
 
 # Nudge Finder/LaunchServices to drop any cached icon for this bundle path —

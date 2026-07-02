@@ -6,6 +6,54 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.9] — macOS 배포 서명/공증 및 OTA 업데이트 안정화
+
+### Added
+- **Developer ID 서명/공증 자동화 준비** — `scripts/sign-macos.sh`와
+  `scripts/notarize-macos.sh`를 추가하고, GitHub Release workflow가
+  Developer ID 인증서/App Store Connect API key secrets가 있을 때 macOS DMG를
+  hardened runtime으로 서명한 뒤 notarization + stapling까지 수행하도록 함.
+- **로컬 Mac에서 공식 macOS 릴리스 업로드 가능** —
+  `scripts/release-local-macos.sh`를 추가해 GitHub Actions secrets 없이도
+  로컬 Keychain의 Developer ID 인증서로 universal macOS 빌드, 서명, 공증,
+  checksums 생성, GitHub Release 업로드까지 처리할 수 있게 함.
+- **로컬 `.env` 기반 서명 설정 추가** — `.env.example`과
+  `scripts/setup-macos-signing.sh`를 추가해 CSR 생성, Developer ID 인증서
+  import, notarytool profile 설정을 로컬에서 진행할 수 있게 함. 기본 앱
+  identifier는 `kr.co.uulab.peterfan`으로 정리.
+- **릴리즈 머신 점검 문서/스크립트 추가** —
+  `docs/MACOS_DISTRIBUTION.md`와 `scripts/check-macos-release.sh`를 추가해
+  공개 배포물과 로컬 전용 서명 재료를 분리하고, 다른 Mac을 릴리즈 머신으로
+  세팅하는 절차와 DMG 내부 앱까지 포함한 Gatekeeper 검증을 관리.
+- **업데이트 체크/OTA 업데이트 강화** — `peterfan update --install`과
+  `--open`을 추가하고, 메뉴바 앱 OTA가 공식 릴리스와 동일한 DMG를 우선
+  받아 설치 전 code signature, notarization ticket, Gatekeeper 검증을 통과한
+  `PeterFan.app`만 교체하도록 함. universal macOS archive는 호환 fallback으로
+  유지.
+- **DMG에 Gatekeeper 복구 스크립트 포함** — 공증되지 않은 빌드가 macOS에서
+  차단될 때, 사용자가 DMG 안의 `Open PeterFan if macOS blocks it.command`를
+  더블클릭해 quarantine 플래그를 지우고 바로 다시 열 수 있게 함.
+- **팬 제어 미설정 상태에서 원클릭 설정 버튼 표시** — 데몬이 아직 없을 때
+  팝오버/상세 창의 Fan control 영역에 바로 "Set Up Fan Control" 버튼을
+  보여줘서 우클릭 메뉴를 찾아갈 필요 없이 관리자 암호 설치 흐름을 실행.
+
+### Fixed
+- **상세 창의 팬 커브 `Save & Apply`가 동작하지 않던 문제** — 상세 창
+  WebView IPC 핸들러가 `savecurve:` 메시지를 받지 않아 버튼 클릭이 조용히
+  무시될 수 있었음. 팝오버와 동일하게 큐에 전달하도록 수정.
+- **로컬 workspace에서 daemon 설치가 macOS 권한으로 실패하던 문제** —
+  관리자 권한 AppleScript가 `~/Documents/.../target/release/peterfand`를 직접
+  읽으면 TCC로 `Operation not permitted`가 날 수 있어서, 설치 전에
+  `/tmp`로 staging한 뒤 root 단계가 그 파일을 설치하도록 수정.
+- **앱 번들에서 로그인 항목이 개발용 `peterfan-menubar`를 잡을 수 있던 문제**
+  — 설치된 `PeterFan.app` 안의 실제 실행 파일명은 `PeterFan`인데 기존 탐색은
+  `peterfan-menubar`만 찾았음. 앱 번들 실행 파일을 우선 등록하도록 수정.
+- **기존 `com.uulab.peterfan.daemon` LaunchDaemon 마이그레이션** — 새
+  `kr.co.uulab.peterfan.daemon` 설치/삭제 시 legacy plist를 같이 unload/remove.
+- **Finder에서 DMG가 `(null)`처럼 보일 수 있던 문제** — DMG 생성 방식을
+  APFS에서 HFS+로 바꾸고 볼륨명을 `PeterFan`으로 검증해, 다운로드한 설치
+  이미지가 Finder에서 정상 이름으로 마운트되도록 함.
+
 ## [1.26.8] — Top Processes 목록의 불필요한 전체 정렬 제거
 
 효율성 개선 두 번째. Top Processes 목록은 상위 5개만 보여주는데,

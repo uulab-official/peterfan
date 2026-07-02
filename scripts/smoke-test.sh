@@ -165,27 +165,31 @@ if [[ "$(uname)" == "Darwin" && -f scripts/bundle-macos.sh ]]; then
         fail "PeterFan.app does NOT bundle peterfand — 'Enable Fan Control' menu item would fail silently"
     fi
 
-    echo "== app bundle must be ad-hoc signed (avoids the scary 'damaged' Gatekeeper error) =="
+    echo "== app bundle must be signed (Developer ID in releases, ad-hoc in local/fork builds) =="
     # Captured into a variable rather than piped straight into `grep -q`:
     # under `pipefail`, grep's early exit on first match can SIGPIPE the
     # still-writing codesign process, which then looks like a failure even
     # though the signature check actually matched.
     codesign_output=$(codesign -dv "$TMP_BUNDLE_DIR/PeterFan.app" 2>&1 || true)
-    if echo "$codesign_output" | grep -q "adhoc"; then
-        pass "PeterFan.app is ad-hoc signed"
+    if codesign --verify --deep --strict "$TMP_BUNDLE_DIR/PeterFan.app" >/dev/null 2>&1; then
+        if echo "$codesign_output" | grep -q "adhoc"; then
+            pass "PeterFan.app is ad-hoc signed"
+        else
+            pass "PeterFan.app is signed"
+        fi
     else
-        fail "PeterFan.app is NOT signed — downloaded copies will show 'is damaged and can't be opened' instead of the friendlier 'unidentified developer' prompt"
+        fail "PeterFan.app is NOT signed — downloaded copies will show 'is damaged and can't be opened'"
     fi
 
     if [[ -f scripts/make-dmg.sh ]]; then
-        echo "== .dmg must build and contain the app + an Applications shortcut =="
+        echo "== .dmg must build and contain the app + Applications shortcut + Gatekeeper helper =="
         if scripts/make-dmg.sh "$TMP_BUNDLE_DIR/PeterFan.app" "$TMP_BUNDLE_DIR/PeterFan.dmg" >/dev/null 2>&1; then
             MOUNT_DIR=$(mktemp -d)
             if hdiutil attach "$TMP_BUNDLE_DIR/PeterFan.dmg" -nobrowse -mountpoint "$MOUNT_DIR" >/dev/null 2>&1; then
-                if [[ -d "$MOUNT_DIR/PeterFan.app" && -L "$MOUNT_DIR/Applications" ]]; then
-                    pass "PeterFan.dmg mounts with PeterFan.app + Applications shortcut"
+                if [[ -d "$MOUNT_DIR/PeterFan.app" && -L "$MOUNT_DIR/Applications" && -x "$MOUNT_DIR/Open PeterFan if macOS blocks it.command" ]]; then
+                    pass "PeterFan.dmg mounts with PeterFan.app + Applications shortcut + Gatekeeper helper"
                 else
-                    fail "PeterFan.dmg is missing the app bundle or the Applications shortcut"
+                    fail "PeterFan.dmg is missing the app bundle, Applications shortcut, or Gatekeeper helper"
                 fi
                 hdiutil detach "$MOUNT_DIR" >/dev/null 2>&1
             else

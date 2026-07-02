@@ -5,8 +5,9 @@
 
 use std::path::PathBuf;
 
-const LABEL: &str = "dev.peterfan.menubar";
+const LABEL: &str = "kr.co.uulab.peterfan.menubar";
 const BINARY_NAME: &str = "peterfan-menubar";
+const APP_BINARY_NAME: &str = "PeterFan";
 
 pub fn plist_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h: PathBuf| {
@@ -32,8 +33,18 @@ pub fn find_menubar_binary(override_path: Option<&str>) -> Result<PathBuf, Strin
         };
     }
     if let Ok(exe) = std::env::current_exe() {
+        if exe
+            .file_name()
+            .is_some_and(|name| name == BINARY_NAME || name == APP_BINARY_NAME)
+        {
+            return Ok(exe);
+        }
         let sibling = exe.parent().map(|d| d.join(BINARY_NAME));
         if let Some(s) = sibling.filter(|p| p.exists()) {
+            return Ok(s);
+        }
+        let app_sibling = exe.parent().map(|d| d.join(APP_BINARY_NAME));
+        if let Some(s) = app_sibling.filter(|p| p.exists()) {
             return Ok(s);
         }
     }

@@ -37,7 +37,8 @@ then richer surfaces. Versions are goals, not promises.
 - [x] Popover is the sole UI (left/right click); Quit via WebView IPC
 - [x] Release binaries per tag (macOS arm64/Intel, Windows) via CI + downloads
 - [x] Double-clickable `PeterFan.app` menu-bar agent bundle in releases
-- [ ] Code-sign / notarize the `.app`; Homebrew cask / `winget` for install
+- [x] Developer ID signing / notarization automation for official macOS DMGs
+- [ ] Homebrew cask / `winget` for install
 - [ ] Configurable menu-bar metric (CPU / temp / net) and refresh interval
 - [ ] Login-item ("start at login") toggle
 

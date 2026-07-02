@@ -8,6 +8,10 @@ Cargo.lock.orig
 # Release packaging output
 /dist
 
+# Local signing/notarization credentials and generated certificate material
+.env
+private/
+
 # We DO commit Cargo.lock: this workspace produces binaries.
 # (Leave the line below commented; documented here so it isn't "fixed" later.)
 # Cargo.lock

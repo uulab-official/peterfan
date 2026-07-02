@@ -1134,7 +1134,7 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
                     .lock()
                     .expect("pending poisoned")
                     .push(cmd.to_string());
-            } else if body.starts_with("license:") {
+            } else if body.starts_with("license:") || body.starts_with("savecurve:") {
                 PENDING
                     .lock()
                     .expect("pending poisoned")
@@ -2426,37 +2426,19 @@ window.__pf={
        msg.textContent=(LANG==='ko'?'오류: ':'Error: ')+d.last_cmd_status;
        note.appendChild(msg);
        if(isUnknownCmd){
-         var fixBtn=document.createElement('button');
-         fixBtn.className='note-fix-btn';
-         // The button is rebuilt fresh every tick (note.innerHTML is reset
-         // above), so a plain per-click `disabled` wouldn't survive to the
-         // next render — track the pending state in a module-level flag
-         // instead, since the install itself (admin password prompt +
-         // privileged copy) can take a while and re-sending the command
-         // mid-prompt would stack a second macOS auth dialog on top.
-         if(FAN_CONTROL_FIX_PENDING){
-           fixBtn.disabled=true;
-           fixBtn.textContent=LANG==='ko'?'설치 중…':'Installing…';
-         } else {
-           fixBtn.textContent=LANG==='ko'?'데몬 업데이트':'Update Daemon';
-           fixBtn.onclick=function(){
-             FAN_CONTROL_FIX_PENDING=true;
-             fixBtn.disabled=true;
-             fixBtn.textContent=LANG==='ko'?'설치 중…':'Installing…';
-             window.ipc.postMessage('cmd:enablefancontrol');
-             // No completion callback reaches JS (the result lands as a
-             // native macOS notification) — release the guard after a
-             // generous timeout so a dismissed/failed prompt doesn't lock
-             // the button forever.
-             setTimeout(function(){FAN_CONTROL_FIX_PENDING=false;},15000);
-           };
-         }
          note.appendChild(document.createElement('br'));
-         note.appendChild(fixBtn);
+         note.appendChild(fanControlSetupButton(LANG==='ko'?'데몬 업데이트':'Update Daemon'));
        }
      } else if(!d.daemon_running){
        note.style.display='';
-       note.textContent='Tip: run peterfan install-daemon once for persistent control at boot.';
+       note.innerHTML='';
+       var setupMsg=document.createElement('span');
+       setupMsg.textContent=LANG==='ko'
+         ?'팬 제어를 유지하려면 최초 1회 설정이 필요합니다.'
+         :'One-time setup is required for persistent fan control.';
+       note.appendChild(setupMsg);
+       note.appendChild(document.createElement('br'));
+       note.appendChild(fanControlSetupButton(LANG==='ko'?'팬 제어 설정':'Set Up Fan Control'));
      } else {
        note.style.display='none';
      }
@@ -2464,7 +2446,7 @@ window.__pf={
    renderFanCards(d.fans);
  } else {
    set('ctl-status','unavailable');
-   if(note){note.style.display='';note.textContent='Fan control unavailable on this Mac — showing live RPM only.';}
+   if(note){note.style.display='';note.textContent=LANG==='ko'?'이 Mac에서는 팬 제어를 사용할 수 없습니다. 실시간 RPM만 표시합니다.':'Fan control unavailable on this Mac — showing live RPM only.';}
    var fc=document.getElementById('fan-cards');if(fc)fc.innerHTML='';
  }
  if(SHOW_CURVE_EDITOR==='1'&&d.can_control){
@@ -2598,6 +2580,30 @@ function renderFanCards(fans){
   Array.prototype.slice.call(container.children).forEach(function(c){
     if(!seen[c.getAttribute('data-fan-id')])c.remove();
   });
+}
+function fanControlSetupButton(label){
+  var fixBtn=document.createElement('button');
+  fixBtn.className='note-fix-btn';
+  // The button is rebuilt fresh every tick, so a plain per-click `disabled`
+  // would disappear on the next render. Keep the pending state outside the
+  // node while the macOS admin-password prompt is in flight.
+  if(FAN_CONTROL_FIX_PENDING){
+    fixBtn.disabled=true;
+    fixBtn.textContent=LANG==='ko'?'설치 중…':'Installing…';
+  } else {
+    fixBtn.textContent=label;
+    fixBtn.onclick=function(){
+      FAN_CONTROL_FIX_PENDING=true;
+      fixBtn.disabled=true;
+      fixBtn.textContent=LANG==='ko'?'설치 중…':'Installing…';
+      window.ipc.postMessage('cmd:enablefancontrol');
+      // No completion callback reaches JS (the result lands as a native macOS
+      // notification) — release the guard after a generous timeout so a
+      // dismissed/failed prompt doesn't lock the button forever.
+      setTimeout(function(){FAN_CONTROL_FIX_PENDING=false;},15000);
+    };
+  }
+  return fixBtn;
 }
 // Detail-Window-only visual fan curve editor. `CURVE_POINTS` is the working
 // copy the user is editing; `CURVE_POINTS_SAVED` mirrors whatever's actually
@@ -2890,9 +2896,11 @@ mod tests {
             assert!(html.contains(r#"id="ps-cpu""#));
             assert!(html.contains("quitProcess"));
             assert!(html.contains("renderFanCards"));
+            assert!(html.contains("fanControlSetupButton"));
             assert!(html.contains(r#"id="fan-cards""#));
             assert!(html.contains("cmd:fanhold:"));
             assert!(html.contains("cmd:fanauto:"));
+            assert!(html.contains("savecurve:"));
         }
     }
 

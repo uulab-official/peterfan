@@ -2,313 +2,306 @@
 
 **English** | [한국어](./README.ko.md) | [日本語](./README.ja.md) | [中文](./README.zh.md)
 
-> **The Mac fan controller and system monitor for developers.** A cross-platform
-> fan controller and hardware monitor with a CLI, a TUI, and a macOS menu-bar
-> app — built in Rust.
+PeterFan is a Rust-based macOS fan controller and system monitor for people who
+want both a polished menu-bar app and scriptable command-line tools.
+
+It combines:
+
+- a macOS menu-bar monitor with live charts and fan controls
+- a CLI for automation, JSON output, diagnostics, and scripting
+- a TUI dashboard for terminal-first workflows
+- a small privileged daemon for persistent fan curves
+- a local HTTP API for integrations
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
 ![Status: beta](https://img.shields.io/badge/status-beta-yellow.svg)
 
-PeterFan is **not** just a fan-speed slider. It's a small, safe, scriptable
-system monitor *and* fan-control platform for developers and power users — the
-kind of tool you `brew install` next to `lazygit`, `btop`, and `mise`, with a
-menu-bar app in the spirit of [iStat Menus](https://bjango.com/mac/istatmenus/)
-and [Stats](https://github.com/exelban/stats): live sparkline graphs in the
-menu bar, per-metric history charts, direct fan-speed control, and a
-scriptable CLI/TUI underneath for people who'd rather pipe `--json` into
-Raycast or a dashboard.
+> Status: beta. PeterFan is useful today, but fan-control behavior depends on
+> Mac model and firmware. Monitoring is read-only by default; fan writes require
+> an explicit administrator setup step.
 
-```text
-Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
-```
+## Features
 
-**CLI, TUI, and the fan-control daemon are free and MIT-licensed, forever.**
-The menu-bar app has a 14-day free trial; after that it needs a one-time
-license (`peterfan license activate <key>`) to keep the always-on menu-bar
-widget and persistent background fan control — read-only commands never stop
-working. See [Pricing](#pricing--licensing) below.
-
----
-
-## Download for Mac — no Terminal needed
-
-1. **[Download the latest `.dmg`](https://github.com/uulab-official/peterfan/releases/latest)**
-   (under **Assets**, look for `PeterFan-vX.Y.Z.dmg`)
-2. Double-click it to open, then drag **PeterFan.app** onto the
-   **Applications** shortcut
-3. Open **PeterFan** from Applications (or Spotlight) — on first launch,
-   **right-click → Open** to confirm ([why?](#download))
-
-That's it — PeterFan lives quietly in your menu bar. 14-day free trial,
-no account or sign-up required. Prefer the command line, or need Windows?
-See [Download](#download) below for `.tar.gz`/`.zip` archives and
-build-from-source instructions.
-
----
-
-## Status
-
-**Beta — v1.26.2.** Actively developed; this table reflects what's actually shipped:
-
-| Area | State |
+| Area | Status |
 | --- | --- |
-| **System metrics** — CPU, memory, disk, network, processes | ✅ real, cross-platform (macOS + Windows) via `sysinfo` |
-| **macOS memory breakdown** — wired / active / inactive / compressed | ✅ real via mach `host_statistics64` (verified against `vm_stat`) |
-| **Battery** — charge, state, cycles, time remaining, **temperature** | ✅ real via `battery` + IOHID (health filtered on Apple Silicon) |
-| Core model (types, metrics, curves, profiles, traits) | ✅ implemented & tested |
-| Mock backends (fully simulated machine + metrics) | ✅ implemented |
-| macOS hardware info (CPU/RAM/OS via `sysctl`) | ✅ real, read-only |
-| **macOS temperatures & fan RPM** | ✅ real — CPU/GPU **die temps via IOHID**, fan RPM + ambient via SMC |
-| Windows temperature / fan reading (EC) | 🚧 planned |
-| GPU utilization | 🔬 investigated — IOReport plumbing works, but the residency it exposes doesn't match Activity Monitor's GPU %, so it's deferred rather than shipped inaccurate ([`docs/RESEARCH.md`](./docs/RESEARCH.md)) |
-| Fan **control** | ⚙️ SMC writes, **needs root** (`sudo peterfan fan set N` or the daemon). `fan set` **verifies by reading RPM back** so you get a real ✓/✗, not a fake "ok". Confirmed on Intel; on Apple Silicon it's attempted and verified (some models' firmware may ignore it) |
-| CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`/`serve`/`benchmark`/`log`/`alert`/`license`/`completions`, global `--watch` & `--json` | ✅ runnable |
-| TUI system dashboard (ratatui) — CPU/mem/disk/net/battery/processes + temps/fans/power | ✅ runnable |
-| **Menu-bar app** — sparkline graph icon (number/graph/both, your choice), hover tooltip with a quick summary, popover dashboard with 2m/1h/1d history charts (hover for exact value + avg/peak), **per-fan Auto/Manual control with an RPM slider bounded to that fan's real range**, profile/Auto/Rules control, quit-process from Top Processes, English/한국어, a separate resizable Detail Window **with a drag-to-edit visual fan curve editor**, light/dark mode | ✅ runnable |
-| **Daemon** (`peterfand`) — continuous curve + restore-on-exit + critical-temp override + IPC server; LaunchDaemon install | ✅ runnable |
-| **Self-update** — menu-bar "Check for Updates…" (and `peterfan update`) checks GitHub Releases and installs in place | ✅ runnable |
-| **Local HTTP API** (`peterfan serve`) — JSON metrics + control for integrations | ✅ runnable |
-| Licensing — 14-day trial, Ed25519 offline-verified keys | ✅ implemented (menu-bar app + daemon fan control only) |
-| Desktop GUI (Tauri), plugins | 🗺️ roadmap |
+| macOS menu-bar app | Live menu-bar sparkline, popover dashboard, detail window, light/dark mode |
+| CLI | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `temps`, `fans`, `fan`, `doctor`, `serve`, `update`, `license`, and more |
+| TUI | Terminal dashboard built with ratatui |
+| System metrics | CPU, memory, disks, network, processes, battery |
+| macOS sensors | CPU/GPU die temperature, SSD and battery temperature, fan RPM, SMC-backed readings |
+| Fan control | Manual fan setting, profiles, editable curves, daemon-driven persistent control |
+| Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
+| Automation | JSON output, local HTTP API, shell completions |
+| Updates | GitHub Release checks from CLI and menu-bar app |
+| Windows | Basic system metrics; fan/sensor control is planned |
 
-When a backend can't read real sensors yet, the CLI/TUI **transparently fall
-back to the mock backend and clearly label the data as `simulated`** — so you
-always get a working demo, and we never pretend a reading is real when it isn't.
+When PeterFan cannot read a real sensor, it labels data as simulated rather than
+pretending the reading is real. See [docs/ROADMAP.md](./docs/ROADMAP.md) and
+[docs/RESEARCH.md](./docs/RESEARCH.md) for implementation notes.
 
-See [`docs/ROADMAP.md`](./docs/ROADMAP.md) for the full plan.
+## Screens and Interfaces
 
----
+PeterFan ships as multiple interfaces over the same core:
 
-## Pricing & licensing
+- `PeterFan.app`: menu-bar app for macOS
+- `peterfan`: command-line interface
+- `peterfan-tui`: live terminal dashboard
+- `peterfand`: root helper daemon used for persistent fan control
+- `peterfan serve`: local JSON HTTP API
 
-- **CLI (`peterfan`), TUI (`peterfan-tui`), and the daemon's fan-control core
-  are MIT-licensed and free forever** — script them, embed them, fork them.
-- **The menu-bar app** (`peterfan-menubar` / `PeterFan.app`) is free to try for
-  **14 days** from first launch. After the trial, running it (and the
-  daemon's *persistent* background fan control) needs a license:
-  ```sh
-  peterfan license status              # trial days left / license status
-  peterfan license activate <key>      # PFAN1-... key from your purchase
-  ```
-  Without a license past the trial, the menu-bar app keeps showing live
-  metrics — only the always-on background widget and continuous fan control
-  are gated; you can still drive fans manually via `sudo peterfan fan set N`.
-- License keys are Ed25519-signed and verified fully offline (no phone-home,
-  no server dependency). Buy a license: *(store link coming soon)*.
+The CLI, TUI, core libraries, and daemon fan-control core are MIT-licensed. The
+menu-bar app source is also in this repository, but running the always-on
+menu-bar product and persistent background fan control after the trial requires
+a license key. See [Licensing](#licensing).
 
----
+## Install
 
-## Download
+Prebuilt release artifacts live on
+[GitHub Releases](https://github.com/uulab-official/peterfan/releases).
 
-Prebuilt binaries are attached to each [GitHub Release](https://github.com/uulab-official/peterfan/releases/latest).
-macOS (Apple Silicon + Intel, universal) and Windows builds are produced by CI
-on every tagged release, in two forms:
-
-| Asset | Contains | Best for |
+| Asset | Platform | Contents |
 | --- | --- | --- |
-| `PeterFan-vX.Y.Z.dmg` | Just `PeterFan.app` + an Applications shortcut | Anyone who just wants the menu-bar app — double-click, drag, done |
-| `peterfan-vX.Y.Z-universal-apple-darwin.tar.gz` | `peterfan` (CLI), `peterfan-tui`, `peterfan-menubar`, `peterfand`, **and** `PeterFan.app` | Developers / scripting / anyone who also wants the CLI or TUI |
+| `PeterFan-vX.Y.Z.dmg` | macOS | `PeterFan.app` and an Applications shortcut |
+| `peterfan-vX.Y.Z-universal-apple-darwin.tar.gz` | macOS | CLI, TUI, daemon, menu-bar binary, and app bundle |
+| `peterfan-vX.Y.Z-x86_64-pc-windows-msvc.zip` | Windows | CLI/TUI/tray binaries where available |
 
-```sh
-# .dmg (menu-bar app only, no Terminal needed)
-open PeterFan-*.dmg
-# → drag PeterFan.app onto the Applications shortcut, then launch it normally
-
-# .tar.gz (CLI + TUI + menu-bar app, for developers)
-tar -xzf peterfan-*-universal-apple-darwin.tar.gz
-cd peterfan-*-universal-apple-darwin
-open PeterFan.app          # menu-bar app
-./peterfan status          # …or use the CLI / TUI directly
-```
-
-Both are built the same way — the `.dmg` is just the `.app` from inside the
-`.tar.gz`, repackaged as a normal disk image for people who don't want a
-Terminal. Windows gets a `.zip` (CLI/TUI/menu-bar binaries only — no `.exe`
-installer yet).
-
-The app is ad-hoc signed (no paid Apple Developer account behind it, so it's
-not notarized — being open source doesn't change this; Gatekeeper only checks
-the binary's signature, not whether the source is public). First launch shows
-the standard "cannot verify developer" prompt — right-click `PeterFan.app` →
-**Open**, or **System Settings → Privacy & Security → Open Anyway**. If macOS
-still refuses with "is damaged and can't be opened," clear the quarantine flag
-manually: `xattr -dr com.apple.quarantine PeterFan.app peterfan*`. Prefer to
-skip this altogether? [Build from source](#build-from-source) instead —
-locally-built binaries are never quarantined in the first place.
-
----
-
-## Enable fan control (one-time)
-
-Fan control writes to the SMC, which **requires root** — exactly like Macs Fan
-Control or TG Pro. Rather than typing `sudo` every time, install the small root
-helper once (you'll get **one macOS password prompt**, no Terminal sudo):
-
-```sh
-./peterfan install-daemon      # one GUI admin prompt; runs at every boot
-./peterfan doctor              # confirms: root helper reachable, SMC keys present
-```
-
-After that the menu-bar buttons and `peterfan fan …` drive the fans through the
-root helper — no further prompts. Remove it with `peterfan uninstall-daemon`.
-`peterfan fan set N` **verifies by reading RPM back**, so you get a real ✓/✗.
-
----
-
-## Build from source
-
-Requires a [Rust toolchain](https://rustup.rs) (1.80+). Bonus: a binary you
-compile yourself never gets the "downloaded from the internet" quarantine
-flag, so it skips the Gatekeeper prompt from the [Download](#download)
-section entirely — no notarization needed either way.
+For macOS, a properly published DMG should be Developer ID signed, notarized,
+and stapled. You can verify a downloaded DMG before installing:
 
 ```bash
-# Build everything
-cargo build
-
-# Full dashboard for THIS machine (real CPU/mem/disk/net/battery)
-cargo run -p peterfan-cli -- status
-
-# Individual metrics
-cargo run -p peterfan-cli -- cpu
-cargo run -p peterfan-cli -- top --mem -n 5
-cargo run -p peterfan-cli -- network
-
-# Diagnose the active backends & their capabilities
-cargo run -p peterfan-cli -- doctor
-
-# Everything against the simulated machine (great for demos/CI)
-cargo run -p peterfan-cli -- --mock status
-
-# Live terminal dashboard
-cargo run -p peterfan-tui -- --mock
-
-# Live metrics in the macOS menu bar (Windows: system tray)
-cargo run -p peterfan-menubar
+spctl -a -vv -t open --context context:primary-signature PeterFan-vX.Y.Z.dmg
 ```
 
-Once installed, the binary is simply `peterfan`.
-
-### Example: `peterfan status`
+Expected result:
 
 ```text
-PeterFan v1.26.2
-backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
-
-CPU · Apple M3 Max
-   21.6%  ███░░░░░░░░░   cores ▄▃▂▂▂▂▂▂▂ ▁▁ ▁
-
-Memory
-  27.4 GB / 36.0 GB ( 76.1%)  █████████░░░
-  wired 5.6 GB  ·  active 7.6 GB  ·  compressed 13.4 GB
-
-Disk
-  /              896.7 GB / 926.4 GB ( 96.8%)  ████████████  SSD
-
-Network
-  en0            ↓    4.2 MB/s  ↑   53.4 KB/s   172.20.248.39  ·  total ↓50.0 GB ↑109.0 GB
-
-Battery
-   72.0%  █████████░░░  charging  ~1h 7m to full
-  214 cycles  ·  41.8 W
-
-Temperatures
-  CPU CPU            58°C  ███████░░░░░   (real die temp via IOHID)
-  CPU CPU hottest    60°C  ███████░░░░░
-  SSD SSD            36°C  ████░░░░░░░░
-  BATT Battery       31°C  ███░░░░░░░░░
-
-Fans
-  Fan 1           2445 RPM    3%  ░░░░░░░░░░░░
-  Fan 2           2635 RPM    3%  ░░░░░░░░░░░░
-
-Power · 21.2 W
+accepted
+source=Notarized Developer ID
 ```
 
-Add `--json` to any command for machine-readable output (handy for Raycast,
-Stream Deck, Hammerspoon, Home Assistant, …).
+If a release asset is rejected by Gatekeeper, prefer building from source or use
+a newer signed release. Maintainers can verify release artifacts with
+[scripts/check-macos-release.sh](./scripts/check-macos-release.sh).
 
-See [`docs/CLI.md`](./docs/CLI.md) for the full command reference.
+## Quick Start
 
----
+Build from source:
 
-## Architecture in one picture
+```bash
+cargo build --release --workspace
+```
+
+Run the CLI:
+
+```bash
+target/release/peterfan status
+target/release/peterfan doctor
+target/release/peterfan fans
+target/release/peterfan update
+target/release/peterfan --json status
+```
+
+Run the TUI:
+
+```bash
+target/release/peterfan-tui
+```
+
+Run the macOS menu-bar app from source:
+
+```bash
+target/release/peterfan-menubar
+```
+
+Build a local macOS app bundle:
+
+```bash
+scripts/bundle-macos.sh target/release/peterfan-menubar dist
+open dist/PeterFan.app
+```
+
+## Fan Control Setup
+
+Reading metrics does not require administrator privileges. Writing fan speeds
+does. For persistent fan control, install the daemon once:
+
+```bash
+target/release/peterfan install-daemon
+target/release/peterfan doctor
+```
+
+After setup, menu-bar controls and CLI fan commands route through the daemon:
+
+```bash
+target/release/peterfan fan status
+target/release/peterfan fan set 55
+target/release/peterfan profile set gaming
+```
+
+Remove the daemon:
+
+```bash
+target/release/peterfan uninstall-daemon
+```
+
+Fan control is hardware-level. PeterFan verifies writes by reading RPM back and
+restores OS control on daemon exit, but you should still use conservative curves
+and keep critical-temperature protection enabled.
+
+## Example Output
 
 ```text
-   CLI · TUI · GUI · HTTP API        ← presentation, portable
-            │
-            ▼
-        peterfan-core                ← domain types, curves, profiles
-            │   (knows nothing about any OS)
-            ▼
-     HardwareProvider  (trait)       ← the single seam
-            ▲
-            │ implemented by
-   ┌────────┴─────────┬──────────────┐
-  mock              macOS          Windows (planned)
-                  (sysctl / SMC)   (EC / WMI)
+PeterFan doctor
+  Version:         1.x
+  OS / arch:       macos / aarch64
+  Metrics backend: sysinfo
+  Thermal backend: macos
+
+System metrics
+  ok cpu
+  ok memory
+  ok disks
+  ok networks
+  ok processes
+  ok battery
+
+Thermal hardware
+  ok read temperatures
+  ok read fans
+  ok control fans
+
+Fan control readiness
+  ok peterfand daemon reachable
+  ok fully ready - daemon is running
 ```
 
-The core depends **only** on the `HardwareProvider` trait. Each platform
-provides one implementation. Adding Linux later means adding one backend — not
-touching the core. Full details in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
+Use `--json` with most commands when integrating with Raycast, Hammerspoon,
+Stream Deck, dashboards, or scripts.
 
----
+## Build Requirements
 
-## Project layout
+- Rust 1.80 or newer
+- macOS 11+ for the app bundle and SMC backend
+- Xcode Command Line Tools for signing, notarization, and DMG validation
+- `jq`, `gh`, and Apple Developer credentials only for official release builds
+
+Useful development commands:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+scripts/smoke-test.sh target/release
+```
+
+Check for updates:
+
+```bash
+peterfan update
+peterfan update --open
+peterfan update --install   # macOS app OTA, when running from PeterFan.app
+```
+
+## Release Builds
+
+Official macOS release builds are created locally so Apple signing material does
+not need to live in GitHub Actions secrets.
+
+One-time setup on a release Mac:
+
+```bash
+cp .env.example .env
+scripts/setup-macos-signing.sh teams
+scripts/setup-macos-signing.sh csr
+scripts/setup-macos-signing.sh import /path/to/developerID_application.cer
+scripts/setup-macos-signing.sh notary
+```
+
+Build, sign, notarize, staple, checksum, and upload a tagged release:
+
+```bash
+scripts/release-local-macos.sh vX.Y.Z --draft
+```
+
+Verify an artifact:
+
+```bash
+scripts/check-macos-release.sh /path/to/PeterFan-vX.Y.Z.dmg
+```
+
+See [docs/MACOS_DISTRIBUTION.md](./docs/MACOS_DISTRIBUTION.md) for the full
+release-machine model, including which files are public and which stay local in
+Keychain, `.env`, and `private/`.
+
+## Project Layout
 
 ```text
 peterfan/
 ├── packages/
-│   ├── core/        peterfan-core      — OS-agnostic types, curves, profiles, trait, licensing
-│   ├── platform/    peterfan-platform  — mock + macOS backends (Windows/Linux planned)
-│   ├── cli/         peterfan           — the command-line interface
-│   ├── tui/         peterfan-tui       — ratatui live dashboard
-│   ├── menubar/     peterfan-menubar   — macOS menu-bar / Windows tray app
-│   └── daemon/      peterfand          — fan-control daemon (curve + safety)
-├── tools/
-│   ├── icongen/          generates the app icon PNG — dev-only, excluded from workspace
-│   └── license-keygen/   issues license keys — dev-only, never shipped, excluded from workspace
-├── apps/
-│   └── landing/     static marketing website (open apps/landing/index.html)
-├── packaging/       LaunchDaemon plist · Homebrew formula · scripts/ install helpers
-├── docs/            architecture, roadmap, CLI reference, research notes
-└── (planned) apps/desktop (Tauri GUI)
+│   ├── core/        OS-agnostic types, curves, profiles, licensing
+│   ├── platform/    mock and platform hardware backends
+│   ├── cli/         peterfan command-line app
+│   ├── tui/         terminal dashboard
+│   ├── menubar/     macOS menu-bar / Windows tray app
+│   └── daemon/      fan-control daemon
+├── packaging/       launchd plists and packaging support
+├── scripts/         build, install, signing, notarization, release helpers
+├── docs/            architecture, roadmap, CLI, distribution notes
+├── tools/           development-only utilities
+└── apps/            supporting apps and experiments
 ```
 
----
+Architecture details are in [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
+CLI details are in [docs/CLI.md](./docs/CLI.md).
 
-## Safety
+## Safety Model
 
-Fan control is hardware-level and can be dangerous if done carelessly. PeterFan's
-design commits to:
+PeterFan is designed around a read-first, control-second model:
 
-- **Capabilities up front** — backends advertise what they can do; the UI never
-  offers control it can't safely perform.
-- **Read-only first** — monitoring works without elevated privileges; control is
-  a deliberate, separate step.
-- **Restore on exit** — the `peterfand` daemon hands control back to the OS on
-  Ctrl-C / SIGTERM / panic, and forces fans to 100% above a critical
-  temperature.
+- sensor reads work without elevation
+- fan writes require explicit admin setup
+- backends declare capabilities before UI controls are shown
+- manual writes are verified by reading RPM back
+- daemon fan control restores OS defaults on exit
+- critical-temperature protection overrides custom curves
 
----
+Some Apple Silicon Macs may ignore specific SMC fan-control writes. In those
+cases PeterFan reports the failed verification instead of claiming success.
+
+## Licensing
+
+The repository is MIT-licensed. The CLI, TUI, core crates, and daemon
+fan-control logic are free to use, fork, and modify under MIT.
+
+The menu-bar app includes a 14-day trial. After the trial, continuing to run the
+always-on menu-bar product and persistent background fan control requires a
+license key:
+
+```bash
+peterfan license status
+peterfan license activate PFAN1-...
+```
+
+License keys are Ed25519-signed and verified offline. Read-only CLI/TUI usage
+does not phone home and does not require an account.
 
 ## Contributing
 
-This is a young project and a great time to get involved. See
-[`CONTRIBUTING.md`](./CONTRIBUTING.md). The most valuable early contributions are
-**new platform backends** (real SMC reading on macOS, an EC/WMI backend on
-Windows) behind the existing `HardwareProvider` trait.
+Contributions are welcome. Good first areas:
 
----
+- new platform sensor backends
+- Windows EC/WMI fan and temperature work
+- UI polish for the menu-bar dashboard
+- additional smoke tests and release validation
+- documentation improvements
+
+Start with [CONTRIBUTING.md](./CONTRIBUTING.md), then run:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
 
 ## License
 
-The code in this repository is [MIT](./LICENSE) © PeterFan contributors —
-including the menu-bar app's source. What's *licensed as a product* is the
-**right to run the menu-bar app's always-on background widget and persistent
-fan control past the 14-day trial** (see [Pricing & licensing](#pricing--licensing)
-above); the CLI, TUI, and daemon's fan-curve logic underneath have no such
-restriction and are free to use, study, and modify under the MIT terms like
-the rest of the project.
+MIT. See [LICENSE](./LICENSE).

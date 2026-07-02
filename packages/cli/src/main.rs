@@ -197,8 +197,15 @@ enum Command {
         #[arg(long, short, default_value_t = 2)]
         interval: u64,
     },
-    /// Check for a newer version on GitHub.
-    Update,
+    /// Check for a newer version on GitHub, optionally installing the macOS app update.
+    Update {
+        /// Install the update in-place when running from PeterFan.app on macOS.
+        #[arg(long)]
+        install: bool,
+        /// Open the GitHub release page in the default browser.
+        #[arg(long)]
+        open: bool,
+    },
     /// Watch metrics and send a desktop notification when a threshold is exceeded.
     /// Run with no args to use saved thresholds from config.
     /// Subcommands: `install` (LaunchAgent), `status`, `remove`.
@@ -455,7 +462,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::InstallDaemon { dry_run } => cmd_install_daemon(dry_run),
         Command::UninstallDaemon { dry_run } => cmd_uninstall_daemon(dry_run),
         Command::Watch { interval } => cmd_watch(mock, interval),
-        Command::Update => cmd_update(),
+        Command::Update { install, open } => cmd_update(json, install, open),
         Command::Alert {
             cpu,
             memory,
@@ -2685,9 +2692,18 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
 
             // ── LaunchDaemon ──────────────────────────────────────────────
             let plist_exists =
+                std::path::Path::new("/Library/LaunchDaemons/kr.co.uulab.peterfan.daemon.plist")
+                    .exists();
+            let legacy_plist_exists =
                 std::path::Path::new("/Library/LaunchDaemons/com.uulab.peterfan.daemon.plist")
                     .exists();
             print_check("LaunchDaemon plist installed", plist_exists);
+            if legacy_plist_exists && !plist_exists {
+                println!(
+                    "    {} legacy LaunchDaemon found; run `peterfan install-daemon` to migrate",
+                    "→".dimmed()
+                );
+            }
             if plist_exists {
                 // `launchctl list <label>` only sees jobs in the *caller's*
                 // launchd domain — an unprivileged `peterfan doctor` can never
@@ -2702,7 +2718,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                         "→".dimmed()
                     );
                 }
-            } else {
+            } else if !legacy_plist_exists {
                 println!(
                     "    {} run `peterfan install-daemon` to set up persistent fan control",
                     "→".dimmed()
@@ -3244,39 +3260,130 @@ fn cmd_watch(mock: bool, interval_secs: u64) -> Result<()> {
 // `peterfan update` — GitHub 최신 버전 확인
 // ---------------------------------------------------------------------------
 
-fn cmd_update() -> Result<()> {
+fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
-    print!("Current: v{current}  Checking GitHub…");
-    let _ = std::io::Write::flush(&mut std::io::stdout());
+    if !json {
+        print!("Current: v{current}  Checking GitHub…");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
 
     let result = peterfan_platform::updater::fetch_latest_release();
-    print!("\r");
-    let _ = std::io::Write::flush(&mut std::io::stdout());
+    if !json {
+        print!("\r");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
 
     let release = match result {
         Ok(r) => r,
         Err(e) => {
-            println!("  {} could not check for updates: {e}", "✗".red());
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": false,
+                        "error": e,
+                    })
+                );
+            } else {
+                println!("  {} could not check for updates: {e}", "✗".red());
+            }
             return Ok(());
         }
     };
 
+    let update_available = peterfan_platform::updater::is_newer(current, &release.version);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "current": current,
+                "latest": release.version,
+                "tag": release.tag,
+                "update_available": update_available,
+                "release_url": release.html_url,
+                "asset_name": release.asset_name,
+                "asset_url": release.asset_url,
+                "archive_url": release.archive_url,
+                "dmg_url": release.dmg_url,
+            })
+        );
+        return Ok(());
+    }
+
     print_kv("Current version", &format!("v{current}"));
     print_kv("Latest version ", &format!("v{}", release.version));
 
-    if peterfan_platform::updater::is_newer(current, &release.version) {
+    if update_available {
         println!(
             "\n  {} Update available → {}",
             "→".cyan(),
             release.html_url.bold()
         );
+        if let Some(name) = &release.asset_name {
+            println!("  asset: {}", name.bold());
+        }
         if let Some(url) = &release.asset_url {
             println!("  {}", url.dimmed());
         }
     } else {
         println!("  {} already up to date", "✓".green());
     }
+
+    if open {
+        open_release_page(&release.html_url)?;
+    }
+
+    if install {
+        if !update_available {
+            println!("  {} nothing to install", "✓".green());
+            return Ok(());
+        }
+        let Some(asset_url) = release.asset_url.as_deref() else {
+            anyhow::bail!(
+                "release {} has no macOS app update asset; open {}",
+                release.tag,
+                release.html_url
+            );
+        };
+        println!("  {} downloading and installing update…", "→".cyan());
+        install_update(asset_url)?;
+        println!(
+            "  {} update queued; PeterFan will relaunch after the current app quits",
+            "✓".green()
+        );
+    }
     Ok(())
+}
+
+fn open_release_page(url: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(url).status()?;
+        Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .status()?;
+        Ok(())
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open").arg(url).status()?;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn install_update(asset_url: &str) -> Result<()> {
+    peterfan_platform::updater::download_and_install(asset_url).map_err(anyhow::Error::msg)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_update(_asset_url: &str) -> Result<()> {
+    anyhow::bail!("OTA app installation is macOS-only; use the release URL instead")
 }
 
 // ---------------------------------------------------------------------------
