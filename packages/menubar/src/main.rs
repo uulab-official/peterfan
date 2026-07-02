@@ -2655,7 +2655,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="setup-actions">
 <button id="setup-fan" class="primary" onclick="startFanControlSetup(this)">Set Up</button>
 <button id="setup-login" onclick="window.ipc.postMessage('togglelogin')">Login</button>
-<button id="setup-update" onclick="window.ipc.postMessage('checkupdates')">Update</button>
+<button id="setup-update" onclick="checkAppUpdates(this)">Update</button>
 </div>
 </div>
 
@@ -2745,6 +2745,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 var LANG='__LANG__';
 var SHOW_CURVE_EDITOR='__SHOWCURVE__';
 var FAN_CONTROL_FIX_PENDING=false;
+var APP_UPDATE_CHECK_PENDING=false;
 window.__pf={
  update:function(d){
  function cls(p){return p<50?'g':p<80?'y':'r';}
@@ -3007,6 +3008,16 @@ function startFanControlSetup(btn){
   // dismissed/failed prompt doesn't lock the button forever.
   setTimeout(function(){FAN_CONTROL_FIX_PENDING=false;},15000);
 }
+function checkAppUpdates(btn){
+  if(APP_UPDATE_CHECK_PENDING)return;
+  APP_UPDATE_CHECK_PENDING=true;
+  if(btn){
+    btn.disabled=true;
+    btn.textContent=LANG==='ko'?'확인 중…':'Checking…';
+  }
+  window.ipc.postMessage('checkupdates');
+  setTimeout(function(){APP_UPDATE_CHECK_PENDING=false;},12000);
+}
 // Detail-Window-only visual fan curve editor. `CURVE_POINTS` is the working
 // copy the user is editing; `CURVE_POINTS_SAVED` mirrors whatever's actually
 // saved server-side, refreshed every tick but never used to clobber
@@ -3194,7 +3205,8 @@ function updateSetup(d){
   }
   var update=document.getElementById('setup-update');
   if(update){
-    update.textContent=LANG==='ko'?'앱':'App';
+    update.disabled=APP_UPDATE_CHECK_PENDING;
+    update.textContent=APP_UPDATE_CHECK_PENDING?(LANG==='ko'?'확인 중…':'Checking…'):(LANG==='ko'?'앱':'App');
     update.title=LANG==='ko'?'앱 업데이트 확인':'Check for app updates';
   }
 }
@@ -3363,6 +3375,7 @@ mod tests {
             assert!(html.contains(r#"id="setup-login""#));
             assert!(html.contains("togglelogin"));
             assert!(html.contains("checkupdates"));
+            assert!(html.contains("checkAppUpdates"));
             assert!(html.contains("updateSetup"));
             assert!(html.contains("daemon_update_needed"));
             assert!(html.contains("Update fan-control daemon"));
