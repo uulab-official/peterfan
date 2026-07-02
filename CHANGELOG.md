@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.14] — 데몬 버전 감지 및 로컬 DMG 재생성 안정화
+
 ### Added
 - **설치된 팬 제어 데몬 버전 감지** — 앱 번들과 `/usr/local/bin/peterfand`의
   버전이 다르면 팝오버 상단 Setup 영역과 Fan control note에서 데몬 업데이트
