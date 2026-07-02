@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **팬 제어 설정 버튼의 진행 상태 통일** — 팝오버 상단 Setup 버튼과 Fan
+  control 영역의 설정/업데이트 버튼이 같은 "설치 중…" 상태를 공유해,
+  관리자 암호 프롬프트가 떠 있는 동안 중복 클릭처럼 보이지 않게 함.
+
 ## [1.26.15] — 데몬 업데이트 프롬프트 흐름 개선
 
 ### Changed

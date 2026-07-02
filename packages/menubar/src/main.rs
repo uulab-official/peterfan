@@ -2653,7 +2653,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="setup" id="setup-row">
 <div class="setup-copy"><div class="setup-main"><span class="setup-dot" id="setup-dot"></span><span id="setup-title">Ready</span></div><div class="setup-sub" id="setup-detail"></div></div>
 <div class="setup-actions">
-<button id="setup-fan" class="primary" onclick="window.ipc.postMessage('cmd:enablefancontrol')">Set Up</button>
+<button id="setup-fan" class="primary" onclick="startFanControlSetup(this)">Set Up</button>
 <button id="setup-login" onclick="window.ipc.postMessage('togglelogin')">Login</button>
 <button id="setup-update" onclick="window.ipc.postMessage('checkupdates')">Update</button>
 </div>
@@ -2985,18 +2985,27 @@ function fanControlSetupButton(label){
     fixBtn.textContent=LANG==='ko'?'설치 중…':'Installing…';
   } else {
     fixBtn.textContent=label;
-    fixBtn.onclick=function(){
-      FAN_CONTROL_FIX_PENDING=true;
-      fixBtn.disabled=true;
-      fixBtn.textContent=LANG==='ko'?'설치 중…':'Installing…';
-      window.ipc.postMessage('cmd:enablefancontrol');
-      // No completion callback reaches JS (the result lands as a native macOS
-      // notification) — release the guard after a generous timeout so a
-      // dismissed/failed prompt doesn't lock the button forever.
-      setTimeout(function(){FAN_CONTROL_FIX_PENDING=false;},15000);
-    };
+    fixBtn.onclick=function(){startFanControlSetup(fixBtn);};
   }
   return fixBtn;
+}
+function startFanControlSetup(btn){
+  if(FAN_CONTROL_FIX_PENDING)return;
+  FAN_CONTROL_FIX_PENDING=true;
+  if(btn){
+    btn.disabled=true;
+    btn.textContent=LANG==='ko'?'설치 중…':'Installing…';
+  }
+  var top=document.getElementById('setup-fan');
+  if(top&&top!==btn){
+    top.disabled=true;
+    top.textContent=LANG==='ko'?'설치 중…':'Installing…';
+  }
+  window.ipc.postMessage('cmd:enablefancontrol');
+  // No completion callback reaches JS (the result lands as a native macOS
+  // notification) — release the guard after a generous timeout so a
+  // dismissed/failed prompt doesn't lock the button forever.
+  setTimeout(function(){FAN_CONTROL_FIX_PENDING=false;},15000);
 }
 // Detail-Window-only visual fan curve editor. `CURVE_POINTS` is the working
 // copy the user is editing; `CURVE_POINTS_SAVED` mirrors whatever's actually
@@ -3169,7 +3178,10 @@ function updateSetup(d){
   var fan=document.getElementById('setup-fan');
   if(fan){
     fan.style.display=d.fan_setup_needed?'':'none';
-    fan.textContent=d.daemon_update_needed?(LANG==='ko'?'업데이트':'Update'):(LANG==='ko'?'설정':'Set Up');
+    fan.disabled=FAN_CONTROL_FIX_PENDING;
+    fan.textContent=FAN_CONTROL_FIX_PENDING
+      ?(LANG==='ko'?'설치 중…':'Installing…')
+      :(d.daemon_update_needed?(LANG==='ko'?'업데이트':'Update'):(LANG==='ko'?'설정':'Set Up'));
   }
   var login=document.getElementById('setup-login');
   if(login){
@@ -3332,6 +3344,7 @@ mod tests {
             assert!(html.contains("quitProcess"));
             assert!(html.contains("renderFanCards"));
             assert!(html.contains("fanControlSetupButton"));
+            assert!(html.contains("startFanControlSetup"));
             assert!(html.contains(r#"id="fan-cards""#));
             assert!(html.contains(r#"id="profile-strip""#));
             assert!(html.contains("setProfile"));
