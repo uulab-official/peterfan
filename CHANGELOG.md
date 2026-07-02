@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.18] — 데몬 업데이트 알림 상태 정리
+
 ### Fixed
 - **데몬 업데이트 성공 후 알림 상태 정리** — 데몬 설치/업데이트가 성공하면
   이전에 저장된 데몬 업데이트 `나중에`/`다시 묻지 않기` 상태를 지워, 이후
