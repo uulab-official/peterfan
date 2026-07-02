@@ -1379,15 +1379,10 @@ fn update(app: &mut App) {
                 Some(m) if m > 0 => (f.rpm as f32 / m as f32 * 100.0).clamp(0.0, 100.0),
                 _ => 0.0,
             };
-            let rpm_text = match f.max_rpm {
-                Some(m) if m > 0 => format!("{} / {m} RPM", f.rpm),
-                _ => format!("{} rpm", f.rpm),
-            };
             let override_pct = fan_overrides.get(&f.id).copied();
             serde_json::json!({
                 "id": f.id,
                 "l": f.label,
-                "rpm": rpm_text,
                 "cur_rpm": f.rpm,
                 "min_rpm": f.min_rpm.unwrap_or(0),
                 "max_rpm": f.max_rpm.unwrap_or(0),
@@ -1467,8 +1462,6 @@ fn update(app: &mut App) {
         "temp_text": hottest.map(|t| format!("{:.0}°C", t.value.0)).unwrap_or_default(),
         "temp_cls": hottest.map(|t| temp_cls(t.value)).unwrap_or("g"),
         "temps": temp_rows,
-        "fans_present": !fans.is_empty(),
-        "fans_text": if fans.len() > 1 { format!("{} fans", fans.len()) } else { fans.first().map(|f| format!("{} rpm", f.rpm)).unwrap_or_default() },
         "fans": fan_rows,
         "batt_present": battery.is_some(),
         "batt_pct": battery.as_ref().map(|b| b.charge_percent).unwrap_or(0.0),
@@ -2104,11 +2097,6 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .trow .l{color:var(--dim);}
 .trow .v{font-weight:600;font-variant-numeric:tabular-nums;}
 .v.g{color:var(--g);}.v.y{color:var(--y);}.v.r{color:var(--r);}
-.frow{display:grid;grid-template-columns:auto 1fr auto;gap:9px;align-items:center;font-size:10.5px;margin-top:6px;}
-.frow .l{color:var(--dim);white-space:nowrap;}
-.frow .v{font-variant-numeric:tabular-nums;white-space:nowrap;}
-.fbar{height:3px;background:var(--track);border-radius:99px;overflow:hidden;}
-.fbar i{display:block;height:100%;background:var(--accent);border-radius:99px;width:0;transition:width .35s;}
 .prow{display:grid;grid-template-columns:1fr auto auto auto;gap:9px;align-items:baseline;font-size:10.5px;margin-top:5px;}
 .pkill{opacity:0;background:none;border:0;color:var(--r);font:inherit;font-size:13px;font-weight:700;line-height:1;padding:0 1px;cursor:pointer;transition:opacity .15s;}
 .prow:hover .pkill{opacity:1;}
@@ -2119,17 +2107,20 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .ctl-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;}
 .ctl-head .name{font-size:9.5px;font-weight:600;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;}
 .ctl-status{font-size:10px;color:var(--dim);font-variant-numeric:tabular-nums;}
-.fan-cards{display:flex;flex-direction:column;gap:6px;}
-.fan-card{background:var(--chip-bg);border-radius:8px;padding:7px 8px;}
-.fan-card-head{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;margin-bottom:4px;}
+.fan-cards{display:flex;flex-direction:column;}
+.fan-card{padding:5px 0;}
+.fan-card+.fan-card{border-top:1px solid var(--line);}
+.fan-card-head{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;margin-bottom:3px;}
 .fan-card-head .fn{font-weight:600;}
 .fan-card-head .fv{font-variant-numeric:tabular-nums;color:var(--dim);}
-.fan-bar{height:3px;background:var(--track);border-radius:99px;overflow:hidden;margin-bottom:6px;}
+.fan-bar{height:3px;background:var(--track);border-radius:99px;overflow:hidden;margin-bottom:4px;}
 .fan-bar i{display:block;height:100%;background:var(--accent);border-radius:99px;width:0;transition:width .35s;}
-.fan-seg{display:grid;grid-template-columns:1fr 1fr;gap:4px;}
-.fan-seg button{background:transparent;border:0;color:var(--dim);font:inherit;font-size:10px;font-weight:600;padding:5px 0;border-radius:6px;cursor:pointer;transition:background .15s,color .15s;}
-.fan-seg button.active{background:var(--panel-bg);color:var(--text);}
-.fan-rpm-row{display:grid;grid-template-columns:auto 1fr auto;gap:7px;align-items:center;margin-top:6px;}
+.fan-bottom{display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.fan-rpm-text{font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.fan-seg{display:flex;gap:4px;flex:0 0 auto;}
+.fan-seg button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:600;padding:3px 8px;border-radius:5px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s;}
+.fan-seg button.active{background:var(--panel-bg);color:var(--text);border-color:rgba(91,157,255,.4);}
+.fan-rpm-row{display:grid;grid-template-columns:auto 1fr auto;gap:7px;align-items:center;margin-top:5px;}
 .fan-rpm-row span{font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .fan-rpm-row input[type=range]{-webkit-appearance:none;height:3px;border-radius:99px;background:var(--track);outline:none;cursor:pointer;}
 .fan-rpm-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;}
@@ -2206,10 +2197,6 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="bar"><div class="bar-fill" id="temp-bar"></div></div><div id="temp-list"></div>
 <canvas class="chart" id="temp-chart"></canvas><div class="chart-stats" id="temp-chart-stats"></div></div></div>
 
-<div class="row" id="sec-fans"><span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.5"/><path d="M12 9.5c0-4 .5-6 2.5-6S18 6 14.5 10M12 14.5c4 0 6 .5 6 2.5s-2.5 3.5-6.5 0M9.5 12c-4 0-6-.5-6-2.5S6 6 10 9.5"/></svg></span>
-<div class="content"><div class="head"><span class="name">Fans</span><span class="val" id="fans-val">—</span></div>
-<div id="fans-list"></div></div></div>
-
 <div class="row" id="sec-batt"><span class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="18" height="9" rx="2"/><path d="M22 11v3"/></svg></span>
 <div class="content"><div class="head"><span class="name">Battery</span><span class="val" id="batt-val">—</span></div>
 <div class="sub" id="batt-sub"></div><div class="bar"><div class="bar-fill" id="batt-bar"></div></div></div></div>
@@ -2258,8 +2245,6 @@ window.__pf={
  if(d.disk_io_present)drawChart('disk-io-chart', d.disk_io_hist, '#ff9f0a', null, fmtBytesPerSec);
  show('sec-temp',d.temp_present);if(d.temp_present){set('temp-val',d.temp_text);bar('temp-bar',d.temp_pct,d.temp_cls);
    var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c;r.children[1].className='v '+t.cls;tl.appendChild(r);});}}
- show('sec-fans',d.fans_present);if(d.fans_present){set('fans-val',d.fans_text);
-   var fl=document.getElementById('fans-list');if(fl){fl.innerHTML='';(d.fans||[]).forEach(function(f){var r=document.createElement('div');r.className='frow';r.innerHTML='<span class="l"></span><span class="fbar"><i></i></span><span class="v"></span>';r.children[0].textContent=f.l;r.querySelector('.fbar i').style.width=Math.max(0,Math.min(100,f.pct))+'%';r.children[2].textContent=f.rpm;fl.appendChild(r);});}}
  show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
  set('net-sub',d.net_sub);
  show('net-ip',!!d.net_ip);if(d.net_ip)set('net-ip',d.net_ip);
@@ -2347,12 +2332,12 @@ function renderFanCards(fans){
       card.setAttribute('data-fan-id',f.id);
       card.innerHTML='<div class="fan-card-head"><span class="fn"></span><span class="fv"></span></div>'+
         '<div class="fan-bar"><i></i></div>'+
-        '<div class="fan-seg"><button class="fa-auto"></button><button class="fa-manual"></button></div>'+
+        '<div class="fan-bottom"><span class="fan-rpm-text"></span><span class="fan-seg"><button class="fa-auto"></button><button class="fa-manual"></button></span></div>'+
         '<div class="fan-rpm-row" style="display:none"><span class="fa-min"></span><input type="range"><span class="fa-max"></span></div>';
       var btnAuto=card.querySelector('.fa-auto');
       var btnManual=card.querySelector('.fa-manual');
       btnAuto.textContent=LANG==='ko'?'자동':'Auto';
-      btnManual.textContent=LANG==='ko'?'수동':'Manual';
+      btnManual.textContent=LANG==='ko'?'사용자 지정…':'Custom…';
       btnAuto.onclick=function(){window.ipc.postMessage('cmd:fanauto:'+f.id);};
       btnManual.onclick=function(){
         // Pin right where the fan already is instead of jumping to a
@@ -2382,6 +2367,9 @@ function renderFanCards(fans){
     card.dataset.curPct=f.pct;
     card.querySelector('.fn').textContent=f.l;
     card.querySelector('.fan-bar i').style.width=Math.max(0,Math.min(100,f.pct))+'%';
+    card.querySelector('.fan-rpm-text').textContent=useRpm
+      ?(f.min_rpm+' — '+f.cur_rpm+' — '+f.max_rpm)
+      :(Math.round(f.pct)+'%');
     card.querySelector('.fa-auto').classList.toggle('active',!manual);
     card.querySelector('.fa-manual').classList.toggle('active',manual);
     card.querySelector('.fa-min').textContent=useRpm?f.min_rpm:'0%';
