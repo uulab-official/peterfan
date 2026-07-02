@@ -282,7 +282,7 @@ impl SystemMonitor for SysinfoMonitor {
     }
 
     fn processes(&self, limit: usize, sort: ProcSort) -> Vec<ProcessInfo> {
-        let mut procs: Vec<ProcessInfo> = self
+        let procs: Vec<ProcessInfo> = self
             .sys
             .processes()
             .values()
@@ -293,17 +293,7 @@ impl SystemMonitor for SysinfoMonitor {
                 memory: p.memory(),
             })
             .collect();
-
-        match sort {
-            ProcSort::Cpu => procs.sort_by(|a, b| {
-                b.cpu_percent
-                    .partial_cmp(&a.cpu_percent)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            }),
-            ProcSort::Memory => procs.sort_by_key(|p| std::cmp::Reverse(p.memory)),
-        }
-        procs.truncate(limit);
-        procs
+        top_processes(procs, limit, sort)
     }
 
     fn battery(&self) -> Option<BatteryInfo> {
@@ -329,6 +319,28 @@ impl SystemMonitor for SysinfoMonitor {
             energy_rate_w: Some(batt.energy_rate().value),
         })
     }
+}
+
+/// Return the top `limit` processes by `sort`, sorted descending. The
+/// popover only ever wants a handful of rows out of every running process
+/// (often 300-600 on a real Mac), polled once a second — a full O(n log n)
+/// sort of the whole list just to keep 5 rows was wasted work.
+/// `select_nth_unstable_by` partitions the top `limit` in O(n), then only
+/// that small slice gets fully sorted.
+fn top_processes(mut procs: Vec<ProcessInfo>, limit: usize, sort: ProcSort) -> Vec<ProcessInfo> {
+    let cmp = |a: &ProcessInfo, b: &ProcessInfo| match sort {
+        ProcSort::Cpu => b
+            .cpu_percent
+            .partial_cmp(&a.cpu_percent)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        ProcSort::Memory => b.memory.cmp(&a.memory),
+    };
+    if limit < procs.len() {
+        procs.select_nth_unstable_by(limit, cmp);
+        procs.truncate(limit);
+    }
+    procs.sort_by(cmp);
+    procs
 }
 
 fn pct(part: u64, whole: u64) -> f32 {
@@ -372,4 +384,53 @@ fn memory_breakdown() -> Option<MemoryBreakdown> {
 #[cfg(not(target_os = "macos"))]
 fn memory_breakdown() -> Option<MemoryBreakdown> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proc(pid: u32, cpu: f32, mem: u64) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            name: format!("proc{pid}"),
+            cpu_percent: cpu,
+            memory: mem,
+        }
+    }
+
+    #[test]
+    fn top_processes_by_cpu_matches_full_sort_descending() {
+        let procs = vec![
+            proc(1, 5.0, 100),
+            proc(2, 90.0, 50),
+            proc(3, 42.0, 999),
+            proc(4, 12.0, 10),
+            proc(5, 60.0, 1),
+        ];
+        let top = top_processes(procs, 3, ProcSort::Cpu);
+        let pids: Vec<u32> = top.iter().map(|p| p.pid).collect();
+        assert_eq!(pids, vec![2, 5, 3]);
+    }
+
+    #[test]
+    fn top_processes_by_memory_matches_full_sort_descending() {
+        let procs = vec![
+            proc(1, 5.0, 100),
+            proc(2, 90.0, 50),
+            proc(3, 42.0, 999),
+            proc(4, 12.0, 10),
+        ];
+        let top = top_processes(procs, 2, ProcSort::Memory);
+        let pids: Vec<u32> = top.iter().map(|p| p.pid).collect();
+        assert_eq!(pids, vec![3, 1]);
+    }
+
+    #[test]
+    fn top_processes_limit_larger_than_list_returns_everything_sorted() {
+        let procs = vec![proc(1, 5.0, 100), proc(2, 90.0, 50)];
+        let top = top_processes(procs, 10, ProcSort::Cpu);
+        let pids: Vec<u32> = top.iter().map(|p| p.pid).collect();
+        assert_eq!(pids, vec![2, 1]);
+    }
 }

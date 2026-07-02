@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.8] — Top Processes 목록의 불필요한 전체 정렬 제거
+
+효율성 개선 두 번째. Top Processes 목록은 상위 5개만 보여주는데,
+지금까지는 실행 중인 프로세스 전체(보통 300~600개)를 매 틱마다 완전히
+정렬한 뒤 5개만 잘라 썼음. 상위 N개만 O(n)에 골라내고 그 5개만 정렬하는
+방식으로 바꿔서 매초 반복되는 불필요한 전체 정렬을 없앰. 화면에 보이는
+결과는 동일함.
+
+### Changed
+- **Top Processes 상위 N개 선택 알고리즘 최적화** — 전체 정렬 대신
+  부분 선택(`select_nth_unstable_by`) 사용.
+
 ## [1.26.7] — 데몬 폴링 IPC 왕복 절반으로 줄임
 
 앞선 코드 리뷰의 효율성(efficiency) 항목 중 하나를 마저 처리. 팝오버가
