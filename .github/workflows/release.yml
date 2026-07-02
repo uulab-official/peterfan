@@ -91,9 +91,15 @@ jobs:
             target/aarch64-apple-darwin/release/peterfand
 
   # ── 3. macOS Intel ─────────────────────────────────────────────────────────
+  # Cross-compiled from an Apple Silicon runner — macos-13 (Intel-hosted)
+  # sat queued with no runner ever picking it up (macos-14 jobs in the same
+  # run started within seconds), which silently blocked every release from
+  # v1.0.0 onward since `publish` requires this job. Xcode's universal SDK on
+  # macos-14 cross-compiles x86_64-apple-darwin fine — there's no need for an
+  # actual Intel host.
   build-macos-x86:
     name: Build macOS x86_64
-    runs-on: macos-13
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
