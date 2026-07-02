@@ -6,7 +6,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [1.26.9] — macOS 배포 서명/공증 및 OTA 업데이트 안정화
+## [1.26.10] — macOS 배포 서명/공증 및 OTA 업데이트 안정화
 
 ### Added
 - **Developer ID 서명/공증 자동화 준비** — `scripts/sign-macos.sh`와

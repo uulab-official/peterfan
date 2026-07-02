@@ -93,7 +93,7 @@ if ! git rev-parse "$TAG" >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ "$(git rev-parse "$TAG")" != "$(git rev-parse HEAD)" ]]; then
+if [[ "$(git rev-parse "${TAG}^{commit}")" != "$(git rev-parse HEAD)" ]]; then
   echo "error: git tag $TAG does not point at HEAD" >&2
   echo "       tag the release commit first, then rerun this script." >&2
   exit 1
