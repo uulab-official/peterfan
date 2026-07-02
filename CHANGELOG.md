@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.15] — 데몬 업데이트 프롬프트 흐름 개선
+
 ### Changed
 - **팬 제어 데몬 업데이트 후 상태 즉시 갱신** — 앱에서 데몬 설치/업데이트를
   실행하면 캐시된 `/usr/local/bin/peterfand` 버전을 비워, 팝오버가 다음 tick에
