@@ -3179,17 +3179,24 @@ function updateSetup(d){
   if(fan){
     fan.style.display=d.fan_setup_needed?'':'none';
     fan.disabled=FAN_CONTROL_FIX_PENDING;
+    fan.title=d.daemon_update_needed
+      ?(LANG==='ko'?'팬 제어 데몬 업데이트':'Update fan-control daemon')
+      :(LANG==='ko'?'팬 제어 설정':'Set up fan control');
     fan.textContent=FAN_CONTROL_FIX_PENDING
       ?(LANG==='ko'?'설치 중…':'Installing…')
-      :(d.daemon_update_needed?(LANG==='ko'?'업데이트':'Update'):(LANG==='ko'?'설정':'Set Up'));
+      :(d.daemon_update_needed?(LANG==='ko'?'데몬':'Daemon'):(LANG==='ko'?'팬':'Fan'));
   }
   var login=document.getElementById('setup-login');
   if(login){
     login.textContent=d.login_item_installed?(LANG==='ko'?'자동 실행 켜짐':'Login On'):(LANG==='ko'?'자동 실행':'Login');
     login.classList.toggle('active',!!d.login_item_installed);
+    login.title=LANG==='ko'?'로그인 시 PeterFan 실행':'Launch PeterFan at login';
   }
   var update=document.getElementById('setup-update');
-  if(update)update.textContent=LANG==='ko'?'업데이트':'Update';
+  if(update){
+    update.textContent=LANG==='ko'?'앱':'App';
+    update.title=LANG==='ko'?'앱 업데이트 확인':'Check for app updates';
+  }
 }
 // Draws a filled area + line sparkline of `data` into the <canvas id=id>.
 // `fixedMax` pins the y-axis (e.g. 100 for percentages); null auto-scales to the data's own peak.
@@ -3358,6 +3365,8 @@ mod tests {
             assert!(html.contains("checkupdates"));
             assert!(html.contains("updateSetup"));
             assert!(html.contains("daemon_update_needed"));
+            assert!(html.contains("Update fan-control daemon"));
+            assert!(html.contains("Check for app updates"));
             assert!(html.contains("cmd:fanhold:"));
             assert!(html.contains("cmd:fanauto:"));
             assert!(html.contains("savecurve:"));
