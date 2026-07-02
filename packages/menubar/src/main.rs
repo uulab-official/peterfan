@@ -2238,6 +2238,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <script>
 var LANG='__LANG__';
 var SHOW_CURVE_EDITOR='__SHOWCURVE__';
+var FAN_CONTROL_FIX_PENDING=false;
 window.__pf={
  update:function(d){
  function cls(p){return p<50?'g':p<80?'y':'r';}
@@ -2301,8 +2302,29 @@ window.__pf={
        if(isUnknownCmd){
          var fixBtn=document.createElement('button');
          fixBtn.className='note-fix-btn';
-         fixBtn.textContent=LANG==='ko'?'데몬 업데이트':'Update Daemon';
-         fixBtn.onclick=function(){window.ipc.postMessage('cmd:enablefancontrol');};
+         // The button is rebuilt fresh every tick (note.innerHTML is reset
+         // above), so a plain per-click `disabled` wouldn't survive to the
+         // next render — track the pending state in a module-level flag
+         // instead, since the install itself (admin password prompt +
+         // privileged copy) can take a while and re-sending the command
+         // mid-prompt would stack a second macOS auth dialog on top.
+         if(FAN_CONTROL_FIX_PENDING){
+           fixBtn.disabled=true;
+           fixBtn.textContent=LANG==='ko'?'설치 중…':'Installing…';
+         } else {
+           fixBtn.textContent=LANG==='ko'?'데몬 업데이트':'Update Daemon';
+           fixBtn.onclick=function(){
+             FAN_CONTROL_FIX_PENDING=true;
+             fixBtn.disabled=true;
+             fixBtn.textContent=LANG==='ko'?'설치 중…':'Installing…';
+             window.ipc.postMessage('cmd:enablefancontrol');
+             // No completion callback reaches JS (the result lands as a
+             // native macOS notification) — release the guard after a
+             // generous timeout so a dismissed/failed prompt doesn't lock
+             // the button forever.
+             setTimeout(function(){FAN_CONTROL_FIX_PENDING=false;},15000);
+           };
+         }
          note.appendChild(document.createElement('br'));
          note.appendChild(fixBtn);
        }
