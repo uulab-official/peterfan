@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.25.1] — 명령 실패를 화면에 표시 (팬별 Manual 버튼 무반응 원인 진단)
+
+### Fixed
+- **팬 카드 "Manual" 버튼이 안 먹던 문제의 실제 원인 발견 + 진단 메시지
+  추가** — 실제로는 버그가 아니라 프로토콜 불일치였음: 시스템에 상시
+  설치된 데몬(`/usr/local/bin/peterfand`)이 v1.10.1로, `fanhold`/
+  `fanauto` 명령이 생기기(v1.23.0) 한참 전 버전이라 그 명령 자체를
+  이해하지 못하고 거부하고 있었음. 문제는 이 실패가 완전히 조용히
+  삼켜지고 있었다는 것 — 화면 어디에도 안 뜸. 이제 어떤 팬 제어 명령이든
+  실패하면 Fan control 영역에 바로 에러 메시지가 뜨고, "unknown
+  command" 오류일 땐 "Enable Fan Control을 다시 실행해 데몬을
+  업데이트하세요"라는 구체적인 해결 방법까지 안내.
+  ⚠️ 이 배포판 자체가 위 안내와 동일한 조치가 필요함 — 메뉴에서
+  **"Enable Fan Control (One-Time Setup)…"**을 한 번 더 실행해야
+  실제로 Manual 버튼이 동작함.
+
 ## [1.25.0] — 상세 창에 시각적 팬 커브 에디터 추가
 
 ### Added

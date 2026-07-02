@@ -1498,6 +1498,7 @@ fn update(app: &mut App) {
         "trial_expired": trial_expired,
         "buy_url": BUY_URL,
         "curve_points": curve_points,
+        "last_cmd_status": STATUS.lock().expect("status poisoned").clone(),
     });
     let script = format!("window.__pf&&window.__pf.update({payload})");
     if app.popover_visible {
@@ -2290,7 +2291,23 @@ window.__pf={
  if(d.can_control){
    set('ctl-status', d.ctl_status||'');
    if(note){
-     if(!d.daemon_running){
+     // A command failure (e.g. a running daemon too old to understand a
+     // command we just sent it) used to be silently swallowed — ctl-status
+     // only ever shows the daemon's own global mode string, never a
+     // per-command result. Surface it here instead, taking priority over
+     // the "install the daemon" tip.
+     var isErr=d.last_cmd_status&&/error|invalid|unknown|failed|needs root|needs at least/i.test(d.last_cmd_status);
+     if(isErr){
+       note.style.display='';
+       // "unknown command" specifically means the running daemon predates
+       // whatever command we just sent it — the fix is a daemon update,
+       // not a config change, so say so directly instead of leaving the
+       // user to guess.
+       var hint=/unknown command/i.test(d.last_cmd_status)
+         ?(LANG==='ko'?' — 메뉴에서 "Enable Fan Control"을 다시 실행해 데몬을 업데이트하세요.':' — try "Enable Fan Control" from the menu again to update the daemon.')
+         :'';
+       note.textContent=(LANG==='ko'?'오류: ':'Error: ')+d.last_cmd_status+hint;
+     } else if(!d.daemon_running){
        note.style.display='';
        note.textContent='Tip: run peterfan install-daemon once for persistent control at boot.';
      } else {
