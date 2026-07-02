@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.22] — 온도 표시 출처 명확화
+
+### Changed
+- **온도 섹션 출처 표시 추가** — Temperature 제목에 `CPU 평균`/`CPU avg`처럼
+  현재 표시 기준을 함께 보여줘, 그래프 평균이 어떤 온도의 평균인지 명확히 함.
+
 ## [1.26.21] — CPU 평균 온도 표시 보정
 
 ### Changed

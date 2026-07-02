@@ -372,6 +372,25 @@ fn display_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
         .or_else(|| hottest_temperature(temps))
 }
 
+fn display_temperature_source(lang: ResolvedLanguage, sensor: Option<&TempSensor>) -> String {
+    let Some(sensor) = sensor else {
+        return String::new();
+    };
+    if sensor.id == "cpu.die" {
+        match lang {
+            ResolvedLanguage::Ko => "CPU 평균".to_string(),
+            ResolvedLanguage::En => "CPU avg".to_string(),
+        }
+    } else if sensor.id.contains("hot") {
+        match lang {
+            ResolvedLanguage::Ko => "최고".to_string(),
+            ResolvedLanguage::En => "hottest".to_string(),
+        }
+    } else {
+        sensor.label.clone()
+    }
+}
+
 fn setup_tone(
     daemon_running: bool,
     daemon_update_needed: bool,
@@ -1790,6 +1809,7 @@ fn update(app: &mut App) {
         "temp_pct": display_temp.map(|t| t.value.0).unwrap_or(0.0),
         "temp_text": display_temp.map(|t| format!("{:.0}°C", t.value.0)).unwrap_or_default(),
         "temp_cls": display_temp.map(|t| temp_cls(t.value)).unwrap_or("g"),
+        "temp_source": display_temperature_source(app.language.resolve(), display_temp),
         "temps": temp_rows,
         "fans": fan_rows,
         "batt_present": battery.is_some(),
@@ -2785,7 +2805,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <canvas class="chart" id="disk-io-chart" style="display:none"></canvas><div class="chart-stats" id="disk-io-chart-stats"></div></div></div>
 
 <div class="row" id="sec-temp"><span class="ic"><svg viewBox="0 0 24 24"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg></span>
-<div class="content"><div class="head"><span class="name">Temperature</span><span class="val" id="temp-val">—</span></div>
+<div class="content"><div class="head"><span class="name" id="temp-name">Temperature</span><span class="val" id="temp-val">—</span></div>
 <div class="bar"><div class="bar-fill" id="temp-bar"></div></div><div id="temp-list"></div>
 <canvas class="chart" id="temp-chart"></canvas><div class="chart-stats" id="temp-chart-stats"></div></div></div>
 
@@ -2838,7 +2858,7 @@ window.__pf={
  show('disk-io-chart',d.disk_io_present);
  show('disk-io-chart-stats',d.disk_io_present);
  if(d.disk_io_present)drawChart('disk-io-chart', d.disk_io_hist, '#ff9f0a', null, fmtBytesPerSec);
- show('sec-temp',d.temp_present);if(d.temp_present){set('temp-val',d.temp_text);bar('temp-bar',d.temp_pct,d.temp_cls);
+ show('sec-temp',d.temp_present);if(d.temp_present){set('temp-name',(LANG==='ko'?'온도':'Temperature')+(d.temp_source?' · '+d.temp_source:''));set('temp-val',d.temp_text);bar('temp-bar',d.temp_pct,d.temp_cls);
    var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c;r.children[1].className='v '+t.cls;tl.appendChild(r);});}}
  show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
  set('net-sub',d.net_sub);
@@ -3433,6 +3453,8 @@ mod tests {
         // replacement (e.g. matching too broadly) would silently break these.
         for html in [&en, &ko] {
             assert!(html.contains(r#"id="cpu-val""#));
+            assert!(html.contains(r#"id="temp-name""#));
+            assert!(html.contains("d.temp_source"));
             assert!(html.contains(r#"id="ctl-status""#));
             assert!(html.contains(r#"id="disk-io-chart-stats""#));
             assert!(html.contains(r#"id="net-ip""#));
@@ -3541,6 +3563,31 @@ mod tests {
             display_temperature(&temps).map(|t| t.id.as_str()),
             Some("airport")
         );
+    }
+
+    #[test]
+    fn display_temperature_source_labels_cpu_average() {
+        let cpu = temp("cpu.die", SensorKind::Cpu, 52.0);
+        let hot = temp("cpu.die.hot", SensorKind::Cpu, 67.0);
+        let airport = temp("airport", SensorKind::Other, 45.0);
+
+        assert_eq!(
+            display_temperature_source(ResolvedLanguage::Ko, Some(&cpu)),
+            "CPU 평균"
+        );
+        assert_eq!(
+            display_temperature_source(ResolvedLanguage::En, Some(&cpu)),
+            "CPU avg"
+        );
+        assert_eq!(
+            display_temperature_source(ResolvedLanguage::Ko, Some(&hot)),
+            "최고"
+        );
+        assert_eq!(
+            display_temperature_source(ResolvedLanguage::En, Some(&airport)),
+            "airport"
+        );
+        assert!(display_temperature_source(ResolvedLanguage::Ko, None).is_empty());
     }
 
     #[test]
