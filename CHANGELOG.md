@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.36] — 팬 제어 재설치 UX 단순화
+
+### Changed
+- **오래된 데몬 안내를 "팬 제어 재설치"로 정리** — 사용자가 root 데몬과 앱
+  버전 차이를 이해할 필요 없이, 문제가 있으면 팬 제어를 한 번 재설치/복구하면
+  된다는 모델로 Setup 제목, 버튼, 알림 문구를 바꿈.
+- **재설치 액션은 기존 데몬을 덮어쓰는 기존 설치 경로를 그대로 사용** — 새
+  `PeterFan.app`에 포함된 `peterfand`를 관리자 권한으로 `/usr/local/bin`과
+  LaunchDaemon에 다시 설치하는 동작을 사용자 언어와 맞춤.
+
 ## [1.26.35] — 데몬 업데이트 권한 요청 비방해화
 
 ### Changed

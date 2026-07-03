@@ -437,12 +437,12 @@ fn setup_title(
         login_item,
     ) {
         (ResolvedLanguage::Ko, true, _, _, _) => "라이선스 필요",
-        (ResolvedLanguage::Ko, false, true, _, _) => "데몬 업데이트 필요",
+        (ResolvedLanguage::Ko, false, true, _, _) => "팬 제어 재설치",
         (ResolvedLanguage::Ko, false, false, true, true) => "준비 완료",
         (ResolvedLanguage::Ko, false, false, true, false) => "팬 제어 준비됨",
         (ResolvedLanguage::Ko, false, false, false, _) => "설정 필요",
         (ResolvedLanguage::En, true, _, _, _) => "License needed",
-        (ResolvedLanguage::En, false, true, _, _) => "Daemon update needed",
+        (ResolvedLanguage::En, false, true, _, _) => "Reinstall Fan Control",
         (ResolvedLanguage::En, false, false, true, true) => "Ready",
         (ResolvedLanguage::En, false, false, true, false) => "Fan control ready",
         (ResolvedLanguage::En, false, false, false, _) => "Setup needed",
@@ -468,7 +468,7 @@ fn setup_detail(
             format!("v{} · 체험판 만료", env!("CARGO_PKG_VERSION"))
         }
         (ResolvedLanguage::Ko, false, true, _, _) => format!(
-            "앱 v{} · 데몬 v{} · v{} 이상 필요",
+            "앱 v{} · 데몬 v{} · v{} 이상으로 팬 제어 재설치",
             env!("CARGO_PKG_VERSION"),
             daemon_version.unwrap_or("unknown"),
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
@@ -494,7 +494,7 @@ fn setup_detail(
             format!("v{} · trial expired", env!("CARGO_PKG_VERSION"))
         }
         (ResolvedLanguage::En, false, true, _, _) => format!(
-            "app v{} · daemon v{} · requires v{}+",
+            "app v{} · daemon v{} · reinstall fan control for v{}+",
             env!("CARGO_PKG_VERSION"),
             daemon_version.unwrap_or("unknown"),
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
@@ -2191,7 +2191,7 @@ fn install_fan_control() {
             if updating_existing {
                 (
                     true,
-                    format!("Fan control updated — daemon is now v{installed_version}."),
+                    format!("Fan control reinstalled — daemon is now v{installed_version}."),
                 )
             } else {
                 (
@@ -2210,7 +2210,7 @@ fn install_fan_control() {
     INSTALL_FAN_CONTROL_IN_FLIGHT.store(false, Ordering::SeqCst);
     notify_control_result(
         if updating_existing {
-            "Update Fan Control"
+            "Reinstall Fan Control"
         } else {
             "Enable Fan Control"
         },
@@ -2319,24 +2319,24 @@ fn maybe_prompt_stale_daemon_update() {
     let lang = cfg.menubar.language.resolve();
     let (title, message, dont_ask, not_now, update) = match lang {
         ResolvedLanguage::Ko => (
-            "PeterFan — 팬 제어 업데이트",
+            "PeterFan — 팬 제어 재설치",
             format!(
-                "이 Mac에 설치된 팬 제어 데몬은 v{old_version}입니다. 이 PeterFan 앱은 팬 제어 데몬 v{} 이상이 필요합니다.\n\n지금 데몬을 업데이트할까요? macOS가 관리자 암호를 한 번 요청합니다.",
+                "이 Mac에 설치된 팬 제어 데몬은 v{old_version}입니다. 이 PeterFan 앱은 팬 제어 데몬 v{} 이상이 필요합니다.\n\n지금 팬 제어를 재설치할까요? macOS가 관리자 암호를 한 번 요청합니다.",
                 peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
             ),
             "다시 묻지 않기",
             "나중에",
-            "데몬 업데이트",
+            "팬 제어 재설치",
         ),
         ResolvedLanguage::En => (
-            "PeterFan — Update Fan Control",
+            "PeterFan — Reinstall Fan Control",
             format!(
-                "The fan-control daemon installed on this Mac is v{old_version}. This PeterFan app requires fan-control daemon v{} or newer.\n\nUpdate the daemon now? macOS will ask for your password once.",
+                "The fan-control daemon installed on this Mac is v{old_version}. This PeterFan app requires fan-control daemon v{} or newer.\n\nReinstall fan control now? macOS will ask for your password once.",
                 peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
             ),
             "Don't Ask Again",
             "Not Now",
-            "Update Daemon",
+            "Reinstall Fan Control",
         ),
     };
     let script = format!(
@@ -2942,7 +2942,7 @@ window.__pf={
        note.appendChild(msg);
        if(isUnknownCmd){
          note.appendChild(document.createElement('br'));
-         note.appendChild(fanControlSetupButton(LANG==='ko'?'데몬 업데이트':'Update Daemon'));
+         note.appendChild(fanControlSetupButton(LANG==='ko'?'팬 제어 재설치':'Reinstall Fan Control'));
        }
      } else if(d.daemon_update_needed){
        note.style.display='';
@@ -2953,7 +2953,7 @@ window.__pf={
          :'The installed fan-control daemon is out of date.';
        note.appendChild(updateMsg);
        note.appendChild(document.createElement('br'));
-       note.appendChild(fanControlSetupButton(LANG==='ko'?'데몬 업데이트':'Update Daemon'));
+       note.appendChild(fanControlSetupButton(LANG==='ko'?'팬 제어 재설치':'Reinstall Fan Control'));
      } else if(!d.daemon_running){
        note.style.display='';
        note.innerHTML='';
@@ -3382,11 +3382,11 @@ function updateSetup(d){
     fan.style.display=d.fan_setup_needed?'':'none';
     fan.disabled=FAN_CONTROL_FIX_PENDING;
     fan.title=d.daemon_update_needed
-      ?(LANG==='ko'?'팬 제어 데몬 업데이트':'Update fan-control daemon')
+      ?(LANG==='ko'?'팬 제어 재설치':'Reinstall fan control')
       :(LANG==='ko'?'팬 제어 설정':'Set up fan control');
     fan.textContent=FAN_CONTROL_FIX_PENDING
       ?(LANG==='ko'?'설치 중…':'Installing…')
-      :(d.daemon_update_needed?(LANG==='ko'?'업데이트':'Update'):(LANG==='ko'?'팬':'Fan'));
+      :(d.daemon_update_needed?(LANG==='ko'?'재설치':'Reinstall'):(LANG==='ko'?'팬':'Fan'));
   }
   var login=document.getElementById('setup-login');
   if(login){
@@ -3588,7 +3588,8 @@ mod tests {
             assert!(html.contains("checkAppUpdates"));
             assert!(html.contains("updateSetup"));
             assert!(html.contains("daemon_update_needed"));
-            assert!(html.contains("Update fan-control daemon"));
+            assert!(html.contains("Reinstall fan control"));
+            assert!(html.contains("Reinstall Fan Control"));
             assert!(html.contains("Check for app updates"));
             assert!(html.contains("cmd:fanhold:"));
             assert!(html.contains("cmd:fanauto:"));
@@ -3746,11 +3747,11 @@ mod tests {
     fn setup_copy_calls_out_stale_daemon() {
         assert_eq!(
             setup_title(ResolvedLanguage::En, true, true, false, false),
-            "Daemon update needed"
+            "Reinstall Fan Control"
         );
         assert_eq!(
             setup_title(ResolvedLanguage::Ko, true, true, false, false),
-            "데몬 업데이트 필요"
+            "팬 제어 재설치"
         );
         assert!(setup_detail(
             ResolvedLanguage::En,
@@ -3761,7 +3762,7 @@ mod tests {
             false
         )
         .contains(&format!(
-            "daemon v1.26.8 · requires v{}+",
+            "daemon v1.26.8 · reinstall fan control for v{}+",
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         )));
         assert!(setup_detail(
@@ -3773,7 +3774,7 @@ mod tests {
             false
         )
         .contains(&format!(
-            "v{} 이상 필요",
+            "v{} 이상으로 팬 제어 재설치",
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         )));
     }
