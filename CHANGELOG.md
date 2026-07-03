@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.38] — 팬 제어 재설치 승인 예측 표시
+
+### Changed
+- **재설치 승인 필요 여부를 Setup 상세에 표시** — 설치된 root 데몬이
+  self-reinstall 명령을 모르는 오래된 버전이면 "이번 한 번 승인 필요"로,
+  최신 계열이면 "조용히 가능"으로 보여 사용자가 macOS 암호 프롬프트를
+  예측할 수 있게 함.
+- **self-reinstall 지원 기준을 공용 플랫폼 API로 분리** —
+  `MIN_SELF_REINSTALL_DAEMON_VERSION` 기준을 추가해 "팬 제어 가능"과
+  "무승인 재설치 가능"을 별도로 판단함.
+
 ## [1.26.37] — 팬 제어 재설치 승인 최소화
 
 ### Added

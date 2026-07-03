@@ -468,10 +468,10 @@ fn setup_detail(
             format!("v{} · 체험판 만료", env!("CARGO_PKG_VERSION"))
         }
         (ResolvedLanguage::Ko, false, true, _, _) => format!(
-            "앱 v{} · 데몬 v{} · v{} 이상으로 팬 제어 재설치",
+            "앱 v{} · 데몬 v{} · 팬 제어 재설치 · {}",
             env!("CARGO_PKG_VERSION"),
             daemon_version.unwrap_or("unknown"),
-            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
+            daemon_reinstall_hint(lang, daemon_version)
         ),
         (ResolvedLanguage::Ko, false, false, true, true) => {
             format!(
@@ -494,10 +494,10 @@ fn setup_detail(
             format!("v{} · trial expired", env!("CARGO_PKG_VERSION"))
         }
         (ResolvedLanguage::En, false, true, _, _) => format!(
-            "app v{} · daemon v{} · reinstall fan control for v{}+",
+            "app v{} · daemon v{} · reinstall fan control · {}",
             env!("CARGO_PKG_VERSION"),
             daemon_version.unwrap_or("unknown"),
-            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
+            daemon_reinstall_hint(lang, daemon_version)
         ),
         (ResolvedLanguage::En, false, false, true, true) => {
             format!(
@@ -516,6 +516,16 @@ fn setup_detail(
         (ResolvedLanguage::En, false, false, false, _) => {
             format!("v{} · daemon not running", env!("CARGO_PKG_VERSION"))
         }
+    }
+}
+
+fn daemon_reinstall_hint(lang: ResolvedLanguage, daemon_version: Option<&str>) -> &'static str {
+    let quiet = daemon_version.is_some_and(peterfan_platform::daemon_self_reinstall_supported);
+    match (lang, quiet) {
+        (ResolvedLanguage::Ko, true) => "조용히 가능",
+        (ResolvedLanguage::Ko, false) => "이번 한 번 승인 필요",
+        (ResolvedLanguage::En, true) => "no prompt",
+        (ResolvedLanguage::En, false) => "one approval this time",
     }
 }
 
@@ -3767,10 +3777,7 @@ mod tests {
             false,
             false
         )
-        .contains(&format!(
-            "daemon v1.26.8 · reinstall fan control for v{}+",
-            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
-        )));
+        .contains("daemon v1.26.8 · reinstall fan control · one approval this time"));
         assert!(setup_detail(
             ResolvedLanguage::Ko,
             true,
@@ -3779,10 +3786,27 @@ mod tests {
             false,
             false
         )
-        .contains(&format!(
-            "v{} 이상으로 팬 제어 재설치",
-            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
-        )));
+        .contains("팬 제어 재설치 · 이번 한 번 승인 필요"));
+    }
+
+    #[test]
+    fn reinstall_hint_distinguishes_legacy_and_self_reinstalling_daemons() {
+        assert_eq!(
+            daemon_reinstall_hint(ResolvedLanguage::Ko, Some("1.26.24")),
+            "이번 한 번 승인 필요"
+        );
+        assert_eq!(
+            daemon_reinstall_hint(ResolvedLanguage::En, Some("1.26.24")),
+            "one approval this time"
+        );
+        assert_eq!(
+            daemon_reinstall_hint(ResolvedLanguage::Ko, Some("1.26.37")),
+            "조용히 가능"
+        );
+        assert_eq!(
+            daemon_reinstall_hint(ResolvedLanguage::En, Some("1.26.37")),
+            "no prompt"
+        );
     }
 
     #[test]

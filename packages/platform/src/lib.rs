@@ -31,6 +31,10 @@ pub mod updater;
 /// or fan-control behavior genuinely requires a newer `/usr/local/bin/peterfand`.
 pub const MIN_REQUIRED_DAEMON_VERSION: &str = "1.26.22";
 
+/// Oldest installed root daemon that can reinstall fan control from the
+/// signed app bundle without another administrator-password prompt.
+pub const MIN_SELF_REINSTALL_DAEMON_VERSION: &str = "1.26.37";
+
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(all(target_os = "macos", feature = "experimental-gpu"))]
@@ -85,6 +89,10 @@ pub fn parse_daemon_version_output(output: &str) -> Option<String> {
 
 pub fn daemon_update_required(installed_version: &str) -> bool {
     updater::is_newer(installed_version, MIN_REQUIRED_DAEMON_VERSION)
+}
+
+pub fn daemon_self_reinstall_supported(installed_version: &str) -> bool {
+    !updater::is_newer(installed_version, MIN_SELF_REINSTALL_DAEMON_VERSION)
 }
 
 #[cfg(target_os = "macos")]
@@ -165,5 +173,14 @@ mod tests {
             super::MIN_REQUIRED_DAEMON_VERSION
         ));
         assert!(!super::daemon_update_required("1.26.24"));
+    }
+
+    #[test]
+    fn daemon_self_reinstall_requires_new_enough_daemon() {
+        assert!(!super::daemon_self_reinstall_supported("1.26.36"));
+        assert!(super::daemon_self_reinstall_supported(
+            super::MIN_SELF_REINSTALL_DAEMON_VERSION
+        ));
+        assert!(super::daemon_self_reinstall_supported("1.26.38"));
     }
 }
