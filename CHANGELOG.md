@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.71] — 고급 릴리즈 무결성 검증
+
+### Added
+- **GitHub asset digest 교차 검증** — GitHub Release API가 제공하는
+  `sha256:<hash>` asset digest가 있으면 다운로드 직후 실제 파일 SHA-256과
+  먼저 대조하고, 이어서 `checksums.txt`와 한 번 더 대조함.
+- **DMG 자체 검증 강화** — OTA가 `.dmg`를 선택한 경우 mount 전에 DMG code
+  signature, stapled notarization ticket, Gatekeeper 평가를 먼저 확인함.
+- **앱 서명 정체성 검증 추가** — 추출된 `PeterFan.app`이 `kr.co.uulab.peterfan`
+  bundle id, `N99FMBQ662` Team ID, 해당 Team의 Developer ID Application 서명인지
+  확인한 뒤에만 설치 큐에 넣음.
+- **업데이트 JSON 진단 확장** — `peterfan --json update`에 `asset_digest`와
+  `checksum_digest`를 포함해 릴리즈 무결성 체인을 눈으로 확인할 수 있게 함.
+
 ## [1.26.70] — OTA 업데이트 무결성 검증 강화
 
 ### Added

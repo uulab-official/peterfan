@@ -3474,9 +3474,11 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
                 "release_url": release.html_url,
                 "asset_name": release.asset_name,
                 "asset_url": release.asset_url,
+                "asset_digest": release.asset_digest,
                 "archive_url": release.archive_url,
                 "dmg_url": release.dmg_url,
                 "checksum_url": release.checksum_url,
+                "checksum_digest": release.checksum_digest,
             })
         );
         return Ok(());

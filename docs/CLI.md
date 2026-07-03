@@ -204,10 +204,12 @@ peterfan update --install
 peterfan --json update
 ```
 
-OTA 설치 전 다운로드된 asset은 GitHub Release의 `checksums.txt`와 SHA-256을
-대조하고, 추출된 `PeterFan.app`은 code signature, stapled notarization ticket,
-Gatekeeper 평가를 통과해야 합니다. `checksums.txt`가 없는 릴리즈는 앱이 OTA
-설치를 거부합니다.
+OTA 설치 전 다운로드된 asset은 GitHub Release API의 asset digest가 있으면 먼저
+SHA-256을 대조하고, 이어서 `checksums.txt`와 한 번 더 대조합니다. `.dmg`는 mount
+전에 code signature, stapled notarization ticket, Gatekeeper 평가를 확인하고,
+추출된 `PeterFan.app`은 `kr.co.uulab.peterfan` bundle id, UULab Developer ID
+Team ID, code signature, stapled notarization ticket, Gatekeeper 평가를 통과해야
+합니다. `checksums.txt`가 없는 릴리즈는 앱이 OTA 설치를 거부합니다.
 
 ### `log` — continuous metrics stream
 

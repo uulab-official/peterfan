@@ -7,6 +7,8 @@
 //! `launchctl`, and keeps the menu-bar binary's dependency footprint small.
 
 pub const REPO: &str = "uulab-official/peterfan";
+const EXPECTED_BUNDLE_ID: &str = "kr.co.uulab.peterfan";
+const EXPECTED_TEAM_ID: &str = "N99FMBQ662";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReleaseInfo {
@@ -21,12 +23,16 @@ pub struct ReleaseInfo {
     /// is absent, it falls back to the universal `apple-darwin.tar.gz`.
     pub asset_url: Option<String>,
     pub asset_name: Option<String>,
+    /// GitHub release asset digest for the selected update asset, currently
+    /// shaped like `sha256:<hex>` when present.
+    pub asset_digest: Option<String>,
     pub archive_url: Option<String>,
     pub dmg_url: Option<String>,
     /// Direct download URL for `checksums.txt`, used to verify the selected
     /// update asset before extraction.
     pub checksum_url: Option<String>,
     pub checksum_name: Option<String>,
+    pub checksum_digest: Option<String>,
 }
 
 /// Query the GitHub API for the latest release. `Err` covers network
@@ -76,10 +82,12 @@ fn parse_release_response(body: &[u8]) -> Result<ReleaseInfo, String> {
         html_url,
         asset_url: preferred.map(|a| a.url.clone()),
         asset_name: preferred.map(|a| a.name.clone()),
+        asset_digest: preferred.and_then(|a| a.digest.clone()),
         archive_url: archive.map(|a| a.url),
         dmg_url: dmg.map(|a| a.url),
         checksum_url: checksums.as_ref().map(|a| a.url.clone()),
-        checksum_name: checksums.map(|a| a.name),
+        checksum_name: checksums.as_ref().map(|a| a.name.clone()),
+        checksum_digest: checksums.and_then(|a| a.digest),
     })
 }
 
@@ -87,6 +95,7 @@ fn parse_release_response(body: &[u8]) -> Result<ReleaseInfo, String> {
 struct Asset {
     name: String,
     url: String,
+    digest: Option<String>,
 }
 
 fn find_asset<F>(assets: &[serde_json::Value], matches: F) -> Option<Asset>
@@ -100,11 +109,19 @@ where
             Some(Asset {
                 name: name.to_string(),
                 url: url.to_string(),
+                digest: parse_github_sha256_digest(asset["digest"].as_str()),
             })
         } else {
             None
         }
     })
+}
+
+fn parse_github_sha256_digest(digest: Option<&str>) -> Option<String> {
+    let digest = digest?;
+    let hash = digest.strip_prefix("sha256:")?;
+    (hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| hash.to_ascii_lowercase())
 }
 
 fn is_preferred_macos_archive(name: &str) -> bool {
@@ -175,7 +192,12 @@ pub fn download_and_install_release(release: &ReleaseInfo) -> Result<(), String>
         .checksum_url
         .as_deref()
         .ok_or("release has no checksums.txt; refusing OTA install")?;
-    download_and_install_verified(asset_url, asset_name, checksum_url)
+    download_and_install_verified(
+        asset_url,
+        asset_name,
+        release.asset_digest.as_deref(),
+        checksum_url,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -195,6 +217,7 @@ pub fn download_and_install(asset_url: &str) -> Result<(), String> {
 fn download_and_install_verified(
     asset_url: &str,
     asset_name: &str,
+    asset_digest: Option<&str>,
     checksum_url: &str,
 ) -> Result<(), String> {
     let app_path = current_app_bundle()?;
@@ -203,6 +226,9 @@ fn download_and_install_verified(
 
     let download = tmp_dir.join(asset_name);
     download_file(asset_url, &download)?;
+    if let Some(expected) = asset_digest {
+        verify_expected_sha256("GitHub asset digest", expected, &download)?;
+    }
 
     let checksums_path = tmp_dir.join("checksums.txt");
     download_file(checksum_url, &checksums_path)?;
@@ -252,6 +278,9 @@ fn install_downloaded_update(
     asset_name: &str,
 ) -> Result<(), String> {
     let is_dmg = asset_name.ends_with(".dmg");
+    if is_dmg {
+        validate_update_dmg(download)?;
+    }
 
     let new_app = if is_dmg {
         extract_app_from_dmg(download, tmp_dir)?
@@ -314,12 +343,21 @@ fn verify_download_checksum(
 ) -> Result<(), String> {
     let expected = checksum_for_asset(checksums, asset_name)
         .ok_or_else(|| format!("checksums.txt does not list {asset_name}"))?;
+    verify_expected_sha256("checksums.txt", &expected, path)
+}
+
+#[cfg(target_os = "macos")]
+fn verify_expected_sha256(
+    source: &str,
+    expected: &str,
+    path: &std::path::Path,
+) -> Result<(), String> {
     let actual = sha256_file(path)?;
     if actual.eq_ignore_ascii_case(&expected) {
         Ok(())
     } else {
         Err(format!(
-            "checksum mismatch for {asset_name}: expected {expected}, got {actual}"
+            "checksum mismatch from {source}: expected {expected}, got {actual}"
         ))
     }
 }
@@ -429,6 +467,45 @@ fn extract_app_from_dmg(
 }
 
 #[cfg(target_os = "macos")]
+fn validate_update_dmg(dmg: &std::path::Path) -> Result<(), String> {
+    let status = std::process::Command::new("codesign")
+        .args(["--verify", "--verbose=2"])
+        .arg(dmg)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err("downloaded update DMG has an invalid code signature".into());
+    }
+
+    let status = std::process::Command::new("xcrun")
+        .args(["stapler", "validate"])
+        .arg(dmg)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err("downloaded update DMG is not notarized/stapled".into());
+    }
+
+    let output = std::process::Command::new("spctl")
+        .args([
+            "-a",
+            "-vv",
+            "-t",
+            "open",
+            "--context",
+            "context:primary-signature",
+        ])
+        .arg(dmg)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() && !spctl_failed_from_resource_exhaustion(&output) {
+        return Err("Gatekeeper rejected the downloaded update DMG".into());
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn validate_update_app(app: &std::path::Path) -> Result<(), String> {
     let status = std::process::Command::new("codesign")
         .args(["--verify", "--deep", "--strict", "--verbose=2"])
@@ -438,6 +515,7 @@ fn validate_update_app(app: &std::path::Path) -> Result<(), String> {
     if !status.success() {
         return Err("downloaded PeterFan.app has an invalid code signature".into());
     }
+    validate_update_app_identity(app)?;
 
     let status = std::process::Command::new("xcrun")
         .args(["stapler", "validate"])
@@ -457,6 +535,43 @@ fn validate_update_app(app: &std::path::Path) -> Result<(), String> {
         return Err("Gatekeeper rejected the downloaded PeterFan.app".into());
     }
 
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn validate_update_app_identity(app: &std::path::Path) -> Result<(), String> {
+    let output = std::process::Command::new("codesign")
+        .args(["-dv", "--verbose=4"])
+        .arg(app)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("could not inspect downloaded PeterFan.app signature".into());
+    }
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !text.lines().any(|line| {
+        line.contains("Authority=Developer ID Application:") && line.contains(EXPECTED_TEAM_ID)
+    }) {
+        return Err(
+            "downloaded PeterFan.app is not signed by the expected Developer ID team".into(),
+        );
+    }
+    if !text
+        .lines()
+        .any(|line| line.trim() == format!("Identifier={EXPECTED_BUNDLE_ID}"))
+    {
+        return Err("downloaded PeterFan.app has the wrong bundle identifier".into());
+    }
+    if !text
+        .lines()
+        .any(|line| line.trim() == format!("TeamIdentifier={EXPECTED_TEAM_ID}"))
+    {
+        return Err("downloaded PeterFan.app has the wrong Team ID".into());
+    }
     Ok(())
 }
 
@@ -512,9 +627,11 @@ mod tests {
             "html_url": "https://github.com/uulab-official/peterfan/releases/tag/v0.27.1",
             "assets": [
                 {"name": "peterfan-v0.27.1-aarch64-apple-darwin.tar.gz",
-                 "browser_download_url": "https://github.com/uulab-official/peterfan/releases/download/v0.27.1/peterfan-v0.27.1-aarch64-apple-darwin.tar.gz"},
+                 "browser_download_url": "https://github.com/uulab-official/peterfan/releases/download/v0.27.1/peterfan-v0.27.1-aarch64-apple-darwin.tar.gz",
+                 "digest": "sha256:ABCDEFabcdefABCDEFabcdefABCDEFabcdefABCDEFabcdefABCDEFabcdefABCD"},
                 {"name": "checksums.txt",
-                 "browser_download_url": "https://github.com/uulab-official/peterfan/releases/download/v0.27.1/checksums.txt"},
+                 "browser_download_url": "https://github.com/uulab-official/peterfan/releases/download/v0.27.1/checksums.txt",
+                 "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
                 {"name": "peterfan-v0.27.1-x86_64-pc-windows-msvc.zip",
                  "browser_download_url": "https://example.com/windows.zip"}
             ]
@@ -524,8 +641,16 @@ mod tests {
         assert_eq!(info.tag, "v0.27.1");
         assert!(info.asset_url.unwrap().contains("aarch64-apple-darwin"));
         assert!(info.asset_name.unwrap().contains("aarch64-apple-darwin"));
+        assert_eq!(
+            info.asset_digest.as_deref(),
+            Some("abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd")
+        );
         assert_eq!(info.checksum_name.as_deref(), Some("checksums.txt"));
         assert!(info.checksum_url.unwrap().ends_with("/checksums.txt"));
+        assert_eq!(
+            info.checksum_digest.as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
     }
 
     #[test]
@@ -584,6 +709,22 @@ mod tests {
         assert!(info.asset_url.is_none());
         assert!(info.asset_name.is_none());
         assert!(info.checksum_url.is_none());
+        assert!(info.asset_digest.is_none());
+        assert!(info.checksum_digest.is_none());
+    }
+
+    #[test]
+    fn parse_github_sha256_digest_accepts_only_sha256_hex() {
+        assert_eq!(
+            parse_github_sha256_digest(Some(
+                "sha256:ABCDEFabcdefABCDEFabcdefABCDEFabcdefABCDEFabcdefABCDEFabcdefABCD"
+            ))
+            .as_deref(),
+            Some("abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd")
+        );
+        assert_eq!(parse_github_sha256_digest(Some("sha512:abc")), None);
+        assert_eq!(parse_github_sha256_digest(Some("sha256:not-hex")), None);
+        assert_eq!(parse_github_sha256_digest(None), None);
     }
 
     #[test]
