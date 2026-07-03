@@ -814,10 +814,12 @@ fn main() {
                 // (including the real privileged install) would be bogus.
                 if !use_mock {
                     std::thread::spawn(maybe_prompt_first_run_setup);
-                    std::thread::spawn(maybe_prompt_stale_daemon_update);
-                    // Staggered a few seconds after the setup prompt so the
-                    // one-shot setup/daemon-update dialogs don't pop on top
-                    // of the update checker.
+                    // App updates are informational; fan-control daemon
+                    // updates are privileged and stay user-initiated through
+                    // the Setup row's Update button.
+                    if should_auto_prompt_stale_daemon_update_on_launch() {
+                        std::thread::spawn(maybe_prompt_stale_daemon_update);
+                    }
                     std::thread::spawn(check_for_updates_on_launch);
                 }
             }
@@ -2284,21 +2286,15 @@ fn stale_daemon_version() -> Option<String> {
 }
 
 fn should_prompt_stale_daemon_update(
-    cfg: &peterfan_core::config::Config,
-    current_version: &str,
-    now_unix: u64,
+    _cfg: &peterfan_core::config::Config,
+    _current_version: &str,
+    _now_unix: u64,
 ) -> bool {
-    if cfg.menubar.daemon_update_prompt_dismissed_for.as_deref() == Some(current_version) {
-        return false;
-    }
-    if cfg
-        .menubar
-        .daemon_update_prompt_snoozed_until_unix
-        .is_some_and(|until| now_unix < until)
-    {
-        return false;
-    }
-    true
+    false
+}
+
+fn should_auto_prompt_stale_daemon_update_on_launch() -> bool {
+    false
 }
 
 /// After an app update, the bundled helper may be newer while the root
@@ -3839,17 +3835,22 @@ mod tests {
     }
 
     #[test]
-    fn stale_daemon_prompt_respects_dismiss_and_snooze() {
+    fn stale_daemon_update_never_auto_prompts() {
         let mut cfg = peterfan_core::config::Config::default();
-        assert!(should_prompt_stale_daemon_update(&cfg, "1.2.3", 1_000));
+        assert!(!should_prompt_stale_daemon_update(&cfg, "1.2.3", 1_000));
 
         cfg.menubar.daemon_update_prompt_snoozed_until_unix = Some(1_500);
         assert!(!should_prompt_stale_daemon_update(&cfg, "1.2.3", 1_000));
-        assert!(should_prompt_stale_daemon_update(&cfg, "1.2.3", 1_501));
+        assert!(!should_prompt_stale_daemon_update(&cfg, "1.2.3", 1_501));
 
         cfg.menubar.daemon_update_prompt_dismissed_for = Some("1.2.3".to_string());
         assert!(!should_prompt_stale_daemon_update(&cfg, "1.2.3", 1_501));
-        assert!(should_prompt_stale_daemon_update(&cfg, "1.2.4", 1_501));
+        assert!(!should_prompt_stale_daemon_update(&cfg, "1.2.4", 1_501));
+    }
+
+    #[test]
+    fn launch_policy_keeps_daemon_update_prompt_user_initiated() {
+        assert!(!should_auto_prompt_stale_daemon_update_on_launch());
     }
 
     #[test]
