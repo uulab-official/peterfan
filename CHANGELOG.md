@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **메뉴바 팝오버 컴팩트 모드** — 기본 화면은 CPU/메모리/온도/팬 제어에 집중하고,
+  저장공간·배터리·네트워크·프로세스·라이선스·종료 같은 보조 섹션은 오른쪽
+  `More` 버튼으로 펼치도록 정리함.
+
+### Documentation
+- **제품 로드맵 재정리** — 예전 v0.x 중심 체크리스트를 현재 v1.26.x 제품 상태,
+  `Now / Next / Later` 우선순위, 팬 제어 신뢰도, 센서 정확도, 배포/업데이트,
+  자동화 계획 중심의 로드맵으로 갱신함.
+- **아키텍처 문서 최신화** — `peterfand`를 planned 항목이 아니라 현재 crate와
+  안전 제어 루프로 설명하도록 수정함.
+
 ## [1.26.40] — RunCat식 간결한 팝오버 액션 레일
 
 ### Changed

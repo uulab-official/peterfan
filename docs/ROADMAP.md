@@ -1,123 +1,158 @@
 # Roadmap
 
-PeterFan is built bottom-up: a clean core and trait first, then real backends,
-then richer surfaces. Versions are goals, not promises.
+PeterFan is a small Mac-first fan controller and system monitor: simple like
+RunCat, observability-minded like Stats, and accurate enough to earn comparison
+with iStat Menus. Versions are plans, not promises, but this document is the
+working product map we use to decide what to polish next.
 
-## v0.1 — Foundation
+## Product North Star
 
-- [x] OS-agnostic core: types, fan curves, profiles
-- [x] `HardwareProvider` trait + capability model
-- [x] Mock backend (fully simulated, controllable)
-- [x] macOS real hardware info via `sysctl`
-- [x] CLI: `status`, `temps`, `fans`, `profile`, `curve`, `hardware`, `doctor`, `--json`
-- [x] TUI dashboard (ratatui)
+- **Glanceable first** — the menu bar should answer one question in one second:
+  "Is my Mac okay?"
+- **Simple until expanded** — the popover stays compact; deeper fan curves,
+  process tables, and diagnostics live behind clear actions.
+- **Honest sensors** — real readings are labeled as real, simulated/fallback
+  readings are labeled as such, and CPU average vs hottest are kept separate.
+- **Safe fan control** — manual control is reversible, verified by RPM readback,
+  restored on exit, and overridden by critical-temperature protection.
+- **No surprise password prompts** — root daemon work is explicit, predictable,
+  and as quiet as macOS allows after the helper is installed.
+- **Open-source friendly** — releases are reproducible from local signing
+  material, docs include screenshots, and CLI/API surfaces stay scriptable.
 
-## v0.2 — System metrics
+## Current State
 
-- [x] `SystemMonitor` trait + `metrics` types
-- [x] Real cross-platform metrics via `sysinfo` (CPU, memory, disk, network, processes)
-- [x] Battery via the `battery` crate
-- [x] CLI: `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `system`; full `status` dashboard
-- [x] Mock metrics monitor for `--mock`
+- [x] Universal notarized macOS DMG with `PeterFan.app`
+- [x] CLI, TUI, menu-bar app, and privileged `peterfand`
+- [x] Apple Silicon CPU die average and hottest temperature via IOHID
+- [x] SMC fan RPM, fan control, per-fan manual pins, and auto restore
+- [x] RunCat-style compact popover with a right-side action rail
+- [x] Menu-bar metric selection, graph/number/both styles, and hover tooltip
+- [x] 2m / 1h / 1d charts with range averages and peaks
+- [x] GitHub Releases OTA update path and local release scripts
+- [x] LaunchDaemon install, self-reinstall path, and admin-prompt explanation
+- [x] README screenshot generation and release readiness checks
 
-## v0.3 — System dashboard TUI
+## Now
 
-- [x] TUI rebuilt on `SystemMonitor`: CPU (global + per-core), memory, disk,
-      network, CPU history, battery, top-process table
+These are the highest-leverage improvements before adding large new surfaces.
 
-## v0.4 — Menu-bar app
+### v1.26.x — Menu-Bar Polish
 
-- [x] `peterfan-menubar`: live CPU in the macOS menu bar + CPU/mem/net dropdown
-      (tray-icon + tao; accessory app, Windows tray fallback)
+- [x] CPU average temperature as the top temperature metric
+- [x] RunCat-style right action rail in the popover
+- [x] Compact/expanded popover modes
+- [ ] Hide low-priority sections from the first viewport when they are idle
+- [ ] Better empty states for unsupported fans, missing battery, and no network
+- [ ] Visual QA screenshots for dark/light mode and Korean/English text fit
+- [ ] More stable popover height when fan cards or setup copy changes
 
-## v0.5 — Popover dashboard (current)
+### v1.27 — Fan Control Confidence
 
-- [x] Click-to-open popover: a WebView (wry) HTML/CSS dashboard — CPU (per-core),
-      memory, storage, temperatures, fans, battery, network — refreshed live
-- [x] Popover is the sole UI (left/right click); Quit via WebView IPC
-- [x] Release binaries per tag (macOS arm64/Intel, Windows) via CI + downloads
-- [x] Double-clickable `PeterFan.app` menu-bar agent bundle in releases
-- [x] Developer ID signing / notarization automation for official macOS DMGs
-- [ ] Homebrew cask / `winget` for install
-- [ ] Configurable menu-bar metric (CPU / temp / net) and refresh interval
-- [ ] Login-item ("start at login") toggle
+- [ ] One-page "Fan Control Health" panel: daemon version, install state,
+      helper path, Team ID, LaunchDaemon state, last command result
+- [ ] Make "first approval vs no prompt" state impossible to miss
+- [ ] Show active fan-control input temperature: CPU average, hottest, critical
+- [ ] Add fan-control dry-run diagnostics in the menu-bar detail window
+- [ ] Keep a short local log of fan-control actions and failures
+- [ ] Document why macOS requires approval for first LaunchDaemon install
 
-## v0.6 — Real macOS sensors (current)
+### v1.28 — Sensor Accuracy
 
-- [x] **macOS temperatures & fan RPM via SMC** (`macsmc`/IOKit) — real `temps`,
-      `fans`, `status`; non-zero sensors only
-- [ ] CPU/GPU **die** temps on Apple Silicon via the IOHID thermal API
-- [ ] Surface SMC **power** (system total W) in the metrics model
+- [ ] Split CPU average, CPU hottest, GPU die, SSD, battery, and board sensors
+      into named groups
+- [ ] Distinguish Apple Silicon GPU die sensors from CPU die sensors
+- [ ] Add sensor-source metadata to JSON output (`iohid`, `smc`, `battery`)
+- [ ] Add "sensor debugger" output for comparing PeterFan with iStat/Stats
+- [ ] Make benchmark/log commands record both average and hottest temperature
+- [ ] Add tests for representative temperature selection across mixed sensors
 
-## v0.9 — Fan control
+### v1.29 — Distribution & Updates
 
-- [x] **Fan control on macOS** via SMC writes: `fan set <pct>` / `fan auto`
-      (requires `sudo`); duty mapped onto each fan's `[min, max]` RPM
+- [x] Local signed/notarized release workflow
+- [x] DMG install smoke test against `/Applications/PeterFan.app`
+- [ ] Homebrew cask
+- [ ] In-app release notes preview before install
+- [ ] Update channel preference: stable / pre-release
+- [ ] Rollback path when an update fails after download
+- [ ] Clearer docs for moving signing material to another Mac
 
-## v0.10 — Daemon (current)
+## Next
 
-- [x] `peterfand` — applies a profile curve continuously, with
-      **restore-on-exit** and a **critical-temp 100% override**
-- [x] LaunchDaemon install (runs as root → no per-command `sudo`)
-- [ ] Code-signed privileged helper (SMAppService) for a fully unsigned-free,
-      no-`sudo` install; menu-bar app talks to the daemon over IPC
+### v1.30 — Automation
 
-## v0.11 — Real CPU die temps (current)
+- [ ] Rule editor in the detail window: battery, AC power, time, CPU temp
+- [ ] Per-profile curve previews in the popover
+- [ ] Import/export config from the UI
+- [ ] Notifications for critical temperature, fan command failures, and updates
+- [ ] "Quiet on battery, performance on AC" preset
 
-- [x] **CPU/GPU die temperatures on Apple Silicon via IOHID** — real `CPU`
-      temp in `temps`/`status`/popover; the daemon curve keys off it
-- [x] SMC system power (W) surfaced in status & popover
-- [ ] Distinguish GPU die from CPU die
+### v1.31 — Power-User Surfaces
 
-## v0.12 — Watch mode & config (current)
+- [ ] Local HTTP API hardening and docs examples for Raycast/Hammerspoon
+- [ ] Stream Deck / BetterTouchTool snippets
+- [ ] CLI `doctor --json` focused on release/support diagnostics
+- [ ] TUI curve editor parity with the detail window
+- [ ] Process list filtering and "quit process" safeguards
 
-- [x] `--watch [--interval N]` live refresh for CLI commands
-- [x] TOML config (`profile`, `interval_secs`, `critical_temp_c`) + `config` command;
-      daemon & watch read defaults from it
-- [ ] More config (startup, alert thresholds, menu-bar metric choice)
+### v1.32 — Platform Reach
 
-## v0.13 — Menu-bar ↔ daemon IPC (current)
+- [ ] Windows read-only metrics packaging
+- [ ] Windows temperature/fan research spike
+- [ ] Linux `hwmon` research spike
+- [ ] Separate platform capability matrix in docs
 
-- [x] Popover control buttons (Auto / profiles) drive the daemon over a Unix
-      socket — fan control from the menu bar with no per-action sudo
-- [ ] Reflect live daemon state (active profile / connected) in the popover
+## Later
 
-## v1.0 — Control depth & Windows
-
-- [ ] **Windows backend** — temps/fans via EC / LibreHardwareMonitor-style access
-- [ ] Code-signed privileged helper (no-`sudo` install); GPU die temp; SMC power (W)
-- [ ] `peterfan-daemon` — privileged control service + safety watchdog
-      (restore-on-exit, critical-temp force ramp)
-- [ ] Curve editor in the TUI
-- [ ] Desktop GUI (Tauri + React + TypeScript + Tailwind): dashboard, fan page,
-      drag-to-edit curve editor, hardware page
-- [ ] Benchmark / stress mode with live temp + RPM capture
-- [ ] Alerts (threshold → notification / boost)
-
-## v2.0 — Ecosystem
-
-- [ ] **Plugin system** — vendor/community drivers (ASUS, Gigabyte, MSI,
-      Corsair, NZXT, …) for new sensors, controllers, RGB, LCD, AIO coolers
-- [ ] **Local HTTP API** (`GET /api/v1/status`, `/fans`, `/temps`;
-      `POST /api/v1/profile`, `/curve`) for Stream Deck, Raycast, Hammerspoon,
-      BetterTouchTool, Home Assistant
-- [ ] Automation rules (battery → silent, AC → gaming, schedule, on-temp)
-- [ ] RGB and AIO/liquid-cooler support via plugins
-
-## v3.0 — Reach
-
-- [ ] **Linux backend** (`hwmon`/sysfs), Wayland/X11-friendly
+- [ ] SMAppService-style privileged helper investigation
+- [ ] Plugin driver system for vendor hardware
 - [ ] Multi-machine monitoring
 - [ ] Web dashboard
-- [ ] Mobile monitoring app
+- [ ] Mobile companion
+- [ ] RGB / AIO / liquid-cooler integrations
 
-## Help wanted
+## Completed Milestones
 
-The highest-leverage contributions right now sit behind the existing
-`HardwareProvider` trait:
+### Core & CLI
 
-1. **Real macOS SMC backend** — replace the `Unsupported` temp/fan stubs in
-   `packages/platform/src/macos.rs` with genuine readings.
-2. **Windows backend** — a new module implementing the same trait.
+- [x] OS-agnostic core types, fan curves, profiles
+- [x] `HardwareProvider` and `SystemMonitor` traits
+- [x] Fully simulated mock backend
+- [x] CLI commands for status, sensors, fans, profile, config, logging,
+      benchmark, alerts, updates, and local HTTP serving
+- [x] Machine-readable JSON output for automation
 
-Neither requires touching `peterfan-core`. That's the point.
+### macOS Sensors & Control
+
+- [x] macOS hardware info via `sysctl`
+- [x] Apple Silicon CPU die temperatures through IOHID
+- [x] SMC ambient/board sensors, fan RPM, and system power
+- [x] SMC fan writes with RPM verification
+- [x] Critical-temperature override and restore-on-exit behavior
+
+### Menu-Bar App
+
+- [x] Accessory app with no Dock icon
+- [x] Menu-bar number/graph/both display modes
+- [x] Popover dashboard with CPU, memory, storage, temperature, battery,
+      network, process, fan, and license sections
+- [x] Per-fan Auto/Manual controls with fan-specific RPM ranges
+- [x] Detail window with fan curve editor
+- [x] Korean and English UI
+
+### Daemon & Distribution
+
+- [x] LaunchDaemon installer and uninstall scripts
+- [x] Unix-socket IPC between menu-bar app/CLI and daemon
+- [x] Root daemon self-reinstall path for quieter future updates
+- [x] Developer ID signing and Apple notarization
+- [x] DMG readiness checks, Gatekeeper validation, and local install tests
+
+## Help Wanted
+
+- **Sensor naming samples** — `peterfan temps --json` outputs from different
+  Apple Silicon and Intel Macs help us map CPU/GPU/board sensors correctly.
+- **Windows fan research** — EC/WMI/LibreHardwareMonitor-style readings need
+  careful safety boundaries before write support.
+- **Design review** — screenshots comparing PeterFan, RunCat, Stats, and iStat
+  help keep the popover useful without becoming crowded.

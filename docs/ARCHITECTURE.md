@@ -36,9 +36,11 @@ architectural invariant to defend in review.
 | `peterfan-cli` | `packages/cli` | The `peterfan` binary. Pure presentation over core + a provider. |
 | `peterfan-tui` | `packages/tui` | `peterfan-tui` binary: a ratatui dashboard polling a `SystemMonitor`. |
 | `peterfan-menubar` | `packages/menubar` | `peterfan-menubar` binary: a macOS menu-bar (Windows tray) app — live CPU in the bar, a left-click WebView popover dashboard, and a right-click native menu. Built on `tray-icon` + `tao` + `wry`. |
+| `peterfan-daemon` | `packages/daemon` | The privileged `peterfand` control loop: applies profiles continuously, serves IPC, restores fans to auto on exit, and forces 100% duty above the critical temperature. |
 
-Planned (see [ROADMAP](./ROADMAP.md)): `packages/daemon` (privileged control
-service + safety watchdog) and `apps/desktop` (Tauri + React GUI).
+Planned work is tracked in [ROADMAP](./ROADMAP.md): UI polish, fan-control
+health diagnostics, sensor accuracy, distribution improvements, and future
+platform backends.
 
 ## Two seams: `SystemMonitor` and `HardwareProvider`
 
@@ -97,10 +99,10 @@ Fan control writes to hardware and can be dangerous. The design commits to:
 1. **Read-only by default.** Monitoring needs no elevated privileges.
 2. **Explicit, separate control.** Writes go through a backend that has
    declared `control_fans = true`.
-3. **Restore on exit / crash.** The planned daemon owns active control and
-   hands fans back to OS-default behavior on shutdown or crash, and force-ramps
-   on critical temperatures. The CLI never leaves fans in a custom state it
-   can't recover from.
+3. **Restore on exit / crash.** The daemon owns active control and hands fans
+   back to OS-default behavior on shutdown or crash, and force-ramps on
+   critical temperatures. The CLI never leaves fans in a custom state it can't
+   recover from.
 
 ## Why Rust
 

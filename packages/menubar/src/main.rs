@@ -2666,6 +2666,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Detail<", ">상세<")
             .replace(">Updates<", ">업데이트<")
             .replace(">License<", ">라이선스<")
+            .replace(">More<", ">더보기<")
             .replace(">Quit<", ">종료<")
             .replace(">Selected point<", ">선택한 점<")
             .replace(">Reset<", ">초기화<")
@@ -2693,6 +2694,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .panel{background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:13px;overflow-y:auto;overflow-x:hidden;box-shadow:var(--shadow);max-height:100vh;}
 .dashboard-shell{display:grid;grid-template-columns:minmax(0,1fr) 78px;gap:8px;padding:7px;}
 .main-pane{min-width:0;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:rgba(255,255,255,.015);}
+body.compact .compact-extra{display:none!important;}
 .action-rail{display:flex;flex-direction:column;gap:7px;position:sticky;top:7px;align-self:start;}
 .rail-btn{height:56px;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;background:var(--chip-bg);border:1px solid var(--panel-border);border-radius:8px;color:var(--text);font:inherit;font-size:9.5px;font-weight:700;cursor:pointer;transition:background .15s,border-color .15s,transform .15s;color-scheme:inherit;}
 .rail-btn:hover{background:var(--chip-hover);border-color:rgba(91,157,255,.35);}
@@ -2700,6 +2702,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .rail-btn svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;color:var(--text);}
 .rail-btn.primary{background:rgba(91,157,255,.18);border-color:rgba(91,157,255,.35);color:var(--accent);}
 .rail-btn.primary svg{color:var(--accent);}
+.rail-btn.active{background:rgba(91,157,255,.16);border-color:rgba(91,157,255,.38);color:var(--accent);}
 .setup{position:relative;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 15px 7px;border-bottom:1px solid var(--line);}
 .setup-main{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;}
 .setup-dot{width:7px;height:7px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 3px transparent;flex:0 0 auto;}
@@ -2809,7 +2812,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .range-tab{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:600;padding:3px 9px;border-radius:99px;cursor:pointer;transition:background .15s,color .15s;}
 .range-tab:hover{background:var(--chip-hover);}
 .range-tab.active{background:rgba(91,157,255,.22);color:var(--accent);}
-</style></head><body><div class="panel"><div class="dashboard-shell"><main class="main-pane">
+</style></head><body class="compact"><div class="panel"><div class="dashboard-shell"><main class="main-pane">
 
 <div class="range-tabs">
 <button class="range-tab active" data-range="2m" onclick="setChartRange('2m')">2m</button>
@@ -2873,7 +2876,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="sub" id="mem-sub"></div><div class="bar"><div class="bar-fill" id="mem-bar"></div></div>
 <canvas class="chart" id="mem-chart"></canvas><div class="chart-stats" id="mem-chart-stats"></div></div></div>
 
-<div class="row"><span class="ic"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span>
+<div class="row compact-extra" data-compact-extra="storage"><span class="ic"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span>
 <div class="content"><div class="head"><span class="name">Storage</span><span class="val" id="disk-val">—</span></div>
 <div class="sub" id="disk-sub"></div><div class="bar"><div class="bar-fill" id="disk-bar"></div></div>
 <div class="sub" id="disk-io-sub" style="display:none;margin-top:4px"></div>
@@ -2884,33 +2887,33 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="bar"><div class="bar-fill" id="temp-bar"></div></div><div id="temp-list"></div>
 <canvas class="chart" id="temp-chart"></canvas><div class="chart-stats" id="temp-chart-stats"></div></div></div>
 
-<div class="row" id="sec-batt"><span class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="18" height="9" rx="2"/><path d="M22 11v3"/></svg></span>
+<div class="row compact-extra" id="sec-batt" data-compact-extra="battery"><span class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="18" height="9" rx="2"/><path d="M22 11v3"/></svg></span>
 <div class="content"><div class="head"><span class="name">Battery</span><span class="val" id="batt-val">—</span></div>
 <div class="sub" id="batt-sub"></div><div class="bar"><div class="bar-fill" id="batt-bar"></div></div></div></div>
 
-<div class="row"><span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg></span>
+<div class="row compact-extra" data-compact-extra="network"><span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg></span>
 <div class="content"><div class="head"><span class="name">Network</span><span class="val"></span></div>
 <div class="sub" id="net-sub"></div>
 <div class="sub" id="net-ip" style="display:none"></div>
 <canvas class="chart" id="net-chart"></canvas><div class="chart-stats" id="net-chart-stats"></div></div></div>
 
-<div class="row" id="sec-procs"><span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5"/></svg></span>
+<div class="row compact-extra" id="sec-procs" data-compact-extra="processes"><span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5"/></svg></span>
 <div class="content"><div class="head"><span class="name">Top Processes</span><span class="sort-tabs"><button class="range-tab" id="ps-cpu" onclick="setProcSort('cpu')">CPU</button><button class="range-tab" id="ps-mem" onclick="setProcSort('mem')">MEM</button></span></div>
 <div id="procs-list"></div></div></div>
 
-<div class="lic" id="lic-row">
+<div class="lic compact-extra" id="lic-row" data-compact-extra="license">
 <span id="lic-text"></span>
 <span class="lic-actions">
 <a class="lic-buy" id="lic-buy" href="#" target="_blank" rel="noopener">Buy License →</a>
 <button class="lic-link" id="lic-toggle" onclick="toggleLicForm()">Activate</button>
 </span>
 </div>
-<div class="lic-form" id="lic-form">
+<div class="lic-form compact-extra" id="lic-form" data-compact-extra="license-form">
 <input type="text" id="lic-input" placeholder="PFAN1-..." spellcheck="false">
 <button onclick="submitLicense()">Activate</button>
 </div>
 
-<div class="foot"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
+<div class="foot compact-extra" data-compact-extra="quit"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
 </main>
 <aside class="action-rail" aria-label="Quick actions">
 <button class="rail-btn primary" id="railDetail" onclick="window.ipc.postMessage('open_detail')" title="Open Detailed Window…"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Detail</span></button>
@@ -2918,7 +2921,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <button class="rail-btn" id="railUpdate" onclick="checkAppUpdates(this)" title="Check for Updates…"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
 <button class="rail-btn" id="railLogin" onclick="window.ipc.postMessage('togglelogin')" title="Launch at Login"><svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M7.1 6.2a8 8 0 1 0 9.8 0"/></svg><span>Login</span></button>
 <button class="rail-btn" id="railLicense" onclick="toggleLicForm()" title="License"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="3"/><path d="M11 12h9M16 12v3M19 12v2"/></svg><span>License</span></button>
-<button class="rail-btn" id="railQuit" onclick="window.ipc.postMessage('quit')" title="Quit PeterFan"><svg viewBox="0 0 24 24"><path d="M9 6H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/><path d="M14 8l4 4-4 4"/><path d="M18 12H9"/></svg><span>Quit</span></button>
+<button class="rail-btn" id="railMore" onclick="togglePopoverExpanded()" title="Show more"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg><span>More</span></button>
 </aside></div></div>
 <div class="chart-tip" id="chart-tip"></div>
 <script>
@@ -2926,6 +2929,30 @@ var LANG='__LANG__';
 var SHOW_CURVE_EDITOR='__SHOWCURVE__';
 var FAN_CONTROL_FIX_PENDING=false;
 var APP_UPDATE_CHECK_PENDING=false;
+function popoverCompact(){
+  return localStorage.getItem('pf.compact')!=='0';
+}
+function setPopoverExpanded(expanded){
+  localStorage.setItem('pf.compact',expanded?'0':'1');
+  applyPopoverMode();
+}
+function togglePopoverExpanded(){
+  setPopoverExpanded(popoverCompact());
+}
+function applyPopoverMode(){
+  var compact=popoverCompact();
+  document.body.classList.toggle('compact',compact);
+  document.body.classList.toggle('expanded',!compact);
+  var more=document.getElementById('railMore');
+  if(more){
+    more.classList.toggle('active',!compact);
+    more.title=compact?(LANG==='ko'?'더보기':'Show more'):(LANG==='ko'?'접기':'Show less');
+    var label=more.querySelector('span');
+    if(label)label.textContent=compact?(LANG==='ko'?'더보기':'More'):(LANG==='ko'?'접기':'Less');
+  }
+  reportHeight();
+}
+applyPopoverMode();
 window.__pf={
  update:function(d){
  function cls(p){return p<50?'g':p<80?'y':'r';}
@@ -3375,7 +3402,10 @@ function saveCurve(){
   if(!CURVE_POINTS||CURVE_POINTS.length<2)return;
   window.ipc.postMessage('savecurve:'+JSON.stringify(CURVE_POINTS));
 }
-function toggleLicForm(){var f=document.getElementById('lic-form');if(f)f.classList.toggle('show');}
+function toggleLicForm(){
+  setPopoverExpanded(true);
+  var f=document.getElementById('lic-form');if(f)f.classList.toggle('show');
+}
 function focusFanControl(){
   var el=document.getElementById('fan-control-section');
   if(el)el.scrollIntoView({block:'nearest',behavior:'auto'});
@@ -3662,7 +3692,9 @@ mod tests {
             assert!(html.contains("railUpdate"));
             assert!(html.contains("railLogin"));
             assert!(html.contains("railLicense"));
+            assert!(html.contains("railMore"));
             assert!(html.contains("focusFanControl"));
+            assert!(html.contains("togglePopoverExpanded"));
         }
 
         assert!(en.contains(">Detail<"));
@@ -3670,11 +3702,28 @@ mod tests {
         assert!(en.contains(">Updates<"));
         assert!(en.contains(">Login<"));
         assert!(en.contains(">License<"));
+        assert!(en.contains(">More<"));
         assert!(ko.contains(">상세<"));
         assert!(ko.contains(">팬<"));
         assert!(ko.contains(">업데이트<"));
         assert!(ko.contains(">자동 실행<"));
         assert!(ko.contains(">라이선스<"));
+        assert!(ko.contains(">더보기<"));
+    }
+
+    #[test]
+    fn dashboard_html_supports_compact_popover_mode() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains("compact-extra"));
+        assert!(en.contains(r#"data-compact-extra="storage""#));
+        assert!(en.contains(r#"data-compact-extra="battery""#));
+        assert!(en.contains(r#"data-compact-extra="network""#));
+        assert!(en.contains(r#"data-compact-extra="processes""#));
+        assert!(en.contains(r#"data-compact-extra="license""#));
+        assert!(en.contains("applyPopoverMode"));
+        assert!(en.contains("setPopoverExpanded"));
+        assert!(en.contains("pf.compact"));
     }
 
     #[test]
