@@ -2677,6 +2677,10 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             &format_temp_opt(probe.selected_hottest_c, "—"),
         );
         print_kv(
+            "  CPU summary",
+            &format_temp_opt(probe.summary_average_c, "not found"),
+        );
+        print_kv(
             "  SMC aggregate",
             &format_temp_opt(probe.aggregate_average_c, "not found"),
         );
@@ -2692,6 +2696,17 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             "  core hottest",
             &format_temp_opt(probe.core_hottest_c, "not found"),
         );
+        if !probe.summary_keys.is_empty() {
+            print_kv(
+                "  summary keys",
+                &probe
+                    .summary_keys
+                    .iter()
+                    .map(|r| format!("{}={:.1}°C", r.key, r.value_c))
+                    .collect::<Vec<_>>()
+                    .join("  "),
+            );
+        }
         if !probe.aggregate_keys.is_empty() {
             print_kv(
                 "  aggregate keys",
@@ -2720,7 +2735,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             );
         }
         println!(
-            "    {} selected avg uses live CPU core keys; SMC aggregate is shown for comparison",
+            "    {} selected avg uses CPU summary first, then live core average; SMC aggregate is comparison-only",
             "→".dimmed()
         );
     }
@@ -3101,17 +3116,21 @@ fn cpu_temperature_probe_json(probe: &peterfan_platform::CpuTemperatureProbe) ->
     serde_json::json!({
         "selected_average_c": probe.selected_average_c,
         "selected_hottest_c": probe.selected_hottest_c,
+        "summary_average_c": probe.summary_average_c,
         "aggregate_average_c": probe.aggregate_average_c,
         "performance_core_average_c": probe.performance_core_average_c,
         "all_core_average_c": probe.all_core_average_c,
         "core_hottest_c": probe.core_hottest_c,
+        "summary_keys": probe.summary_keys.iter().map(|r| {
+            serde_json::json!({ "key": r.key, "value_c": r.value_c })
+        }).collect::<Vec<_>>(),
         "aggregate_keys": probe.aggregate_keys.iter().map(|r| {
             serde_json::json!({ "key": r.key, "value_c": r.value_c })
         }).collect::<Vec<_>>(),
         "core_keys": probe.core_keys.iter().map(|r| {
             serde_json::json!({ "key": r.key, "class": r.class, "value_c": r.value_c })
         }).collect::<Vec<_>>(),
-        "selection_policy": "live_core_average_then_smc_aggregate_fallback",
+        "selection_policy": "cpu_summary_then_live_core_average_then_smc_aggregate_fallback",
     })
 }
 
@@ -4007,10 +4026,15 @@ mod tests {
         let probe = peterfan_platform::CpuTemperatureProbe {
             selected_average_c: Some(75.0),
             selected_hottest_c: Some(78.0),
+            summary_average_c: Some(75.0),
             aggregate_average_c: Some(75.0),
             performance_core_average_c: Some(65.0),
             all_core_average_c: Some(64.0),
             core_hottest_c: Some(78.0),
+            summary_keys: vec![peterfan_platform::CpuTemperatureKeyReading {
+                key: "TCDX".to_string(),
+                value_c: 75.0,
+            }],
             aggregate_keys: vec![peterfan_platform::CpuTemperatureKeyReading {
                 key: "TV0s".to_string(),
                 value_c: 75.0,
@@ -4026,8 +4050,9 @@ mod tests {
         assert_eq!(json["selected_average_c"], 75.0);
         assert_eq!(
             json["selection_policy"],
-            "live_core_average_then_smc_aggregate_fallback"
+            "cpu_summary_then_live_core_average_then_smc_aggregate_fallback"
         );
+        assert_eq!(json["summary_keys"][0]["key"], "TCDX");
         assert_eq!(json["aggregate_keys"][0]["key"], "TV0s");
         assert_eq!(json["core_keys"][0]["class"], "performance");
     }

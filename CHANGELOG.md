@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.68] — CPU summary 온도 기준 보정
+
+### Fixed
+- **CPU 평균 온도 기준을 `TCDX` summary 키 우선으로 보정** — Macs Fan Control
+  바이너리와 로컬 SMC 샘플에서 확인되는 `TCDX`가 짧은 부하에도 반응하고
+  외부 도구의 CPU 평균 표시와 더 가까워, 대표 `CPU Core Average`는 `TCDX`
+  우선, 없을 때 `Te*`/`Tf*` live core 평균 fallback으로 변경함.
+- **`doctor` calibration 출력 확장** — `CPU summary`와 `summary_keys`를 추가해
+  `TCDX`, live core 평균, `TV*` aggregate를 한 화면/JSON에서 비교할 수 있게 함.
+
 ## [1.26.67] — CPU 평균 온도 실시간 반응성 보정
 
 ### Fixed
