@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.44] — 레일 화면 전환 핫픽스
+
+### Fixed
+- **오른쪽 레일 클릭 전환 고정** — macOS WebView에서 `localStorage`가 실패해도
+  클릭한 레일 화면을 메모리 상태로 유지하도록 바꿔, 버튼을 눌러도 왼쪽 화면이
+  `Status`로 되돌아가던 문제를 수정함.
+
 ## [1.26.43] — 오른쪽 레일 명령 정리
 
 ### Changed

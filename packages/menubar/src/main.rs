@@ -3002,10 +3002,12 @@ function setPopoverExpanded(expanded){
 function togglePopoverExpanded(){
   setPopoverExpanded(popoverCompact());
 }
+var RAIL_VIEW=storageGet('pf.rail.view')||'overview';
 function railView(){
-  return storageGet('pf.rail.view')||'overview';
+  return RAIL_VIEW||'overview';
 }
 function setRailView(view){
+  RAIL_VIEW=view;
   storageSet('pf.rail.view',view);
   document.body.setAttribute('data-rail-view',view);
   applyRailView();
@@ -3977,8 +3979,12 @@ mod tests {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
         assert!(en.contains(r#"<body class="compact" data-rail-view="overview">"#));
+        assert!(en.contains("var RAIL_VIEW=storageGet('pf.rail.view')||'overview';"));
         assert!(en.contains("function setRailView(view)"));
         assert!(en.contains("function applyRailView()"));
+        assert!(en.contains("function railView(){"));
+        assert!(en.contains("return RAIL_VIEW||'overview';"));
+        assert!(en.contains("RAIL_VIEW=view;"));
         assert!(en.contains(r#"id="rail-update-panel""#));
         assert!(en.contains(r#"id="rail-login-panel""#));
         assert!(en.contains(r#"id="rail-license-panel""#));
