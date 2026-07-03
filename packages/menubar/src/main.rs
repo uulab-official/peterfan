@@ -1480,8 +1480,8 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
 /// the current monitor — with the CPU/memory/storage/temperature/fans/
 /// battery/network/processes/fan-control sections all present, content can
 /// genuinely exceed a short display's height. Content beyond this scrolls
-/// (see `.panel{overflow-y:auto}`) instead of being cut off or pushed
-/// off-screen.
+/// inside the left `.main-pane` instead of dragging the action rail along or
+/// being cut off.
 fn max_popover_height(w: &Window) -> f64 {
     let scale = w.scale_factor();
     let Some(monitor) = w.current_monitor() else {
@@ -2691,11 +2691,14 @@ const DASHBOARD_HTML_EN: &str = r##"<!doctype html><html><head><meta charset="ut
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;color:var(--text);-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased;overflow:hidden;}
-.panel{background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:13px;overflow-y:auto;overflow-x:hidden;box-shadow:var(--shadow);max-height:100vh;}
-.dashboard-shell{display:grid;grid-template-columns:minmax(0,1fr) 78px;gap:8px;padding:7px;}
-.main-pane{min-width:0;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:rgba(255,255,255,.015);}
+.panel{background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:13px;overflow:hidden;box-shadow:var(--shadow);max-height:100vh;}
+.dashboard-shell{display:grid;grid-template-columns:minmax(0,1fr) 78px;gap:8px;padding:7px;height:100vh;max-height:100vh;}
+.main-pane{min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:9px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;background:rgba(255,255,255,.015);}
+.main-pane::-webkit-scrollbar{width:8px;}
+.main-pane::-webkit-scrollbar-thumb{background:rgba(127,136,150,.45);border-radius:99px;}
+.main-pane::-webkit-scrollbar-track{background:transparent;}
 body.compact .compact-extra{display:none!important;}
-.action-rail{display:flex;flex-direction:column;gap:7px;position:sticky;top:7px;align-self:start;}
+.action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;}
 .rail-btn{height:56px;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;background:var(--chip-bg);border:1px solid var(--panel-border);border-radius:8px;color:var(--text);font:inherit;font-size:9.5px;font-weight:700;cursor:pointer;transition:background .15s,border-color .15s,transform .15s;color-scheme:inherit;}
 .rail-btn:hover{background:var(--chip-hover);border-color:rgba(91,157,255,.35);}
 .rail-btn:active{transform:scale(.98);}
@@ -3570,7 +3573,16 @@ function reportHeight(){
   if(!window.ipc)return;
   // Measure after layout settles so populated lists are included.
   requestAnimationFrame(function(){
-    var h=Math.max(document.body.scrollHeight,document.documentElement.scrollHeight);
+    var main=document.querySelector('.main-pane');
+    var rail=document.querySelector('.action-rail');
+    var shellPad=14;
+    var contentH=Math.max(
+      main?main.scrollHeight:0,
+      rail?rail.scrollHeight:0,
+      document.body.scrollHeight,
+      document.documentElement.scrollHeight
+    );
+    var h=contentH+shellPad;
     window.ipc.postMessage('h:'+Math.ceil(h));
   });
 }
@@ -3724,6 +3736,21 @@ mod tests {
         assert!(en.contains("applyPopoverMode"));
         assert!(en.contains("setPopoverExpanded"));
         assert!(en.contains("pf.compact"));
+    }
+
+    #[test]
+    fn dashboard_scrollbar_belongs_to_main_pane_not_action_rail() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains(".panel{"));
+        assert!(en.contains("overflow:hidden"));
+        assert!(en.contains(".dashboard-shell{"));
+        assert!(en.contains("height:100vh"));
+        assert!(en.contains(".main-pane{"));
+        assert!(en.contains("overflow-y:auto"));
+        assert!(en.contains("scrollbar-gutter:stable"));
+        assert!(en.contains(".action-rail{"));
+        assert!(!en.contains("position:sticky;top:7px"));
     }
 
     #[test]
