@@ -190,10 +190,6 @@ struct TrayMenu {
     /// terminal (macOS only; `None` elsewhere).
     #[cfg(target_os = "macos")]
     enable_fan_control: tray_icon::menu::MenuId,
-    /// "Launch at Login" checkbox — kept in sync with the actual LaunchAgent
-    /// state after each toggle.
-    #[cfg(target_os = "macos")]
-    launch_at_login: tray_icon::menu::CheckMenuItem,
     check_updates: tray_icon::menu::MenuId,
     open_detail: tray_icon::menu::MenuId,
     /// "Language" submenu — changing this saves to config and asks the user
@@ -208,7 +204,6 @@ struct TrayMenu {
 /// popover/detail-window open, without needing a full app relaunch).
 struct L10n {
     enable_fan_control: &'static str,
-    launch_at_login: &'static str,
     auto: &'static str,
     rules: &'static str,
     profile_silent: &'static str,
@@ -237,7 +232,6 @@ fn strings(lang: ResolvedLanguage) -> L10n {
     match lang {
         ResolvedLanguage::En => L10n {
             enable_fan_control: "Enable Fan Control (One-Time Setup)…",
-            launch_at_login: "Launch at Login",
             auto: "Auto (OS-managed)",
             rules: "Rules",
             profile_silent: "Silent",
@@ -263,7 +257,6 @@ fn strings(lang: ResolvedLanguage) -> L10n {
         },
         ResolvedLanguage::Ko => L10n {
             enable_fan_control: "팬 제어 활성화 (최초 1회 설정)…",
-            launch_at_login: "로그인 시 자동 실행",
             auto: "자동 (OS 관리)",
             rules: "규칙",
             profile_silent: "무음",
@@ -343,15 +336,6 @@ fn save_language(language: Language) {
     let _ = peterfan_platform::config::save(&cfg);
 }
 
-#[cfg(target_os = "macos")]
-fn login_item_installed() -> bool {
-    peterfan_platform::login_item::is_installed()
-}
-#[cfg(not(target_os = "macos"))]
-fn login_item_installed() -> bool {
-    false
-}
-
 fn hottest_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
     temps.iter().max_by(|a, b| {
         a.value
@@ -421,15 +405,12 @@ fn temperature_row_label(lang: ResolvedLanguage, sensor: &TempSensor) -> String 
 fn setup_tone(
     daemon_running: bool,
     daemon_update_needed: bool,
-    login_item: bool,
     trial_expired: bool,
 ) -> &'static str {
     if trial_expired || daemon_update_needed {
         "warn"
-    } else if daemon_running && login_item {
-        "ok"
     } else if daemon_running {
-        "info"
+        "ok"
     } else {
         "warn"
     }
@@ -439,26 +420,17 @@ fn setup_title(
     lang: ResolvedLanguage,
     daemon_running: bool,
     daemon_update_needed: bool,
-    login_item: bool,
     trial_expired: bool,
 ) -> &'static str {
-    match (
-        lang,
-        trial_expired,
-        daemon_update_needed,
-        daemon_running,
-        login_item,
-    ) {
-        (ResolvedLanguage::Ko, true, _, _, _) => "라이선스 필요",
-        (ResolvedLanguage::Ko, false, true, _, _) => "팬 제어 재설치",
-        (ResolvedLanguage::Ko, false, false, true, true) => "준비 완료",
-        (ResolvedLanguage::Ko, false, false, true, false) => "팬 제어 준비됨",
-        (ResolvedLanguage::Ko, false, false, false, _) => "설정 필요",
-        (ResolvedLanguage::En, true, _, _, _) => "License needed",
-        (ResolvedLanguage::En, false, true, _, _) => "Reinstall Fan Control",
-        (ResolvedLanguage::En, false, false, true, true) => "Ready",
-        (ResolvedLanguage::En, false, false, true, false) => "Fan control ready",
-        (ResolvedLanguage::En, false, false, false, _) => "Setup needed",
+    match (lang, trial_expired, daemon_update_needed, daemon_running) {
+        (ResolvedLanguage::Ko, true, _, _) => "라이선스 필요",
+        (ResolvedLanguage::Ko, false, true, _) => "팬 제어 재설치",
+        (ResolvedLanguage::Ko, false, false, true) => "준비 완료",
+        (ResolvedLanguage::Ko, false, false, false) => "설정 필요",
+        (ResolvedLanguage::En, true, _, _) => "License needed",
+        (ResolvedLanguage::En, false, true, _) => "Reinstall Fan Control",
+        (ResolvedLanguage::En, false, false, true) => "Ready",
+        (ResolvedLanguage::En, false, false, false) => "Setup needed",
     }
 }
 
@@ -467,66 +439,45 @@ fn setup_detail(
     daemon_running: bool,
     daemon_update_needed: bool,
     daemon_version: Option<&str>,
-    login_item: bool,
     trial_expired: bool,
 ) -> String {
-    match (
-        lang,
-        trial_expired,
-        daemon_update_needed,
-        daemon_running,
-        login_item,
-    ) {
-        (ResolvedLanguage::Ko, true, _, _, _) => {
+    match (lang, trial_expired, daemon_update_needed, daemon_running) {
+        (ResolvedLanguage::Ko, true, _, _) => {
             format!("v{} · 체험판 만료", env!("CARGO_PKG_VERSION"))
         }
-        (ResolvedLanguage::Ko, false, true, _, _) => format!(
+        (ResolvedLanguage::Ko, false, true, _) => format!(
             "앱 v{} · 데몬 v{} · 팬 제어 재설치 · {}",
             env!("CARGO_PKG_VERSION"),
             daemon_version.unwrap_or("unknown"),
             daemon_reinstall_hint(lang, daemon_version)
         ),
-        (ResolvedLanguage::Ko, false, false, true, true) => {
+        (ResolvedLanguage::Ko, false, false, true) => {
             format!(
-                "앱 v{} · 데몬 v{} 정상 · 암호 불필요 · 자동 실행 켜짐",
+                "앱 v{} · 데몬 v{} 정상 · 암호 불필요",
                 env!("CARGO_PKG_VERSION"),
                 daemon_version.unwrap_or("unknown")
             )
         }
-        (ResolvedLanguage::Ko, false, false, true, false) => {
-            format!(
-                "앱 v{} · 데몬 v{} 정상 · 암호 불필요 · 자동 실행 꺼짐",
-                env!("CARGO_PKG_VERSION"),
-                daemon_version.unwrap_or("unknown")
-            )
-        }
-        (ResolvedLanguage::Ko, false, false, false, _) => {
+        (ResolvedLanguage::Ko, false, false, false) => {
             format!("v{} · 데몬 미실행", env!("CARGO_PKG_VERSION"))
         }
-        (ResolvedLanguage::En, true, _, _, _) => {
+        (ResolvedLanguage::En, true, _, _) => {
             format!("v{} · trial expired", env!("CARGO_PKG_VERSION"))
         }
-        (ResolvedLanguage::En, false, true, _, _) => format!(
+        (ResolvedLanguage::En, false, true, _) => format!(
             "app v{} · daemon v{} · reinstall fan control · {}",
             env!("CARGO_PKG_VERSION"),
             daemon_version.unwrap_or("unknown"),
             daemon_reinstall_hint(lang, daemon_version)
         ),
-        (ResolvedLanguage::En, false, false, true, true) => {
+        (ResolvedLanguage::En, false, false, true) => {
             format!(
-                "app v{} · daemon v{} OK · no admin prompt · login on",
+                "app v{} · daemon v{} OK · no admin prompt",
                 env!("CARGO_PKG_VERSION"),
                 daemon_version.unwrap_or("unknown")
             )
         }
-        (ResolvedLanguage::En, false, false, true, false) => {
-            format!(
-                "app v{} · daemon v{} OK · no admin prompt · login off",
-                env!("CARGO_PKG_VERSION"),
-                daemon_version.unwrap_or("unknown")
-            )
-        }
-        (ResolvedLanguage::En, false, false, false, _) => {
+        (ResolvedLanguage::En, false, false, false) => {
             format!("v{} · daemon not running", env!("CARGO_PKG_VERSION"))
         }
     }
@@ -902,19 +853,6 @@ fn main() {
                     // fix is one click from the exact error message that
                     // told the user they needed it, not a hunt through menus.
                     std::thread::spawn(install_fan_control);
-                } else if c == "togglelogin" {
-                    #[cfg(target_os = "macos")]
-                    {
-                        if let Some(ref tm) = app.tray_menu {
-                            toggle_launch_at_login(tm, app.metric.as_str());
-                            let installed = peterfan_platform::login_item::is_installed();
-                            *STATUS.lock().expect("status poisoned") = if installed {
-                                "launch at login enabled".into()
-                            } else {
-                                "launch at login disabled".into()
-                            };
-                        }
-                    }
                 } else if c == "checkupdates" {
                     std::thread::spawn(check_for_updates_interactive);
                 } else if c == "ready" {
@@ -987,9 +925,6 @@ fn main() {
                     Some(cmd.clone())
                 } else if is_enable_fan_control_id(tm, id) {
                     std::thread::spawn(install_fan_control);
-                    None
-                } else if is_launch_at_login_id(tm, id) {
-                    toggle_launch_at_login(tm, app.metric.as_str());
                     None
                 } else if tm.check_updates == *id {
                     std::thread::spawn(check_for_updates_interactive);
@@ -1135,16 +1070,6 @@ fn build_tray(app: &mut App) {
     #[cfg(target_os = "macos")]
     let enable_fan_control_item = MenuItem::new(s.enable_fan_control, true, None);
 
-    // "Launch at Login" — a per-user LaunchAgent, so this never needs an
-    // admin password and can toggle instantly (unlike fan control).
-    #[cfg(target_os = "macos")]
-    let launch_at_login_item = CheckMenuItem::new(
-        s.launch_at_login,
-        true,
-        peterfan_platform::login_item::is_installed(),
-        None,
-    );
-
     // Build context menu: Auto | Rules | — | profiles... | — | Quit
     let auto_item = MenuItem::new(s.auto, true, None);
     let rules_item = MenuItem::new(s.rules, true, None);
@@ -1266,8 +1191,6 @@ fn build_tray(app: &mut App) {
     let _ = menu.append(&show_submenu);
     let _ = menu.append(&display_submenu);
     let _ = menu.append(&language_submenu);
-    #[cfg(target_os = "macos")]
-    let _ = menu.append(&launch_at_login_item);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&open_detail_item);
     let _ = menu.append(&check_updates_item);
@@ -1287,8 +1210,6 @@ fn build_tray(app: &mut App) {
         fan_speed_items,
         #[cfg(target_os = "macos")]
         enable_fan_control: enable_fan_control_item.id().clone(),
-        #[cfg(target_os = "macos")]
-        launch_at_login: launch_at_login_item,
         check_updates: check_updates_item.id().clone(),
         open_detail: open_detail_item.id().clone(),
         language_items,
@@ -1356,7 +1277,7 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
                 QUIT.store(true, Ordering::Relaxed);
             } else if body == "open_detail" {
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
-            } else if body == "ready" || body == "togglelogin" || body == "checkupdates" {
+            } else if body == "ready" || body == "checkupdates" {
                 PENDING
                     .lock()
                     .expect("pending poisoned")
@@ -1440,7 +1361,7 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
                 QUIT.store(true, Ordering::Relaxed);
             } else if body == "open_detail" {
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
-            } else if body == "ready" || body == "togglelogin" || body == "checkupdates" {
+            } else if body == "ready" || body == "checkupdates" {
                 PENDING
                     .lock()
                     .expect("pending poisoned")
@@ -1817,7 +1738,6 @@ fn update(app: &mut App) {
         }
         (ResolvedLanguage::En, Entitlement::TrialExpired) => ("Trial expired".to_string(), true),
     };
-    let login_item = login_item_installed();
     let chart_range = ChartRange::from_u8(CHART_RANGE.load(Ordering::Relaxed));
     // Seeds the Detail Window's curve editor: the user's saved custom curve
     // if there is one, otherwise Balanced's points as a reasonable starting
@@ -1886,11 +1806,10 @@ fn update(app: &mut App) {
         "active_profile": active_profile,
         "active_control_mode": active_control_mode,
         "fan_setup_needed": (!daemon_running || daemon_update_needed) && can_control,
-        "login_item_installed": login_item,
         "app_version": env!("CARGO_PKG_VERSION"),
-        "setup_tone": setup_tone(!daemon_st.is_empty(), daemon_update_needed, login_item, trial_expired),
-        "setup_title": setup_title(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, login_item, trial_expired),
-        "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, daemon_version.as_deref(), login_item, trial_expired),
+        "setup_tone": setup_tone(!daemon_st.is_empty(), daemon_update_needed, trial_expired),
+        "setup_title": setup_title(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, trial_expired),
+        "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, daemon_version.as_deref(), trial_expired),
         "license_line": license_line,
         "trial_expired": trial_expired,
         "buy_url": BUY_URL,
@@ -2165,31 +2084,6 @@ fn is_enable_fan_control_id(tm: &TrayMenu, id: &tray_icon::menu::MenuId) -> bool
 fn is_enable_fan_control_id(_tm: &TrayMenu, _id: &tray_icon::menu::MenuId) -> bool {
     false
 }
-
-#[cfg(target_os = "macos")]
-fn is_launch_at_login_id(tm: &TrayMenu, id: &tray_icon::menu::MenuId) -> bool {
-    tm.launch_at_login.id() == id
-}
-#[cfg(not(target_os = "macos"))]
-fn is_launch_at_login_id(_tm: &TrayMenu, _id: &tray_icon::menu::MenuId) -> bool {
-    false
-}
-
-/// Toggle the "Launch at Login" LaunchAgent — a per-user agent, so this
-/// never needs an admin password and can happen instantly on click.
-#[cfg(target_os = "macos")]
-fn toggle_launch_at_login(tm: &TrayMenu, metric: &str) {
-    use peterfan_platform::login_item;
-    let now_installed = if login_item::is_installed() {
-        // Still installed if removal failed.
-        login_item::remove().is_err()
-    } else {
-        login_item::install(None, metric).is_ok()
-    };
-    tm.launch_at_login.set_checked(now_installed);
-}
-#[cfg(not(target_os = "macos"))]
-fn toggle_launch_at_login(_tm: &TrayMenu, _metric: &str) {}
 
 /// Run the one-time privileged daemon install (macOS admin-password dialog)
 /// from the menu bar directly — a GUI-only user never has to open a
@@ -2662,11 +2556,9 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">MEM<", ">메모리<")
             .replace(">Ready<", ">준비 완료<")
             .replace(">Set Up<", ">설정<")
-            .replace(">Login<", ">자동 실행<")
             .replace(">Settings<", ">설정<")
             .replace(">General Settings<", ">일반 설정<")
             .replace(">App Preferences<", ">앱 설정<")
-            .replace(">Launch at Login<", ">로그인 시 실행<")
             .replace(">Update<", ">업데이트<")
             .replace(">Auto<", ">자동<")
             .replace(">Silent<", ">저소음<")
@@ -2687,7 +2579,6 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">More Actions<", ">더보기<")
             .replace(">Open Detail Window<", ">상세 창 열기<")
             .replace(">Open Detail Window…<", ">상세 창 열기…<")
-            .replace(">Toggle Login Item<", ">자동 실행 전환<")
             .replace(
                 "Open a larger dashboard window, use the native menu for advanced settings, or quit PeterFan.",
                 "큰 대시보드 창을 열거나, 고급 설정은 기본 메뉴에서 조정하고, PeterFan을 종료할 수 있습니다.",
@@ -2695,10 +2586,6 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(
                 "Manage startup and app behavior from one place.",
                 "시작 동작과 앱 동작을 한 화면에서 관리합니다.",
-            )
-            .replace(
-                "Start PeterFan automatically when you sign in.",
-                "로그인할 때 PeterFan을 자동으로 실행합니다.",
             )
             .replace(
                 "Open the full dashboard when you need more room.",
@@ -2912,7 +2799,6 @@ body.compact .compact-extra{display:none!important;}
 <div class="setup-menu-wrap">
 <button id="setup-more" class="setup-more" onclick="toggleSetupMenu(event)" onkeydown="handleSetupMoreKey(event)" aria-label="Setup actions" aria-haspopup="menu" aria-expanded="false" title="Setup actions">…</button>
 <div class="setup-menu" id="setup-menu" role="menu" onkeydown="handleSetupMenuKey(event)">
-<button class="setup-menu-item" role="menuitem" id="setup-login" onclick="closeSetupMenu();window.ipc.postMessage('togglelogin')">Login</button>
 <button class="setup-menu-item" role="menuitem" id="setup-update" onclick="closeSetupMenu();checkAppUpdates(this)">Update</button>
 </div>
 </div>
@@ -2929,10 +2815,6 @@ body.compact .compact-extra{display:none!important;}
 <div class="panel-title-row"><div class="panel-title">General Settings</div><span class="panel-pill info" id="rail-settings-pill">App Preferences</span></div>
 <div class="panel-copy">Manage startup and app behavior from one place.</div>
 <div class="settings-list">
-<div class="settings-item">
-<div><div class="settings-item-title">Launch at Login</div><div class="settings-item-copy" id="rail-login-copy">Start PeterFan automatically when you sign in.</div></div>
-<div><span class="panel-pill" id="rail-login-pill">Off</span> <button class="panel-action secondary" id="rail-login-toggle" onclick="window.ipc.postMessage('togglelogin')">Toggle Login Item</button></div>
-</div>
 <div class="settings-item">
 <div><div class="settings-item-title">Detail Window</div><div class="settings-item-copy">Open the full dashboard when you need more room.</div></div>
 <button class="panel-action secondary" onclick="window.ipc.postMessage('open_detail')">Open Detail Window…</button>
@@ -3378,7 +3260,8 @@ function renderFanCards(fans){
     }
     var manual=!!f.manual;
     var useRpm=f.max_rpm>0;
-    card.dataset.curPct=f.pct;
+    var targetPct=f.override_pct!=null?f.override_pct:f.pct;
+    card.dataset.curPct=targetPct;
     card.querySelector('.fn').textContent=f.l;
     card.querySelector('.fan-bar i').style.width=Math.max(0,Math.min(100,f.pct))+'%';
     card.querySelector('.fan-rpm-text').textContent=useRpm
@@ -3403,10 +3286,10 @@ function renderFanCards(fans){
     // control — without this, typing into the number box would get
     // clobbered by the next 1s poll before the "change" event even fires.
     if(slider!==document.activeElement&&numInput!==document.activeElement){
-      var targetRpm=useRpm?Math.round(f.min_rpm+(f.max_rpm-f.min_rpm)*f.pct/100):Math.round(f.pct);
+      var targetRpm=useRpm?Math.round(f.min_rpm+(f.max_rpm-f.min_rpm)*targetPct/100):Math.round(targetPct);
       slider.value=targetRpm;
       numInput.value=targetRpm;
-      card.querySelector('.fv').textContent=manual?(useRpm?(targetRpm+' RPM'):(targetRpm+'%')):(Math.round(f.pct)+'%');
+      card.querySelector('.fv').textContent=manual?(useRpm?(targetRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%');
     }
   });
   Array.prototype.slice.call(container.children).forEach(function(c){
@@ -3720,12 +3603,6 @@ function updateSetup(d){
       ?(LANG==='ko'?'설치 중…':'Installing…')
       :(d.daemon_update_needed?(LANG==='ko'?'재설치':'Reinstall'):(LANG==='ko'?'팬':'Fan'));
   }
-  var login=document.getElementById('setup-login');
-  if(login){
-    login.textContent=d.login_item_installed?(LANG==='ko'?'자동 실행 켜짐':'Launch at Login On'):(LANG==='ko'?'자동 실행 켜기':'Launch at Login');
-    login.classList.toggle('active',!!d.login_item_installed);
-    login.title=LANG==='ko'?'로그인 시 PeterFan 실행':'Launch PeterFan at login';
-  }
   var more=document.getElementById('setup-more');
   if(more){
     more.title=LANG==='ko'?'설정 작업':'Setup actions';
@@ -3768,14 +3645,7 @@ function updateRail(d){
     setButtonLabel(settings,LANG==='ko'?'설정':'Settings');
     settings.title=LANG==='ko'?'설정 열기':'Open settings';
   }
-  var loginCopy=document.getElementById('rail-login-copy');
-  if(loginCopy)loginCopy.textContent=d.login_item_installed
-    ?(LANG==='ko'?'로그인 시 PeterFan이 자동 실행됩니다.':'PeterFan launches automatically at login.')
-    :(LANG==='ko'?'로그인할 때 PeterFan을 자동으로 실행할 수 있습니다.':'Start PeterFan automatically when you sign in.');
-  var loginToggle=document.getElementById('rail-login-toggle');
-  if(loginToggle)loginToggle.textContent=d.login_item_installed?(LANG==='ko'?'자동 실행 끄기':'Turn Off'):(LANG==='ko'?'자동 실행 켜기':'Turn On');
   setPanelPill('rail-settings-pill',LANG==='ko'?'앱 설정':'App Preferences','info');
-  setPanelPill('rail-login-pill',d.login_item_installed?(LANG==='ko'?'켜짐':'On'):(LANG==='ko'?'꺼짐':'Off'),d.login_item_installed?'ok':'');
   var lic=document.getElementById('railLicense');
   if(lic){
     setButtonLabel(lic,d.trial_expired?(LANG==='ko'?'활성화':'Activate'):(LANG==='ko'?'라이선스':'License'));
@@ -3961,8 +3831,6 @@ mod tests {
             assert!(html.contains("focusSetupMenuItem"));
             assert!(html.contains("setup-menu-item"));
             assert!(html.contains(r#"role="menuitem""#));
-            assert!(html.contains(r#"id="setup-login""#));
-            assert!(html.contains("togglelogin"));
             assert!(html.contains("checkupdates"));
             assert!(html.contains("checkAppUpdates"));
             assert!(html.contains("updateSetup"));
@@ -4115,7 +3983,6 @@ mod tests {
         for id in [
             "rail-update-pill",
             "rail-settings-pill",
-            "rail-login-pill",
             "rail-license-pill",
             "rail-more-pill",
         ] {
@@ -4126,7 +3993,6 @@ mod tests {
         assert!(en.contains(".panel-pill{"));
         assert!(en.contains("setPanelPill('rail-update-pill'"));
         assert!(en.contains("setPanelPill('rail-settings-pill'"));
-        assert!(en.contains("setPanelPill('rail-login-pill'"));
         assert!(en.contains("setPanelPill('rail-license-pill'"));
         assert!(en.contains("setPanelPill('rail-more-pill'"));
         assert!(en.contains("function setPanelPill(id,text,tone)"));
@@ -4161,7 +4027,6 @@ mod tests {
         assert!(en.contains("RAIL_VIEW=view;"));
         assert!(en.contains(r#"id="rail-update-panel""#));
         assert!(en.contains(r#"id="rail-settings-panel""#));
-        assert!(en.contains(r#"id="rail-login-toggle""#));
         assert!(en.contains(r#"id="rail-license-panel""#));
         assert!(en.contains("rail-license-form"));
         assert!(en.contains("submitLicenseInput('rail-lic-input')"));
@@ -4228,10 +4093,33 @@ mod tests {
         assert!(en.contains("grid-template-columns:minmax(0,1fr) 78px"));
         assert!(en.contains("function updateRail(d)"));
         assert!(en.contains("railSettings"));
-        assert!(en.contains("rail-login-toggle"));
-        assert!(en.contains("login_item_installed"));
         assert!(en.contains("setTimeout(function(){"));
         assert!(en.contains("},2500);"));
+    }
+
+    #[test]
+    fn dashboard_removes_launch_at_login_controls_from_popover() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+
+        for html in [&en, &ko] {
+            assert!(!html.contains("togglelogin"));
+            assert!(!html.contains("setup-login"));
+            assert!(!html.contains("rail-login"));
+            assert!(!html.contains("Launch at Login"));
+            assert!(!html.contains("로그인"));
+            assert!(!html.contains("자동 실행"));
+        }
+    }
+
+    #[test]
+    fn fan_cards_show_manual_override_target_immediately() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains("var targetPct=f.override_pct!=null?f.override_pct:f.pct;"));
+        assert!(en.contains("card.dataset.curPct=targetPct;"));
+        assert!(en.contains("var targetRpm=useRpm?Math.round(f.min_rpm+(f.max_rpm-f.min_rpm)*targetPct/100):Math.round(targetPct);"));
+        assert!(en.contains("card.querySelector('.fv').textContent=manual?(useRpm?(targetRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%');"));
     }
 
     #[test]
@@ -4424,31 +4312,21 @@ mod tests {
     #[test]
     fn setup_copy_calls_out_stale_daemon() {
         assert_eq!(
-            setup_title(ResolvedLanguage::En, true, true, false, false),
+            setup_title(ResolvedLanguage::En, true, true, false),
             "Reinstall Fan Control"
         );
         assert_eq!(
-            setup_title(ResolvedLanguage::Ko, true, true, false, false),
+            setup_title(ResolvedLanguage::Ko, true, true, false),
             "팬 제어 재설치"
         );
-        assert!(setup_detail(
-            ResolvedLanguage::En,
-            true,
-            true,
-            Some("1.26.8"),
-            false,
-            false
-        )
-        .contains("daemon v1.26.8 · reinstall fan control · one approval this time"));
-        assert!(setup_detail(
-            ResolvedLanguage::Ko,
-            true,
-            true,
-            Some("1.26.8"),
-            false,
-            false
-        )
-        .contains("팬 제어 재설치 · 이번 한 번 승인 필요"));
+        assert!(
+            setup_detail(ResolvedLanguage::En, true, true, Some("1.26.8"), false)
+                .contains("daemon v1.26.8 · reinstall fan control · one approval this time")
+        );
+        assert!(
+            setup_detail(ResolvedLanguage::Ko, true, true, Some("1.26.8"), false)
+                .contains("팬 제어 재설치 · 이번 한 번 승인 필요")
+        );
     }
 
     #[test]
@@ -4473,56 +4351,28 @@ mod tests {
 
     #[test]
     fn setup_detail_shows_daemon_version_when_ready() {
-        let en = setup_detail(
-            ResolvedLanguage::En,
-            true,
-            false,
-            Some("1.26.18"),
-            true,
-            false,
-        );
+        let en = setup_detail(ResolvedLanguage::En, true, false, Some("1.26.18"), false);
         assert!(en.contains("app v"));
         assert!(en.contains("daemon v1.26.18 OK"));
         assert!(en.contains("no admin prompt"));
-        assert!(en.contains("login on"));
+        assert!(!en.contains("login"));
 
-        let ko = setup_detail(
-            ResolvedLanguage::Ko,
-            true,
-            false,
-            Some("1.26.18"),
-            false,
-            false,
-        );
+        let ko = setup_detail(ResolvedLanguage::Ko, true, false, Some("1.26.18"), false);
         assert!(ko.contains("앱 v"));
         assert!(ko.contains("데몬 v1.26.18 정상"));
         assert!(ko.contains("암호 불필요"));
-        assert!(ko.contains("자동 실행 꺼짐"));
+        assert!(!ko.contains("자동 실행"));
     }
 
     #[test]
     fn setup_detail_reassures_when_daemon_is_compatible_but_older_than_app() {
         assert!(!peterfan_platform::daemon_update_required("1.26.24"));
 
-        let en = setup_detail(
-            ResolvedLanguage::En,
-            true,
-            false,
-            Some("1.26.24"),
-            true,
-            false,
-        );
+        let en = setup_detail(ResolvedLanguage::En, true, false, Some("1.26.24"), false);
         assert!(en.contains("daemon v1.26.24 OK"));
         assert!(en.contains("no admin prompt"));
 
-        let ko = setup_detail(
-            ResolvedLanguage::Ko,
-            true,
-            false,
-            Some("1.26.24"),
-            true,
-            false,
-        );
+        let ko = setup_detail(ResolvedLanguage::Ko, true, false, Some("1.26.24"), false);
         assert!(ko.contains("데몬 v1.26.24 정상"));
         assert!(ko.contains("암호 불필요"));
     }

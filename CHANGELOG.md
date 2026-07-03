@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.49] — 로그인 UI 제거와 팬 설정 피드백 수정
+
+### Fixed
+- **팬 수동 설정이 안 먹는 것처럼 보이던 문제** — 데몬은 `fanhold` 명령을 받고
+  실제 팬 RPM도 늦게 따라오지만, UI가 계속 현재 RPM/auto 상태만 보여주던 문제를
+  수정해 수동 target을 즉시 표시함.
+- **로그인 항목으로 메뉴바 아이콘이 중복될 수 있던 문제** — popover와 네이티브
+  메뉴에서 Launch at Login 조작을 제거하고, 현재 PC의 PeterFan 로그인 항목도
+  제거함.
+
+### Changed
+- **상단 setup copy 단순화** — 상태 문구에서 자동 실행 켜짐/꺼짐을 제거하고,
+  팬 제어/데몬/라이선스 상태만 보여주도록 정리함.
+
 ## [1.26.48] — 설정 진입과 배포본 클릭 UX 수정
 
 ### Fixed
