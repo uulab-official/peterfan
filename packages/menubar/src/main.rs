@@ -2978,12 +2978,12 @@ body.compact .compact-extra{display:none!important;}
 <div class="foot compact-extra" data-compact-extra="quit"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
 </main>
 <aside class="action-rail" aria-label="Quick actions">
-<button class="rail-btn primary" id="railDetail" data-rail-action="detail" onclick="runRailAction('detail',this)" title="Status overview"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Status</span></button>
-<button class="rail-btn" id="railFan" data-rail-action="fan" onclick="runRailAction('fan',this)" title="Fan control"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fan</span></button>
-<button class="rail-btn" id="railUpdate" data-rail-action="update" onclick="runRailAction('update',this)" title="Check for Updates…"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
-<button class="rail-btn" id="railLogin" data-rail-action="login" onclick="runRailAction('login',this)" title="Launch at Login"><svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M7.1 6.2a8 8 0 1 0 9.8 0"/></svg><span>Login</span></button>
-<button class="rail-btn" id="railLicense" data-rail-action="license" onclick="runRailAction('license',this)" title="License"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="3"/><path d="M11 12h9M16 12v3M19 12v2"/></svg><span>License</span></button>
-<button class="rail-btn" id="railMore" data-rail-action="more" onclick="runRailAction('more',this)" title="Show more"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg><span>More</span></button>
+<button class="rail-btn primary" id="railDetail" data-rail-action="detail" aria-pressed="true" onclick="runRailAction('detail',this)" title="Status overview"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Status</span></button>
+<button class="rail-btn" id="railFan" data-rail-action="fan" aria-pressed="false" onclick="runRailAction('fan',this)" title="Fan control"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fan</span></button>
+<button class="rail-btn" id="railUpdate" data-rail-action="update" aria-pressed="false" onclick="runRailAction('update',this)" title="Check for Updates…"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
+<button class="rail-btn" id="railLogin" data-rail-action="login" aria-pressed="false" onclick="runRailAction('login',this)" title="Launch at Login"><svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M7.1 6.2a8 8 0 1 0 9.8 0"/></svg><span>Login</span></button>
+<button class="rail-btn" id="railLicense" data-rail-action="license" aria-pressed="false" onclick="runRailAction('license',this)" title="License"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="3"/><path d="M11 12h9M16 12v3M19 12v2"/></svg><span>License</span></button>
+<button class="rail-btn" id="railMore" data-rail-action="more" aria-pressed="false" onclick="runRailAction('more',this)" title="Show more"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg><span>More</span></button>
 </aside></div></div>
 <div class="chart-tip" id="chart-tip"></div>
 <script>
@@ -3019,7 +3019,7 @@ function setRailView(view){
   RAIL_VIEW=view;
   storageSet('pf.rail.view',view);
   document.body.setAttribute('data-rail-view',view);
-  applyRailView();
+  applyRailView(true);
 }
 function setVisible(id,on){
   var el=document.getElementById(id);
@@ -3029,9 +3029,16 @@ function setVisible(id,on){
 }
 function setRailButtonActive(id,on){
   var el=document.getElementById(id);
-  if(el)el.classList.toggle('active',!!on);
+  if(el){
+    el.classList.toggle('active',!!on);
+    el.setAttribute('aria-pressed',on?'true':'false');
+  }
 }
-function applyRailView(){
+function resetRailPaneScroll(){
+  var pane=document.querySelector('.main-pane');
+  if(pane)pane.scrollTop=0;
+}
+function applyRailView(resetScroll){
   var view=railView();
   document.body.setAttribute('data-rail-view',view);
   var all=['range-tabs','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','lic-row','lic-form','foot','rail-update-panel','rail-login-panel','rail-license-panel','rail-more-panel'];
@@ -3055,6 +3062,7 @@ function applyRailView(){
     if(key==='detail')key='overview';
     setRailButtonActive('rail'+name,view===key);
   });
+  if(resetScroll)resetRailPaneScroll();
   reportHeight();
 }
 function applyPopoverMode(){
@@ -4032,13 +4040,29 @@ mod tests {
     }
 
     #[test]
+    fn rail_view_switch_resets_scroll_and_marks_pressed_state() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains(r#"id="railDetail" data-rail-action="detail" aria-pressed="true""#));
+        assert!(en.contains(r#"id="railFan" data-rail-action="fan" aria-pressed="false""#));
+        assert!(en.contains("function resetRailPaneScroll()"));
+        assert!(en.contains("pane.scrollTop=0;"));
+        assert!(en.contains("function setRailView(view)"));
+        assert!(en.contains("applyRailView(true);"));
+        assert!(en.contains("function applyRailView(resetScroll)"));
+        assert!(en.contains("if(resetScroll)resetRailPaneScroll();"));
+        assert!(en.contains("el.setAttribute('aria-pressed',on?'true':'false');"));
+        assert!(!en.contains("function applyRailView(){"));
+    }
+
+    #[test]
     fn action_rail_buttons_switch_left_pane_views() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
         assert!(en.contains(r#"<body class="compact" data-rail-view="overview">"#));
         assert!(en.contains("var RAIL_VIEW=storageGet('pf.rail.view')||'overview';"));
         assert!(en.contains("function setRailView(view)"));
-        assert!(en.contains("function applyRailView()"));
+        assert!(en.contains("function applyRailView(resetScroll)"));
         assert!(en.contains("function railView(){"));
         assert!(en.contains("return RAIL_VIEW||'overview';"));
         assert!(en.contains("RAIL_VIEW=view;"));
