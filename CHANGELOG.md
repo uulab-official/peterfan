@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.31] — README 이미지 렌더러
+
+### Changed
+- **README overview 이미지 렌더러 추가** — `scripts/render-readme-overview.swift`로
+  오픈소스 첫 화면 이미지를 재생성할 수 있게 하고, 이미지 안의 앱 버전은
+  `Cargo.toml`에서 자동으로 읽도록 함.
+- **문서 검사 강화** — `scripts/check-docs.sh`가 README overview 렌더러의
+  실행 가능 여부까지 확인하도록 함.
+
 ## [1.26.30] — 문서 신선도 자동 검사
 
 ### Changed

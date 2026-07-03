@@ -80,6 +80,14 @@ else
   fail "README overview image is missing"
 fi
 
+if [[ -x "$ROOT/scripts/render-readme-overview.swift" ]]; then
+  ok "README overview renderer exists and is executable"
+elif [[ -f "$ROOT/scripts/render-readme-overview.swift" ]]; then
+  fail "README overview renderer exists but is not executable"
+else
+  fail "README overview renderer is missing"
+fi
+
 echo
 if [[ "$FAILED" -eq 0 ]]; then
   ok "docs are ready"
