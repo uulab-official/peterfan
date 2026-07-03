@@ -46,6 +46,7 @@ use peterfan_core::{HardwareProvider, SystemMonitor};
 /// Placeholder purchase link — point this at the real store page once one
 /// exists (Gumroad/Paddle/Stripe checkout).
 const BUY_URL: &str = "https://peterfan.dev/buy";
+const MIN_REQUIRED_DAEMON_VERSION: &str = "1.26.22";
 
 const REFRESH: Duration = Duration::from_secs(1);
 /// Samples kept for the menu-bar graph icon (always shows the short-term
@@ -523,6 +524,10 @@ fn parse_daemon_version_output(output: &str) -> Option<String> {
         .find(|part| part.chars().next().is_some_and(|c| c.is_ascii_digit()))
         .map(|part| part.trim().to_string())
         .filter(|part| !part.is_empty())
+}
+
+fn daemon_update_required(installed_version: &str) -> bool {
+    peterfan_platform::updater::is_newer(installed_version, MIN_REQUIRED_DAEMON_VERSION)
 }
 
 #[cfg(target_os = "macos")]
@@ -1713,7 +1718,7 @@ fn update(app: &mut App) {
     let daemon_update_needed = daemon_running
         && daemon_version
             .as_deref()
-            .is_some_and(|version| version != env!("CARGO_PKG_VERSION"));
+            .is_some_and(daemon_update_required);
     let active_profile = daemon_json
         .as_ref()
         .and_then(|v| v.get("mode").and_then(|m| m.as_str()))
@@ -2171,9 +2176,7 @@ fn install_fan_control() {
         return;
     }
     let old_version = cached_installed_daemon_version();
-    let updating_existing = old_version
-        .as_deref()
-        .is_some_and(|version| version != env!("CARGO_PKG_VERSION"));
+    let updating_existing = old_version.as_deref().is_some_and(daemon_update_required);
     clear_daemon_version_cache();
     let (ok, message) = match peterfan_platform::daemon_install::install(false) {
         Ok(InstallOutcome::Installed) => {
@@ -2268,10 +2271,10 @@ fn stale_daemon_version() -> Option<String> {
         return None;
     }
     let version = installed_daemon_version()?;
-    if version == env!("CARGO_PKG_VERSION") {
-        None
-    } else {
+    if daemon_update_required(&version) {
         Some(version)
+    } else {
+        None
     }
 }
 #[cfg(not(target_os = "macos"))]
@@ -2297,15 +2300,15 @@ fn should_prompt_stale_daemon_update(
     true
 }
 
-/// After an app update, the bundled helper is new but the root LaunchDaemon
-/// remains whatever was previously installed. Surface that mismatch once per
-/// app version so fan control does not quietly run old logic forever.
+/// After an app update, the bundled helper may be newer while the root
+/// LaunchDaemon remains whatever was previously installed. Only surface this
+/// when the installed daemon is below the minimum version this app actually
+/// requires; UI-only releases should not ask for an admin password.
 #[cfg(target_os = "macos")]
 fn maybe_prompt_stale_daemon_update() {
     std::thread::sleep(Duration::from_secs(2));
-    let current = env!("CARGO_PKG_VERSION");
     let cfg = peterfan_platform::config::load();
-    if !should_prompt_stale_daemon_update(&cfg, current, now_unix()) {
+    if !should_prompt_stale_daemon_update(&cfg, MIN_REQUIRED_DAEMON_VERSION, now_unix()) {
         return;
     }
     let Some(old_version) = stale_daemon_version() else {
@@ -2317,7 +2320,7 @@ fn maybe_prompt_stale_daemon_update() {
         ResolvedLanguage::Ko => (
             "PeterFan — 팬 제어 업데이트",
             format!(
-                "PeterFan 앱은 v{current}이지만, 이 Mac에 설치된 팬 제어 데몬은 아직 v{old_version}입니다.\n\n지금 데몬도 업데이트할까요? macOS가 관리자 암호를 한 번 요청합니다."
+                "이 Mac에 설치된 팬 제어 데몬은 v{old_version}입니다. 이 PeterFan 앱은 팬 제어 데몬 v{MIN_REQUIRED_DAEMON_VERSION} 이상이 필요합니다.\n\n지금 데몬을 업데이트할까요? macOS가 관리자 암호를 한 번 요청합니다."
             ),
             "다시 묻지 않기",
             "나중에",
@@ -2326,7 +2329,7 @@ fn maybe_prompt_stale_daemon_update() {
         ResolvedLanguage::En => (
             "PeterFan — Update Fan Control",
             format!(
-                "PeterFan is v{current}, but the fan-control daemon installed on this Mac is still v{old_version}.\n\nUpdate the daemon now? macOS will ask for your password once."
+                "The fan-control daemon installed on this Mac is v{old_version}. This PeterFan app requires fan-control daemon v{MIN_REQUIRED_DAEMON_VERSION} or newer.\n\nUpdate the daemon now? macOS will ask for your password once."
             ),
             "Don't Ask Again",
             "Not Now",
@@ -2354,7 +2357,8 @@ fn maybe_prompt_stale_daemon_update() {
         install_fan_control();
     } else if stdout.contains(dont_ask) {
         let mut cfg = peterfan_platform::config::load();
-        cfg.menubar.daemon_update_prompt_dismissed_for = Some(current.to_string());
+        cfg.menubar.daemon_update_prompt_dismissed_for =
+            Some(MIN_REQUIRED_DAEMON_VERSION.to_string());
         let _ = peterfan_platform::config::save(&cfg);
     } else if stdout.contains(not_now) {
         let mut cfg = peterfan_platform::config::load();
@@ -3539,6 +3543,13 @@ mod tests {
             Some("1.26.8".to_string())
         );
         assert_eq!(parse_daemon_version_output("peterfand\n"), None);
+    }
+
+    #[test]
+    fn daemon_update_uses_min_required_version_not_app_version() {
+        assert!(daemon_update_required("1.26.21"));
+        assert!(!daemon_update_required(MIN_REQUIRED_DAEMON_VERSION));
+        assert!(!daemon_update_required("1.26.24"));
     }
 
     fn temp(id: &str, kind: SensorKind, value: f32) -> TempSensor {
