@@ -28,23 +28,87 @@ use peterfan_core::provider::Capabilities;
 use peterfan_core::types::{Celsius, Fan, HardwareInfo, SensorKind, TempSensor};
 use peterfan_core::HardwareProvider;
 
-const M3_CPU_CORE_TEMP_KEYS: &[(&str, &str)] = &[
-    ("Te05", "CPU Efficiency Core 1"),
-    ("Te0L", "CPU Efficiency Core 2"),
-    ("Te0P", "CPU Efficiency Core 3"),
-    ("Te0S", "CPU Efficiency Core 4"),
-    ("Tf04", "CPU Performance Core 1"),
-    ("Tf09", "CPU Performance Core 2"),
-    ("Tf0A", "CPU Performance Core 3"),
-    ("Tf0B", "CPU Performance Core 4"),
-    ("Tf0D", "CPU Performance Core 5"),
-    ("Tf0E", "CPU Performance Core 6"),
-    ("Tf44", "CPU Performance Core 7"),
-    ("Tf49", "CPU Performance Core 8"),
-    ("Tf4A", "CPU Performance Core 9"),
-    ("Tf4B", "CPU Performance Core 10"),
-    ("Tf4D", "CPU Performance Core 11"),
-    ("Tf4E", "CPU Performance Core 12"),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CpuCoreClass {
+    Efficiency,
+    Performance,
+}
+
+struct CpuCoreTempKey {
+    key: &'static str,
+    class: CpuCoreClass,
+}
+
+struct CpuCoreTemp {
+    class: CpuCoreClass,
+    temp: f32,
+}
+
+const M3_CPU_CORE_TEMP_KEYS: &[CpuCoreTempKey] = &[
+    CpuCoreTempKey {
+        key: "Te05",
+        class: CpuCoreClass::Efficiency,
+    },
+    CpuCoreTempKey {
+        key: "Te0L",
+        class: CpuCoreClass::Efficiency,
+    },
+    CpuCoreTempKey {
+        key: "Te0P",
+        class: CpuCoreClass::Efficiency,
+    },
+    CpuCoreTempKey {
+        key: "Te0S",
+        class: CpuCoreClass::Efficiency,
+    },
+    CpuCoreTempKey {
+        key: "Tf04",
+        class: CpuCoreClass::Performance,
+    },
+    CpuCoreTempKey {
+        key: "Tf09",
+        class: CpuCoreClass::Performance,
+    },
+    CpuCoreTempKey {
+        key: "Tf0A",
+        class: CpuCoreClass::Performance,
+    },
+    CpuCoreTempKey {
+        key: "Tf0B",
+        class: CpuCoreClass::Performance,
+    },
+    CpuCoreTempKey {
+        key: "Tf0D",
+        class: CpuCoreClass::Performance,
+    },
+    CpuCoreTempKey {
+        key: "Tf0E",
+        class: CpuCoreClass::Performance,
+    },
+    CpuCoreTempKey {
+        key: "Tf44",
+        class: CpuCoreClass::Performance,
+    },
+    CpuCoreTempKey {
+        key: "Tf49",
+        class: CpuCoreClass::Performance,
+    },
+    CpuCoreTempKey {
+        key: "Tf4A",
+        class: CpuCoreClass::Performance,
+    },
+    CpuCoreTempKey {
+        key: "Tf4B",
+        class: CpuCoreClass::Performance,
+    },
+    CpuCoreTempKey {
+        key: "Tf4D",
+        class: CpuCoreClass::Performance,
+    },
+    CpuCoreTempKey {
+        key: "Tf4E",
+        class: CpuCoreClass::Performance,
+    },
 ];
 
 fn deduped_name_average_max<'a, I>(temps: I) -> Option<f32>
@@ -87,18 +151,38 @@ fn average_and_hot(values: &[f32]) -> Option<(f32, f32)> {
     })
 }
 
-fn apple_silicon_cpu_core_temperatures() -> Vec<(String, f32)> {
-    let keys: Vec<&str> = M3_CPU_CORE_TEMP_KEYS.iter().map(|(key, _)| *key).collect();
+fn apple_silicon_cpu_core_temperatures() -> Vec<CpuCoreTemp> {
+    let keys: Vec<&str> = M3_CPU_CORE_TEMP_KEYS
+        .iter()
+        .map(|sensor| sensor.key)
+        .collect();
     let raw = crate::smc_write::read_temperature_keys(&keys);
     raw.into_iter()
         .filter_map(|(key, temp)| {
-            let label = M3_CPU_CORE_TEMP_KEYS
+            let sensor = M3_CPU_CORE_TEMP_KEYS
                 .iter()
-                .find(|(known, _)| *known == key)
-                .map(|(_, label)| *label)?;
-            Some((label.to_string(), temp))
+                .find(|known| known.key == key)?;
+            Some(CpuCoreTemp {
+                class: sensor.class,
+                temp,
+            })
         })
         .collect()
+}
+
+fn apple_silicon_cpu_average_and_hot(cores: &[CpuCoreTemp]) -> Option<(f32, f32)> {
+    let all_core_values: Vec<f32> = cores.iter().map(|sensor| sensor.temp).collect();
+    let mut average_values: Vec<f32> = cores
+        .iter()
+        .filter(|sensor| sensor.class == CpuCoreClass::Performance)
+        .map(|sensor| sensor.temp)
+        .collect();
+    if average_values.is_empty() {
+        average_values.clone_from(&all_core_values);
+    }
+    let avg = average_and_hot(&average_values)?.0;
+    let hot = average_and_hot(&all_core_values)?.1;
+    Some((avg, hot))
 }
 
 impl HardwareProvider for MacosProvider {
@@ -154,12 +238,12 @@ impl HardwareProvider for MacosProvider {
         let mut temps: Vec<TempSensor> = Vec::new();
 
         // M3 Pro/Max expose Apple-Silicon CPU core sensors through SMC keys
-        // (`Te*` efficiency cores, `Tf*` performance cores). Prefer these for
-        // the user-facing CPU average because this matches tools such as Macs
-        // Fan Control more closely than PMU `tdie` package readings.
+        // (`Te*` efficiency cores, `Tf*` performance cores). Macs Fan Control's
+        // "CPU Core Average" tracks the performance-core group much more
+        // closely than an all-E/P-core average, so prefer P-core average for
+        // the user-facing CPU reading and keep hottest across every core.
         let smc_cpu_cores = apple_silicon_cpu_core_temperatures();
-        let smc_cpu_values: Vec<f32> = smc_cpu_cores.iter().map(|(_, temp)| *temp).collect();
-        if let Some((avg, hot)) = average_and_hot(&smc_cpu_values) {
+        if let Some((avg, hot)) = apple_silicon_cpu_average_and_hot(&smc_cpu_cores) {
             temps.push(TempSensor {
                 id: "cpu.die".into(),
                 label: "CPU Core Average".into(),
@@ -492,16 +576,77 @@ mod tests {
     }
 
     #[test]
+    fn apple_silicon_cpu_average_prefers_performance_cores() {
+        let cores = vec![
+            super::CpuCoreTemp {
+                class: super::CpuCoreClass::Efficiency,
+                temp: 60.0,
+            },
+            super::CpuCoreTemp {
+                class: super::CpuCoreClass::Efficiency,
+                temp: 62.0,
+            },
+            super::CpuCoreTemp {
+                class: super::CpuCoreClass::Performance,
+                temp: 74.0,
+            },
+            super::CpuCoreTemp {
+                class: super::CpuCoreClass::Performance,
+                temp: 78.0,
+            },
+        ];
+
+        assert_eq!(
+            super::apple_silicon_cpu_average_and_hot(&cores),
+            Some((76.0, 78.0))
+        );
+    }
+
+    #[test]
+    fn apple_silicon_cpu_average_falls_back_to_all_cores_without_performance_keys() {
+        let cores = vec![
+            super::CpuCoreTemp {
+                class: super::CpuCoreClass::Efficiency,
+                temp: 60.0,
+            },
+            super::CpuCoreTemp {
+                class: super::CpuCoreClass::Efficiency,
+                temp: 62.0,
+            },
+        ];
+
+        assert_eq!(
+            super::apple_silicon_cpu_average_and_hot(&cores),
+            Some((61.0, 62.0))
+        );
+    }
+
+    #[test]
     fn m3_cpu_core_key_map_includes_efficiency_and_performance_cores() {
         let keys: Vec<&str> = super::M3_CPU_CORE_TEMP_KEYS
             .iter()
-            .map(|(key, _)| *key)
+            .map(|sensor| sensor.key)
             .collect();
 
         assert!(keys.contains(&"Te05"));
         assert!(keys.contains(&"Te0S"));
         assert!(keys.contains(&"Tf04"));
         assert!(keys.contains(&"Tf4E"));
+    }
+
+    #[test]
+    fn m3_cpu_core_key_map_marks_core_classes() {
+        let efficiency = super::M3_CPU_CORE_TEMP_KEYS
+            .iter()
+            .filter(|sensor| sensor.class == super::CpuCoreClass::Efficiency)
+            .count();
+        let performance = super::M3_CPU_CORE_TEMP_KEYS
+            .iter()
+            .filter(|sensor| sensor.class == super::CpuCoreClass::Performance)
+            .count();
+
+        assert_eq!(efficiency, 4);
+        assert_eq!(performance, 12);
     }
 
     #[test]
@@ -538,8 +683,11 @@ mod tests {
     #[test]
     #[ignore = "prints PeterFan's selected Apple Silicon CPU core SMC keys"]
     fn print_selected_cpu_core_temperature_keys() {
-        for (label, temp) in super::apple_silicon_cpu_core_temperatures() {
-            println!("{label}: {temp:.2}");
+        for (idx, sensor) in super::apple_silicon_cpu_core_temperatures()
+            .iter()
+            .enumerate()
+        {
+            println!("{:?} {:02}: {:.2}", sensor.class, idx + 1, sensor.temp);
         }
     }
 }

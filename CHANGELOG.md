@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.64] — Macs Fan Control CPU 평균 기준 재보정
+
+### Fixed
+- **CPU Core Average가 여전히 낮게 보이던 문제 수정** — M3 Pro/Max에서 E-core까지
+  섞은 전체 코어 평균 대신 Performance Core SMC 키 평균을 `CPU Core Average` 대표값으로
+  사용함. Macs Fan Control의 `CPU Core Average`가 표시된 Performance Core 온도군과
+  더 가까운 값을 보이는 동작에 맞춤.
+- **CPU 최고 온도는 전체 코어 기준 유지** — 대표 평균은 P-core 기준으로 맞추되,
+  `CPU Core Hottest`는 E/P 전체 코어 중 가장 뜨거운 값을 계속 사용함.
+
 ## [1.26.63] — 팝오버 높이 안정화
 
 ### Fixed
