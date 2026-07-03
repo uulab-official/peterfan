@@ -2649,6 +2649,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
         ResolvedLanguage::En => html,
         ResolvedLanguage::Ko => html
             .replace(">Fan control<", ">팬 제어<")
+            .replace(">Runner<", ">러너<")
             .replace(">Status<", ">상태<")
             .replace(">Memory<", ">메모리<")
             .replace(">Storage<", ">저장공간<")
@@ -2712,6 +2713,25 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .dashboard-shell{display:grid;grid-template-columns:minmax(0,1fr) 78px;gap:8px;padding:7px;height:100vh;max-height:100vh;}
 .main-pane{min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:9px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:none;background:rgba(255,255,255,.015);}
 .main-pane::-webkit-scrollbar{display:none;}
+.runner-strip{padding:9px 15px 7px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(91,157,255,.07),rgba(255,255,255,.01));}
+.runner-meta{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+.runner-name{font-size:9.5px;font-weight:800;color:var(--dim);letter-spacing:0;text-transform:uppercase;}
+.runner-load{font-size:10px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;}
+.runner-track{position:relative;height:28px;border-radius:99px;background:var(--track);overflow:hidden;}
+.runner-track:before{content:"";position:absolute;left:0;right:0;bottom:7px;height:1px;background:linear-gradient(90deg,transparent,rgba(91,157,255,.55),transparent);}
+.runner-character{position:absolute;left:2px;bottom:7px;width:24px;height:20px;animation:runnerTravel var(--runner-speed,1100ms) linear infinite;}
+.runner-character span{position:absolute;display:block;background:var(--accent);}
+.runner-head{width:6px;height:6px;border-radius:50%;left:10px;top:0;}
+.runner-torso{width:3px;height:10px;left:11px;top:6px;border-radius:99px;transform:rotate(10deg);transform-origin:top center;}
+.runner-arm{width:3px;height:10px;left:11px;top:7px;border-radius:99px;transform-origin:top center;animation:runnerStride var(--runner-speed,1100ms) ease-in-out infinite;}
+.runner-arm.a{transform:rotate(58deg);}
+.runner-arm.b{transform:rotate(-58deg);animation-delay:calc(var(--runner-speed,1100ms) / -2);}
+.runner-leg{width:3px;height:11px;left:11px;top:14px;border-radius:99px;transform-origin:top center;animation:runnerStride var(--runner-speed,1100ms) ease-in-out infinite reverse;}
+.runner-leg.a{transform:rotate(58deg);}
+.runner-leg.b{transform:rotate(-58deg);animation-delay:calc(var(--runner-speed,1100ms) / -2);}
+@keyframes runnerTravel{0%{transform:translateX(-24px)}100%{transform:translateX(250px)}}
+@keyframes runnerStride{0%,100%{transform:rotate(58deg)}50%{transform:rotate(-58deg)}}
+@media (prefers-reduced-motion: reduce){.runner-character,.runner-arm,.runner-leg{animation:none}.runner-character{transform:translateX(118px)}}
 body.compact .compact-extra{display:none!important;}
 .action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;}
 .rail-btn{height:56px;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;background:var(--chip-bg);border:1px solid var(--panel-border);border-radius:8px;color:var(--text);font:inherit;font-size:9.5px;font-weight:700;cursor:pointer;transition:background .15s,border-color .15s,transform .15s;color-scheme:inherit;}
@@ -2845,6 +2865,17 @@ body.compact .compact-extra{display:none!important;}
 .range-tab:hover{background:var(--chip-hover);}
 .range-tab.active{background:rgba(91,157,255,.22);color:var(--accent);}
 </style></head><body class="compact" data-rail-view="overview"><div class="panel"><div class="dashboard-shell"><main class="main-pane">
+
+<div class="runner-strip" id="runner-strip">
+<div class="runner-meta"><span class="runner-name">Runner</span><span class="runner-load" id="runner-load">CPU —</span></div>
+<div class="runner-track" aria-hidden="true">
+<div class="runner-character" id="runner-character">
+<span class="runner-head"></span><span class="runner-torso"></span>
+<span class="runner-arm a"></span><span class="runner-arm b"></span>
+<span class="runner-leg a"></span><span class="runner-leg b"></span>
+</div>
+</div>
+</div>
 
 <div class="range-tabs" id="range-tabs">
 <button class="range-tab active" data-range="2m" onclick="setChartRange('2m')">2m</button>
@@ -3098,6 +3129,13 @@ function setPanelPill(id,text,tone){
   el.textContent=text;
   el.className='panel-pill '+(tone||'');
 }
+function updateRunner(cpuPct){
+  var pct=Math.max(0,Math.min(100,Number(cpuPct)||0));
+  var speed=Math.round(1400-(pct*9));
+  document.documentElement.style.setProperty('--runner-speed',Math.max(420,speed)+'ms');
+  var load=document.getElementById('runner-load');
+  if(load)load.textContent='CPU '+pct.toFixed(0)+'%';
+}
 function runRailAction(action,btn){
   flashRailButton(btn);
   switch(action){
@@ -3117,6 +3155,7 @@ window.__pf={
  function show(id,on){var e=document.getElementById(id);if(e)e.style.display=on?'':'none';}
  updateSetup(d);
  updateRail(d);
+ updateRunner(d.cpu_pct);
  set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
  var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span');s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title='Core '+(i+1)+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
  set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
@@ -3938,6 +3977,27 @@ mod tests {
         assert!(ko.contains(">자동 실행<"));
         assert!(ko.contains(">라이선스<"));
         assert!(ko.contains(">더보기<"));
+    }
+
+    #[test]
+    fn dashboard_has_cpu_driven_runner_character() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+
+        assert!(en.contains(r#"id="runner-strip""#));
+        assert!(en.contains(r#"id="runner-load""#));
+        assert!(en.contains(r#"class="runner-character""#));
+        assert!(en.contains("runner-head"));
+        assert!(en.contains("runner-torso"));
+        assert!(en.contains("runner-arm a"));
+        assert!(en.contains("runner-leg b"));
+        assert!(en.contains("@keyframes runnerTravel"));
+        assert!(en.contains("@keyframes runnerStride"));
+        assert!(en.contains("@media (prefers-reduced-motion: reduce)"));
+        assert!(en.contains("function updateRunner(cpuPct)"));
+        assert!(en.contains("--runner-speed"));
+        assert!(en.contains("updateRunner(d.cpu_pct);"));
+        assert!(ko.contains(">러너<"));
     }
 
     #[test]

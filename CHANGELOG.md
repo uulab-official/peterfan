@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.47] — CPU 연동 러너 캐릭터
+
+### Added
+- **상단 러너 캐릭터** — 팝오버 상단에 움직이는 러너를 추가해 RunCat처럼 시스템
+  부하를 시각적으로 느낄 수 있게 함.
+
+### Changed
+- **CPU 기반 러너 속도** — 러너 애니메이션 속도를 CPU 사용률에 맞춰 조절하고,
+  macOS의 움직임 줄이기 설정에서는 애니메이션을 멈추도록 처리함.
+
 ## [1.26.46] — 레일 전환 사용감 개선
 
 ### Changed
