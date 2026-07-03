@@ -2663,6 +2663,10 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Ready<", ">준비 완료<")
             .replace(">Set Up<", ">설정<")
             .replace(">Login<", ">자동 실행<")
+            .replace(">Settings<", ">설정<")
+            .replace(">General Settings<", ">일반 설정<")
+            .replace(">App Preferences<", ">앱 설정<")
+            .replace(">Launch at Login<", ">로그인 시 실행<")
             .replace(">Update<", ">업데이트<")
             .replace(">Auto<", ">자동<")
             .replace(">Silent<", ">저소음<")
@@ -2682,9 +2686,23 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Quit<", ">종료<")
             .replace(">More Actions<", ">더보기<")
             .replace(">Open Detail Window<", ">상세 창 열기<")
+            .replace(">Open Detail Window…<", ">상세 창 열기…<")
+            .replace(">Toggle Login Item<", ">자동 실행 전환<")
             .replace(
                 "Open a larger dashboard window, use the native menu for advanced settings, or quit PeterFan.",
                 "큰 대시보드 창을 열거나, 고급 설정은 기본 메뉴에서 조정하고, PeterFan을 종료할 수 있습니다.",
+            )
+            .replace(
+                "Manage startup and app behavior from one place.",
+                "시작 동작과 앱 동작을 한 화면에서 관리합니다.",
+            )
+            .replace(
+                "Start PeterFan automatically when you sign in.",
+                "로그인할 때 PeterFan을 자동으로 실행합니다.",
+            )
+            .replace(
+                "Open the full dashboard when you need more room.",
+                "더 넓은 화면이 필요할 때 전체 대시보드를 엽니다.",
             )
             .replace(">Selected point<", ">선택한 점<")
             .replace(">Reset<", ">초기화<")
@@ -2847,6 +2865,10 @@ body.compact .compact-extra{display:none!important;}
 .rail-panel .panel-action.secondary{background:var(--chip-bg);border-color:transparent;color:var(--text);}
 .rail-panel .panel-action.danger{background:rgba(255,69,58,.16);border-color:rgba(255,69,58,.36);color:var(--r);}
 .rail-panel .panel-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.settings-list{display:flex;flex-direction:column;gap:8px;}
+.settings-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
+.settings-item-title{font-size:11px;font-weight:700;color:var(--text);}
+.settings-item-copy{font-size:9.5px;color:var(--dim);line-height:1.35;margin-top:2px;}
 .lic{padding:8px 15px;border-top:1px solid var(--line);font-size:10.5px;color:var(--dim);display:flex;align-items:center;justify-content:space-between;gap:8px;}
 .lic.expired{background:rgba(255,159,10,.14);color:var(--text);}
 .lic-actions{display:flex;align-items:center;gap:10px;flex:0 0 auto;}
@@ -2903,10 +2925,19 @@ body.compact .compact-extra{display:none!important;}
 <div class="panel-actions"><button class="panel-action" id="rail-update-check" onclick="checkAppUpdates(this)">Check Updates</button></div>
 </div>
 
-<div class="rail-panel" id="rail-login-panel">
-<div class="panel-title-row"><div class="panel-title">Launch at Login</div><span class="panel-pill" id="rail-login-pill">Off</span></div>
-<div class="panel-copy" id="rail-login-copy">Start PeterFan automatically when you sign in.</div>
-<div class="panel-actions"><button class="panel-action" id="rail-login-toggle" onclick="window.ipc.postMessage('togglelogin')">Toggle Login Item</button></div>
+<div class="rail-panel" id="rail-settings-panel">
+<div class="panel-title-row"><div class="panel-title">General Settings</div><span class="panel-pill info" id="rail-settings-pill">App Preferences</span></div>
+<div class="panel-copy">Manage startup and app behavior from one place.</div>
+<div class="settings-list">
+<div class="settings-item">
+<div><div class="settings-item-title">Launch at Login</div><div class="settings-item-copy" id="rail-login-copy">Start PeterFan automatically when you sign in.</div></div>
+<div><span class="panel-pill" id="rail-login-pill">Off</span> <button class="panel-action secondary" id="rail-login-toggle" onclick="window.ipc.postMessage('togglelogin')">Toggle Login Item</button></div>
+</div>
+<div class="settings-item">
+<div><div class="settings-item-title">Detail Window</div><div class="settings-item-copy">Open the full dashboard when you need more room.</div></div>
+<button class="panel-action secondary" onclick="window.ipc.postMessage('open_detail')">Open Detail Window…</button>
+</div>
+</div>
 </div>
 
 <div class="rail-panel" id="rail-license-panel">
@@ -3012,7 +3043,7 @@ body.compact .compact-extra{display:none!important;}
 <button class="rail-btn primary" id="railDetail" data-rail-action="detail" aria-pressed="true" onclick="runRailAction('detail',this)" title="Status overview"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Status</span></button>
 <button class="rail-btn" id="railFan" data-rail-action="fan" aria-pressed="false" onclick="runRailAction('fan',this)" title="Fan control"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fan</span></button>
 <button class="rail-btn" id="railUpdate" data-rail-action="update" aria-pressed="false" onclick="runRailAction('update',this)" title="Check for Updates…"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
-<button class="rail-btn" id="railLogin" data-rail-action="login" aria-pressed="false" onclick="runRailAction('login',this)" title="Launch at Login"><svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M7.1 6.2a8 8 0 1 0 9.8 0"/></svg><span>Login</span></button>
+<button class="rail-btn" id="railSettings" data-rail-action="settings" aria-pressed="false" onclick="runRailAction('settings',this)" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.2-.1a1.7 1.7 0 0 0-1.9-.1 8 8 0 0 1-1.4.8 1.7 1.7 0 0 0-1.1 1.5V23h-4v-.5A1.7 1.7 0 0 0 8.1 21a8 8 0 0 1-1.4-.8 1.7 1.7 0 0 0-1.9.1l-.2.1-2-3.4.1-.1A1.7 1.7 0 0 0 3 15a8.6 8.6 0 0 1 0-1.7 1.7 1.7 0 0 0-.3-1.9l-.1-.1 2-3.4.2.1a1.7 1.7 0 0 0 1.9.1A8 8 0 0 1 8.1 7a1.7 1.7 0 0 0 1.1-1.5V5h4v.5A1.7 1.7 0 0 0 14.3 7a8 8 0 0 1 1.4.8 1.7 1.7 0 0 0 1.9-.1l.2-.1 2 3.4-.1.1a1.7 1.7 0 0 0-.3 1.9 8.6 8.6 0 0 1 0 2z"/></svg><span>Settings</span></button>
 <button class="rail-btn" id="railLicense" data-rail-action="license" aria-pressed="false" onclick="runRailAction('license',this)" title="License"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="3"/><path d="M11 12h9M16 12v3M19 12v2"/></svg><span>License</span></button>
 <button class="rail-btn" id="railMore" data-rail-action="more" aria-pressed="false" onclick="runRailAction('more',this)" title="Show more"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg><span>More</span></button>
 </aside></div></div>
@@ -3072,15 +3103,15 @@ function resetRailPaneScroll(){
 function applyRailView(resetScroll){
   var view=railView();
   document.body.setAttribute('data-rail-view',view);
-  var all=['range-tabs','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','lic-row','lic-form','foot','rail-update-panel','rail-login-panel','rail-license-panel','rail-more-panel'];
+  var all=['range-tabs','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','lic-row','lic-form','foot','rail-update-panel','rail-settings-panel','rail-license-panel','rail-more-panel'];
   all.forEach(function(id){setVisible(id,false);});
   if(view==='fan'){
     ['setup-row','fan-control-section'].forEach(function(id){setVisible(id,true);});
     if(SHOW_CURVE_EDITOR==='1')setVisible('curve-editor-section',true);
   } else if(view==='update'){
     setVisible('rail-update-panel',true);
-  } else if(view==='login'){
-    setVisible('rail-login-panel',true);
+  } else if(view==='settings'){
+    setVisible('rail-settings-panel',true);
   } else if(view==='license'){
     setVisible('rail-license-panel',true);
   } else if(view==='more'){
@@ -3088,7 +3119,7 @@ function applyRailView(resetScroll){
   } else {
     ['range-tabs','setup-row','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
   }
-  ['Detail','Fan','Update','Login','License','More'].forEach(function(name){
+  ['Detail','Fan','Update','Settings','License','More'].forEach(function(name){
     var key=name.toLowerCase();
     if(key==='detail')key='overview';
     setRailButtonActive('rail'+name,view===key);
@@ -3142,7 +3173,7 @@ function runRailAction(action,btn){
     case 'detail':setRailView('overview');break;
     case 'fan':setRailView('fan');break;
     case 'update':setRailView('update');checkAppUpdates(btn);break;
-    case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;
+    case 'settings':setRailView('settings');break;
     case 'license':setRailView('license');break;
     case 'more':setRailView('more');break;
   }
@@ -3732,13 +3763,10 @@ function updateRail(d){
   setPanelPill('rail-update-pill',APP_UPDATE_CHECK_PENDING?(LANG==='ko'?'확인 중':'Checking'):(LANG==='ko'?'준비':'Ready'),APP_UPDATE_CHECK_PENDING?'info':'ok');
   var updCheck=document.getElementById('rail-update-check');
   if(updCheck&&!APP_UPDATE_CHECK_PENDING)updCheck.textContent=LANG==='ko'?'업데이트 확인':'Check Updates';
-  var login=document.getElementById('railLogin');
-  if(login){
-    setButtonLabel(login,d.login_item_installed?(LANG==='ko'?'자동 켬':'Login On'):(LANG==='ko'?'자동 실행':'Login'));
-    login.title=d.login_item_installed
-      ?(LANG==='ko'?'로그인 시 실행 켜짐':'Launch at login is on')
-      :(LANG==='ko'?'로그인 시 실행 켜기':'Launch at login');
-    login.classList.toggle('active',!!d.login_item_installed);
+  var settings=document.getElementById('railSettings');
+  if(settings){
+    setButtonLabel(settings,LANG==='ko'?'설정':'Settings');
+    settings.title=LANG==='ko'?'설정 열기':'Open settings';
   }
   var loginCopy=document.getElementById('rail-login-copy');
   if(loginCopy)loginCopy.textContent=d.login_item_installed
@@ -3746,6 +3774,7 @@ function updateRail(d){
     :(LANG==='ko'?'로그인할 때 PeterFan을 자동으로 실행할 수 있습니다.':'Start PeterFan automatically when you sign in.');
   var loginToggle=document.getElementById('rail-login-toggle');
   if(loginToggle)loginToggle.textContent=d.login_item_installed?(LANG==='ko'?'자동 실행 끄기':'Turn Off'):(LANG==='ko'?'자동 실행 켜기':'Turn On');
+  setPanelPill('rail-settings-pill',LANG==='ko'?'앱 설정':'App Preferences','info');
   setPanelPill('rail-login-pill',d.login_item_installed?(LANG==='ko'?'켜짐':'On'):(LANG==='ko'?'꺼짐':'Off'),d.login_item_installed?'ok':'');
   var lic=document.getElementById('railLicense');
   if(lic){
@@ -3958,23 +3987,24 @@ mod tests {
             assert!(html.contains("railDetail"));
             assert!(html.contains("railFan"));
             assert!(html.contains("railUpdate"));
-            assert!(html.contains("railLogin"));
+            assert!(html.contains("railSettings"));
             assert!(html.contains("railLicense"));
             assert!(html.contains("railMore"));
             assert!(html.contains("focusFanControl"));
+            assert!(html.contains("rail-settings-panel"));
             assert!(html.contains("rail-more-panel"));
         }
 
         assert!(en.contains(">Status<"));
         assert!(en.contains(">Fan<"));
         assert!(en.contains(">Updates<"));
-        assert!(en.contains(">Login<"));
+        assert!(en.contains(">Settings<"));
         assert!(en.contains(">License<"));
         assert!(en.contains(">More<"));
         assert!(ko.contains(">상태<"));
         assert!(ko.contains(">팬<"));
         assert!(ko.contains(">업데이트<"));
-        assert!(ko.contains(">자동 실행<"));
+        assert!(ko.contains(">설정<"));
         assert!(ko.contains(">라이선스<"));
         assert!(ko.contains(">더보기<"));
     }
@@ -4040,7 +4070,7 @@ mod tests {
             ("railDetail", "detail"),
             ("railFan", "fan"),
             ("railUpdate", "update"),
-            ("railLogin", "login"),
+            ("railSettings", "settings"),
             ("railLicense", "license"),
             ("railMore", "more"),
         ] {
@@ -4053,7 +4083,8 @@ mod tests {
         assert!(en.contains("case 'detail':setRailView('overview');break;"));
         assert!(en.contains("case 'fan':setRailView('fan');break;"));
         assert!(en.contains("case 'update':setRailView('update');checkAppUpdates(btn);break;"));
-        assert!(en.contains(
+        assert!(en.contains("case 'settings':setRailView('settings');break;"));
+        assert!(!en.contains(
             "case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;"
         ));
         assert!(en.contains("case 'license':setRailView('license');break;"));
@@ -4083,6 +4114,7 @@ mod tests {
 
         for id in [
             "rail-update-pill",
+            "rail-settings-pill",
             "rail-login-pill",
             "rail-license-pill",
             "rail-more-pill",
@@ -4093,6 +4125,7 @@ mod tests {
         assert!(en.contains(".panel-title-row{"));
         assert!(en.contains(".panel-pill{"));
         assert!(en.contains("setPanelPill('rail-update-pill'"));
+        assert!(en.contains("setPanelPill('rail-settings-pill'"));
         assert!(en.contains("setPanelPill('rail-login-pill'"));
         assert!(en.contains("setPanelPill('rail-license-pill'"));
         assert!(en.contains("setPanelPill('rail-more-pill'"));
@@ -4127,7 +4160,8 @@ mod tests {
         assert!(en.contains("return RAIL_VIEW||'overview';"));
         assert!(en.contains("RAIL_VIEW=view;"));
         assert!(en.contains(r#"id="rail-update-panel""#));
-        assert!(en.contains(r#"id="rail-login-panel""#));
+        assert!(en.contains(r#"id="rail-settings-panel""#));
+        assert!(en.contains(r#"id="rail-login-toggle""#));
         assert!(en.contains(r#"id="rail-license-panel""#));
         assert!(en.contains("rail-license-form"));
         assert!(en.contains("submitLicenseInput('rail-lic-input')"));
@@ -4137,7 +4171,8 @@ mod tests {
         assert!(en.contains(r#"id="sec-network""#));
         assert!(en.contains("case 'fan':setRailView('fan');break;"));
         assert!(en.contains("case 'update':setRailView('update');checkAppUpdates(btn);break;"));
-        assert!(en.contains(
+        assert!(en.contains("case 'settings':setRailView('settings');break;"));
+        assert!(!en.contains(
             "case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;"
         ));
         assert!(en.contains("case 'license':setRailView('license');break;"));
@@ -4192,7 +4227,8 @@ mod tests {
         let en = dashboard_html(ResolvedLanguage::En, false);
         assert!(en.contains("grid-template-columns:minmax(0,1fr) 78px"));
         assert!(en.contains("function updateRail(d)"));
-        assert!(en.contains("railLogin"));
+        assert!(en.contains("railSettings"));
+        assert!(en.contains("rail-login-toggle"));
         assert!(en.contains("login_item_installed"));
         assert!(en.contains("setTimeout(function(){"));
         assert!(en.contains("},2500);"));

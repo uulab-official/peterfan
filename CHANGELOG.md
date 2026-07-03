@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.48] — 설정 진입과 배포본 클릭 UX 수정
+
+### Fixed
+- **배포본이 오래된 UI를 제공하던 문제 추적** — 최신 Release 자산이 `v1.26.40`
+  상태라 오른쪽 버튼 라우팅 수정이 사용자 다운로드본에 반영되지 않았음을 확인함.
+
+### Changed
+- **오른쪽 레일 Settings 추가** — `Login` 즉시 토글 버튼을 `Settings` 화면 진입
+  버튼으로 바꾸고, 자동 실행 토글은 설정 패널 안에서 명시적으로 누르게 정리함.
+
 ## [1.26.47] — CPU 연동 러너 캐릭터
 
 ### Added
