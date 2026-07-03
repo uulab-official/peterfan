@@ -3069,8 +3069,8 @@ function runRailAction(action,btn){
   switch(action){
     case 'detail':window.ipc.postMessage('open_detail');break;
     case 'fan':setRailView('fan');break;
-    case 'update':setRailView('update');break;
-    case 'login':setRailView('login');break;
+    case 'update':setRailView('update');checkAppUpdates(btn);break;
+    case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;
     case 'license':setRailView('license');break;
     case 'more':setRailView('more');break;
   }
@@ -3761,23 +3761,9 @@ function bindChartTooltip(cv){
 }
 function reportHeight(){
   if(!window.ipc)return;
-  // Measure after layout settles so populated lists are included.
-  requestAnimationFrame(function(){
-    var main=document.querySelector('.main-pane');
-    var rail=document.querySelector('.action-rail');
-    var shellPad=14;
-    var contentH=Math.max(
-      main?main.scrollHeight:0,
-      rail?rail.scrollHeight:0,
-      document.body.scrollHeight,
-      document.documentElement.scrollHeight
-    );
-    var h=contentH+shellPad;
-    window.ipc.postMessage('h:'+Math.ceil(h));
-  });
+  window.ipc.postMessage('h:520');
 }
-// Height is reported from update() once real data has populated the lists,
-// so the window snaps to the exact content height instead of an empty one.
+// The popover stays fixed-height; overflow belongs inside `.main-pane`.
 </script></body></html>"##;
 
 #[cfg(test)]
@@ -3965,8 +3951,10 @@ mod tests {
         assert!(en.contains("flashRailButton(btn)"));
         assert!(en.contains("case 'detail':window.ipc.postMessage('open_detail');break;"));
         assert!(en.contains("case 'fan':setRailView('fan');break;"));
-        assert!(en.contains("case 'update':setRailView('update');break;"));
-        assert!(en.contains("case 'login':setRailView('login');break;"));
+        assert!(en.contains("case 'update':setRailView('update');checkAppUpdates(btn);break;"));
+        assert!(en.contains(
+            "case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;"
+        ));
         assert!(en.contains("case 'license':setRailView('license');break;"));
         assert!(en.contains("case 'more':setRailView('more');break;"));
         assert!(en.contains("function setButtonLabel(btn,label)"));
@@ -3992,11 +3980,26 @@ mod tests {
         assert!(en.contains(r#"id="sec-storage""#));
         assert!(en.contains(r#"id="sec-network""#));
         assert!(en.contains("case 'fan':setRailView('fan');break;"));
-        assert!(en.contains("case 'update':setRailView('update');break;"));
-        assert!(en.contains("case 'login':setRailView('login');break;"));
+        assert!(en.contains("case 'update':setRailView('update');checkAppUpdates(btn);break;"));
+        assert!(en.contains(
+            "case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;"
+        ));
         assert!(en.contains("case 'license':setRailView('license');break;"));
         assert!(en.contains("case 'more':setRailView('more');break;"));
         assert!(!en.contains("case 'license':toggleLicForm();break;"));
+    }
+
+    #[test]
+    fn action_rail_does_not_resize_popover_to_content_height() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains("function reportHeight()"));
+        assert!(en.contains("window.ipc.postMessage('h:520');"));
+        assert!(en.contains("overflow belongs inside `.main-pane`"));
+        assert!(!en.contains("document.body.scrollHeight"));
+        assert!(!en.contains("document.documentElement.scrollHeight"));
+        assert!(!en.contains("main?main.scrollHeight:0"));
+        assert!(!en.contains("contentH+shellPad"));
     }
 
     #[test]
