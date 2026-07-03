@@ -475,14 +475,14 @@ fn setup_detail(
         ),
         (ResolvedLanguage::Ko, false, false, true, true) => {
             format!(
-                "앱 v{} · 데몬 v{} 호환됨 · 자동 실행 켜짐",
+                "앱 v{} · 데몬 v{} 정상 · 암호 불필요 · 자동 실행 켜짐",
                 env!("CARGO_PKG_VERSION"),
                 daemon_version.unwrap_or("unknown")
             )
         }
         (ResolvedLanguage::Ko, false, false, true, false) => {
             format!(
-                "앱 v{} · 데몬 v{} 호환됨 · 자동 실행 꺼짐",
+                "앱 v{} · 데몬 v{} 정상 · 암호 불필요 · 자동 실행 꺼짐",
                 env!("CARGO_PKG_VERSION"),
                 daemon_version.unwrap_or("unknown")
             )
@@ -501,14 +501,14 @@ fn setup_detail(
         ),
         (ResolvedLanguage::En, false, false, true, true) => {
             format!(
-                "app v{} · daemon v{} compatible · login on",
+                "app v{} · daemon v{} OK · no admin prompt · login on",
                 env!("CARGO_PKG_VERSION"),
                 daemon_version.unwrap_or("unknown")
             )
         }
         (ResolvedLanguage::En, false, false, true, false) => {
             format!(
-                "app v{} · daemon v{} compatible · login off",
+                "app v{} · daemon v{} OK · no admin prompt · login off",
                 env!("CARGO_PKG_VERSION"),
                 daemon_version.unwrap_or("unknown")
             )
@@ -3390,7 +3390,7 @@ function updateSetup(d){
       :(LANG==='ko'?'팬 제어 설정':'Set up fan control');
     fan.textContent=FAN_CONTROL_FIX_PENDING
       ?(LANG==='ko'?'설치 중…':'Installing…')
-      :(d.daemon_update_needed?(LANG==='ko'?'데몬':'Daemon'):(LANG==='ko'?'팬':'Fan'));
+      :(d.daemon_update_needed?(LANG==='ko'?'업데이트':'Update'):(LANG==='ko'?'팬':'Fan'));
   }
   var login=document.getElementById('setup-login');
   if(login){
@@ -3793,7 +3793,8 @@ mod tests {
             false,
         );
         assert!(en.contains("app v"));
-        assert!(en.contains("daemon v1.26.18 compatible"));
+        assert!(en.contains("daemon v1.26.18 OK"));
+        assert!(en.contains("no admin prompt"));
         assert!(en.contains("login on"));
 
         let ko = setup_detail(
@@ -3805,8 +3806,36 @@ mod tests {
             false,
         );
         assert!(ko.contains("앱 v"));
-        assert!(ko.contains("데몬 v1.26.18 호환됨"));
+        assert!(ko.contains("데몬 v1.26.18 정상"));
+        assert!(ko.contains("암호 불필요"));
         assert!(ko.contains("자동 실행 꺼짐"));
+    }
+
+    #[test]
+    fn setup_detail_reassures_when_daemon_is_compatible_but_older_than_app() {
+        assert!(!peterfan_platform::daemon_update_required("1.26.24"));
+
+        let en = setup_detail(
+            ResolvedLanguage::En,
+            true,
+            false,
+            Some("1.26.24"),
+            true,
+            false,
+        );
+        assert!(en.contains("daemon v1.26.24 OK"));
+        assert!(en.contains("no admin prompt"));
+
+        let ko = setup_detail(
+            ResolvedLanguage::Ko,
+            true,
+            false,
+            Some("1.26.24"),
+            true,
+            false,
+        );
+        assert!(ko.contains("데몬 v1.26.24 정상"));
+        assert!(ko.contains("암호 불필요"));
     }
 
     #[test]
