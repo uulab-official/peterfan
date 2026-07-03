@@ -277,7 +277,9 @@ version, installed root-daemon version, and whether the daemon is compatible
 with the current app. On macOS it also prints CPU temperature calibration
 candidates: selected average/hottest, `TCDX` summary, SMC aggregate average,
 P-core average, all-core average, and the underlying `TCDX`/`TV*`/`Te*`/`Tf*`
-SMC keys. Start here when something looks off.
+SMC keys. The selected CPU average uses the higher of the SMC aggregate and
+`TCDX` summary, with live core average as fallback. Start here when something
+looks off.
 
 ```bash
 peterfan doctor

@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.69] — Macs Fan Control CPU 평균 기준 재보정
+
+### Fixed
+- **CPU 평균 온도를 Macs Fan Control의 `CPU Core Average` 기준에 다시 맞춤** —
+  로컬 Mac15,10 M3 Max에서 MFC의 74~75°C CPU 평균 표시가 `TCDX` summary보다
+  `TV0s`/`TV1s`/`TVsa`/`TVss` SMC aggregate와 일치함을 확인하고, PeterFan
+  대표 `CPU Core Average`를 `SMC aggregate`와 `TCDX` summary 중 더 높은 값으로
+  선택하도록 변경함. 둘 다 없을 때만 `Te*`/`Tf*` live core 평균으로 fallback함.
+- **`doctor` calibration 정책 문구 정정** — JSON/텍스트 출력의
+  `selection_policy`를 실제 선택 기준과 맞춰, 외부 도구와 온도 차이가 날 때
+  어떤 후보값이 대표 온도로 선택됐는지 바로 확인할 수 있게 함.
+
 ## [1.26.68] — CPU summary 온도 기준 보정
 
 ### Fixed

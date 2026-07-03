@@ -14,9 +14,9 @@ pub fn hottest_temperature_c(temps: &[TempSensor]) -> Option<f32> {
 
 /// Human-facing representative temperature.
 ///
-/// PeterFan publishes `cpu.die` as the average of the individual CPU die
-/// sensors. Prefer that value for status/menu/log output so multi-die Apple
-/// Silicon machines do not show a single hottest core as the "CPU temp".
+/// PeterFan publishes `cpu.die` as the calibrated CPU average selected by the
+/// platform backend. Prefer that value for status/menu/log output so Apple
+/// Silicon machines use the same representative temperature everywhere.
 pub fn representative_temperature_c(temps: &[TempSensor]) -> Option<f32> {
     temps
         .iter()
