@@ -916,6 +916,11 @@ fn main() {
                     }
                 } else if c == "checkupdates" {
                     std::thread::spawn(check_for_updates_interactive);
+                } else if c == "ready" {
+                    // The WebView finished loading after one or more native
+                    // updates may already have been evaluated too early. The
+                    // unconditional update() below immediately re-sends the
+                    // latest metrics into the now-ready dashboard.
                 } else {
                     // Hardware I/O (SMC calls) can take hundreds of ms,
                     // especially while failing (no daemon, no root) — run it
@@ -1350,7 +1355,7 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
                 QUIT.store(true, Ordering::Relaxed);
             } else if body == "open_detail" {
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
-            } else if body == "togglelogin" || body == "checkupdates" {
+            } else if body == "ready" || body == "togglelogin" || body == "checkupdates" {
                 PENDING
                     .lock()
                     .expect("pending poisoned")
@@ -1434,7 +1439,7 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
                 QUIT.store(true, Ordering::Relaxed);
             } else if body == "open_detail" {
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
-            } else if body == "togglelogin" || body == "checkupdates" {
+            } else if body == "ready" || body == "togglelogin" || body == "checkupdates" {
                 PENDING
                     .lock()
                     .expect("pending poisoned")
@@ -1889,7 +1894,9 @@ fn update(app: &mut App) {
         "curve_points": curve_points,
         "last_cmd_status": STATUS.lock().expect("status poisoned").clone(),
     });
-    let script = format!("window.__pf&&window.__pf.update({payload})");
+    let script = format!(
+        "window.__pf_pending={payload};window.__pf&&window.__pf.update(window.__pf_pending)"
+    );
     if app.popover_visible {
         if let Some(wv) = &app.webview {
             let _ = wv.evaluate_script(&script);
@@ -2934,11 +2941,21 @@ var LANG='__LANG__';
 var SHOW_CURVE_EDITOR='__SHOWCURVE__';
 var FAN_CONTROL_FIX_PENDING=false;
 var APP_UPDATE_CHECK_PENDING=false;
+if(!('__pf_pending' in window))window.__pf_pending=null;
+function applyPendingUpdate(){
+  if(window.__pf&&window.__pf.update&&window.__pf_pending)window.__pf.update(window.__pf_pending);
+}
+function storageGet(k){
+  try{return localStorage.getItem(k);}catch(e){return null;}
+}
+function storageSet(k,v){
+  try{localStorage.setItem(k,v);}catch(e){}
+}
 function popoverCompact(){
-  return localStorage.getItem('pf.compact')!=='0';
+  return storageGet('pf.compact')!=='0';
 }
 function setPopoverExpanded(expanded){
-  localStorage.setItem('pf.compact',expanded?'0':'1');
+  storageSet('pf.compact',expanded?'0':'1');
   applyPopoverMode();
 }
 function togglePopoverExpanded(){
@@ -3098,6 +3115,8 @@ window.__pf={
  }
  reportHeight();
 }};
+applyPendingUpdate();
+if(window.ipc)window.ipc.postMessage('ready');
 // One card per controllable fan — independent Auto/Manual toggle + a slider
 // bounded to that fan's own min/max RPM (not a 0-100% abstraction), so you
 // can pin e.g. just the left fan while the right one keeps following the
@@ -3822,6 +3841,16 @@ mod tests {
         assert!(en.contains("btn.querySelector('span')"));
         assert!(en.contains("btn.dataset.defaultLabel"));
         assert!(en.contains("el.classList.add('focus-pulse')"));
+    }
+
+    #[test]
+    fn dashboard_requests_refresh_when_webview_becomes_ready() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains("window.__pf_pending"));
+        assert!(en.contains("function applyPendingUpdate()"));
+        assert!(en.contains("window.ipc.postMessage('ready')"));
+        assert!(en.contains("applyPendingUpdate();"));
     }
 
     #[test]
