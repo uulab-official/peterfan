@@ -2703,10 +2703,8 @@ const DASHBOARD_HTML_EN: &str = r##"<!doctype html><html><head><meta charset="ut
 html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;color:var(--text);-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased;overflow:hidden;}
 .panel{background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:13px;overflow:hidden;box-shadow:var(--shadow);max-height:100vh;}
 .dashboard-shell{display:grid;grid-template-columns:minmax(0,1fr) 78px;gap:8px;padding:7px;height:100vh;max-height:100vh;}
-.main-pane{min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:9px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;background:rgba(255,255,255,.015);}
-.main-pane::-webkit-scrollbar{width:8px;}
-.main-pane::-webkit-scrollbar-thumb{background:rgba(127,136,150,.45);border-radius:99px;}
-.main-pane::-webkit-scrollbar-track{background:transparent;}
+.main-pane{min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:9px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:none;background:rgba(255,255,255,.015);}
+.main-pane::-webkit-scrollbar{display:none;}
 body.compact .compact-extra{display:none!important;}
 .action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;}
 .rail-btn{height:56px;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;background:var(--chip-bg);border:1px solid var(--panel-border);border-radius:8px;color:var(--text);font:inherit;font-size:9.5px;font-weight:700;cursor:pointer;transition:background .15s,border-color .15s,transform .15s;color-scheme:inherit;}
@@ -3839,7 +3837,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_scrollbar_belongs_to_main_pane_not_action_rail() {
+    fn dashboard_main_pane_scrolls_without_visible_scrollbar() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
         assert!(en.contains(".panel{"));
@@ -3849,6 +3847,8 @@ mod tests {
         assert!(en.contains(".main-pane{"));
         assert!(en.contains("overflow-y:auto"));
         assert!(en.contains("scrollbar-gutter:stable"));
+        assert!(en.contains("scrollbar-width:none"));
+        assert!(en.contains(".main-pane::-webkit-scrollbar{display:none;}"));
         assert!(en.contains(".action-rail{"));
         assert!(!en.contains("position:sticky;top:7px"));
     }
