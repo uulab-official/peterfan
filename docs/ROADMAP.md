@@ -29,6 +29,7 @@ working product map we use to decide what to polish next.
 - [x] RunCat-style compact popover with a right-side action rail
 - [x] Menu-bar metric selection, graph/number/both styles, and hover tooltip
 - [x] 2m / 1h / 1d charts with range averages and peaks
+- [x] Multi-monitor popover placement pinned to the clicked display
 - [x] GitHub Releases OTA update path and local release scripts
 - [x] LaunchDaemon install, self-reinstall path, and admin-prompt explanation
 - [x] README screenshot generation and release readiness checks
@@ -42,6 +43,8 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] CPU average temperature as the top temperature metric
 - [x] RunCat-style right action rail in the popover
 - [x] Compact/expanded popover modes
+- [x] Keep popover on the clicked monitor in multi-display setups
+- [x] Fan Control Health card in Settings: daemon, approval, command status
 - [ ] Hide low-priority sections from the first viewport when they are idle
 - [ ] Better empty states for unsupported fans, missing battery, and no network
 - [ ] Visual QA screenshots for dark/light mode and Korean/English text fit
@@ -49,7 +52,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 
 ### v1.27 — Fan Control Confidence
 
-- [ ] One-page "Fan Control Health" panel: daemon version, install state,
+- [ ] Detail-window "Fan Control Health" panel: daemon version, install state,
       helper path, Team ID, LaunchDaemon state, last command result
 - [ ] Make "first approval vs no prompt" state impossible to miss
 - [ ] Show active fan-control input temperature: CPU average, hottest, critical

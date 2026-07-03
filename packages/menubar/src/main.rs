@@ -1800,10 +1800,13 @@ fn update(app: &mut App) {
         "ctl_status": ctl_status,
         "daemon_running": !daemon_st.is_empty(),
         "daemon_version": daemon_version.clone(),
+        "daemon_required_version": peterfan_platform::MIN_REQUIRED_DAEMON_VERSION,
         "daemon_update_needed": daemon_update_needed,
         "active_profile": active_profile,
         "active_control_mode": active_control_mode,
         "fan_setup_needed": (!daemon_running || daemon_update_needed) && can_control,
+        "fan_count": fans.len(),
+        "controllable_fan_count": fans.iter().filter(|f| f.controllable).count(),
         "app_version": env!("CARGO_PKG_VERSION"),
         "setup_tone": setup_tone(!daemon_st.is_empty(), daemon_update_needed),
         "setup_title": setup_title(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed),
@@ -2787,6 +2790,13 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Settings<", ">설정<")
             .replace(">General Settings<", ">일반 설정<")
             .replace(">App Preferences<", ">앱 설정<")
+            .replace(">Fan Control Health<", ">팬 제어 상태<")
+            .replace(">Daemon<", ">데몬<")
+            .replace(">Control Path<", ">제어 경로<")
+            .replace(">Last Command<", ">마지막 명령<")
+            .replace(">Fans Detected<", ">감지된 팬<")
+            .replace(">Admin Approval<", ">관리자 승인<")
+            .replace(">App<", ">앱<")
             .replace(">Update<", ">업데이트<")
             .replace(">Auto<", ">자동<")
             .replace(">Silent<", ">저소음<")
@@ -2962,6 +2972,15 @@ body.compact .compact-extra{display:none!important;}
 .settings-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
 .settings-item-title{font-size:11px;font-weight:700;color:var(--text);}
 .settings-item-copy{font-size:9.5px;color:var(--dim);line-height:1.35;margin-top:2px;}
+.health-card{padding:10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
+.health-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
+.health-title{font-size:11px;font-weight:800;color:var(--text);}
+.health-grid{display:grid;grid-template-columns:1fr;gap:6px;}
+.health-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:10px;border-top:1px solid var(--line);padding-top:6px;}
+.health-row:first-child{border-top:0;padding-top:0;}
+.health-label{color:var(--dim);font-weight:650;}
+.health-value{font-weight:650;text-align:right;font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere;}
+.health-value.ok{color:var(--g);}.health-value.warn{color:var(--y);}.health-value.info{color:var(--accent);}
 .foot{border-top:1px solid var(--line);padding:3px;}
 .quit{display:block;width:100%;background:transparent;border:0;color:var(--dim);font:inherit;font-size:10.5px;letter-spacing:.02em;padding:8px;border-radius:8px;cursor:pointer;transition:background .15s,color .15s;}
 .quit:hover{background:var(--track-hover);color:var(--text);}
@@ -3001,6 +3020,17 @@ body.compact .compact-extra{display:none!important;}
 <div class="panel-title-row"><div class="panel-title">General Settings</div><span class="panel-pill info" id="rail-settings-pill">App Preferences</span></div>
 <div class="panel-copy">Manage startup and app behavior from one place.</div>
 <div class="settings-list">
+<div class="health-card" id="fan-health-card">
+<div class="health-head"><div class="health-title">Fan Control Health</div><span class="panel-pill info" id="health-pill">Ready</span></div>
+<div class="health-grid">
+<div class="health-row"><span class="health-label">Daemon</span><span class="health-value" id="health-daemon">—</span></div>
+<div class="health-row"><span class="health-label">Control Path</span><span class="health-value" id="health-control-path">—</span></div>
+<div class="health-row"><span class="health-label">Last Command</span><span class="health-value" id="health-last-command">—</span></div>
+<div class="health-row"><span class="health-label">Fans Detected</span><span class="health-value" id="health-fans">—</span></div>
+<div class="health-row"><span class="health-label">Admin Approval</span><span class="health-value" id="health-approval">—</span></div>
+<div class="health-row"><span class="health-label">App</span><span class="health-value" id="health-app">—</span></div>
+</div>
+</div>
 <div class="settings-item">
 <div><div class="settings-item-title">Detail Window</div><div class="settings-item-copy">Open the full dashboard when you need more room.</div></div>
 <button class="panel-action secondary" onclick="window.ipc.postMessage('open_detail')">Open Detail Window…</button>
@@ -3770,13 +3800,44 @@ function updateRail(d){
   setPanelPill('rail-update-pill',APP_UPDATE_CHECK_PENDING?(LANG==='ko'?'확인 중':'Checking'):(LANG==='ko'?'준비':'Ready'),APP_UPDATE_CHECK_PENDING?'info':'ok');
   var updCheck=document.getElementById('rail-update-check');
   if(updCheck&&!APP_UPDATE_CHECK_PENDING)updCheck.textContent=LANG==='ko'?'업데이트 확인':'Check Updates';
-  var settings=document.getElementById('railSettings');
+ var settings=document.getElementById('railSettings');
   if(settings){
     setButtonLabel(settings,LANG==='ko'?'설정':'Settings');
     settings.title=LANG==='ko'?'설정 열기':'Open settings';
   }
-  setPanelPill('rail-settings-pill',LANG==='ko'?'앱 설정':'App Preferences','info');
+  updateHealthPanel(d);
   setPanelPill('rail-more-pill',LANG==='ko'?'도구':'Tools','info');
+}
+function setHealthValue(id,text,tone){
+  var el=document.getElementById(id);
+  if(!el)return;
+  el.textContent=text||'—';
+  el.className='health-value '+(tone||'');
+}
+function updateHealthPanel(d){
+  var tone=d.daemon_update_needed?'warn':(d.daemon_running?'ok':(d.can_control?'warn':'info'));
+  var pill=d.daemon_update_needed
+    ?(LANG==='ko'?'재설치 필요':'Reinstall')
+    :(d.daemon_running?(LANG==='ko'?'정상':'OK'):(d.can_control?(LANG==='ko'?'설정 필요':'Setup'):(LANG==='ko'?'읽기 전용':'Read-only')));
+  setPanelPill('rail-settings-pill',pill,tone);
+  setPanelPill('health-pill',pill,tone);
+  var daemonText=d.daemon_running
+    ?('v'+(d.daemon_version||'unknown')+(d.daemon_update_needed?' → v'+(d.daemon_required_version||''):''))
+    :(LANG==='ko'?'실행 안 됨':'not running');
+  setHealthValue('health-daemon',daemonText,d.daemon_update_needed?'warn':(d.daemon_running?'ok':'warn'));
+  var path=d.daemon_running
+    ?(LANG==='ko'?'root 데몬':'root daemon')
+    :(d.can_control?(LANG==='ko'?'앱 직접 제어':'app direct'):(LANG==='ko'?'읽기 전용':'read-only'));
+  setHealthValue('health-control-path',path,d.daemon_running?'ok':(d.can_control?'info':'warn'));
+  var last=d.last_cmd_status||d.ctl_status||'';
+  var lastTone=/error|invalid|unknown|failed|needs root|needs at least/i.test(last)?'warn':'info';
+  setHealthValue('health-last-command',last||'—',lastTone);
+  setHealthValue('health-fans',(d.controllable_fan_count||0)+' / '+(d.fan_count||0),d.controllable_fan_count?'ok':'info');
+  var approval=d.daemon_running&&!d.daemon_update_needed
+    ?(LANG==='ko'?'추가 승인 없음':'no extra prompt')
+    :(d.daemon_update_needed?(LANG==='ko'?'재설치 때 1회':'one prompt to reinstall'):(d.can_control?(LANG==='ko'?'최초 설정 때 1회':'one prompt for setup'):(LANG==='ko'?'필요 없음':'not needed')));
+  setHealthValue('health-approval',approval,d.daemon_running&&!d.daemon_update_needed?'ok':(d.can_control?'warn':'info'));
+  setHealthValue('health-app','v'+(d.app_version||''),'info');
 }
 // Draws a filled area + line sparkline of `data` into the <canvas id=id>.
 // `fixedMax` pins the y-axis (e.g. 100 for percentages); null auto-scales to the data's own peak.
@@ -4248,6 +4309,29 @@ mod tests {
         assert!(en.contains("setPanelPill('rail-settings-pill'"));
         assert!(en.contains("setPanelPill('rail-more-pill'"));
         assert!(en.contains("function setPanelPill(id,text,tone)"));
+    }
+
+    #[test]
+    fn settings_panel_contains_fan_control_health_card() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+
+        assert!(en.contains(r#"id="fan-health-card""#));
+        assert!(en.contains(">Fan Control Health<"));
+        assert!(en.contains(r#"id="health-daemon""#));
+        assert!(en.contains(r#"id="health-control-path""#));
+        assert!(en.contains(r#"id="health-last-command""#));
+        assert!(en.contains(r#"id="health-approval""#));
+        assert!(en.contains("function updateHealthPanel(d)"));
+        assert!(en.contains("updateHealthPanel(d);"));
+        assert!(en.contains("d.daemon_required_version"));
+        assert!(en.contains("d.controllable_fan_count"));
+
+        assert!(ko.contains(">팬 제어 상태<"));
+        assert!(ko.contains(">데몬<"));
+        assert!(ko.contains(">제어 경로<"));
+        assert!(ko.contains(">마지막 명령<"));
+        assert!(ko.contains(">관리자 승인<"));
     }
 
     #[test]

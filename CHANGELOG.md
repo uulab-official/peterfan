@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.55] — 로드맵 정리와 팬 제어 상태 카드
+
+### Added
+- **Settings 안에 Fan Control Health 카드 추가** — 데몬 실행/버전, 제어 경로,
+  마지막 팬 제어 명령, 감지된 팬 수, 관리자 승인 필요 여부, 앱 버전을 한 화면에서
+  확인할 수 있게 함.
+
+### Changed
+- **로드맵 최신화** — 멀티 모니터 팝오버 수정과 Settings Health 카드를 현재 완료
+  상태에 반영하고, 다음 fan-control confidence 작업을 더 명확히 정리함.
+
 ## [1.26.54] — 멀티 모니터 팝오버 위치 수정
 
 ### Fixed
