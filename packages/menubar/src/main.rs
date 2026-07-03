@@ -2182,7 +2182,13 @@ fn install_fan_control() {
         .as_deref()
         .is_some_and(peterfan_platform::daemon_update_required);
     clear_daemon_version_cache();
-    let (ok, message) = match peterfan_platform::daemon_install::install(false) {
+    let install_result = if updating_existing {
+        peterfan_platform::daemon_install::reinstall_via_running_daemon(false)
+            .or_else(|_| peterfan_platform::daemon_install::install(false))
+    } else {
+        peterfan_platform::daemon_install::install(false)
+    };
+    let (ok, message) = match install_result {
         Ok(InstallOutcome::Installed) => {
             clear_daemon_version_cache();
             persist_clear_daemon_update_prompt_state();

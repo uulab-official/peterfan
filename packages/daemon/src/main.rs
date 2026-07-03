@@ -548,6 +548,57 @@ fn spawn_ipc_server(shared: Arc<Mutex<State>>) {
     });
 }
 
+#[cfg(target_os = "macos")]
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "macos")]
+fn validate_self_reinstall_source(path: &str) -> Result<PathBuf, String> {
+    let canonical = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    if canonical.as_path()
+        != std::path::Path::new(peterfan_platform::daemon_install::APP_BUNDLE_DAEMON_BIN)
+    {
+        return Err(format!(
+            "reinstall source must be {}",
+            peterfan_platform::daemon_install::APP_BUNDLE_DAEMON_BIN
+        ));
+    }
+    if !canonical.is_file() {
+        return Err("reinstall source is not a file".to_string());
+    }
+    Ok(canonical)
+}
+
+#[cfg(target_os = "macos")]
+fn start_self_reinstall(path: &str) -> Result<String, String> {
+    let source = validate_self_reinstall_source(path)?;
+    let source = shell_quote(&source.to_string_lossy());
+    let daemon_bin = peterfan_platform::daemon_install::DAEMON_BIN;
+    let label = peterfan_platform::daemon_install::DAEMON_LABEL;
+    let script = format!(
+        "set -e\n\
+         /usr/bin/codesign --verify --strict --verbose=2 {source}\n\
+         /usr/bin/codesign -dv --verbose=4 {source} 2>&1 | /usr/bin/grep -q 'TeamIdentifier=N99FMBQ662'\n\
+         (sleep 0.3; /usr/bin/install -m 755 {source} {daemon_bin}; /bin/launchctl kickstart -k system/{label}) >/tmp/peterfan-self-reinstall.log 2>&1 &\n"
+    );
+    let status = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(script)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok("ok reinstalling fan control".to_string())
+    } else {
+        Err("error: reinstall source is not a trusted PeterFan release".to_string())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_self_reinstall(_path: &str) -> Result<String, String> {
+    Err("error: fan-control reinstall is only available on macOS".to_string())
+}
+
 #[cfg(unix)]
 fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
     let backend = shared.lock().expect("state poisoned").backend.clone();
@@ -686,6 +737,13 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             STOP.store(true, Ordering::Relaxed);
             format!("ok stopping ({backend})")
         }
+        Some("reinstall-fan-control") => match (parts.next(), parts.next()) {
+            (Some(path), None) => match start_self_reinstall(path) {
+                Ok(reply) => reply,
+                Err(e) => e,
+            },
+            _ => "error: reinstall-fan-control requires <app-bundled-peterfand-path>".into(),
+        },
         _ => "error: unknown command".into(),
     }
 }
@@ -838,5 +896,12 @@ mod tests {
             shared.lock().unwrap().fan_overrides.get("fan.left"),
             Some(&30)
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn self_reinstall_rejects_non_app_bundle_sources() {
+        let reply = handle_command("reinstall-fan-control /tmp/peterfand", &test_state(true));
+        assert!(reply.starts_with("No such file") || reply.starts_with("reinstall source"));
     }
 }

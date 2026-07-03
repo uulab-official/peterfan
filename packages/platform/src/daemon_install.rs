@@ -11,6 +11,9 @@ use std::path::PathBuf;
 pub const DAEMON_LABEL: &str = "kr.co.uulab.peterfan.daemon";
 pub const LEGACY_DAEMON_LABEL: &str = "com.uulab.peterfan.daemon";
 
+pub const DAEMON_BIN: &str = "/usr/local/bin/peterfand";
+pub const DAEMON_PLIST: &str = "/Library/LaunchDaemons/kr.co.uulab.peterfan.daemon.plist";
+pub const APP_BUNDLE_DAEMON_BIN: &str = "/Applications/PeterFan.app/Contents/MacOS/peterfand";
 pub const NEWSYSLOG_CONF: &str = "/etc/newsyslog.d/peterfand.conf";
 const NEWSYSLOG_BODY: &str = "\
 # PeterFan daemon log rotation (rotate at 1 MB, keep 5 compressed archives)\n\
@@ -123,13 +126,13 @@ pub fn install(dry_run: bool) -> Result<InstallOutcome, String> {
             std::fs::set_permissions(&staged_bin, perms).map_err(|e| e.to_string())?;
         }
     }
-    let plist_dst = format!("/Library/LaunchDaemons/{DAEMON_LABEL}.plist");
+    let plist_dst = DAEMON_PLIST.to_string();
     let legacy_plist_dst = format!("/Library/LaunchDaemons/{LEGACY_DAEMON_LABEL}.plist");
     let script = format!(
         "set -e\n\
          launchctl bootout system '{legacy_plist_dst}' 2>/dev/null || true\n\
          rm -f '{legacy_plist_dst}'\n\
-         install -m 755 '{staged_bin}' /usr/local/bin/peterfand\n\
+         install -m 755 '{staged_bin}' {DAEMON_BIN}\n\
          rm -f '{staged_bin}'\n\
          cat > '{plist_dst}' <<'PLIST'\n{plist}PLIST\n\
          chown root:wheel '{plist_dst}'\n\
@@ -171,7 +174,7 @@ pub fn uninstall(dry_run: bool) -> Result<InstallOutcome, String> {
     let script = format!(
         "launchctl bootout system '{plist_dst}' 2>/dev/null || true\n\
          launchctl bootout system '{legacy_plist_dst}' 2>/dev/null || true\n\
-         rm -f '{plist_dst}' '{legacy_plist_dst}' /usr/local/bin/peterfand\n\
+         rm -f '{plist_dst}' '{legacy_plist_dst}' {DAEMON_BIN}\n\
          rm -f {NEWSYSLOG_CONF}\n"
     );
     let dry_run_output = run_privileged(&script, dry_run)?;
@@ -179,4 +182,40 @@ pub fn uninstall(dry_run: bool) -> Result<InstallOutcome, String> {
         return Ok(InstallOutcome::DryRun(dry_run_output));
     }
     Ok(InstallOutcome::Installed)
+}
+
+/// Ask an already-running root daemon to reinstall fan control from the
+/// signed app bundle. This avoids another administrator-password prompt after
+/// the initial LaunchDaemon install. Older daemons do not understand this
+/// command, so callers should fall back to [`install`] when this returns `Err`.
+#[cfg(target_os = "macos")]
+pub fn reinstall_via_running_daemon(dry_run: bool) -> Result<InstallOutcome, String> {
+    let bin = find_peterfand()?;
+    let bin = std::fs::canonicalize(&bin).map_err(|e| e.to_string())?;
+    if bin.as_path() != std::path::Path::new(APP_BUNDLE_DAEMON_BIN) {
+        return Err(format!(
+            "daemon self-reinstall only works from {APP_BUNDLE_DAEMON_BIN}"
+        ));
+    }
+    let cmd = format!("reinstall-fan-control {}", bin.display());
+    if dry_run {
+        return Ok(InstallOutcome::DryRun(cmd));
+    }
+    match crate::ipc::send_command(&cmd) {
+        Some(reply) if reply.starts_with("ok ") => {
+            std::thread::sleep(std::time::Duration::from_millis(1800));
+            if crate::daemon_reachable() {
+                Ok(InstallOutcome::Installed)
+            } else {
+                Ok(InstallOutcome::InstalledButUnreachable)
+            }
+        }
+        Some(reply) => Err(reply),
+        None => Err("no running fan-control daemon".to_string()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn reinstall_via_running_daemon(_dry_run: bool) -> Result<InstallOutcome, String> {
+    Err("daemon self-reinstall is only available on macOS".to_string())
 }

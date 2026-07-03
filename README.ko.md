@@ -47,7 +47,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.26.36.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.26.37.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -146,9 +146,11 @@ TG Pro와 정확히 같은 방식입니다. 매번 `sudo`를 입력하는 대신
 ```
 
 이후로는 메뉴바의 버튼들과 `peterfan fan …` 명령어가 root 헬퍼를 통해 팬을
-제어하며, 추가 프롬프트는 뜨지 않습니다. 제거하려면 `peterfan uninstall-daemon`을
-사용하세요. `peterfan fan set N`은 **RPM을 다시 읽어들여 검증**하므로 실제 ✓/✗
-결과를 확인할 수 있습니다.
+제어하며, 추가 프롬프트는 뜨지 않습니다. 최신 헬퍼가 이미 실행 중이면 앱 번들 안의
+새 `peterfand`로 팬 제어를 조용히 재설치할 수도 있습니다. 아주 오래된 헬퍼에서
+이 기능이 들어간 버전으로 넘어오는 첫 전환만 macOS 승인이 한 번 더 필요할 수
+있습니다. 제거하려면 `peterfan uninstall-daemon`을 사용하세요. `peterfan fan set N`은
+**RPM을 다시 읽어들여 검증**하므로 실제 ✓/✗ 결과를 확인할 수 있습니다.
 
 ---
 
@@ -186,7 +188,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.26.36
+PeterFan v1.26.37
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max

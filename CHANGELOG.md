@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.37] — 팬 제어 재설치 승인 최소화
+
+### Added
+- **root 데몬 self-reinstall IPC 추가** — 이미 최신 계열의 `peterfand`가 root로
+  실행 중이면 앱이 `reinstall-fan-control` 명령으로 `/Applications/PeterFan.app`
+  안의 signed `peterfand`를 재설치하도록 요청할 수 있음.
+
+### Changed
+- **재설치 시 관리자 승인 fallback 최소화** — 팬 제어 재설치가 필요할 때 먼저
+  실행 중인 root 데몬을 통한 조용한 재설치를 시도하고, 데몬이 너무 오래되어
+  명령을 모를 때만 기존 macOS 관리자 승인 경로로 fallback함.
+
 ## [1.26.36] — 팬 제어 재설치 UX 단순화
 
 ### Changed
