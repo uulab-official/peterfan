@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.53] — 고양이 표시 스타일 명칭 정리
+
+### Changed
+- **메뉴바 표시 스타일을 실제 동작에 맞게 정리** — 메뉴와 CLI help에서 `Graph` 대신
+  `Cat` / `고양이`로 표시해, RunCat처럼 뛰는 메뉴바 캐릭터 모드임을 바로 알 수 있게 함.
+- **기존 설정 호환 유지** — 새 설정은 `display = "cat"`으로 저장하지만, 기존
+  `display = "graph"` 설정과 `--display graph` 옵션도 계속 고양이 아이콘 모드로
+  읽도록 유지함.
+
 ## [1.26.52] — CPU 속도 연동 고양이 애니메이션
 
 ### Fixed

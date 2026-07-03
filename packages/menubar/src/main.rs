@@ -46,7 +46,7 @@ use peterfan_core::{HardwareProvider, SystemMonitor};
 const REFRESH: Duration = Duration::from_secs(1);
 const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(70);
 const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(340);
-/// Samples kept for the menu-bar graph icon (always shows the short-term
+/// Samples kept for the menu-bar runner icon (always shows the short-term
 /// trend, independent of the popover's chart range selector) — 120 samples
 /// at a 1s tick is a 2-minute rolling window.
 const HIST_CAP: usize = 120;
@@ -178,7 +178,7 @@ struct TrayMenu {
     /// "Show" submenu — which metric the menu-bar item tracks. Each entry's
     /// checked state is kept in sync with `App.metric` whenever it changes.
     show_items: Vec<(MenubarMetric, tray_icon::menu::CheckMenuItem)>,
-    /// "Display" submenu — number / graph / both.
+    /// "Display" submenu — number / cat / both.
     display_items: Vec<(MenubarDisplay, tray_icon::menu::CheckMenuItem)>,
     /// "Fan Speed" submenu — direct RPM presets, mapped to the same command
     /// strings `execute_control` already understands ("auto", "hold:<pct>").
@@ -249,8 +249,8 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             show_fan: "Fan",
             show_network: "Network",
             style_number: "Number",
-            style_graph: "Graph",
-            style_both: "Number + Graph",
+            style_graph: "Cat",
+            style_both: "Number + Cat",
         },
         ResolvedLanguage::Ko => L10n {
             enable_fan_control: "팬 제어 활성화 (최초 1회 설정)…",
@@ -274,8 +274,8 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             show_fan: "팬",
             show_network: "네트워크",
             style_number: "숫자",
-            style_graph: "그래프",
-            style_both: "숫자 + 그래프",
+            style_graph: "고양이",
+            style_both: "숫자 + 고양이",
         },
     }
 }
@@ -301,7 +301,7 @@ struct App {
     /// Created lazily on first request.
     detail_window: Option<Window>,
     detail_webview: Option<WebView>,
-    /// Short-term (2-minute) history for the menu-bar graph icon only — the
+    /// Short-term (2-minute) history for the menu-bar runner icon only — the
     /// icon always shows the recent trend, independent of the popover's
     /// chart range selector.
     fan_hist: VecDeque<f32>,
@@ -615,20 +615,7 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!(
-            "peterfan-menubar {}\n\n\
-             Live system metrics in the macOS menu bar.\n\n\
-             USAGE:\n    peterfan-menubar [OPTIONS]\n\n\
-             OPTIONS:\n    \
-             --mock                Use simulated hardware instead of real sensors\n    \
-             --metric <cpu|memory|temp|fan|network>  What the menu-bar item tracks\n    \
-             --display <number|graph|both>           How it's rendered\n    \
-             (Both flags override the saved preference; changing them from the\n    \
-             right-click menu persists for next launch.)\n    \
-             --version, -V         Print version and exit\n    \
-             --help, -h            Print this help and exit",
-            env!("CARGO_PKG_VERSION")
-        );
+        println!("{}", help_text());
         return;
     }
     if let Some(arg) = unsupported_menubar_arg(&args) {
@@ -963,6 +950,23 @@ fn main() {
     });
 }
 
+fn help_text() -> String {
+    format!(
+        "peterfan-menubar {}\n\n\
+         Live system metrics in the macOS menu bar.\n\n\
+         USAGE:\n    peterfan-menubar [OPTIONS]\n\n\
+         OPTIONS:\n    \
+         --mock                Use simulated hardware instead of real sensors\n    \
+         --metric <cpu|memory|temp|fan|network>  What the menu-bar item tracks\n    \
+         --display <number|cat|both>             How it's rendered (cat also accepts legacy graph)\n    \
+         (Both flags override the saved preference; changing them from the\n    \
+         right-click menu persists for next launch.)\n    \
+         --version, -V         Print version and exit\n    \
+         --help, -h            Print this help and exit",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 fn unsupported_menubar_arg(args: &[String]) -> Option<&str> {
     let mut i = 1;
     while i < args.len() {
@@ -1047,7 +1051,7 @@ fn build_tray(app: &mut App) {
     })
     .collect();
 
-    // "Display" — number only / graph only / both.
+    // "Display" — number only / cat only / both.
     let display_submenu = Submenu::new(s.menu_bar_style, true);
     let display_items: Vec<(MenubarDisplay, CheckMenuItem)> = [
         (MenubarDisplay::Number, s.style_number),
@@ -1404,7 +1408,7 @@ fn update(app: &mut App) {
     let cpu = app.monitor.cpu();
     // Gathered unconditionally (cheap — the underlying sysinfo/provider state
     // was already refreshed/held open) so the rolling history stays populated
-    // even while the popover is closed and the graph icon keeps moving.
+    // even while the popover is closed and the runner icon keeps moving.
     let mem = app.monitor.memory();
     let nets = app.monitor.networks();
     let temps = app.provider.temperatures().unwrap_or_default();
@@ -1441,7 +1445,7 @@ fn update(app: &mut App) {
     app.net_h.push((rx + tx) as f32);
     app.runner_cpu_pct = cpu.usage_percent;
 
-    // Menu-bar item: number, graph, or both, tracking whichever metric the
+    // Menu-bar item: number, cat, or both, tracking whichever metric the
     // user picked from the right-click menu (persisted across relaunches).
     if let Some(tray) = &app.tray {
         // Fixed-width formatting throughout: a menu-bar item that changes
@@ -4401,6 +4405,18 @@ mod tests {
             strings(ResolvedLanguage::En).show_temperature,
             "CPU Average Temp"
         );
+    }
+
+    #[test]
+    fn menu_bar_display_style_labels_match_cat_runner() {
+        assert_eq!(strings(ResolvedLanguage::En).style_graph, "Cat");
+        assert_eq!(strings(ResolvedLanguage::En).style_both, "Number + Cat");
+        assert_eq!(strings(ResolvedLanguage::Ko).style_graph, "고양이");
+        assert_eq!(strings(ResolvedLanguage::Ko).style_both, "숫자 + 고양이");
+
+        let help = help_text();
+        assert!(help.contains("--display <number|cat|both>"));
+        assert!(help.contains("cat also accepts legacy graph"));
     }
 
     #[test]

@@ -15,9 +15,10 @@ PeterFan은 단순한 팬 속도 슬라이더가 아닙니다. 개발자와 파�
 스크립트로 다룰 수 있는 시스템 모니터 *겸* 팬 제어 플랫폼입니다 — `lazygit`, `btop`,
 `mise` 옆에 나란히 `brew install`해두는 그런 종류의 도구이면서, [iStat
 Menus](https://bjango.com/mac/istatmenus/)나 [Stats](https://github.com/exelban/stats)
-같은 정신을 이어받은 메뉴바 앱이기도 합니다: 메뉴바에 실시간으로 그려지는 스파크라인
-그래프, 지표별 히스토리 차트, 팬 속도 직접 제어, 그리고 `--json`을 Raycast나 대시보드로
-파이프하고 싶은 사람들을 위한 스크립트 가능한 CLI/TUI까지 밑단에 갖추고 있습니다.
+같은 정신을 이어받은 메뉴바 앱이기도 합니다: CPU 사용량에 맞춰 뛰는 고양이 메뉴바
+캐릭터, 지표별 히스토리 차트, 팬 속도 직접 제어, 그리고 `--json`을 Raycast나
+대시보드로 파이프하고 싶은 사람들을 위한 스크립트 가능한 CLI/TUI까지 밑단에 갖추고
+있습니다.
 
 ```text
 Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
@@ -45,7 +46,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.26.52.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.26.53.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -165,7 +166,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.26.52
+PeterFan v1.26.53
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max

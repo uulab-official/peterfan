@@ -154,9 +154,10 @@ impl MenubarMetric {
 pub enum MenubarDisplay {
     /// Text only, e.g. "42%" — the lightest, most compact look.
     Number,
-    /// Colored bar-chart sparkline icon only, no text.
+    /// Animated RunCat-style character icon only, no text.
+    #[serde(rename = "cat", alias = "graph")]
     Graph,
-    /// Sparkline icon plus text (default — matches iStat's combined style).
+    /// Animated character icon plus text.
     #[default]
     Both,
 }
@@ -165,7 +166,7 @@ impl MenubarDisplay {
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "number" | "text" => Some(Self::Number),
-            "graph" => Some(Self::Graph),
+            "cat" | "runner" | "graph" => Some(Self::Graph),
             "both" => Some(Self::Both),
             _ => None,
         }
@@ -174,7 +175,7 @@ impl MenubarDisplay {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Number => "number",
-            Self::Graph => "graph",
+            Self::Graph => "cat",
             Self::Both => "both",
         }
     }
@@ -291,7 +292,7 @@ pub struct Config {
     /// License key + trial start, for the menu-bar app and daemon.
     #[serde(default, skip_serializing_if = "LicenseConfig::is_empty")]
     pub license: LicenseConfig,
-    /// Menu-bar item appearance (metric shown + number/graph/both style).
+    /// Menu-bar item appearance (metric shown + number/cat/both style).
     #[serde(default, skip_serializing_if = "MenubarConfig::is_default")]
     pub menubar: MenubarConfig,
 }
@@ -495,9 +496,21 @@ mod tests {
         cfg.menubar.display = MenubarDisplay::Graph;
         let toml = cfg.to_toml();
         assert!(toml.contains("[menubar]"));
+        assert!(toml.contains("display = \"cat\""));
         let back = Config::from_toml(&toml).unwrap();
         assert_eq!(back.menubar.metric, MenubarMetric::Network);
         assert_eq!(back.menubar.display, MenubarDisplay::Graph);
+
+        let legacy = Config::from_toml("[menubar]\ndisplay = \"graph\"\n").unwrap();
+        assert_eq!(legacy.menubar.display, MenubarDisplay::Graph);
+    }
+
+    #[test]
+    fn menubar_display_accepts_cat_alias_for_runner_icon() {
+        assert_eq!(MenubarDisplay::parse("cat"), Some(MenubarDisplay::Graph));
+        assert_eq!(MenubarDisplay::parse("runner"), Some(MenubarDisplay::Graph));
+        assert_eq!(MenubarDisplay::parse("graph"), Some(MenubarDisplay::Graph));
+        assert_eq!(MenubarDisplay::Graph.as_str(), "cat");
     }
 
     #[test]
