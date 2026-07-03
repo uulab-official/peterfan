@@ -140,7 +140,7 @@ impl RangedHistory {
     }
 }
 
-const POPOVER_W: f64 = 348.0;
+const POPOVER_W: f64 = 372.0;
 /// Initial height; the popover then reports its real content height (below) and
 /// the window is resized to fit exactly.
 const POPOVER_H: f64 = 520.0;
@@ -2642,6 +2642,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Memory<", ">메모리<")
             .replace(">Storage<", ">저장공간<")
             .replace(">Temperature<", ">온도<")
+            .replace(">Fan<", ">팬<")
             .replace(">Fans<", ">팬<")
             .replace(">Battery<", ">배터리<")
             .replace(">Network<", ">네트워크<")
@@ -2662,6 +2663,10 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace("Open Detailed Window…", "상세 창 열기…")
             .replace(">Quit PeterFan<", ">PeterFan 종료<")
             .replace(">Fan Curve<", ">팬 커브<")
+            .replace(">Detail<", ">상세<")
+            .replace(">Updates<", ">업데이트<")
+            .replace(">License<", ">라이선스<")
+            .replace(">Quit<", ">종료<")
             .replace(">Selected point<", ">선택한 점<")
             .replace(">Reset<", ">초기화<")
             .replace(">Remove Point<", ">점 삭제<")
@@ -2686,6 +2691,15 @@ const DASHBOARD_HTML_EN: &str = r##"<!doctype html><html><head><meta charset="ut
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;color:var(--text);-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased;overflow:hidden;}
 .panel{background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:13px;overflow-y:auto;overflow-x:hidden;box-shadow:var(--shadow);max-height:100vh;}
+.dashboard-shell{display:grid;grid-template-columns:minmax(0,1fr) 78px;gap:8px;padding:7px;}
+.main-pane{min-width:0;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:rgba(255,255,255,.015);}
+.action-rail{display:flex;flex-direction:column;gap:7px;position:sticky;top:7px;align-self:start;}
+.rail-btn{height:56px;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;background:var(--chip-bg);border:1px solid var(--panel-border);border-radius:8px;color:var(--text);font:inherit;font-size:9.5px;font-weight:700;cursor:pointer;transition:background .15s,border-color .15s,transform .15s;color-scheme:inherit;}
+.rail-btn:hover{background:var(--chip-hover);border-color:rgba(91,157,255,.35);}
+.rail-btn:active{transform:scale(.98);}
+.rail-btn svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;color:var(--text);}
+.rail-btn.primary{background:rgba(91,157,255,.18);border-color:rgba(91,157,255,.35);color:var(--accent);}
+.rail-btn.primary svg{color:var(--accent);}
 .setup{position:relative;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 15px 7px;border-bottom:1px solid var(--line);}
 .setup-main{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;}
 .setup-dot{width:7px;height:7px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 3px transparent;flex:0 0 auto;}
@@ -2795,7 +2809,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .range-tab{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:600;padding:3px 9px;border-radius:99px;cursor:pointer;transition:background .15s,color .15s;}
 .range-tab:hover{background:var(--chip-hover);}
 .range-tab.active{background:rgba(91,157,255,.22);color:var(--accent);}
-</style></head><body><div class="panel">
+</style></head><body><div class="panel"><div class="dashboard-shell"><main class="main-pane">
 
 <div class="range-tabs">
 <button class="range-tab active" data-range="2m" onclick="setChartRange('2m')">2m</button>
@@ -2817,7 +2831,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 </div>
 </div>
 
-<div class="ctl" style="border-top:0;border-bottom:1px solid var(--line)">
+<div class="ctl" id="fan-control-section" style="border-top:0;border-bottom:1px solid var(--line)">
 <div class="ctl-head"><span class="name">Fan control</span><span class="ctl-status" id="ctl-status"></span></div>
 <div class="profile-strip" id="profile-strip">
 <button data-mode="auto" title="Auto" onclick="setAuto()">Auto</button>
@@ -2896,8 +2910,16 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <button onclick="submitLicense()">Activate</button>
 </div>
 
-<div class="foot"><button class="quit" onclick="window.ipc.postMessage('open_detail')">Open Detailed Window…</button><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
-</div>
+<div class="foot"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
+</main>
+<aside class="action-rail" aria-label="Quick actions">
+<button class="rail-btn primary" id="railDetail" onclick="window.ipc.postMessage('open_detail')" title="Open Detailed Window…"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Detail</span></button>
+<button class="rail-btn" id="railFan" onclick="focusFanControl()" title="Fan control"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fan</span></button>
+<button class="rail-btn" id="railUpdate" onclick="checkAppUpdates(this)" title="Check for Updates…"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
+<button class="rail-btn" id="railLogin" onclick="window.ipc.postMessage('togglelogin')" title="Launch at Login"><svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M7.1 6.2a8 8 0 1 0 9.8 0"/></svg><span>Login</span></button>
+<button class="rail-btn" id="railLicense" onclick="toggleLicForm()" title="License"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="3"/><path d="M11 12h9M16 12v3M19 12v2"/></svg><span>License</span></button>
+<button class="rail-btn" id="railQuit" onclick="window.ipc.postMessage('quit')" title="Quit PeterFan"><svg viewBox="0 0 24 24"><path d="M9 6H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/><path d="M14 8l4 4-4 4"/><path d="M18 12H9"/></svg><span>Quit</span></button>
+</aside></div></div>
 <div class="chart-tip" id="chart-tip"></div>
 <script>
 var LANG='__LANG__';
@@ -3354,6 +3376,10 @@ function saveCurve(){
   window.ipc.postMessage('savecurve:'+JSON.stringify(CURVE_POINTS));
 }
 function toggleLicForm(){var f=document.getElementById('lic-form');if(f)f.classList.toggle('show');}
+function focusFanControl(){
+  var el=document.getElementById('fan-control-section');
+  if(el)el.scrollIntoView({block:'nearest',behavior:'auto'});
+}
 function setChartRange(r){
   document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){b.classList.toggle('active',b.dataset.range===r);});
   window.ipc.postMessage('range:'+r);
@@ -3621,6 +3647,34 @@ mod tests {
             assert!(html.contains("cmd:fanauto:"));
             assert!(html.contains("savecurve:"));
         }
+    }
+
+    #[test]
+    fn dashboard_html_has_runcat_style_action_rail() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+
+        for html in [&en, &ko] {
+            assert!(html.contains(r#"class="dashboard-shell""#));
+            assert!(html.contains(r#"class="action-rail""#));
+            assert!(html.contains("railDetail"));
+            assert!(html.contains("railFan"));
+            assert!(html.contains("railUpdate"));
+            assert!(html.contains("railLogin"));
+            assert!(html.contains("railLicense"));
+            assert!(html.contains("focusFanControl"));
+        }
+
+        assert!(en.contains(">Detail<"));
+        assert!(en.contains(">Fan<"));
+        assert!(en.contains(">Updates<"));
+        assert!(en.contains(">Login<"));
+        assert!(en.contains(">License<"));
+        assert!(ko.contains(">상세<"));
+        assert!(ko.contains(">팬<"));
+        assert!(ko.contains(">업데이트<"));
+        assert!(ko.contains(">자동 실행<"));
+        assert!(ko.contains(">라이선스<"));
     }
 
     #[test]
