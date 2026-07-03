@@ -45,7 +45,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] Compact/expanded popover modes
 - [x] Keep popover on the clicked monitor in multi-display setups
 - [x] Fan Control Health card in Settings: daemon, approval, command status
-- [ ] Hide low-priority sections from the first viewport when they are idle
+- [x] Hide low-priority sections from the first viewport when they are idle
 - [x] Better empty states for unsupported fans, missing battery, and no network
 - [ ] Visual QA screenshots for dark/light mode and Korean/English text fit
 - [ ] More stable popover height when fan cards or setup copy changes

@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.57] — More 화면에 추가 지표 배치
+
+### Changed
+- **첫 화면은 CPU/메모리/온도 중심으로 유지** — 저장공간, 배터리, 네트워크,
+  프로세스 목록 같은 저우선순위 지표는 기본 상태에서 숨겨 팝오버 첫 화면을 더
+  단순하게 유지함.
+- **More 버튼을 추가 지표 화면으로 개선** — 오른쪽 `More`를 누르면 저장공간,
+  배터리, 네트워크, Top Processes와 상세/종료 액션을 한 화면에서 볼 수 있게 함.
+- **로드맵 갱신** — low-priority sections first-viewport 항목을 완료 상태로 반영함.
+
 ## [1.26.56] — 하드웨어 빈 상태 안내 개선
 
 ### Added

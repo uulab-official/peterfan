@@ -2814,6 +2814,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Updates<", ">업데이트<")
             .replace(">More<", ">더보기<")
             .replace(">Quit<", ">종료<")
+            .replace(">More Metrics<", ">추가 지표<")
             .replace(">More Actions<", ">더보기<")
             .replace(">Open Detail Window<", ">상세 창 열기<")
             .replace(">Open Detail Window…<", ">상세 창 열기…<")
@@ -2861,6 +2862,8 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .main-pane{min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:9px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:none;background:rgba(255,255,255,.015);}
 .main-pane::-webkit-scrollbar{display:none;}
 body.compact .compact-extra{display:none!important;}
+body.compact[data-rail-view="more"] .compact-extra{display:grid!important;}
+body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;}
 .action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;}
 .rail-btn{height:56px;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;background:var(--chip-bg);border:1px solid var(--panel-border);border-radius:8px;color:var(--text);font:inherit;font-size:9.5px;font-weight:700;cursor:pointer;transition:background .15s,border-color .15s,transform .15s;color-scheme:inherit;}
 .rail-btn:hover{background:var(--chip-hover);border-color:rgba(91,157,255,.35);}
@@ -3055,7 +3058,7 @@ body.compact .compact-extra{display:none!important;}
 </div>
 
 <div class="rail-panel" id="rail-more-panel">
-<div class="panel-title-row"><div class="panel-title">More Actions</div><span class="panel-pill info" id="rail-more-pill">Tools</span></div>
+<div class="panel-title-row"><div class="panel-title">More Metrics</div><span class="panel-pill info" id="rail-more-pill">Tools</span></div>
 <div class="panel-copy">Open a larger dashboard window, use the native menu for advanced settings, or quit PeterFan.</div>
 <div class="panel-actions">
 <button class="panel-action" onclick="window.ipc.postMessage('open_detail')">Open Detail Window</button>
@@ -3206,7 +3209,7 @@ function applyRailView(resetScroll){
   } else if(view==='settings'){
     setVisible('rail-settings-panel',true);
   } else if(view==='more'){
-    setVisible('rail-more-panel',true);
+    ['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach(function(id){setVisible(id,true);});
   } else {
     ['range-tabs','setup-row','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
   }
@@ -4464,9 +4467,26 @@ mod tests {
         assert!(en.contains("case 'more':setRailView('more');break;"));
         assert!(en.contains(r#"onclick="window.ipc.postMessage('open_detail')""#));
         assert!(en.contains(r#"onclick="window.ipc.postMessage('quit')""#));
-        assert!(en.contains("setVisible('rail-more-panel',true);"));
+        assert!(en.contains(
+            "['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach"
+        ));
         assert!(!en.contains("case 'detail':window.ipc.postMessage('open_detail');break;"));
         assert!(!en.contains("if(view==='more')setPopoverExpanded(true);"));
+    }
+
+    #[test]
+    fn more_view_reveals_low_priority_metric_sections() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains(r#"body.compact[data-rail-view="more"] .compact-extra"#));
+        assert!(en.contains(
+            "['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach"
+        ));
+        assert!(en.contains(r#"data-compact-extra="storage""#));
+        assert!(en.contains(r#"data-compact-extra="battery""#));
+        assert!(en.contains(r#"data-compact-extra="network""#));
+        assert!(en.contains(r#"data-compact-extra="processes""#));
+        assert!(en.contains("More Metrics"));
     }
 
     #[test]
