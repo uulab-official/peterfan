@@ -35,6 +35,9 @@ jobs:
       - name: Formatting
         run: cargo fmt --all -- --check
 
+      - name: Documentation readiness
+        run: scripts/check-docs.sh
+
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 

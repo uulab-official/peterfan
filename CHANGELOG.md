@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.30] — 문서 신선도 자동 검사
+
+### Changed
+- **문서 신선도 검사 스크립트 추가** — `scripts/check-docs.sh`가 README 이미지
+  경로, overview 이미지 파일, 한국어 README의 현재 버전, CHANGELOG 섹션을
+  릴리즈 전 자동으로 확인하게 함.
+- **CI와 로컬 릴리즈에 문서 검사 연결** — GitHub Actions와
+  `scripts/release-local-macos.sh`가 문서 drift를 빌드/공증 전에 잡도록 함.
+
 ## [1.26.29] — README 이미지와 릴리즈 리마인더
 
 ### Changed

@@ -243,6 +243,7 @@ Maintainer reminder before every version bump:
 
 - update `CHANGELOG.md`, `Cargo.toml`, and `Cargo.lock`
 - refresh README screenshots when the menu-bar or diagnostics UI changes
+- run `scripts/check-docs.sh`
 - run `cargo fmt --check`, `cargo test --workspace`, and
   `cargo clippy --workspace --all-targets -- -D warnings`
 - run `scripts/release-local-macos.sh vX.Y.Z` and install-test the DMG from

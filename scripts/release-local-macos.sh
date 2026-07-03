@@ -104,6 +104,8 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+scripts/check-docs.sh
+
 IDENTITY="${PETERFAN_SIGN_IDENTITY:-}"
 if [[ -z "$IDENTITY" ]]; then
   IDENTITY=$(security find-identity -p codesigning -v | awk -F\" '/Developer ID Application/ {print $2; exit}')
