@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.29] — README 이미지와 릴리즈 리마인더
+
+### Changed
+- **README 제품 이미지 추가** — 오픈소스 페이지 첫 화면에서 메뉴바 대시보드,
+  팬 상태, `peterfan doctor` 진단 흐름을 한눈에 볼 수 있는 개요 이미지를 추가함.
+- **릴리즈 전 리마인더 추가** — 버전업 때 changelog/version/스크린샷/검증/DMG
+  설치 테스트를 잊지 않도록 README의 Release Builds 섹션에 체크리스트를 추가함.
+- **한국어 README 최신화** — 현재 베타 버전과 공식 macOS 릴리즈의 Developer ID
+  서명/공증 상태 설명을 최신 배포 흐름에 맞게 정정함.
+
 ## [1.26.28] — App Bundle CLI 오사용 안내
 
 ### Fixed

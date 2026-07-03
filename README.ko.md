@@ -9,6 +9,8 @@
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
 ![Status: beta](https://img.shields.io/badge/status-beta-yellow.svg)
 
+![PeterFan 메뉴바 대시보드와 CLI 진단 화면](./docs/images/peterfan-readme-overview.png)
+
 PeterFan은 단순한 팬 속도 슬라이더가 아닙니다. 개발자와 파워유저를 위한 작고 안전하며
 스크립트로 다룰 수 있는 시스템 모니터 *겸* 팬 제어 플랫폼입니다 — `lazygit`, `btop`,
 `mise` 옆에 나란히 `brew install`해두는 그런 종류의 도구이면서, [iStat
@@ -34,8 +36,8 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 1. **[최신 `.dmg` 다운로드](https://github.com/uulab-official/peterfan/releases/latest)**
    (**Assets** 항목에서 `PeterFan-vX.Y.Z.dmg`를 찾으세요)
 2. 더블클릭해서 열고, **PeterFan.app**을 **Applications** 바로가기로 드래그하세요
-3. Applications(또는 Spotlight)에서 **PeterFan**을 실행합니다 — 처음 실행할 때는
-   **우클릭 → 열기**로 한 번 확인해줘야 합니다 ([이유는?](#download))
+3. Applications(또는 Spotlight)에서 **PeterFan**을 실행합니다. 공식 `.dmg`는
+   Developer ID 서명과 Apple 공증을 거쳐 배포됩니다.
 
 이게 끝입니다 — PeterFan은 이제 조용히 메뉴바에 자리잡습니다. 14일 무료 체험이며 계정
 생성이나 가입 절차는 필요 없습니다. 커맨드라인을 선호하거나 Windows가 필요하다면 아래
@@ -45,7 +47,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.26.2.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.26.29.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -99,8 +101,8 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 ## 다운로드 (Download)
 
 미리 빌드된 바이너리는 각 [GitHub 릴리즈](https://github.com/uulab-official/peterfan/releases/latest)에
-첨부되어 있습니다. macOS(Apple Silicon + Intel, 유니버설)와 Windows 빌드는 태그가
-붙은 릴리즈마다 CI가 두 가지 형태로 생성합니다:
+첨부되어 있습니다. macOS(Apple Silicon + Intel, 유니버설) 릴리즈는 로컬 릴리즈
+머신에서 Developer ID 서명/공증 후 업로드하며, Windows 빌드는 별도 산출물로 제공됩니다:
 
 | 자산 | 포함 내용 | 이런 분께 적합 |
 | --- | --- | --- |
@@ -124,16 +126,10 @@ open PeterFan.app          # 메뉴바 앱
 Windows는 `.zip`으로 제공됩니다(CLI/TUI/메뉴바 바이너리만 포함 — 아직 `.exe`
 설치 프로그램은 없습니다).
 
-이 앱은 애드혹(ad-hoc) 서명만 되어 있습니다(유료 Apple Developer 계정이 없어
-공증(notarize)은 되어 있지 않습니다 — 오픈소스라고 해서 다른 건 아닙니다.
-Gatekeeper는 소스 공개 여부가 아니라 바이너리 서명만 봅니다). 최초 실행 시
-"개발자를 확인할 수 없음"이라는 표준 macOS 경고가 뜹니다 — `PeterFan.app`을
-우클릭 → **열기**를 선택하거나, **시스템 설정 → 개인정보 보호 및 보안 → 그래도
-열기**를 이용하세요. macOS가 여전히 "손상되어 열 수 없음"이라며 거부한다면
-격리(quarantine) 플래그를 직접 제거하세요: `xattr -dr com.apple.quarantine
-PeterFan.app peterfan*`. 이 과정 자체가 번거로우시면 [소스에서
-빌드하기](#소스에서-빌드하기)를 이용해보세요 — 직접 컴파일한 바이너리는 애초에
-격리 플래그가 붙지 않습니다.
+공식 `.dmg`는 Developer ID로 서명하고 Apple 공증(notarization)과 stapling까지
+마친 뒤 배포합니다. Gatekeeper가 거부한다면 먼저 최신 릴리즈를 다시 받아보고,
+문제가 계속되면 `scripts/check-macos-release.sh`로 산출물을 검증하세요. 소스에서
+직접 빌드한 개발용 번들은 공증된 공식 릴리즈와 다를 수 있습니다.
 
 ---
 
@@ -190,7 +186,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.26.2
+PeterFan v1.26.29
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max

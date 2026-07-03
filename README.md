@@ -17,6 +17,8 @@ It combines:
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
 ![Status: beta](https://img.shields.io/badge/status-beta-yellow.svg)
 
+![PeterFan menu-bar dashboard and CLI diagnostics](./docs/images/peterfan-readme-overview.png)
+
 > Status: beta. PeterFan is useful today, but fan-control behavior depends on
 > Mac model and firmware. Monitoring is read-only by default; fan writes require
 > an explicit administrator setup step.
@@ -41,6 +43,10 @@ pretending the reading is real. See [docs/ROADMAP.md](./docs/ROADMAP.md) and
 [docs/RESEARCH.md](./docs/RESEARCH.md) for implementation notes.
 
 ## Screens and Interfaces
+
+The screenshot above shows the two surfaces PeterFan is built around: a quiet
+menu-bar dashboard for daily use, and a scriptable `peterfan doctor` path for
+debugging release, daemon, and hardware state.
 
 PeterFan ships as multiple interfaces over the same core:
 
@@ -232,6 +238,15 @@ scripts/check-macos-release.sh /path/to/PeterFan-vX.Y.Z.dmg
 See [docs/MACOS_DISTRIBUTION.md](./docs/MACOS_DISTRIBUTION.md) for the full
 release-machine model, including which files are public and which stay local in
 Keychain, `.env`, and `private/`.
+
+Maintainer reminder before every version bump:
+
+- update `CHANGELOG.md`, `Cargo.toml`, and `Cargo.lock`
+- refresh README screenshots when the menu-bar or diagnostics UI changes
+- run `cargo fmt --check`, `cargo test --workspace`, and
+  `cargo clippy --workspace --all-targets -- -D warnings`
+- run `scripts/release-local-macos.sh vX.Y.Z` and install-test the DMG from
+  `/Applications`
 
 ## Project Layout
 
