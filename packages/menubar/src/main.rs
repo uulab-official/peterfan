@@ -469,20 +469,21 @@ fn setup_detail(
             format!("v{} · 체험판 만료", env!("CARGO_PKG_VERSION"))
         }
         (ResolvedLanguage::Ko, false, true, _, _) => format!(
-            "앱 v{} · 데몬 v{} · 업데이트 필요",
+            "앱 v{} · 데몬 v{} · v{} 이상 필요",
             env!("CARGO_PKG_VERSION"),
-            daemon_version.unwrap_or("unknown")
+            daemon_version.unwrap_or("unknown"),
+            MIN_REQUIRED_DAEMON_VERSION
         ),
         (ResolvedLanguage::Ko, false, false, true, true) => {
             format!(
-                "앱 v{} · 데몬 v{} · 자동 실행 켜짐",
+                "앱 v{} · 데몬 v{} 호환됨 · 자동 실행 켜짐",
                 env!("CARGO_PKG_VERSION"),
                 daemon_version.unwrap_or("unknown")
             )
         }
         (ResolvedLanguage::Ko, false, false, true, false) => {
             format!(
-                "앱 v{} · 데몬 v{} · 자동 실행 꺼짐",
+                "앱 v{} · 데몬 v{} 호환됨 · 자동 실행 꺼짐",
                 env!("CARGO_PKG_VERSION"),
                 daemon_version.unwrap_or("unknown")
             )
@@ -494,20 +495,21 @@ fn setup_detail(
             format!("v{} · trial expired", env!("CARGO_PKG_VERSION"))
         }
         (ResolvedLanguage::En, false, true, _, _) => format!(
-            "app v{} · daemon v{} · update needed",
+            "app v{} · daemon v{} · requires v{}+",
             env!("CARGO_PKG_VERSION"),
-            daemon_version.unwrap_or("unknown")
+            daemon_version.unwrap_or("unknown"),
+            MIN_REQUIRED_DAEMON_VERSION
         ),
         (ResolvedLanguage::En, false, false, true, true) => {
             format!(
-                "app v{} · daemon v{} · login on",
+                "app v{} · daemon v{} compatible · login on",
                 env!("CARGO_PKG_VERSION"),
                 daemon_version.unwrap_or("unknown")
             )
         }
         (ResolvedLanguage::En, false, false, true, false) => {
             format!(
-                "app v{} · daemon v{} · login off",
+                "app v{} · daemon v{} compatible · login off",
                 env!("CARGO_PKG_VERSION"),
                 daemon_version.unwrap_or("unknown")
             )
@@ -2182,13 +2184,12 @@ fn install_fan_control() {
         Ok(InstallOutcome::Installed) => {
             clear_daemon_version_cache();
             persist_clear_daemon_update_prompt_state();
+            let installed_version = cached_installed_daemon_version()
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
             if updating_existing {
                 (
                     true,
-                    format!(
-                        "Fan control updated — daemon is now v{}.",
-                        env!("CARGO_PKG_VERSION")
-                    ),
+                    format!("Fan control updated — daemon is now v{installed_version}."),
                 )
             } else {
                 (
@@ -3660,7 +3661,9 @@ mod tests {
             false,
             false
         )
-        .contains("daemon v1.26.8"));
+        .contains(&format!(
+            "daemon v1.26.8 · requires v{MIN_REQUIRED_DAEMON_VERSION}+"
+        )));
         assert!(setup_detail(
             ResolvedLanguage::Ko,
             true,
@@ -3669,7 +3672,7 @@ mod tests {
             false,
             false
         )
-        .contains("업데이트 필요"));
+        .contains(&format!("v{MIN_REQUIRED_DAEMON_VERSION} 이상 필요")));
     }
 
     #[test]
@@ -3683,7 +3686,7 @@ mod tests {
             false,
         );
         assert!(en.contains("app v"));
-        assert!(en.contains("daemon v1.26.18"));
+        assert!(en.contains("daemon v1.26.18 compatible"));
         assert!(en.contains("login on"));
 
         let ko = setup_detail(
@@ -3695,7 +3698,7 @@ mod tests {
             false,
         );
         assert!(ko.contains("앱 v"));
-        assert!(ko.contains("데몬 v1.26.18"));
+        assert!(ko.contains("데몬 v1.26.18 호환됨"));
         assert!(ko.contains("자동 실행 꺼짐"));
     }
 
