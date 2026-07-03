@@ -29,7 +29,7 @@ pub mod updater;
 /// App-only UI releases should bump the app version without forcing users to
 /// re-enter their macOS password. Raise this only when the daemon IPC contract
 /// or fan-control behavior genuinely requires a newer `/usr/local/bin/peterfand`.
-pub const MIN_REQUIRED_DAEMON_VERSION: &str = "1.26.22";
+pub const MIN_REQUIRED_DAEMON_VERSION: &str = "1.26.62";
 
 /// Oldest installed root daemon that can reinstall fan control from the
 /// signed app bundle without another administrator-password prompt.
@@ -168,11 +168,11 @@ mod tests {
 
     #[test]
     fn daemon_update_uses_min_required_version_not_app_version() {
-        assert!(super::daemon_update_required("1.26.21"));
+        assert!(super::daemon_update_required("1.26.61"));
         assert!(!super::daemon_update_required(
             super::MIN_REQUIRED_DAEMON_VERSION
         ));
-        assert!(!super::daemon_update_required("1.26.24"));
+        assert!(!super::daemon_update_required("1.26.63"));
     }
 
     #[test]

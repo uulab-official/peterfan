@@ -154,6 +154,25 @@ pub fn probe() -> FanProbe {
     }
 }
 
+/// Read selected SMC temperature keys as Celsius.
+///
+/// This is intentionally tiny and key-list driven. Apple Silicon exposes many
+/// opaque temperature keys, and reading the full table every second is too
+/// expensive for the menu-bar app; callers should pass only keys they trust.
+pub fn read_temperature_keys(keys: &[&str]) -> Vec<(String, f32)> {
+    let Ok(conn) = Conn::open() else {
+        return Vec::new();
+    };
+    keys.iter()
+        .filter_map(|key| {
+            let value = conn.read_temperature_key_str(key).ok()?;
+            (1.0..=130.0)
+                .contains(&value)
+                .then(|| ((*key).to_string(), value))
+        })
+        .collect()
+}
+
 /// Errors from a fan-control write.
 #[derive(Debug)]
 pub enum FanCtlError {
@@ -251,6 +270,11 @@ impl Conn {
 
     /// Read up to `out.len()` bytes of `key` into `out`; returns the key size.
     fn read_key(&self, key: u32, out: &mut [u8]) -> Result<usize, FanCtlError> {
+        let (_, size) = self.read_key_typed(key, out)?;
+        Ok(size)
+    }
+
+    fn read_key_typed(&self, key: u32, out: &mut [u8]) -> Result<(u32, usize), FanCtlError> {
         let mut input = KeyData {
             key,
             data8: CMD_READ_KEYINFO,
@@ -268,7 +292,21 @@ impl Conn {
         self.call(&input, &mut data)?;
         let n = size.min(out.len());
         out[..n].copy_from_slice(&data.bytes.0[..n]);
-        Ok(size)
+        Ok((info.key_info.data_type, size))
+    }
+
+    fn read_temperature_key_str(&self, key: &str) -> Result<f32, FanCtlError> {
+        if key.len() != 4 {
+            return Err(FanCtlError::Smc(-1));
+        }
+        let mut raw = [0u8; 4];
+        let key = u32::from_be_bytes(
+            key.as_bytes()
+                .try_into()
+                .map_err(|_| FanCtlError::Smc(-1))?,
+        );
+        let (data_type, size) = self.read_key_typed(key, &mut raw)?;
+        decode_temperature(data_type, &raw[..size.min(raw.len())])
     }
 
     /// Write `data` to `key` (after reading its declared size from the SMC).
@@ -293,6 +331,15 @@ impl Conn {
 
         let mut out2 = KeyData::default();
         self.call(&input, &mut out2)
+    }
+}
+
+fn decode_temperature(data_type: u32, data: &[u8]) -> Result<f32, FanCtlError> {
+    match &data_type.to_be_bytes() {
+        b"sp78" if data.len() >= 2 => Ok(i16::from_be_bytes([data[0], data[1]]) as f32 / 256.0),
+        b"fp88" if data.len() >= 2 => Ok(u16::from_be_bytes([data[0], data[1]]) as f32 / 256.0),
+        b"flt " if data.len() >= 4 => Ok(f32::from_ne_bytes([data[0], data[1], data[2], data[3]])),
+        _ => Err(FanCtlError::Smc(-1)),
     }
 }
 

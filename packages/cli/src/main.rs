@@ -1821,8 +1821,13 @@ fn cmd_system(mock: bool, json: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_status_compact(mock: bool, json: bool) -> Result<()> {
-    // daemon_sensors() gives temps + fans + mode in one IPC call — no second roundtrip.
-    let daemon_s = if !mock { daemon_sensors() } else { None };
+    // daemon_sensors_if_compatible() gives temps + fans + mode in one IPC call
+    // when the running daemon uses the same sensor contract as this CLI.
+    let daemon_s = if !mock {
+        daemon_sensors_if_compatible()
+    } else {
+        None
+    };
     let m = if daemon_s.is_some() {
         // Skip provider init and sampling; we have temps from the daemon.
         instant_monitor(mock)
@@ -1885,7 +1890,11 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
     // When the daemon has cached thermals, we can skip hardware provider init
     // entirely and run only the system monitor (150 ms sample window).
     // When the daemon is absent, we parallelise provider init with the sample.
-    let daemon_s = if !mock { daemon_sensors() } else { None };
+    let daemon_s = if !mock {
+        daemon_sensors_if_compatible()
+    } else {
+        None
+    };
 
     let (m, sensors, thermal_backend, power_w) = if let Some(ds) = daemon_s {
         let m = sampled_monitor(mock);
@@ -2083,7 +2092,7 @@ fn simulated_note() -> String {
 
 fn cmd_temps(mock: bool, json: bool) -> Result<()> {
     let sensors = if !mock {
-        if let Some(ds) = daemon_sensors() {
+        if let Some(ds) = daemon_sensors_if_compatible() {
             ds
         } else {
             let prov = provider(mock);
@@ -2106,7 +2115,7 @@ fn cmd_temps(mock: bool, json: bool) -> Result<()> {
 
 fn cmd_fans(mock: bool, json: bool) -> Result<()> {
     let sensors = if !mock {
-        if let Some(ds) = daemon_sensors() {
+        if let Some(ds) = daemon_sensors_if_compatible() {
             ds
         } else {
             let prov = provider(mock);
@@ -3049,6 +3058,19 @@ fn daemon_sensors() -> Option<Sensors> {
     None
 }
 
+fn daemon_cache_is_compatible(installed_version: Option<&str>) -> bool {
+    installed_version
+        .map(|version| !peterfan_platform::daemon_update_required(version))
+        .unwrap_or(true)
+}
+
+fn daemon_sensors_if_compatible() -> Option<Sensors> {
+    if !daemon_cache_is_compatible(peterfan_platform::installed_daemon_version().as_deref()) {
+        return None;
+    }
+    daemon_sensors()
+}
+
 /// Whether the process is running with elevated privileges.
 #[cfg(unix)]
 fn is_elevated() -> bool {
@@ -3875,5 +3897,14 @@ mod tests {
         assert_eq!(super::temp_display_label(&cpu), "Average");
         assert_eq!(super::temp_display_label(&hot), "Hottest");
         assert_eq!(super::temp_display_label(&ssd), "SSD");
+    }
+
+    #[test]
+    fn daemon_cache_is_ignored_when_daemon_needs_update() {
+        assert!(!super::daemon_cache_is_compatible(Some("1.26.61")));
+        assert!(super::daemon_cache_is_compatible(Some(
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
+        )));
+        assert!(super::daemon_cache_is_compatible(None));
     }
 }

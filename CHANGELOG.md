@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.62] — Apple Silicon CPU Core 평균 온도 보정
+
+### Fixed
+- **Macs Fan Control과 크게 다르던 CPU 평균 온도 수정** — M3 Pro/Max 계열에서
+  IOHID `PMU tdie*` 패키지 온도 평균 대신 SMC `Te*`/`Tf*` E-core/P-core 온도
+  키를 우선 사용해 `CPU Core Average`에 더 가까운 값을 표시함.
+- **오래된 데몬 온도 캐시 방지** — 팬 제어 데몬도 같은 온도 기준을 써야 하므로
+  최소 요구 데몬 버전을 `v1.26.62`로 올림.
+
 ## [1.26.61] — 메뉴바 앱 중복 실행 방지
 
 ### Fixed

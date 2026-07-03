@@ -4809,11 +4809,11 @@ mod tests {
 
     #[test]
     fn daemon_update_uses_min_required_version_not_app_version() {
-        assert!(peterfan_platform::daemon_update_required("1.26.21"));
+        assert!(peterfan_platform::daemon_update_required("1.26.61"));
         assert!(!peterfan_platform::daemon_update_required(
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         ));
-        assert!(!peterfan_platform::daemon_update_required("1.26.24"));
+        assert!(!peterfan_platform::daemon_update_required("1.26.63"));
     }
 
     #[test]
@@ -5042,14 +5042,32 @@ mod tests {
 
     #[test]
     fn setup_detail_reassures_when_daemon_is_compatible_but_older_than_app() {
-        assert!(!peterfan_platform::daemon_update_required("1.26.24"));
+        assert!(!peterfan_platform::daemon_update_required(
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
+        ));
 
-        let en = setup_detail(ResolvedLanguage::En, true, false, Some("1.26.24"));
-        assert!(en.contains("daemon v1.26.24 OK"));
+        let en = setup_detail(
+            ResolvedLanguage::En,
+            true,
+            false,
+            Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION),
+        );
+        assert!(en.contains(&format!(
+            "daemon v{} OK",
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
+        )));
         assert!(en.contains("no admin prompt"));
 
-        let ko = setup_detail(ResolvedLanguage::Ko, true, false, Some("1.26.24"));
-        assert!(ko.contains("데몬 v1.26.24 정상"));
+        let ko = setup_detail(
+            ResolvedLanguage::Ko,
+            true,
+            false,
+            Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION),
+        );
+        assert!(ko.contains(&format!(
+            "데몬 v{} 정상",
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
+        )));
         assert!(ko.contains("암호 불필요"));
     }
 

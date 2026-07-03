@@ -28,6 +28,25 @@ use peterfan_core::provider::Capabilities;
 use peterfan_core::types::{Celsius, Fan, HardwareInfo, SensorKind, TempSensor};
 use peterfan_core::HardwareProvider;
 
+const M3_CPU_CORE_TEMP_KEYS: &[(&str, &str)] = &[
+    ("Te05", "CPU Efficiency Core 1"),
+    ("Te0L", "CPU Efficiency Core 2"),
+    ("Te0P", "CPU Efficiency Core 3"),
+    ("Te0S", "CPU Efficiency Core 4"),
+    ("Tf04", "CPU Performance Core 1"),
+    ("Tf09", "CPU Performance Core 2"),
+    ("Tf0A", "CPU Performance Core 3"),
+    ("Tf0B", "CPU Performance Core 4"),
+    ("Tf0D", "CPU Performance Core 5"),
+    ("Tf0E", "CPU Performance Core 6"),
+    ("Tf44", "CPU Performance Core 7"),
+    ("Tf49", "CPU Performance Core 8"),
+    ("Tf4A", "CPU Performance Core 9"),
+    ("Tf4B", "CPU Performance Core 10"),
+    ("Tf4D", "CPU Performance Core 11"),
+    ("Tf4E", "CPU Performance Core 12"),
+];
+
 fn deduped_name_average_max<'a, I>(temps: I) -> Option<f32>
 where
     I: IntoIterator<Item = (&'a str, f32)>,
@@ -58,6 +77,28 @@ impl MacosProvider {
             force_conn: Mutex::new(None),
         })
     }
+}
+
+fn average_and_hot(values: &[f32]) -> Option<(f32, f32)> {
+    (!values.is_empty()).then(|| {
+        let avg = values.iter().sum::<f32>() / values.len() as f32;
+        let hot = values.iter().copied().fold(0.0, f32::max);
+        (avg, hot)
+    })
+}
+
+fn apple_silicon_cpu_core_temperatures() -> Vec<(String, f32)> {
+    let keys: Vec<&str> = M3_CPU_CORE_TEMP_KEYS.iter().map(|(key, _)| *key).collect();
+    let raw = crate::smc_write::read_temperature_keys(&keys);
+    raw.into_iter()
+        .filter_map(|(key, temp)| {
+            let label = M3_CPU_CORE_TEMP_KEYS
+                .iter()
+                .find(|(known, _)| *known == key)
+                .map(|(_, label)| *label)?;
+            Some((label.to_string(), temp))
+        })
+        .collect()
 }
 
 impl HardwareProvider for MacosProvider {
@@ -112,29 +153,52 @@ impl HardwareProvider for MacosProvider {
         }
         let mut temps: Vec<TempSensor> = Vec::new();
 
-        // Real CPU die temperatures via IOHID (the SMC doesn't expose these on
-        // Apple Silicon). `tcal` is a calibration reading, not a die sensor;
-        // duplicate service entries are collapsed by sensor name.
+        // M3 Pro/Max expose Apple-Silicon CPU core sensors through SMC keys
+        // (`Te*` efficiency cores, `Tf*` performance cores). Prefer these for
+        // the user-facing CPU average because this matches tools such as Macs
+        // Fan Control more closely than PMU `tdie` package readings.
+        let smc_cpu_cores = apple_silicon_cpu_core_temperatures();
+        let smc_cpu_values: Vec<f32> = smc_cpu_cores.iter().map(|(_, temp)| *temp).collect();
+        if let Some((avg, hot)) = average_and_hot(&smc_cpu_values) {
+            temps.push(TempSensor {
+                id: "cpu.die".into(),
+                label: "CPU Core Average".into(),
+                kind: SensorKind::Cpu,
+                value: Celsius(avg),
+            });
+            temps.push(TempSensor {
+                id: "cpu.die.hot".into(),
+                label: "CPU Core Hottest".into(),
+                kind: SensorKind::Cpu,
+                value: Celsius(hot),
+            });
+        }
+
+        // Fallback CPU die temperatures via IOHID. `tcal` is a calibration
+        // reading, not a die sensor; duplicate service entries are collapsed by
+        // sensor name.
         let hid = crate::macos_hid::read_temps();
         let dies: Vec<(&str, f32)> = hid
             .iter()
             .filter(|(n, _)| n.contains("tdie"))
             .map(|(n, t)| (n.as_str(), *t))
             .collect();
-        if let Some(avg) = deduped_name_average_max(dies.iter().copied()) {
-            let hot = dies.iter().map(|(_, t)| *t).fold(0.0, f32::max);
-            temps.push(TempSensor {
-                id: "cpu.die".into(),
-                label: "CPU avg".into(),
-                kind: SensorKind::Cpu,
-                value: Celsius(avg),
-            });
-            temps.push(TempSensor {
-                id: "cpu.die.hot".into(),
-                label: "CPU hottest".into(),
-                kind: SensorKind::Cpu,
-                value: Celsius(hot),
-            });
+        if temps.iter().all(|t| t.id != "cpu.die") {
+            if let Some(avg) = deduped_name_average_max(dies.iter().copied()) {
+                let hot = dies.iter().map(|(_, t)| *t).fold(0.0, f32::max);
+                temps.push(TempSensor {
+                    id: "cpu.die".into(),
+                    label: "CPU avg".into(),
+                    kind: SensorKind::Cpu,
+                    value: Celsius(avg),
+                });
+                temps.push(TempSensor {
+                    id: "cpu.die.hot".into(),
+                    label: "CPU hottest".into(),
+                    kind: SensorKind::Cpu,
+                    value: Celsius(hot),
+                });
+            }
         }
         let nand: Vec<f32> = hid
             .iter()
@@ -416,5 +480,66 @@ mod tests {
     #[test]
     fn deduped_name_average_empty_input_is_none() {
         assert!(super::deduped_name_average_max([]).is_none());
+    }
+
+    #[test]
+    fn average_and_hot_summarizes_core_temperatures() {
+        assert_eq!(super::average_and_hot(&[]), None);
+        assert_eq!(
+            super::average_and_hot(&[70.0, 74.0, 68.0]),
+            Some((70.666664, 74.0))
+        );
+    }
+
+    #[test]
+    fn m3_cpu_core_key_map_includes_efficiency_and_performance_cores() {
+        let keys: Vec<&str> = super::M3_CPU_CORE_TEMP_KEYS
+            .iter()
+            .map(|(key, _)| *key)
+            .collect();
+
+        assert!(keys.contains(&"Te05"));
+        assert!(keys.contains(&"Te0S"));
+        assert!(keys.contains(&"Tf04"));
+        assert!(keys.contains(&"Tf4E"));
+    }
+
+    #[test]
+    #[ignore = "prints local SMC CPU core temperatures for manual debugging"]
+    fn print_smc_cpu_core_temperatures() {
+        let mut smc = macsmc::Smc::connect().expect("SMC should open");
+        let iter = smc.cpu_core_temps().expect("CPU core temps should read");
+        for (idx, temp) in iter.enumerate() {
+            match temp {
+                Ok(temp) => println!("{:02}: {:.2}", idx + 1, temp.0),
+                Err(e) => println!("{:02}: error {e:?}", idx + 1),
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "prints local SMC temperature-like keys for manual debugging"]
+    fn print_smc_temperature_like_keys() {
+        let mut smc = macsmc::Smc::connect().expect("SMC should open");
+        for data in smc.all_data().expect("SMC data should iterate") {
+            let Ok(data) = data else { continue };
+            if !data.key.starts_with('T') {
+                continue;
+            }
+            let Ok(Some(macsmc::DataValue::Float(value))) = data.value else {
+                continue;
+            };
+            if (1.0..=130.0).contains(&value) {
+                println!("{:4}  {:6.2}", data.key, value);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "prints PeterFan's selected Apple Silicon CPU core SMC keys"]
+    fn print_selected_cpu_core_temperature_keys() {
+        for (label, temp) in super::apple_silicon_cpu_core_temperatures() {
+            println!("{label}: {temp:.2}");
+        }
     }
 }
