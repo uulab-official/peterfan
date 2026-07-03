@@ -2664,18 +2664,26 @@ const DASHBOARD_HTML_EN: &str = r##"<!doctype html><html><head><meta charset="ut
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;color:var(--text);-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased;overflow:hidden;}
 .panel{background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:13px;overflow-y:auto;overflow-x:hidden;box-shadow:var(--shadow);max-height:100vh;}
-.setup{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 15px 7px;border-bottom:1px solid var(--line);}
+.setup{position:relative;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 15px 7px;border-bottom:1px solid var(--line);}
 .setup-main{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;}
 .setup-dot{width:7px;height:7px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 3px transparent;flex:0 0 auto;}
 .setup-dot.ok{background:var(--g);box-shadow:0 0 0 3px rgba(48,209,88,.12);}
 .setup-dot.info{background:var(--accent);box-shadow:0 0 0 3px rgba(91,157,255,.12);}
 .setup-dot.warn{background:var(--y);box-shadow:0 0 0 3px rgba(255,214,10,.14);}
-.setup-sub{font-size:9.5px;color:var(--dim);margin-top:1px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:135px;}
+.setup-copy{min-width:0;}
+.setup-sub{font-size:9.5px;color:var(--dim);margin-top:1px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:205px;}
 .setup-actions{display:flex;gap:4px;flex:0 0 auto;}
 .setup-actions button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:700;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s,border-color .15s;}
 .setup-actions button:hover{background:var(--chip-hover);color:var(--text);}
 .setup-actions button.primary{background:rgba(91,157,255,.22);border-color:rgba(91,157,255,.5);color:var(--accent);}
 .setup-actions button.active{color:var(--g);border-color:rgba(48,209,88,.35);}
+.setup-menu-wrap{position:relative;}
+.setup-actions .setup-more{width:24px;height:24px;padding:0;font-size:15px;line-height:20px;color:var(--text);}
+.setup-menu{display:none;position:absolute;right:0;top:29px;min-width:142px;padding:5px;background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:8px;box-shadow:var(--shadow);z-index:20;}
+.setup-menu.show{display:block;}
+.setup-actions .setup-menu-item{display:block;width:100%;padding:6px 8px;border-radius:6px;text-align:left;color:var(--text);font-size:10.5px;font-weight:600;background:transparent;}
+.setup-actions .setup-menu-item:hover{background:var(--track-hover);}
+.setup-actions .setup-menu-item.active{color:var(--g);border-color:transparent;}
 .row{display:grid;grid-template-columns:24px 1fr;gap:12px;padding:8px 15px;align-items:center;}
 .row + .row{border-top:1px solid var(--line);}
 .ic{width:21px;height:21px;color:var(--dim);}
@@ -2776,8 +2784,13 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="setup-copy"><div class="setup-main"><span class="setup-dot" id="setup-dot"></span><span id="setup-title">Ready</span></div><div class="setup-sub" id="setup-detail"></div></div>
 <div class="setup-actions">
 <button id="setup-fan" class="primary" onclick="startFanControlSetup(this)">Set Up</button>
-<button id="setup-login" onclick="window.ipc.postMessage('togglelogin')">Login</button>
-<button id="setup-update" onclick="checkAppUpdates(this)">Update</button>
+<div class="setup-menu-wrap">
+<button id="setup-more" class="setup-more" onclick="toggleSetupMenu(event)" aria-label="Setup actions" title="Setup actions">…</button>
+<div class="setup-menu" id="setup-menu">
+<button class="setup-menu-item" id="setup-login" onclick="closeSetupMenu();window.ipc.postMessage('togglelogin')">Login</button>
+<button class="setup-menu-item" id="setup-update" onclick="closeSetupMenu();checkAppUpdates(this)">Update</button>
+</div>
+</div>
 </div>
 </div>
 
@@ -3140,6 +3153,19 @@ function checkAppUpdates(btn){
   window.ipc.postMessage('checkupdates');
   setTimeout(function(){APP_UPDATE_CHECK_PENDING=false;},12000);
 }
+function closeSetupMenu(){
+  var menu=document.getElementById('setup-menu');
+  if(menu)menu.classList.remove('show');
+}
+function toggleSetupMenu(ev){
+  if(ev&&ev.stopPropagation)ev.stopPropagation();
+  var menu=document.getElementById('setup-menu');
+  if(menu)menu.classList.toggle('show');
+}
+document.addEventListener('click',function(ev){
+  var wrap=document.querySelector('.setup-menu-wrap');
+  if(wrap&&!wrap.contains(ev.target))closeSetupMenu();
+});
 // Detail-Window-only visual fan curve editor. `CURVE_POINTS` is the working
 // copy the user is editing; `CURVE_POINTS_SAVED` mirrors whatever's actually
 // saved server-side, refreshed every tick but never used to clobber
@@ -3321,14 +3347,19 @@ function updateSetup(d){
   }
   var login=document.getElementById('setup-login');
   if(login){
-    login.textContent=d.login_item_installed?(LANG==='ko'?'자동 실행 켜짐':'Login On'):(LANG==='ko'?'자동 실행':'Login');
+    login.textContent=d.login_item_installed?(LANG==='ko'?'자동 실행 켜짐':'Launch at Login On'):(LANG==='ko'?'자동 실행 켜기':'Launch at Login');
     login.classList.toggle('active',!!d.login_item_installed);
     login.title=LANG==='ko'?'로그인 시 PeterFan 실행':'Launch PeterFan at login';
+  }
+  var more=document.getElementById('setup-more');
+  if(more){
+    more.title=LANG==='ko'?'설정 작업':'Setup actions';
+    more.setAttribute('aria-label',more.title);
   }
   var update=document.getElementById('setup-update');
   if(update){
     update.disabled=APP_UPDATE_CHECK_PENDING;
-    update.textContent=APP_UPDATE_CHECK_PENDING?(LANG==='ko'?'확인 중…':'Checking…'):(LANG==='ko'?'앱':'App');
+    update.textContent=APP_UPDATE_CHECK_PENDING?(LANG==='ko'?'확인 중…':'Checking…'):(LANG==='ko'?'업데이트 확인':'Check Updates');
     update.title=LANG==='ko'?'앱 업데이트 확인':'Check for app updates';
   }
 }
@@ -3498,6 +3529,10 @@ mod tests {
             assert!(html.contains("cmd:auto"));
             assert!(html.contains("cmd:profile:"));
             assert!(html.contains(r#"id="setup-row""#));
+            assert!(html.contains(r#"id="setup-more""#));
+            assert!(html.contains(r#"id="setup-menu""#));
+            assert!(html.contains("toggleSetupMenu"));
+            assert!(html.contains("setup-menu-item"));
             assert!(html.contains(r#"id="setup-login""#));
             assert!(html.contains("togglelogin"));
             assert!(html.contains("checkupdates"));

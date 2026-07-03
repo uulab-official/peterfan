@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.32] — 상단 Setup 메뉴 정리
+
+### Changed
+- **상단 Setup 영역 단순화** — 팝오버 첫 화면에는 상태와 필요한 팬/데몬 조치만
+  남기고, 자동 실행과 업데이트 확인은 `…` 보조 메뉴 안으로 옮겨 버튼 수를
+  줄임.
+
 ## [1.26.31] — README 이미지 렌더러
 
 ### Changed
