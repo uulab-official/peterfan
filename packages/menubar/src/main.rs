@@ -2681,6 +2681,10 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Quit<", ">종료<")
             .replace(">More Actions<", ">더보기<")
             .replace(">Open Detail Window<", ">상세 창 열기<")
+            .replace(
+                "Open a larger dashboard window, use the native menu for advanced settings, or quit PeterFan.",
+                "큰 대시보드 창을 열거나, 고급 설정은 기본 메뉴에서 조정하고, PeterFan을 종료할 수 있습니다.",
+            )
             .replace(">Selected point<", ">선택한 점<")
             .replace(">Reset<", ">초기화<")
             .replace(">Remove Point<", ">점 삭제<")
@@ -2812,7 +2816,12 @@ body.compact .compact-extra{display:none!important;}
 .chart-tip{position:fixed;pointer-events:none;background:rgba(20,20,22,.92);color:#fff;font-size:9.5px;font-weight:600;padding:3px 7px;border-radius:5px;display:none;z-index:999;white-space:nowrap;font-variant-numeric:tabular-nums;}
 .chart-stats{font-size:9px;color:var(--dim);text-align:right;margin-top:3px;font-variant-numeric:tabular-nums;}
 .rail-panel{display:none;padding:18px 18px;border-bottom:1px solid var(--line);min-height:220px;}
-.rail-panel .panel-title{font-size:14px;font-weight:700;margin-bottom:6px;}
+.panel-title-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;}
+.rail-panel .panel-title{font-size:14px;font-weight:700;min-width:0;}
+.panel-pill{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:99px;background:var(--chip-bg);color:var(--dim);font-size:9px;font-weight:800;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.panel-pill.ok{background:rgba(48,209,88,.14);color:var(--g);}
+.panel-pill.warn{background:rgba(255,214,10,.16);color:var(--y);}
+.panel-pill.info{background:rgba(91,157,255,.16);color:var(--accent);}
 .rail-panel .panel-copy{font-size:10.5px;color:var(--dim);line-height:1.5;margin-bottom:12px;}
 .rail-panel .panel-action{background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:10px;font-weight:700;padding:7px 10px;border-radius:7px;cursor:pointer;}
 .rail-panel .panel-action.secondary{background:var(--chip-bg);border-color:transparent;color:var(--text);}
@@ -2858,19 +2867,19 @@ body.compact .compact-extra{display:none!important;}
 </div>
 
 <div class="rail-panel" id="rail-update-panel">
-<div class="panel-title">Updates</div>
+<div class="panel-title-row"><div class="panel-title">Updates</div><span class="panel-pill info" id="rail-update-pill">Ready</span></div>
 <div class="panel-copy" id="rail-update-copy">PeterFan is ready to check for updates.</div>
 <div class="panel-actions"><button class="panel-action" id="rail-update-check" onclick="checkAppUpdates(this)">Check Updates</button></div>
 </div>
 
 <div class="rail-panel" id="rail-login-panel">
-<div class="panel-title">Launch at Login</div>
+<div class="panel-title-row"><div class="panel-title">Launch at Login</div><span class="panel-pill" id="rail-login-pill">Off</span></div>
 <div class="panel-copy" id="rail-login-copy">Start PeterFan automatically when you sign in.</div>
 <div class="panel-actions"><button class="panel-action" id="rail-login-toggle" onclick="window.ipc.postMessage('togglelogin')">Toggle Login Item</button></div>
 </div>
 
 <div class="rail-panel" id="rail-license-panel">
-<div class="panel-title">License</div>
+<div class="panel-title-row"><div class="panel-title">License</div><span class="panel-pill" id="rail-license-pill">Trial</span></div>
 <div class="panel-copy" id="rail-license-copy">Activate PeterFan or review your current license state.</div>
 <div class="lic-form show" id="rail-license-form">
 <input type="text" id="rail-lic-input" placeholder="PFAN1-..." spellcheck="false">
@@ -2879,7 +2888,7 @@ body.compact .compact-extra{display:none!important;}
 </div>
 
 <div class="rail-panel" id="rail-more-panel">
-<div class="panel-title">More Actions</div>
+<div class="panel-title-row"><div class="panel-title">More Actions</div><span class="panel-pill info" id="rail-more-pill">Tools</span></div>
 <div class="panel-copy">Open a larger dashboard window, use the native menu for advanced settings, or quit PeterFan.</div>
 <div class="panel-actions">
 <button class="panel-action" onclick="window.ipc.postMessage('open_detail')">Open Detail Window</button>
@@ -3074,6 +3083,12 @@ function setButtonLabel(btn,label){
   var span=btn.querySelector('span');
   if(span)span.textContent=label;
   else btn.textContent=label;
+}
+function setPanelPill(id,text,tone){
+  var el=document.getElementById(id);
+  if(!el)return;
+  el.textContent=text;
+  el.className='panel-pill '+(tone||'');
 }
 function runRailAction(action,btn){
   flashRailButton(btn);
@@ -3648,8 +3663,8 @@ function updateSetup(d){
 function updateRail(d){
   var detail=document.getElementById('railDetail');
   if(detail){
-    setButtonLabel(detail,LANG==='ko'?'상세':'Detail');
-    detail.title=LANG==='ko'?'상세 창 열기':'Open detailed window';
+    setButtonLabel(detail,LANG==='ko'?'상태':'Status');
+    detail.title=LANG==='ko'?'상태 요약':'Status overview';
   }
   var fan=document.getElementById('railFan');
   if(fan){
@@ -3667,6 +3682,7 @@ function updateRail(d){
   }
   var updCopy=document.getElementById('rail-update-copy');
   if(updCopy)updCopy.textContent=(LANG==='ko'?'현재 버전 ':'Current version ')+(d.app_version||'');
+  setPanelPill('rail-update-pill',APP_UPDATE_CHECK_PENDING?(LANG==='ko'?'확인 중':'Checking'):(LANG==='ko'?'준비':'Ready'),APP_UPDATE_CHECK_PENDING?'info':'ok');
   var updCheck=document.getElementById('rail-update-check');
   if(updCheck&&!APP_UPDATE_CHECK_PENDING)updCheck.textContent=LANG==='ko'?'업데이트 확인':'Check Updates';
   var login=document.getElementById('railLogin');
@@ -3683,6 +3699,7 @@ function updateRail(d){
     :(LANG==='ko'?'로그인할 때 PeterFan을 자동으로 실행할 수 있습니다.':'Start PeterFan automatically when you sign in.');
   var loginToggle=document.getElementById('rail-login-toggle');
   if(loginToggle)loginToggle.textContent=d.login_item_installed?(LANG==='ko'?'자동 실행 끄기':'Turn Off'):(LANG==='ko'?'자동 실행 켜기':'Turn On');
+  setPanelPill('rail-login-pill',d.login_item_installed?(LANG==='ko'?'켜짐':'On'):(LANG==='ko'?'꺼짐':'Off'),d.login_item_installed?'ok':'');
   var lic=document.getElementById('railLicense');
   if(lic){
     setButtonLabel(lic,d.trial_expired?(LANG==='ko'?'활성화':'Activate'):(LANG==='ko'?'라이선스':'License'));
@@ -3691,6 +3708,8 @@ function updateRail(d){
   }
   var licCopy=document.getElementById('rail-license-copy');
   if(licCopy)licCopy.textContent=d.license_line||'';
+  setPanelPill('rail-license-pill',d.trial_expired?(LANG==='ko'?'필요':'Required'):(LANG==='ko'?'활성':'Active'),d.trial_expired?'warn':'ok');
+  setPanelPill('rail-more-pill',LANG==='ko'?'도구':'Tools','info');
 }
 // Draws a filled area + line sparkline of `data` into the <canvas id=id>.
 // `fixedMax` pins the y-axis (e.g. 100 for percentages); null auto-scales to the data's own peak.
@@ -3811,6 +3830,9 @@ mod tests {
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
         assert!(ko.contains(">팬 제어<"));
         assert!(ko.contains(">PeterFan 종료<"));
+        assert!(ko.contains(">더보기<"));
+        assert!(ko.contains(">상세 창 열기<"));
+        assert!(ko.contains("큰 대시보드 창을 열거나"));
         assert!(ko.contains(">자동<"));
         assert!(ko.contains(">균형<"));
         // Auto/Manual per-fan card labels are rendered by JS at runtime
@@ -3972,6 +3994,41 @@ mod tests {
         assert!(en.contains("btn.querySelector('span')"));
         assert!(en.contains("btn.dataset.defaultLabel"));
         assert!(en.contains("el.classList.add('focus-pulse')"));
+    }
+
+    #[test]
+    fn update_rail_keeps_status_button_as_navigation_not_detail_command() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+
+        assert!(en.contains(r#"title="Status overview""#));
+        assert!(en.contains("setButtonLabel(detail,LANG==='ko'?'상태':'Status');"));
+        assert!(en.contains("detail.title=LANG==='ko'?'상태 요약':'Status overview';"));
+        assert!(ko.contains(">상태<"));
+        assert!(!en.contains("setButtonLabel(detail,LANG==='ko'?'상세':'Detail');"));
+        assert!(!en.contains("detail.title=LANG==='ko'?'상세 창 열기':'Open detailed window';"));
+    }
+
+    #[test]
+    fn rail_panels_show_live_status_pills() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        for id in [
+            "rail-update-pill",
+            "rail-login-pill",
+            "rail-license-pill",
+            "rail-more-pill",
+        ] {
+            assert!(en.contains(&format!(r#"id="{id}""#)));
+        }
+
+        assert!(en.contains(".panel-title-row{"));
+        assert!(en.contains(".panel-pill{"));
+        assert!(en.contains("setPanelPill('rail-update-pill'"));
+        assert!(en.contains("setPanelPill('rail-login-pill'"));
+        assert!(en.contains("setPanelPill('rail-license-pill'"));
+        assert!(en.contains("setPanelPill('rail-more-pill'"));
+        assert!(en.contains("function setPanelPill(id,text,tone)"));
     }
 
     #[test]
