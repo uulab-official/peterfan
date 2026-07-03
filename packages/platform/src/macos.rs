@@ -125,7 +125,7 @@ impl HardwareProvider for MacosProvider {
             let hot = dies.iter().map(|(_, t)| *t).fold(0.0, f32::max);
             temps.push(TempSensor {
                 id: "cpu.die".into(),
-                label: "CPU".into(),
+                label: "CPU avg".into(),
                 kind: SensorKind::Cpu,
                 value: Celsius(avg),
             });

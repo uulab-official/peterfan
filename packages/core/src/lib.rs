@@ -28,6 +28,7 @@ pub mod metrics;
 pub mod monitor;
 pub mod profile;
 pub mod provider;
+pub mod thermals;
 pub mod types;
 
 pub use error::{CoreError, Result};

@@ -21,6 +21,7 @@ use peterfan_core::error::CoreError;
 use peterfan_core::license::{self, Entitlement, LicenseStatus};
 use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
+use peterfan_core::thermals::{hottest_temperature_c, representative_temperature_c};
 use peterfan_core::types::{Fan, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
@@ -624,12 +625,8 @@ fn cmd_log(mock: bool, interval: u64, format: LogFormat) -> Result<()> {
             .first()
             .map(|d| d.used_percent)
             .unwrap_or(0.0);
-        let temp = provider
-            .temperatures()
-            .unwrap_or_default()
-            .iter()
-            .map(|t| t.value.0)
-            .fold(0.0_f32, f32::max);
+        let temps = provider.temperatures().unwrap_or_default();
+        let temp = representative_temperature_c(&temps).unwrap_or(0.0);
         let rpm = provider
             .fans()
             .unwrap_or_default()
@@ -735,12 +732,8 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64, bench_profile: Option<String
         std::thread::sleep(Duration::from_secs(1));
         monitor.refresh();
         let cpu = monitor.cpu().usage_percent;
-        let temp = provider
-            .temperatures()
-            .unwrap_or_default()
-            .iter()
-            .map(|t| t.value.0)
-            .fold(0.0_f32, f32::max);
+        let temps = provider.temperatures().unwrap_or_default();
+        let temp = representative_temperature_c(&temps).unwrap_or(0.0);
         let rpm = provider
             .fans()
             .unwrap_or_default()
@@ -974,7 +967,7 @@ fn api_apply_profile(body: &str, provider: &dyn HardwareProvider) -> (u16, serde
     if let Some(reply) = ipc_send(&format!("profile {name}")) {
         let curve = profile.default_curve();
         let temps = provider.temperatures().unwrap_or_default();
-        let temp = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+        let temp = representative_temperature_c(&temps).unwrap_or(0.0);
         let duty = curve.duty_at(temp);
         return (
             200,
@@ -993,7 +986,7 @@ fn api_apply_profile(body: &str, provider: &dyn HardwareProvider) -> (u16, serde
     }
     let curve = profile.default_curve();
     let temps = provider.temperatures().unwrap_or_default();
-    let temp = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+    let temp = representative_temperature_c(&temps).unwrap_or(0.0);
     let duty = curve.duty_at(temp);
     for f in provider
         .fans()
@@ -1848,7 +1841,8 @@ fn cmd_status_compact(mock: bool, json: bool) -> Result<()> {
             None,
         )
     };
-    let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+    let display_temp = representative_temperature_c(&temps).unwrap_or(0.0);
+    let hottest = hottest_temperature_c(&temps).unwrap_or(0.0);
     let fastest = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
 
     if json {
@@ -1857,6 +1851,7 @@ fn cmd_status_compact(mock: bool, json: bool) -> Result<()> {
             serde_json::to_string_pretty(&serde_json::json!({
                 "cpu_pct": cpu.usage_percent,
                 "mem_pct": mem.used_percent,
+                "temp_c": display_temp,
                 "hottest_c": hottest,
                 "fastest_rpm": fastest,
                 "daemon_mode": daemon,
@@ -1869,8 +1864,8 @@ fn cmd_status_compact(mock: bool, json: bool) -> Result<()> {
         format!("CPU {:.0}%", cpu.usage_percent),
         format!("MEM {:.0}%", mem.used_percent),
     ];
-    if hottest > 0.0 {
-        parts.push(format!("{hottest:.0}°C"));
+    if display_temp > 0.0 {
+        parts.push(format!("{display_temp:.0}°C"));
     }
     if fastest > 0 {
         parts.push(format!("{fastest} RPM"));
@@ -2429,7 +2424,7 @@ fn cmd_profile(provider: &dyn HardwareProvider, name: Option<String>, json: bool
 
     let curve = profile.default_curve();
     let sensors = read_sensors(provider)?;
-    let temp = hottest_temp(&sensors.temps);
+    let temp = representative_temperature_c(&sensors.temps).unwrap_or(0.0);
     let duty = curve.duty_at(temp);
 
     let caps = provider.capabilities();
@@ -2982,10 +2977,18 @@ fn print_temps(temps: &[TempSensor]) {
         println!(
             "  {} {:<14} {:>6}  {}",
             render::kind_label(t.kind),
-            t.label,
+            temp_display_label(t),
             render::temp_colored(t.value),
             render::temp_bar_colored(t.value),
         );
+    }
+}
+
+fn temp_display_label(sensor: &TempSensor) -> &str {
+    match sensor.id.as_str() {
+        "cpu.die" => "Average",
+        "cpu.die.hot" => "Hottest",
+        _ => &sensor.label,
     }
 }
 
@@ -3014,14 +3017,6 @@ fn print_check(label: &str, ok: bool) {
         "✗".red().to_string()
     };
     println!("  {mark} {label}");
-}
-
-fn hottest_temp(temps: &[TempSensor]) -> f32 {
-    temps
-        .iter()
-        .map(|t| t.value.0)
-        .fold(f32::MIN, f32::max)
-        .max(0.0)
 }
 
 /// Try to get temperature and fan data from the running daemon's cache via IPC.
@@ -3239,7 +3234,7 @@ fn cmd_watch(mock: bool, interval_secs: u64) -> Result<()> {
         let mem = mon.memory();
         let temps = prov.temperatures().unwrap_or_default();
         let fans = prov.fans().unwrap_or_default();
-        let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+        let hottest = hottest_temperature_c(&temps).unwrap_or(0.0);
         let fastest_rpm = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
         let power = prov.power_watts();
 
@@ -3617,12 +3612,8 @@ fn run_alert_loop(
         mon.refresh();
         let cpu_val = mon.cpu().usage_percent;
         let mem_val = mon.memory().used_percent;
-        let temp_val = prov
-            .temperatures()
-            .unwrap_or_default()
-            .iter()
-            .map(|t| t.value.0)
-            .fold(0.0_f32, f32::max);
+        let temps = prov.temperatures().unwrap_or_default();
+        let temp_val = hottest_temperature_c(&temps).unwrap_or(0.0);
 
         let now = Instant::now();
 
@@ -3860,4 +3851,29 @@ fn cmd_alert_agent(action: AlertAction) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use peterfan_core::types::{Celsius, SensorKind, TempSensor};
+
+    fn temp(id: &str, label: &str, kind: SensorKind, value: f32) -> TempSensor {
+        TempSensor {
+            id: id.to_string(),
+            label: label.to_string(),
+            kind,
+            value: Celsius(value),
+        }
+    }
+
+    #[test]
+    fn temp_display_label_normalizes_cached_cpu_average_labels() {
+        let cpu = temp("cpu.die", "CPU", SensorKind::Cpu, 43.0);
+        let hot = temp("cpu.die.hot", "CPU hottest", SensorKind::Cpu, 45.0);
+        let ssd = temp("ssd", "SSD", SensorKind::Storage, 33.0);
+
+        assert_eq!(super::temp_display_label(&cpu), "Average");
+        assert_eq!(super::temp_display_label(&hot), "Hottest");
+        assert_eq!(super::temp_display_label(&ssd), "SSD");
+    }
 }

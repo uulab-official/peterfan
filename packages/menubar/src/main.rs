@@ -40,6 +40,7 @@ use peterfan_core::error::CoreError;
 use peterfan_core::license::{self, Entitlement};
 use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
+use peterfan_core::thermals::{hottest_temperature_c, representative_temperature_c};
 use peterfan_core::types::{Celsius, SensorKind, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
@@ -253,7 +254,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             language: "Language",
             show_cpu: "CPU",
             show_memory: "Memory",
-            show_temperature: "Temperature",
+            show_temperature: "CPU Average Temp",
             show_fan: "Fan",
             show_network: "Network",
             style_number: "Number",
@@ -279,7 +280,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             language: "언어",
             show_cpu: "CPU",
             show_memory: "메모리",
-            show_temperature: "온도",
+            show_temperature: "CPU 평균 온도",
             show_fan: "팬",
             show_network: "네트워크",
             style_number: "숫자",
@@ -364,11 +365,6 @@ fn display_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
     temps
         .iter()
         .find(|t| t.id == "cpu.die")
-        .or_else(|| {
-            temps
-                .iter()
-                .find(|t| t.kind == SensorKind::Cpu && !t.id.contains("hot"))
-        })
         .or_else(|| hottest_temperature(temps))
 }
 
@@ -389,6 +385,23 @@ fn display_temperature_source(lang: ResolvedLanguage, sensor: Option<&TempSensor
     } else {
         sensor.label.clone()
     }
+}
+
+fn display_temperature_source_for_temps(
+    lang: ResolvedLanguage,
+    temps: &[TempSensor],
+    sensor: Option<&TempSensor>,
+) -> String {
+    if temps
+        .iter()
+        .any(|t| t.kind == SensorKind::Cpu && !t.id.contains("hot"))
+    {
+        return match lang {
+            ResolvedLanguage::Ko => "CPU 평균".to_string(),
+            ResolvedLanguage::En => "CPU avg".to_string(),
+        };
+    }
+    display_temperature_source(lang, sensor)
 }
 
 fn temperature_row_label(lang: ResolvedLanguage, sensor: &TempSensor) -> String {
@@ -628,13 +641,9 @@ fn save_custom_curve(provider: &dyn HardwareProvider, points_json: &str) -> Stri
         return "custom curve saved".into();
     }
     if provider.capabilities().control_fans {
-        let hot = provider
-            .temperatures()
-            .unwrap_or_default()
-            .iter()
-            .map(|t| t.value.0)
-            .fold(0.0_f32, f32::max);
-        let duty = fan_curve.duty_at(hot);
+        let temps = provider.temperatures().unwrap_or_default();
+        let temp = representative_temperature_c(&temps).unwrap_or(0.0);
+        let duty = fan_curve.duty_at(temp);
         for fan in provider.fans().unwrap_or_default() {
             if fan.controllable {
                 let _ = provider.set_fan_duty(&fan.id, duty);
@@ -1536,8 +1545,8 @@ fn update(app: &mut App) {
     let nets = app.monitor.networks();
     let temps = app.provider.temperatures().unwrap_or_default();
     let fans = app.provider.fans().unwrap_or_default();
-    let display_temp = display_temperature(&temps).map(|t| t.value.0);
-    let hottest = hottest_temperature(&temps).map(|t| t.value.0);
+    let display_temp = representative_temperature_c(&temps);
+    let hottest = hottest_temperature_c(&temps);
     let fastest_rpm = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
     let fastest_pct = fans
         .iter()
@@ -1703,6 +1712,7 @@ fn update(app: &mut App) {
     // Temperatures: CPU average is the headline users compare with iStat/Stats;
     // the hottest sensor is still listed below and remains the fan-control input.
     let display_temp = display_temperature(&temps);
+    let display_temp_value = representative_temperature_c(&temps);
     let temp_rows: Vec<_> = temps
         .iter()
         .map(|t| {
@@ -1836,11 +1846,11 @@ fn update(app: &mut App) {
         "disk_io_sub": disk_io_sub,
         "procs": proc_rows,
         "proc_sort": if matches!(proc_sort, ProcSort::Memory) { "mem" } else { "cpu" },
-        "temp_present": display_temp.is_some(),
-        "temp_pct": display_temp.map(|t| t.value.0).unwrap_or(0.0),
-        "temp_text": display_temp.map(|t| format!("{:.0}°C", t.value.0)).unwrap_or_default(),
-        "temp_cls": display_temp.map(|t| temp_cls(t.value)).unwrap_or("g"),
-        "temp_source": display_temperature_source(app.language.resolve(), display_temp),
+        "temp_present": display_temp_value.is_some(),
+        "temp_pct": display_temp_value.unwrap_or(0.0),
+        "temp_text": display_temp_value.map(|t| format!("{t:.0}°C")).unwrap_or_default(),
+        "temp_cls": display_temp_value.map(|t| temp_cls(Celsius(t))).unwrap_or("g"),
+        "temp_source": display_temperature_source_for_temps(app.language.resolve(), &temps, display_temp),
         "temps": temp_rows,
         "fans": fan_rows,
         "batt_present": battery.is_some(),
@@ -1967,8 +1977,8 @@ fn apply_local(provider: &dyn HardwareProvider, cmd: &str) -> String {
         match Profile::parse(name) {
             Some(p) => {
                 let temps = provider.temperatures().unwrap_or_default();
-                let hot = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
-                let duty = p.default_curve().duty_at(hot);
+                let temp = representative_temperature_c(&temps).unwrap_or(0.0);
+                let duty = p.default_curve().duty_at(temp);
                 (
                     fans.iter()
                         .try_for_each(|id| provider.set_fan_duty(id, duty)),
@@ -3735,6 +3745,25 @@ mod tests {
     }
 
     #[test]
+    fn display_temperature_source_labels_raw_cpu_sensor_set_as_average() {
+        let temps = vec![
+            temp("cpu.core.1", SensorKind::Cpu, 40.0),
+            temp("cpu.core.2", SensorKind::Cpu, 60.0),
+            temp("ssd", SensorKind::Storage, 80.0),
+        ];
+        let display = display_temperature(&temps);
+
+        assert_eq!(
+            display_temperature_source_for_temps(ResolvedLanguage::Ko, &temps, display),
+            "CPU 평균"
+        );
+        assert_eq!(
+            display_temperature_source_for_temps(ResolvedLanguage::En, &temps, display),
+            "CPU avg"
+        );
+    }
+
+    #[test]
     fn temperature_row_labels_call_out_average_and_hottest() {
         let cpu = temp("cpu.die", SensorKind::Cpu, 52.0);
         let hot = temp("cpu.die.hot", SensorKind::Cpu, 67.0);
@@ -3756,6 +3785,18 @@ mod tests {
         assert_eq!(
             temperature_row_label(ResolvedLanguage::Ko, &airport),
             "airport"
+        );
+    }
+
+    #[test]
+    fn menu_bar_temperature_metric_names_cpu_average() {
+        assert_eq!(
+            strings(ResolvedLanguage::Ko).show_temperature,
+            "CPU 평균 온도"
+        );
+        assert_eq!(
+            strings(ResolvedLanguage::En).show_temperature,
+            "CPU Average Temp"
         );
     }
 

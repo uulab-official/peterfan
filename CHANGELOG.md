@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.39] — 메뉴바 CPU 평균 온도 고정
+
+### Changed
+- **상단 메뉴바 온도를 CPU 평균 기준으로 고정** — `cpu.die` 합성 평균이 있으면
+  그 값을 쓰고, raw CPU 센서가 여러 개만 들어오는 경우에도 non-hot CPU 센서들을
+  평균 내어 상단 숫자와 팝오버 헤드라인에 표시함.
+- **최고온도와 평균온도 역할 분리** — 사용자에게 보이는 대표 온도는 CPU 평균,
+  critical override/alert 같은 안전 판단은 최고온도를 계속 사용하도록 공용
+  thermals 선택 규칙을 분리함.
+- **메뉴 항목 문구 명확화** — 메뉴 막대 표시 항목의 온도 옵션을
+  `CPU 평균 온도` / `CPU Average Temp`로 바꿔 상단 숫자의 의미를 바로 알 수
+  있게 함.
+
 ## [1.26.38] — 팬 제어 재설치 승인 예측 표시
 
 ### Changed

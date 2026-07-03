@@ -1,8 +1,8 @@
 //! `peterfand` — the PeterFan fan-control daemon.
 //!
-//! Applies a fan curve continuously: every interval it reads the hottest
-//! temperature, evaluates the chosen profile's curve, and drives the fans to
-//! the resulting duty. Two safety behaviors are built in:
+//! Applies a fan curve continuously: every interval it reads the representative
+//! CPU temperature, evaluates the chosen profile's curve, and drives the fans
+//! to the resulting duty. Two safety behaviors are built in:
 //!
 //! - **Critical-temperature override** — above `--critical` °C the fans are
 //!   forced to 100%, regardless of the curve.
@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use peterfan_core::config::RuleContext;
 use peterfan_core::profile::Profile;
+use peterfan_core::thermals::{hottest_temperature_c, representative_temperature_c};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 /// Set by the signal handler; the control loop checks it and exits cleanly.
@@ -396,7 +397,8 @@ fn control_loop(
             s.last_fans = fans_now.clone();
             s.last_power_w = power_now;
         }
-        let hottest = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
+        let hottest = hottest_temperature_c(&temps).unwrap_or(0.0);
+        let representative_temp = representative_temperature_c(&temps).unwrap_or(hottest);
 
         if auto {
             // Per-fan overrides still apply on top of the global "auto" mode
@@ -441,7 +443,7 @@ fn control_loop(
             };
             let ctx = RuleContext {
                 on_ac,
-                cpu_temp_c: hottest,
+                cpu_temp_c: representative_temp,
                 hour: local_hour(),
             };
             let profile = if state.manual {
@@ -459,7 +461,7 @@ fn control_loop(
             } else {
                 // Use config.curve_for() so Profile::Custom resolves to the user-defined curve.
                 (
-                    state.config.curve_for(profile).duty_at(hottest),
+                    state.config.curve_for(profile).duty_at(representative_temp),
                     profile.as_str().into(),
                 )
             };
@@ -479,7 +481,9 @@ fn control_loop(
             };
             // Only log when duty or mode actually changes (avoids flooding the log).
             if last_duty != Some(duty) || last_src != src {
-                println!("peterfand: {hottest:.0}°C -> {duty}% ({why}) [{src} ac={on_ac}]");
+                println!(
+                    "peterfand: avg {representative_temp:.0}°C / hot {hottest:.0}°C -> {duty}% ({why}) [{src} ac={on_ac}]"
+                );
                 last_duty = Some(duty);
                 last_src = src.to_string();
             }

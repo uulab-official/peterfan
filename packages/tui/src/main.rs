@@ -27,6 +27,7 @@ use peterfan_core::metrics::{
     SystemInfo,
 };
 use peterfan_core::profile::Profile;
+use peterfan_core::thermals::representative_temperature_c;
 use peterfan_core::types::{Fan, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
@@ -234,8 +235,8 @@ fn handle_fan_key(key: KeyCode, provider: &dyn HardwareProvider) -> Option<Strin
         // Direct fallback (needs root / mock).
         if let Some(p) = Profile::parse(name) {
             let temps = provider.temperatures().unwrap_or_default();
-            let hot = temps.iter().map(|t| t.value.0).fold(0.0_f32, f32::max);
-            let duty = p.default_curve().duty_at(hot);
+            let temp = representative_temperature_c(&temps).unwrap_or(0.0);
+            let duty = p.default_curve().duty_at(temp);
             let fans: Vec<_> = provider
                 .fans()
                 .unwrap_or_default()
