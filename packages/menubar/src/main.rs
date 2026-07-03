@@ -2649,6 +2649,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
         ResolvedLanguage::En => html,
         ResolvedLanguage::Ko => html
             .replace(">Fan control<", ">팬 제어<")
+            .replace(">Status<", ">상태<")
             .replace(">Memory<", ">메모리<")
             .replace(">Storage<", ">저장공간<")
             .replace(">Temperature<", ">온도<")
@@ -2678,6 +2679,8 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">License<", ">라이선스<")
             .replace(">More<", ">더보기<")
             .replace(">Quit<", ">종료<")
+            .replace(">More Actions<", ">더보기<")
+            .replace(">Open Detail Window<", ">상세 창 열기<")
             .replace(">Selected point<", ">선택한 점<")
             .replace(">Reset<", ">초기화<")
             .replace(">Remove Point<", ">점 삭제<")
@@ -2813,6 +2816,7 @@ body.compact .compact-extra{display:none!important;}
 .rail-panel .panel-copy{font-size:10.5px;color:var(--dim);line-height:1.5;margin-bottom:12px;}
 .rail-panel .panel-action{background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:10px;font-weight:700;padding:7px 10px;border-radius:7px;cursor:pointer;}
 .rail-panel .panel-action.secondary{background:var(--chip-bg);border-color:transparent;color:var(--text);}
+.rail-panel .panel-action.danger{background:rgba(255,69,58,.16);border-color:rgba(255,69,58,.36);color:var(--r);}
 .rail-panel .panel-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .lic{padding:8px 15px;border-top:1px solid var(--line);font-size:10.5px;color:var(--dim);display:flex;align-items:center;justify-content:space-between;gap:8px;}
 .lic.expired{background:rgba(255,159,10,.14);color:var(--text);}
@@ -2871,6 +2875,15 @@ body.compact .compact-extra{display:none!important;}
 <div class="lic-form show" id="rail-license-form">
 <input type="text" id="rail-lic-input" placeholder="PFAN1-..." spellcheck="false">
 <button onclick="submitLicenseInput('rail-lic-input')">Activate</button>
+</div>
+</div>
+
+<div class="rail-panel" id="rail-more-panel">
+<div class="panel-title">More Actions</div>
+<div class="panel-copy">Open a larger dashboard window, use the native menu for advanced settings, or quit PeterFan.</div>
+<div class="panel-actions">
+<button class="panel-action" onclick="window.ipc.postMessage('open_detail')">Open Detail Window</button>
+<button class="panel-action danger" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button>
 </div>
 </div>
 
@@ -2956,7 +2969,7 @@ body.compact .compact-extra{display:none!important;}
 <div class="foot compact-extra" data-compact-extra="quit"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
 </main>
 <aside class="action-rail" aria-label="Quick actions">
-<button class="rail-btn primary" id="railDetail" data-rail-action="detail" onclick="runRailAction('detail',this)" title="Open Detailed Window…"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Detail</span></button>
+<button class="rail-btn primary" id="railDetail" data-rail-action="detail" onclick="runRailAction('detail',this)" title="Status overview"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Status</span></button>
 <button class="rail-btn" id="railFan" data-rail-action="fan" onclick="runRailAction('fan',this)" title="Fan control"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fan</span></button>
 <button class="rail-btn" id="railUpdate" data-rail-action="update" onclick="runRailAction('update',this)" title="Check for Updates…"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
 <button class="rail-btn" id="railLogin" data-rail-action="login" onclick="runRailAction('login',this)" title="Launch at Login"><svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M7.1 6.2a8 8 0 1 0 9.8 0"/></svg><span>Login</span></button>
@@ -2993,7 +3006,6 @@ function railView(){
   return storageGet('pf.rail.view')||'overview';
 }
 function setRailView(view){
-  if(view==='more')setPopoverExpanded(true);
   storageSet('pf.rail.view',view);
   document.body.setAttribute('data-rail-view',view);
   applyRailView();
@@ -3011,7 +3023,7 @@ function setRailButtonActive(id,on){
 function applyRailView(){
   var view=railView();
   document.body.setAttribute('data-rail-view',view);
-  var all=['range-tabs','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','lic-row','lic-form','foot','rail-update-panel','rail-login-panel','rail-license-panel'];
+  var all=['range-tabs','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','lic-row','lic-form','foot','rail-update-panel','rail-login-panel','rail-license-panel','rail-more-panel'];
   all.forEach(function(id){setVisible(id,false);});
   if(view==='fan'){
     ['setup-row','fan-control-section'].forEach(function(id){setVisible(id,true);});
@@ -3023,29 +3035,26 @@ function applyRailView(){
   } else if(view==='license'){
     setVisible('rail-license-panel',true);
   } else if(view==='more'){
-    ['range-tabs','setup-row','fan-control-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-network','sec-procs','lic-row','lic-form','foot'].forEach(function(id){setVisible(id,true);});
-    if(SHOW_CURVE_EDITOR==='1')setVisible('curve-editor-section',true);
-    var batt=document.getElementById('sec-batt');
-    if(batt&&batt.dataset.present==='1')setVisible('sec-batt',true);
+    setVisible('rail-more-panel',true);
   } else {
     ['range-tabs','setup-row','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
   }
   ['Detail','Fan','Update','Login','License','More'].forEach(function(name){
     var key=name.toLowerCase();
+    if(key==='detail')key='overview';
     setRailButtonActive('rail'+name,view===key);
   });
   reportHeight();
 }
 function applyPopoverMode(){
-  var compact=popoverCompact();
+  var compact=true;
   document.body.classList.toggle('compact',compact);
   document.body.classList.toggle('expanded',!compact);
   var more=document.getElementById('railMore');
   if(more){
-    more.classList.toggle('active',!compact);
-    more.title=compact?(LANG==='ko'?'더보기':'Show more'):(LANG==='ko'?'접기':'Show less');
+    more.title=LANG==='ko'?'더보기':'More actions';
     var label=more.querySelector('span');
-    if(label)label.textContent=compact?(LANG==='ko'?'더보기':'More'):(LANG==='ko'?'접기':'Less');
+    if(label)label.textContent=LANG==='ko'?'더보기':'More';
   }
   reportHeight();
 }
@@ -3067,7 +3076,7 @@ function setButtonLabel(btn,label){
 function runRailAction(action,btn){
   flashRailButton(btn);
   switch(action){
-    case 'detail':window.ipc.postMessage('open_detail');break;
+    case 'detail':setRailView('overview');break;
     case 'fan':setRailView('fan');break;
     case 'update':setRailView('update');checkAppUpdates(btn);break;
     case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;
@@ -3882,16 +3891,16 @@ mod tests {
             assert!(html.contains("railLicense"));
             assert!(html.contains("railMore"));
             assert!(html.contains("focusFanControl"));
-            assert!(html.contains("togglePopoverExpanded"));
+            assert!(html.contains("rail-more-panel"));
         }
 
-        assert!(en.contains(">Detail<"));
+        assert!(en.contains(">Status<"));
         assert!(en.contains(">Fan<"));
         assert!(en.contains(">Updates<"));
         assert!(en.contains(">Login<"));
         assert!(en.contains(">License<"));
         assert!(en.contains(">More<"));
-        assert!(ko.contains(">상세<"));
+        assert!(ko.contains(">상태<"));
         assert!(ko.contains(">팬<"));
         assert!(ko.contains(">업데이트<"));
         assert!(ko.contains(">자동 실행<"));
@@ -3949,7 +3958,7 @@ mod tests {
 
         assert!(en.contains("function runRailAction(action,btn)"));
         assert!(en.contains("flashRailButton(btn)"));
-        assert!(en.contains("case 'detail':window.ipc.postMessage('open_detail');break;"));
+        assert!(en.contains("case 'detail':setRailView('overview');break;"));
         assert!(en.contains("case 'fan':setRailView('fan');break;"));
         assert!(en.contains("case 'update':setRailView('update');checkAppUpdates(btn);break;"));
         assert!(en.contains(
@@ -3987,6 +3996,20 @@ mod tests {
         assert!(en.contains("case 'license':setRailView('license');break;"));
         assert!(en.contains("case 'more':setRailView('more');break;"));
         assert!(!en.contains("case 'license':toggleLicForm();break;"));
+    }
+
+    #[test]
+    fn action_rail_commands_live_inside_more_panel() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains(r#"id="rail-more-panel""#));
+        assert!(en.contains("case 'detail':setRailView('overview');break;"));
+        assert!(en.contains("case 'more':setRailView('more');break;"));
+        assert!(en.contains(r#"onclick="window.ipc.postMessage('open_detail')""#));
+        assert!(en.contains(r#"onclick="window.ipc.postMessage('quit')""#));
+        assert!(en.contains("setVisible('rail-more-panel',true);"));
+        assert!(!en.contains("case 'detail':window.ipc.postMessage('open_detail');break;"));
+        assert!(!en.contains("if(view==='more')setPopoverExpanded(true);"));
     }
 
     #[test]
