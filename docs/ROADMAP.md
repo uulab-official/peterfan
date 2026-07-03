@@ -24,7 +24,8 @@ working product map we use to decide what to polish next.
 
 - [x] Universal notarized macOS DMG with `PeterFan.app`
 - [x] CLI, TUI, menu-bar app, and privileged `peterfand`
-- [x] Apple Silicon CPU die average and hottest temperature via IOHID
+- [x] Apple Silicon CPU average/hottest temperature via SMC core keys, with
+      IOHID die readings as fallback
 - [x] SMC fan RPM, fan control, per-fan manual pins, and auto restore
 - [x] RunCat-style compact popover with a right-side action rail
 - [x] Menu-bar metric selection, graph/number/both styles, and hover tooltip
@@ -48,7 +49,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] Hide low-priority sections from the first viewport when they are idle
 - [x] Better empty states for unsupported fans, missing battery, and no network
 - [x] Visual QA screenshots for dark/light mode and Korean/English text fit
-- [ ] More stable popover height when fan cards or setup copy changes
+- [x] More stable popover height when fan cards or setup copy changes
 
 ### v1.27 — Fan Control Confidence
 
@@ -129,7 +130,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 ### macOS Sensors & Control
 
 - [x] macOS hardware info via `sysctl`
-- [x] Apple Silicon CPU die temperatures through IOHID
+- [x] Apple Silicon CPU temperatures through SMC core keys and IOHID fallback
 - [x] SMC ambient/board sensors, fan RPM, and system power
 - [x] SMC fan writes with RPM verification
 - [x] Critical-temperature override and restore-on-exit behavior

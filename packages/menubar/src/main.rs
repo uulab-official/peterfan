@@ -17,7 +17,7 @@
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -142,8 +142,9 @@ impl RangedHistory {
 }
 
 const POPOVER_W: f64 = 440.0;
-/// Initial height; the popover then reports its real content height (below) and
-/// the window is resized to fit exactly.
+/// Fixed popover height. Route-specific overflow belongs inside `.main-pane`;
+/// resizing the native window on every content change makes the action rail
+/// feel unstable and can move the popover away from the clicked menu-bar item.
 const POPOVER_H: f64 = 520.0;
 
 /// Set by the popover's Quit button (via WebView IPC), polled by the loop.
@@ -152,10 +153,6 @@ static QUIT: AtomicBool = AtomicBool::new(false);
 /// (opening a window needs `&mut App` + the event-loop target, neither of
 /// which the IPC handler closure has access to).
 static OPEN_DETAIL: AtomicBool = AtomicBool::new(false);
-/// Content height (CSS px) reported by the popover; 0 = not yet measured.
-static DESIRED_H: AtomicU32 = AtomicU32::new(0);
-/// Height already applied to the window, to avoid resizing every tick.
-static APPLIED_H: AtomicU32 = AtomicU32::new(0);
 /// Control commands queued by popover buttons (`auto`, `profile:gaming`).
 static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Last control result, shown in the popover.
@@ -863,19 +860,6 @@ fn main() {
             update(&mut app); // reflect "applying…" (or the license result) immediately
         }
 
-        // Resize the popover window to the height the WebView reported, so it
-        // fits the content exactly (no empty space) — capped so it never
-        // runs past the bottom of the screen (the content itself scrolls
-        // past that point instead).
-        let desired = DESIRED_H.load(Ordering::Relaxed);
-        if desired > 0 && desired != APPLIED_H.load(Ordering::Relaxed) {
-            if let Some(w) = &app.window {
-                let capped = (desired as f64).min(max_popover_height(w));
-                w.set_inner_size(LogicalSize::new(POPOVER_W, capped));
-                APPLIED_H.store(desired, Ordering::Relaxed);
-            }
-        }
-
         // Handle context-menu item selections.
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
             let id = &ev.id;
@@ -1293,10 +1277,10 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
                     .lock()
                     .expect("pending poisoned")
                     .push(body.to_string());
-            } else if let Some(h) = body.strip_prefix("h:") {
-                if let Ok(v) = h.trim().parse::<u32>() {
-                    DESIRED_H.store(v, Ordering::Relaxed);
-                }
+            } else if body.starts_with("h:") {
+                // Kept for compatibility with older dashboard HTML. The
+                // popover is intentionally fixed-height now; content scrolls
+                // inside `.main-pane` instead of resizing the native window.
             } else if let Some(cmd) = body.strip_prefix("cmd:") {
                 PENDING
                     .lock()
@@ -1449,6 +1433,10 @@ fn max_popover_height_for_bounds(display: DisplayBounds, popover_top_y: f64) -> 
     (display.bottom() - popover_top_y - 12.0).max(200.0)
 }
 
+fn popover_height_for_window(w: &Window) -> f64 {
+    POPOVER_H.min(max_popover_height(w))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct DisplayBounds {
     x: f64,
@@ -1528,14 +1516,9 @@ fn toggle_popover(app: &mut App, rect: Rect) {
     // icon instead of floating below it.
     let displays: Vec<_> = w.available_monitors().map(|m| monitor_bounds(&m)).collect();
     w.set_outer_position(popover_position_for_rect(rect, win_w, &displays));
-    // Snap to the last known content height *before* showing, so repeat
-    // opens don't visibly resize (only the very first open of a session —
-    // before any height has ever been measured — can still do that).
-    let applied = APPLIED_H.load(Ordering::Relaxed);
-    if applied > 0 {
-        let capped = (applied as f64).min(max_popover_height(w));
-        w.set_inner_size(LogicalSize::new(POPOVER_W, capped));
-    }
+    // Snap to the product-defined fixed height before showing. On very short
+    // displays we cap to the available area; the left pane owns scrolling.
+    w.set_inner_size(LogicalSize::new(POPOVER_W, popover_height_for_window(w)));
     // No open animation — it should appear in one frame, not fade/scale in.
     w.set_visible(true);
     w.set_focus();
@@ -3663,9 +3646,9 @@ function renderFanCards(fans){
     card.querySelector('.fa-max').textContent=useRpm?f.max_rpm:'100%';
     // Always occupies the same layout space (opacity/pointer-events toggle
     // only, never display) — hiding it outright used to change the
-    // popover's total content height, which triggers a full window resize
-    // (see reportHeight/DESIRED_H) and made every chart below visibly
-    // redraw at a new width, which read as "the graphs randomly changed."
+    // popover's total content height, which used to trigger a full window
+    // resize and made every chart below visibly redraw at a new width,
+    // which read as "the graphs randomly changed."
     card.querySelector('.fan-rpm-row').classList.toggle('inactive', !manual);
     var slider=card.querySelector('input[type=range]');
     var numInput=card.querySelector('.fa-num');
@@ -4274,6 +4257,35 @@ mod tests {
     }
 
     #[test]
+    fn popover_height_is_fixed_unless_display_is_short() {
+        assert_eq!(POPOVER_H, 520.0);
+        assert_eq!(
+            POPOVER_H.min(max_popover_height_for_bounds(
+                DisplayBounds {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1440.0,
+                    height: 900.0,
+                },
+                24.0,
+            )),
+            520.0
+        );
+        assert_eq!(
+            POPOVER_H.min(max_popover_height_for_bounds(
+                DisplayBounds {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1440.0,
+                    height: 480.0,
+                },
+                24.0,
+            )),
+            444.0
+        );
+    }
+
+    #[test]
     fn dashboard_html_translates_known_labels() {
         let en = dashboard_html(ResolvedLanguage::En, true);
         assert!(en.contains(">Fan control<"));
@@ -4710,10 +4722,14 @@ mod tests {
     #[test]
     fn action_rail_does_not_resize_popover_to_content_height() {
         let en = dashboard_html(ResolvedLanguage::En, false);
+        let source = include_str!("main.rs");
 
         assert!(en.contains("function reportHeight()"));
         assert!(en.contains("window.ipc.postMessage('h:520');"));
         assert!(en.contains("overflow belongs inside `.main-pane`"));
+        assert!(source.contains("const POPOVER_H: f64 = 520.0;"));
+        assert!(source.contains("fn popover_height_for_window(w: &Window) -> f64"));
+        assert!(source.contains("body.starts_with(\"h:\")"));
         assert!(!en.contains("document.body.scrollHeight"));
         assert!(!en.contains("document.documentElement.scrollHeight"));
         assert!(!en.contains("main?main.scrollHeight:0"));
