@@ -2808,6 +2808,12 @@ body.compact .compact-extra{display:none!important;}
 .chart{width:100%;height:28px;display:block;margin-top:8px;border-radius:4px;cursor:crosshair;}
 .chart-tip{position:fixed;pointer-events:none;background:rgba(20,20,22,.92);color:#fff;font-size:9.5px;font-weight:600;padding:3px 7px;border-radius:5px;display:none;z-index:999;white-space:nowrap;font-variant-numeric:tabular-nums;}
 .chart-stats{font-size:9px;color:var(--dim);text-align:right;margin-top:3px;font-variant-numeric:tabular-nums;}
+.rail-panel{display:none;padding:18px 18px;border-bottom:1px solid var(--line);min-height:220px;}
+.rail-panel .panel-title{font-size:14px;font-weight:700;margin-bottom:6px;}
+.rail-panel .panel-copy{font-size:10.5px;color:var(--dim);line-height:1.5;margin-bottom:12px;}
+.rail-panel .panel-action{background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:10px;font-weight:700;padding:7px 10px;border-radius:7px;cursor:pointer;}
+.rail-panel .panel-action.secondary{background:var(--chip-bg);border-color:transparent;color:var(--text);}
+.rail-panel .panel-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .lic{padding:8px 15px;border-top:1px solid var(--line);font-size:10.5px;color:var(--dim);display:flex;align-items:center;justify-content:space-between;gap:8px;}
 .lic.expired{background:rgba(255,159,10,.14);color:var(--text);}
 .lic-actions{display:flex;align-items:center;gap:10px;flex:0 0 auto;}
@@ -2825,9 +2831,9 @@ body.compact .compact-extra{display:none!important;}
 .range-tab{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:600;padding:3px 9px;border-radius:99px;cursor:pointer;transition:background .15s,color .15s;}
 .range-tab:hover{background:var(--chip-hover);}
 .range-tab.active{background:rgba(91,157,255,.22);color:var(--accent);}
-</style></head><body class="compact"><div class="panel"><div class="dashboard-shell"><main class="main-pane">
+</style></head><body class="compact" data-rail-view="overview"><div class="panel"><div class="dashboard-shell"><main class="main-pane">
 
-<div class="range-tabs">
+<div class="range-tabs" id="range-tabs">
 <button class="range-tab active" data-range="2m" onclick="setChartRange('2m')">2m</button>
 <button class="range-tab" data-range="1h" onclick="setChartRange('1h')">1h</button>
 <button class="range-tab" data-range="1d" onclick="setChartRange('1d')">1d</button>
@@ -2844,6 +2850,27 @@ body.compact .compact-extra{display:none!important;}
 <button class="setup-menu-item" role="menuitem" id="setup-update" onclick="closeSetupMenu();checkAppUpdates(this)">Update</button>
 </div>
 </div>
+</div>
+</div>
+
+<div class="rail-panel" id="rail-update-panel">
+<div class="panel-title">Updates</div>
+<div class="panel-copy" id="rail-update-copy">PeterFan is ready to check for updates.</div>
+<div class="panel-actions"><button class="panel-action" id="rail-update-check" onclick="checkAppUpdates(this)">Check Updates</button></div>
+</div>
+
+<div class="rail-panel" id="rail-login-panel">
+<div class="panel-title">Launch at Login</div>
+<div class="panel-copy" id="rail-login-copy">Start PeterFan automatically when you sign in.</div>
+<div class="panel-actions"><button class="panel-action" id="rail-login-toggle" onclick="window.ipc.postMessage('togglelogin')">Toggle Login Item</button></div>
+</div>
+
+<div class="rail-panel" id="rail-license-panel">
+<div class="panel-title">License</div>
+<div class="panel-copy" id="rail-license-copy">Activate PeterFan or review your current license state.</div>
+<div class="lic-form show" id="rail-license-form">
+<input type="text" id="rail-lic-input" placeholder="PFAN1-..." spellcheck="false">
+<button onclick="submitLicenseInput('rail-lic-input')">Activate</button>
 </div>
 </div>
 
@@ -2878,18 +2905,18 @@ body.compact .compact-extra{display:none!important;}
 </div>
 </div></div>
 
-<div class="row"><span class="ic"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>
+<div class="row" id="sec-cpu"><span class="ic"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>
 <div class="content"><div class="head"><span class="name">CPU</span><span class="val" id="cpu-val">—</span></div>
 <div class="sub" id="cpu-sub"></div><div class="cores" id="cores"></div>
 <div class="bar"><div class="bar-fill" id="cpu-bar"></div></div>
 <canvas class="chart" id="cpu-chart"></canvas><div class="chart-stats" id="cpu-chart-stats"></div></div></div>
 
-<div class="row"><span class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="11" rx="1.5"/><path d="M6 18v2M10 18v2M14 18v2M18 18v2M6 10v4M10 10v4M14 10v4"/></svg></span>
+<div class="row" id="sec-mem"><span class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="11" rx="1.5"/><path d="M6 18v2M10 18v2M14 18v2M18 18v2M6 10v4M10 10v4M14 10v4"/></svg></span>
 <div class="content"><div class="head"><span class="name">Memory</span><span class="val" id="mem-val">—</span></div>
 <div class="sub" id="mem-sub"></div><div class="bar"><div class="bar-fill" id="mem-bar"></div></div>
 <canvas class="chart" id="mem-chart"></canvas><div class="chart-stats" id="mem-chart-stats"></div></div></div>
 
-<div class="row compact-extra" data-compact-extra="storage"><span class="ic"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span>
+<div class="row compact-extra" id="sec-storage" data-compact-extra="storage"><span class="ic"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span>
 <div class="content"><div class="head"><span class="name">Storage</span><span class="val" id="disk-val">—</span></div>
 <div class="sub" id="disk-sub"></div><div class="bar"><div class="bar-fill" id="disk-bar"></div></div>
 <div class="sub" id="disk-io-sub" style="display:none;margin-top:4px"></div>
@@ -2904,7 +2931,7 @@ body.compact .compact-extra{display:none!important;}
 <div class="content"><div class="head"><span class="name">Battery</span><span class="val" id="batt-val">—</span></div>
 <div class="sub" id="batt-sub"></div><div class="bar"><div class="bar-fill" id="batt-bar"></div></div></div></div>
 
-<div class="row compact-extra" data-compact-extra="network"><span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg></span>
+<div class="row compact-extra" id="sec-network" data-compact-extra="network"><span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg></span>
 <div class="content"><div class="head"><span class="name">Network</span><span class="val"></span></div>
 <div class="sub" id="net-sub"></div>
 <div class="sub" id="net-ip" style="display:none"></div>
@@ -2962,6 +2989,51 @@ function setPopoverExpanded(expanded){
 function togglePopoverExpanded(){
   setPopoverExpanded(popoverCompact());
 }
+function railView(){
+  return storageGet('pf.rail.view')||'overview';
+}
+function setRailView(view){
+  if(view==='more')setPopoverExpanded(true);
+  storageSet('pf.rail.view',view);
+  document.body.setAttribute('data-rail-view',view);
+  applyRailView();
+}
+function setVisible(id,on){
+  var el=document.getElementById(id);
+  if(el)el.style.display=on?'':'none';
+}
+function setRailButtonActive(id,on){
+  var el=document.getElementById(id);
+  if(el)el.classList.toggle('active',!!on);
+}
+function applyRailView(){
+  var view=railView();
+  document.body.setAttribute('data-rail-view',view);
+  var all=['range-tabs','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','lic-row','lic-form','foot','rail-update-panel','rail-login-panel','rail-license-panel'];
+  all.forEach(function(id){setVisible(id,false);});
+  if(view==='fan'){
+    ['setup-row','fan-control-section'].forEach(function(id){setVisible(id,true);});
+    if(SHOW_CURVE_EDITOR==='1')setVisible('curve-editor-section',true);
+  } else if(view==='update'){
+    setVisible('rail-update-panel',true);
+  } else if(view==='login'){
+    setVisible('rail-login-panel',true);
+  } else if(view==='license'){
+    setVisible('rail-license-panel',true);
+  } else if(view==='more'){
+    ['range-tabs','setup-row','fan-control-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-network','sec-procs','lic-row','lic-form','foot'].forEach(function(id){setVisible(id,true);});
+    if(SHOW_CURVE_EDITOR==='1')setVisible('curve-editor-section',true);
+    var batt=document.getElementById('sec-batt');
+    if(batt&&batt.dataset.present==='1')setVisible('sec-batt',true);
+  } else {
+    ['range-tabs','setup-row','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
+  }
+  ['Detail','Fan','Update','Login','License','More'].forEach(function(name){
+    var key=name.toLowerCase();
+    setRailButtonActive('rail'+name,view===key);
+  });
+  reportHeight();
+}
 function applyPopoverMode(){
   var compact=popoverCompact();
   document.body.classList.toggle('compact',compact);
@@ -2976,6 +3048,7 @@ function applyPopoverMode(){
   reportHeight();
 }
 applyPopoverMode();
+setRailView(railView());
 function flashRailButton(btn){
   if(!btn)return;
   btn.classList.remove('pulse');
@@ -2993,11 +3066,11 @@ function runRailAction(action,btn){
   flashRailButton(btn);
   switch(action){
     case 'detail':window.ipc.postMessage('open_detail');break;
-    case 'fan':focusFanControl();break;
-    case 'update':checkAppUpdates(btn);break;
-    case 'login':window.ipc.postMessage('togglelogin');break;
-    case 'license':toggleLicForm();break;
-    case 'more':togglePopoverExpanded();break;
+    case 'fan':setRailView('fan');break;
+    case 'update':setRailView('update');break;
+    case 'login':setRailView('login');break;
+    case 'license':setRailView('license');break;
+    case 'more':setRailView('more');break;
   }
 }
 window.__pf={
@@ -3019,6 +3092,7 @@ window.__pf={
  show('sec-temp',d.temp_present);if(d.temp_present){set('temp-name',(LANG==='ko'?'온도':'Temperature')+(d.temp_source?' · '+d.temp_source:''));set('temp-val',d.temp_text);bar('temp-bar',d.temp_pct,d.temp_cls);
    var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c;r.children[1].className='v '+t.cls;tl.appendChild(r);});}}
  show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
+ var battSec=document.getElementById('sec-batt');if(battSec)battSec.dataset.present=d.batt_present?'1':'0';
  set('net-sub',d.net_sub);
  show('net-ip',!!d.net_ip);if(d.net_ip)set('net-ip',d.net_ip);
  var psCpu=document.getElementById('ps-cpu'),psMem=document.getElementById('ps-mem');
@@ -3115,6 +3189,7 @@ window.__pf={
    var ces2=document.getElementById('curve-editor-section');
    if(ces2)ces2.style.display='none';
  }
+ applyRailView();
  reportHeight();
 }};
 applyPendingUpdate();
@@ -3512,7 +3587,10 @@ function quitProcess(pid,name){
   window.ipc.postMessage('killproc:'+pid);
 }
 function submitLicense(){
-  var inp=document.getElementById('lic-input');
+  submitLicenseInput('lic-input');
+}
+function submitLicenseInput(id){
+  var inp=document.getElementById(id);
   var v=inp&&inp.value.trim();
   if(!v)return;
   window.ipc.postMessage('license:'+v);
@@ -3574,6 +3652,10 @@ function updateRail(d){
     upd.title=LANG==='ko'?'업데이트 확인':'Check for updates';
     upd.disabled=false;
   }
+  var updCopy=document.getElementById('rail-update-copy');
+  if(updCopy)updCopy.textContent=(LANG==='ko'?'현재 버전 ':'Current version ')+(d.app_version||'');
+  var updCheck=document.getElementById('rail-update-check');
+  if(updCheck&&!APP_UPDATE_CHECK_PENDING)updCheck.textContent=LANG==='ko'?'업데이트 확인':'Check Updates';
   var login=document.getElementById('railLogin');
   if(login){
     setButtonLabel(login,d.login_item_installed?(LANG==='ko'?'자동 켬':'Login On'):(LANG==='ko'?'자동 실행':'Login'));
@@ -3582,12 +3664,20 @@ function updateRail(d){
       :(LANG==='ko'?'로그인 시 실행 켜기':'Launch at login');
     login.classList.toggle('active',!!d.login_item_installed);
   }
+  var loginCopy=document.getElementById('rail-login-copy');
+  if(loginCopy)loginCopy.textContent=d.login_item_installed
+    ?(LANG==='ko'?'로그인 시 PeterFan이 자동 실행됩니다.':'PeterFan launches automatically at login.')
+    :(LANG==='ko'?'로그인할 때 PeterFan을 자동으로 실행할 수 있습니다.':'Start PeterFan automatically when you sign in.');
+  var loginToggle=document.getElementById('rail-login-toggle');
+  if(loginToggle)loginToggle.textContent=d.login_item_installed?(LANG==='ko'?'자동 실행 끄기':'Turn Off'):(LANG==='ko'?'자동 실행 켜기':'Turn On');
   var lic=document.getElementById('railLicense');
   if(lic){
     setButtonLabel(lic,d.trial_expired?(LANG==='ko'?'활성화':'Activate'):(LANG==='ko'?'라이선스':'License'));
     lic.title=LANG==='ko'?'라이선스 입력':'License';
     lic.classList.toggle('active',!!d.trial_expired);
   }
+  var licCopy=document.getElementById('rail-license-copy');
+  if(licCopy)licCopy.textContent=d.license_line||'';
 }
 // Draws a filled area + line sparkline of `data` into the <canvas id=id>.
 // `fixedMax` pins the y-axis (e.g. 100 for percentages); null auto-scales to the data's own peak.
@@ -3872,15 +3962,39 @@ mod tests {
         assert!(en.contains("function runRailAction(action,btn)"));
         assert!(en.contains("flashRailButton(btn)"));
         assert!(en.contains("case 'detail':window.ipc.postMessage('open_detail');break;"));
-        assert!(en.contains("case 'fan':focusFanControl();break;"));
-        assert!(en.contains("case 'update':checkAppUpdates(btn);break;"));
-        assert!(en.contains("case 'login':window.ipc.postMessage('togglelogin');break;"));
-        assert!(en.contains("case 'license':toggleLicForm();break;"));
-        assert!(en.contains("case 'more':togglePopoverExpanded();break;"));
+        assert!(en.contains("case 'fan':setRailView('fan');break;"));
+        assert!(en.contains("case 'update':setRailView('update');break;"));
+        assert!(en.contains("case 'login':setRailView('login');break;"));
+        assert!(en.contains("case 'license':setRailView('license');break;"));
+        assert!(en.contains("case 'more':setRailView('more');break;"));
         assert!(en.contains("function setButtonLabel(btn,label)"));
         assert!(en.contains("btn.querySelector('span')"));
         assert!(en.contains("btn.dataset.defaultLabel"));
         assert!(en.contains("el.classList.add('focus-pulse')"));
+    }
+
+    #[test]
+    fn action_rail_buttons_switch_left_pane_views() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains(r#"<body class="compact" data-rail-view="overview">"#));
+        assert!(en.contains("function setRailView(view)"));
+        assert!(en.contains("function applyRailView()"));
+        assert!(en.contains(r#"id="rail-update-panel""#));
+        assert!(en.contains(r#"id="rail-login-panel""#));
+        assert!(en.contains(r#"id="rail-license-panel""#));
+        assert!(en.contains("rail-license-form"));
+        assert!(en.contains("submitLicenseInput('rail-lic-input')"));
+        assert!(en.contains(r#"id="sec-cpu""#));
+        assert!(en.contains(r#"id="sec-mem""#));
+        assert!(en.contains(r#"id="sec-storage""#));
+        assert!(en.contains(r#"id="sec-network""#));
+        assert!(en.contains("case 'fan':setRailView('fan');break;"));
+        assert!(en.contains("case 'update':setRailView('update');break;"));
+        assert!(en.contains("case 'login':setRailView('login');break;"));
+        assert!(en.contains("case 'license':setRailView('license');break;"));
+        assert!(en.contains("case 'more':setRailView('more');break;"));
+        assert!(!en.contains("case 'license':toggleLicForm();break;"));
     }
 
     #[test]
