@@ -15,6 +15,8 @@
 #![recursion_limit = "256"]
 
 use std::collections::VecDeque;
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -47,6 +49,7 @@ use peterfan_core::{HardwareProvider, SystemMonitor};
 const REFRESH: Duration = Duration::from_secs(1);
 const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(70);
 const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(340);
+const SINGLE_INSTANCE_LOCK_BASENAME: &str = "kr.co.uulab.peterfan.menubar";
 /// Samples kept for the menu-bar runner icon (always shows the short-term
 /// trend, independent of the popover's chart range selector) — 120 samples
 /// at a 1s tick is a 2-minute rolling window.
@@ -597,6 +600,58 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+fn single_instance_lock_path() -> PathBuf {
+    #[cfg(unix)]
+    let suffix = unsafe {
+        // SAFETY: geteuid has no preconditions and only reads process state.
+        libc::geteuid()
+    };
+    #[cfg(not(unix))]
+    let suffix = 0u32;
+
+    std::env::temp_dir().join(format!("{SINGLE_INSTANCE_LOCK_BASENAME}.{suffix}.lock"))
+}
+
+fn acquire_single_instance_lock() -> Result<File, String> {
+    acquire_single_instance_lock_at(&single_instance_lock_path())
+}
+
+#[cfg(unix)]
+fn acquire_single_instance_lock_at(path: &Path) -> Result<File, String> {
+    use std::os::fd::AsRawFd;
+
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    let rc = unsafe {
+        // SAFETY: the file descriptor is valid for the lifetime of `file`.
+        libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
+    };
+    if rc == 0 {
+        Ok(file)
+    } else {
+        Err(format!(
+            "could not lock {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ))
+    }
+}
+
+#[cfg(not(unix))]
+fn acquire_single_instance_lock_at(path: &Path) -> Result<File, String> {
+    OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("could not create {}: {e}", path.display()))
+}
+
 /// Push a sample, dropping the oldest once past [`HIST_CAP`].
 fn push_hist<T>(buf: &mut VecDeque<T>, v: T) {
     push_capped(buf, v, HIST_CAP);
@@ -629,6 +684,13 @@ fn main() {
         std::process::exit(2);
     }
     let use_mock = args.iter().any(|a| a == "--mock");
+    let _single_instance = match acquire_single_instance_lock() {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("PeterFan is already running ({e}).");
+            return;
+        }
+    };
 
     let saved = peterfan_platform::config::load().menubar;
     let metric = args
@@ -4772,6 +4834,22 @@ mod tests {
 
         let missing_value = vec!["PeterFan".to_string(), "--metric".to_string()];
         assert_eq!(unsupported_menubar_arg(&missing_value), Some("--metric"));
+    }
+
+    #[test]
+    fn single_instance_lock_rejects_second_process() {
+        let path = std::env::temp_dir().join(format!(
+            "{}.test.{}.lock",
+            SINGLE_INSTANCE_LOCK_BASENAME,
+            std::process::id()
+        ));
+        let first = acquire_single_instance_lock_at(&path).expect("first lock should work");
+        let second = acquire_single_instance_lock_at(&path);
+        assert!(second.is_err());
+        drop(first);
+        let third = acquire_single_instance_lock_at(&path).expect("released lock should work");
+        drop(third);
+        let _ = std::fs::remove_file(path);
     }
 
     fn temp(id: &str, kind: SensorKind, value: f32) -> TempSensor {

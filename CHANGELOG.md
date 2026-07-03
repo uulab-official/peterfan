@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.61] — 메뉴바 앱 중복 실행 방지
+
+### Fixed
+- **상단 메뉴바 아이콘이 2개 생기던 문제 수정** — `open -n`처럼 새 인스턴스 실행을
+  강제로 요청하더라도 두 번째 PeterFan 메뉴바 프로세스가 트레이 아이콘을 만들기 전에
+  종료되도록 사용자별 single-instance lock을 추가함.
+
 ## [1.26.60] — 팝오버 시각 QA 스냅샷
 
 ### Added
