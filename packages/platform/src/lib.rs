@@ -24,6 +24,13 @@ pub mod mock_monitor;
 pub mod system;
 pub mod updater;
 
+/// Oldest installed root daemon this app version can safely keep using.
+///
+/// App-only UI releases should bump the app version without forcing users to
+/// re-enter their macOS password. Raise this only when the daemon IPC contract
+/// or fan-control behavior genuinely requires a newer `/usr/local/bin/peterfand`.
+pub const MIN_REQUIRED_DAEMON_VERSION: &str = "1.26.22";
+
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(all(target_os = "macos", feature = "experimental-gpu"))]
@@ -68,6 +75,35 @@ pub fn daemon_reachable() -> bool {
     false
 }
 
+pub fn parse_daemon_version_output(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .find(|part| part.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .map(|part| part.trim().to_string())
+        .filter(|part| !part.is_empty())
+}
+
+pub fn daemon_update_required(installed_version: &str) -> bool {
+    updater::is_newer(installed_version, MIN_REQUIRED_DAEMON_VERSION)
+}
+
+#[cfg(target_os = "macos")]
+pub fn installed_daemon_version() -> Option<String> {
+    let output = std::process::Command::new("/usr/local/bin/peterfand")
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_daemon_version_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn installed_daemon_version() -> Option<String> {
+    None
+}
+
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 /// Return the best available backend for the current operating system.
@@ -105,4 +141,29 @@ pub fn quick_monitor() -> Box<dyn SystemMonitor> {
 /// Return the simulated system-metrics monitor (`peterfan --mock`).
 pub fn mock_monitor() -> Box<dyn SystemMonitor> {
     Box::new(mock_monitor::MockMonitor::new())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn parse_daemon_version_output_finds_semver_token() {
+        assert_eq!(
+            super::parse_daemon_version_output("peterfand 1.26.13\n"),
+            Some("1.26.13".to_string())
+        );
+        assert_eq!(
+            super::parse_daemon_version_output("warning\npeterfand 1.26.8"),
+            Some("1.26.8".to_string())
+        );
+        assert_eq!(super::parse_daemon_version_output("peterfand\n"), None);
+    }
+
+    #[test]
+    fn daemon_update_uses_min_required_version_not_app_version() {
+        assert!(super::daemon_update_required("1.26.21"));
+        assert!(!super::daemon_update_required(
+            super::MIN_REQUIRED_DAEMON_VERSION
+        ));
+        assert!(!super::daemon_update_required("1.26.24"));
+    }
 }

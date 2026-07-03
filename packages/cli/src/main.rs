@@ -2582,12 +2582,21 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     let caps = provider.capabilities();
     let mcaps = monitor.capabilities();
     let elevated = is_elevated();
+    let daemon_reachable = peterfan_platform::daemon_reachable();
+    let installed_daemon_version = peterfan_platform::installed_daemon_version();
+    let daemon_update_required = installed_daemon_version
+        .as_deref()
+        .is_some_and(peterfan_platform::daemon_update_required);
 
     if json {
         let mut fan_control = serde_json::json!({
             "elevated": elevated,
-            "daemon_reachable": peterfan_platform::daemon_reachable(),
+            "daemon_reachable": daemon_reachable,
             "control_fans": caps.control_fans,
+            "installed_daemon_version": installed_daemon_version,
+            "minimum_required_daemon_version": peterfan_platform::MIN_REQUIRED_DAEMON_VERSION,
+            "daemon_update_required": daemon_update_required,
+            "daemon_compatible": installed_daemon_version.is_some() && !daemon_update_required,
         });
         #[cfg(target_os = "macos")]
         if let Some(p) = peterfan_platform::fan_control_probe() {
@@ -2645,8 +2654,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
         println!();
         println!("{}", render::heading("Fan control readiness"));
         print_check("running as root", elevated);
-        let daemon = peterfan_platform::daemon_reachable();
-        print_check("peterfand daemon reachable", daemon);
+        print_check("peterfand daemon reachable", daemon_reachable);
         #[cfg(target_os = "macos")]
         if let Some(p) = peterfan_platform::fan_control_probe() {
             print_kv("  SMC opened", if p.opened { "yes" } else { "no" });
@@ -2660,7 +2668,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
         // Verdict.
         let verdict = if !caps.control_fans {
             "this backend can't write fans".yellow().to_string()
-        } else if daemon {
+        } else if daemon_reachable {
             let mode = ipc_send("status")
                 .as_deref()
                 .and_then(|r| r.strip_prefix("ok "))
@@ -2690,6 +2698,36 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             println!();
             println!("{}", render::heading("Setup"));
 
+            print_kv("  app version", &format!("v{}", env!("CARGO_PKG_VERSION")));
+            print_kv(
+                "  daemon requirement",
+                &format!(">= v{}", peterfan_platform::MIN_REQUIRED_DAEMON_VERSION),
+            );
+            match installed_daemon_version.as_deref() {
+                Some(version) if daemon_update_required => {
+                    print_kv(
+                        "  installed daemon",
+                        &format!("v{} ({})", version, "update required".yellow()),
+                    );
+                    println!(
+                        "    {} update the daemon from the app Setup area, or run `peterfan install-daemon`",
+                        "→".dimmed()
+                    );
+                }
+                Some(version) => {
+                    print_kv(
+                        "  installed daemon",
+                        &format!("v{} ({})", version, "compatible".green()),
+                    );
+                }
+                None => {
+                    print_kv(
+                        "  installed daemon",
+                        &format!("{}", "not installed or not readable".yellow()),
+                    );
+                }
+            }
+
             // ── LaunchDaemon ──────────────────────────────────────────────
             let plist_exists =
                 std::path::Path::new("/Library/LaunchDaemons/kr.co.uulab.peterfan.daemon.plist")
@@ -2711,8 +2749,8 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                 // reported "not loaded" even when the daemon was fine. The
                 // actual IPC reachability check above is the real ground
                 // truth (and already ran), so reuse it instead of guessing.
-                print_check("  daemon responding over IPC", daemon);
-                if !daemon {
+                print_check("  daemon responding over IPC", daemon_reachable);
+                if !daemon_reachable {
                     println!(
                         "    {} run `peterfan install-daemon` to reload",
                         "→".dimmed()

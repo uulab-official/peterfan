@@ -272,8 +272,9 @@ peterfan login-item remove
 
 ### `doctor`
 
-Diagnoses the active backend, its capabilities, and whether the process is
-running elevated. Start here when something looks off.
+Diagnoses the active backend, sensor capabilities, fan-control readiness, app
+version, installed root-daemon version, and whether the daemon is compatible
+with the current app. Start here when something looks off.
 
 ```bash
 peterfan doctor

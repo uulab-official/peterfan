@@ -46,7 +46,6 @@ use peterfan_core::{HardwareProvider, SystemMonitor};
 /// Placeholder purchase link — point this at the real store page once one
 /// exists (Gumroad/Paddle/Stripe checkout).
 const BUY_URL: &str = "https://peterfan.dev/buy";
-const MIN_REQUIRED_DAEMON_VERSION: &str = "1.26.22";
 
 const REFRESH: Duration = Duration::from_secs(1);
 /// Samples kept for the menu-bar graph icon (always shows the short-term
@@ -472,7 +471,7 @@ fn setup_detail(
             "앱 v{} · 데몬 v{} · v{} 이상 필요",
             env!("CARGO_PKG_VERSION"),
             daemon_version.unwrap_or("unknown"),
-            MIN_REQUIRED_DAEMON_VERSION
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         ),
         (ResolvedLanguage::Ko, false, false, true, true) => {
             format!(
@@ -498,7 +497,7 @@ fn setup_detail(
             "app v{} · daemon v{} · requires v{}+",
             env!("CARGO_PKG_VERSION"),
             daemon_version.unwrap_or("unknown"),
-            MIN_REQUIRED_DAEMON_VERSION
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         ),
         (ResolvedLanguage::En, false, false, true, true) => {
             format!(
@@ -520,34 +519,6 @@ fn setup_detail(
     }
 }
 
-fn parse_daemon_version_output(output: &str) -> Option<String> {
-    output
-        .split_whitespace()
-        .find(|part| part.chars().next().is_some_and(|c| c.is_ascii_digit()))
-        .map(|part| part.trim().to_string())
-        .filter(|part| !part.is_empty())
-}
-
-fn daemon_update_required(installed_version: &str) -> bool {
-    peterfan_platform::updater::is_newer(installed_version, MIN_REQUIRED_DAEMON_VERSION)
-}
-
-#[cfg(target_os = "macos")]
-fn installed_daemon_version() -> Option<String> {
-    let output = std::process::Command::new("/usr/local/bin/peterfand")
-        .arg("--version")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    parse_daemon_version_output(&String::from_utf8_lossy(&output.stdout))
-}
-#[cfg(not(target_os = "macos"))]
-fn installed_daemon_version() -> Option<String> {
-    None
-}
-
 fn cached_installed_daemon_version() -> Option<String> {
     let now = Instant::now();
     let mut cache = DAEMON_VERSION_CACHE
@@ -558,7 +529,7 @@ fn cached_installed_daemon_version() -> Option<String> {
             return version.clone();
         }
     }
-    let version = installed_daemon_version();
+    let version = peterfan_platform::installed_daemon_version();
     *cache = Some((now, version.clone()));
     version
 }
@@ -1720,7 +1691,7 @@ fn update(app: &mut App) {
     let daemon_update_needed = daemon_running
         && daemon_version
             .as_deref()
-            .is_some_and(daemon_update_required);
+            .is_some_and(peterfan_platform::daemon_update_required);
     let active_profile = daemon_json
         .as_ref()
         .and_then(|v| v.get("mode").and_then(|m| m.as_str()))
@@ -2178,7 +2149,9 @@ fn install_fan_control() {
         return;
     }
     let old_version = cached_installed_daemon_version();
-    let updating_existing = old_version.as_deref().is_some_and(daemon_update_required);
+    let updating_existing = old_version
+        .as_deref()
+        .is_some_and(peterfan_platform::daemon_update_required);
     clear_daemon_version_cache();
     let (ok, message) = match peterfan_platform::daemon_install::install(false) {
         Ok(InstallOutcome::Installed) => {
@@ -2271,8 +2244,8 @@ fn stale_daemon_version() -> Option<String> {
     if !peterfan_platform::daemon_reachable() {
         return None;
     }
-    let version = installed_daemon_version()?;
-    if daemon_update_required(&version) {
+    let version = peterfan_platform::installed_daemon_version()?;
+    if peterfan_platform::daemon_update_required(&version) {
         Some(version)
     } else {
         None
@@ -2309,7 +2282,11 @@ fn should_prompt_stale_daemon_update(
 fn maybe_prompt_stale_daemon_update() {
     std::thread::sleep(Duration::from_secs(2));
     let cfg = peterfan_platform::config::load();
-    if !should_prompt_stale_daemon_update(&cfg, MIN_REQUIRED_DAEMON_VERSION, now_unix()) {
+    if !should_prompt_stale_daemon_update(
+        &cfg,
+        peterfan_platform::MIN_REQUIRED_DAEMON_VERSION,
+        now_unix(),
+    ) {
         return;
     }
     let Some(old_version) = stale_daemon_version() else {
@@ -2321,7 +2298,8 @@ fn maybe_prompt_stale_daemon_update() {
         ResolvedLanguage::Ko => (
             "PeterFan — 팬 제어 업데이트",
             format!(
-                "이 Mac에 설치된 팬 제어 데몬은 v{old_version}입니다. 이 PeterFan 앱은 팬 제어 데몬 v{MIN_REQUIRED_DAEMON_VERSION} 이상이 필요합니다.\n\n지금 데몬을 업데이트할까요? macOS가 관리자 암호를 한 번 요청합니다."
+                "이 Mac에 설치된 팬 제어 데몬은 v{old_version}입니다. 이 PeterFan 앱은 팬 제어 데몬 v{} 이상이 필요합니다.\n\n지금 데몬을 업데이트할까요? macOS가 관리자 암호를 한 번 요청합니다.",
+                peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
             ),
             "다시 묻지 않기",
             "나중에",
@@ -2330,7 +2308,8 @@ fn maybe_prompt_stale_daemon_update() {
         ResolvedLanguage::En => (
             "PeterFan — Update Fan Control",
             format!(
-                "The fan-control daemon installed on this Mac is v{old_version}. This PeterFan app requires fan-control daemon v{MIN_REQUIRED_DAEMON_VERSION} or newer.\n\nUpdate the daemon now? macOS will ask for your password once."
+                "The fan-control daemon installed on this Mac is v{old_version}. This PeterFan app requires fan-control daemon v{} or newer.\n\nUpdate the daemon now? macOS will ask for your password once.",
+                peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
             ),
             "Don't Ask Again",
             "Not Now",
@@ -2359,7 +2338,7 @@ fn maybe_prompt_stale_daemon_update() {
     } else if stdout.contains(dont_ask) {
         let mut cfg = peterfan_platform::config::load();
         cfg.menubar.daemon_update_prompt_dismissed_for =
-            Some(MIN_REQUIRED_DAEMON_VERSION.to_string());
+            Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION.to_string());
         let _ = peterfan_platform::config::save(&cfg);
     } else if stdout.contains(not_now) {
         let mut cfg = peterfan_platform::config::load();
@@ -3534,23 +3513,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_daemon_version_output_finds_semver_token() {
-        assert_eq!(
-            parse_daemon_version_output("peterfand 1.26.13\n"),
-            Some("1.26.13".to_string())
-        );
-        assert_eq!(
-            parse_daemon_version_output("warning\npeterfand 1.26.8"),
-            Some("1.26.8".to_string())
-        );
-        assert_eq!(parse_daemon_version_output("peterfand\n"), None);
-    }
-
-    #[test]
     fn daemon_update_uses_min_required_version_not_app_version() {
-        assert!(daemon_update_required("1.26.21"));
-        assert!(!daemon_update_required(MIN_REQUIRED_DAEMON_VERSION));
-        assert!(!daemon_update_required("1.26.24"));
+        assert!(peterfan_platform::daemon_update_required("1.26.21"));
+        assert!(!peterfan_platform::daemon_update_required(
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
+        ));
+        assert!(!peterfan_platform::daemon_update_required("1.26.24"));
     }
 
     fn temp(id: &str, kind: SensorKind, value: f32) -> TempSensor {
@@ -3662,7 +3630,8 @@ mod tests {
             false
         )
         .contains(&format!(
-            "daemon v1.26.8 · requires v{MIN_REQUIRED_DAEMON_VERSION}+"
+            "daemon v1.26.8 · requires v{}+",
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         )));
         assert!(setup_detail(
             ResolvedLanguage::Ko,
@@ -3672,7 +3641,10 @@ mod tests {
             false,
             false
         )
-        .contains(&format!("v{MIN_REQUIRED_DAEMON_VERSION} 이상 필요")));
+        .contains(&format!(
+            "v{} 이상 필요",
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
+        )));
     }
 
     #[test]

@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.27] — Doctor 데몬 호환성 진단
+
+### Changed
+- **데몬 호환 기준을 공용 플랫폼 API로 이동** — 메뉴바와 CLI가 같은
+  `MIN_REQUIRED_DAEMON_VERSION` 기준으로 데몬 업데이트 필요 여부를 판단하게 함.
+- **`peterfan doctor` 데몬 버전 진단 강화** — 앱 버전, 설치된 시스템 데몬 버전,
+  최소 요구 데몬 버전, 호환/업데이트 필요 상태를 Setup 섹션과 JSON 출력에
+  표시하도록 함.
+
 ## [1.26.26] — 데몬 호환 상태 표시 개선
 
 ### Changed
