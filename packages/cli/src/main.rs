@@ -2720,7 +2720,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             );
         }
         println!(
-            "    {} selected avg uses SMC aggregate first, then falls back to P-core/all-core",
+            "    {} selected avg uses live CPU core keys; SMC aggregate is shown for comparison",
             "→".dimmed()
         );
     }
@@ -3111,7 +3111,7 @@ fn cpu_temperature_probe_json(probe: &peterfan_platform::CpuTemperatureProbe) ->
         "core_keys": probe.core_keys.iter().map(|r| {
             serde_json::json!({ "key": r.key, "class": r.class, "value_c": r.value_c })
         }).collect::<Vec<_>>(),
-        "selection_policy": "smc_aggregate_then_performance_core_then_all_core",
+        "selection_policy": "live_core_average_then_smc_aggregate_fallback",
     })
 }
 
@@ -4026,7 +4026,7 @@ mod tests {
         assert_eq!(json["selected_average_c"], 75.0);
         assert_eq!(
             json["selection_policy"],
-            "smc_aggregate_then_performance_core_then_all_core"
+            "live_core_average_then_smc_aggregate_fallback"
         );
         assert_eq!(json["aggregate_keys"][0]["key"], "TV0s");
         assert_eq!(json["core_keys"][0]["class"], "performance");

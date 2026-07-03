@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.67] — CPU 평균 온도 실시간 반응성 보정
+
+### Fixed
+- **CPU 평균 온도가 74~75°C 근처에 고정된 것처럼 보이던 문제 수정** —
+  SMC `TV*` aggregate 키가 외부 앱과 한 순간은 비슷하지만 짧은 CPU 부하에도 거의
+  움직이지 않는 smoothed aggregate임을 확인하고, 메뉴바/`temps`의 대표
+  `CPU Core Average`를 다시 `Te*`/`Tf*` 실제 core 키 전체 평균으로 전환함.
+- **`doctor` calibration 의미 정리** — `TV*` aggregate는 대표값이 아니라 비교
+  진단값으로 표시하고, 선택 정책을 `live_core_average_then_smc_aggregate_fallback`
+  으로 JSON에 기록함.
+
 ## [1.26.66] — CPU 온도 비교 진단 강화
 
 ### Added
