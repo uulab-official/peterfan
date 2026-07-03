@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use tao::dpi::{LogicalSize, PhysicalPosition};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopWindowTarget};
+use tao::monitor::MonitorHandle;
 use tao::window::{Window, WindowBuilder};
 
 #[cfg(target_os = "macos")]
@@ -1355,12 +1356,90 @@ fn max_popover_height(w: &Window) -> f64 {
     let Some(monitor) = w.current_monitor() else {
         return 900.0; // generous fallback if the display can't be queried
     };
-    let monitor_h = monitor.size().height as f64 / scale;
+    let display = monitor_bounds(&monitor);
     let top_y = w
         .outer_position()
         .map(|p| p.y as f64 / scale)
         .unwrap_or(0.0);
-    (monitor_h - top_y - 12.0).max(200.0)
+    max_popover_height_for_bounds(
+        DisplayBounds {
+            x: display.x / scale,
+            y: display.y / scale,
+            width: display.width / scale,
+            height: display.height / scale,
+        },
+        top_y,
+    )
+}
+
+fn max_popover_height_for_bounds(display: DisplayBounds, popover_top_y: f64) -> f64 {
+    (display.bottom() - popover_top_y - 12.0).max(200.0)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DisplayBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl DisplayBounds {
+    fn right(self) -> f64 {
+        self.x + self.width
+    }
+
+    fn bottom(self) -> f64 {
+        self.y + self.height
+    }
+
+    fn contains_point(self, x: f64, y: f64) -> bool {
+        x >= self.x && x < self.right() && y >= self.y && y < self.bottom()
+    }
+}
+
+fn monitor_bounds(monitor: &MonitorHandle) -> DisplayBounds {
+    let pos = monitor.position();
+    let size = monitor.size();
+    DisplayBounds {
+        x: pos.x as f64,
+        y: pos.y as f64,
+        width: size.width as f64,
+        height: size.height as f64,
+    }
+}
+
+fn popover_position_for_rect(
+    rect: Rect,
+    popover_width: f64,
+    displays: &[DisplayBounds],
+) -> PhysicalPosition<f64> {
+    let anchor_x = rect.position.x + rect.size.width as f64;
+    let anchor_y = rect.position.y + rect.size.height as f64;
+    let display = displays
+        .iter()
+        .copied()
+        .find(|d| d.contains_point(rect.position.x, rect.position.y))
+        .or_else(|| {
+            displays
+                .iter()
+                .copied()
+                .find(|d| d.contains_point(anchor_x, anchor_y))
+        });
+
+    let x = display.map_or_else(
+        || (anchor_x - popover_width).max(8.0),
+        |d| {
+            let min_x = d.x + 8.0;
+            let max_x = d.right() - popover_width - 8.0;
+            if min_x <= max_x {
+                (anchor_x - popover_width).clamp(min_x, max_x)
+            } else {
+                d.x + 8.0
+            }
+        },
+    );
+    PhysicalPosition::new(x, anchor_y)
 }
 
 fn toggle_popover(app: &mut App, rect: Rect) {
@@ -1371,12 +1450,11 @@ fn toggle_popover(app: &mut App, rect: Rect) {
     let Some(w) = &app.window else { return };
     let scale = w.scale_factor();
     let win_w = POPOVER_W * scale;
-    let x = (rect.position.x + rect.size.width as f64 - win_w).max(8.0);
     // Flush against the menu bar rather than leaving a visible gap — matches
     // how native menu extras (Control Center, Wi-Fi, …) sit right under the
     // icon instead of floating below it.
-    let y = rect.position.y + rect.size.height as f64;
-    w.set_outer_position(PhysicalPosition::new(x, y));
+    let displays: Vec<_> = w.available_monitors().map(|m| monitor_bounds(&m)).collect();
+    w.set_outer_position(popover_position_for_rect(rect, win_w, &displays));
     // Snap to the last known content height *before* showing, so repeat
     // opens don't visibly resize (only the very first open of a session —
     // before any height has ever been measured — can still do that).
@@ -3805,6 +3883,82 @@ mod tests {
             menu_on_right_click,
             "right-click should still show the native context menu"
         );
+    }
+
+    fn tray_rect(x: f64, y: f64, width: u32, height: u32) -> Rect {
+        Rect {
+            position: tray_icon::dpi::PhysicalPosition::new(x, y),
+            size: tray_icon::dpi::PhysicalSize::new(width, height),
+        }
+    }
+
+    #[test]
+    fn popover_position_stays_on_left_external_display() {
+        let displays = [
+            DisplayBounds {
+                x: -1920.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+            },
+            DisplayBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1728.0,
+                height: 1117.0,
+            },
+        ];
+        let pos = popover_position_for_rect(tray_rect(-40.0, 0.0, 24, 24), 440.0, &displays);
+
+        assert!(pos.x < 0.0, "popover should remain on the clicked display");
+        assert!(pos.x >= displays[0].x + 8.0);
+        assert!(pos.x + 440.0 <= displays[0].right() - 8.0);
+        assert_eq!(pos.y, 24.0);
+    }
+
+    #[test]
+    fn popover_position_stays_on_right_external_display() {
+        let displays = [
+            DisplayBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1728.0,
+                height: 1117.0,
+            },
+            DisplayBounds {
+                x: 1728.0,
+                y: 0.0,
+                width: 2560.0,
+                height: 1440.0,
+            },
+        ];
+        let pos = popover_position_for_rect(tray_rect(4260.0, 0.0, 24, 24), 440.0, &displays);
+
+        assert!(
+            pos.x >= displays[1].x,
+            "popover should stay on the clicked display"
+        );
+        assert!(pos.x + 440.0 <= displays[1].right() - 8.0);
+        assert_eq!(pos.y, 24.0);
+    }
+
+    #[test]
+    fn max_popover_height_respects_display_y_offset() {
+        let upper_display = DisplayBounds {
+            x: 0.0,
+            y: -900.0,
+            width: 1440.0,
+            height: 900.0,
+        };
+        let lower_display = DisplayBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 1440.0,
+            height: 900.0,
+        };
+
+        assert_eq!(max_popover_height_for_bounds(upper_display, -876.0), 864.0);
+        assert_eq!(max_popover_height_for_bounds(lower_display, 24.0), 864.0);
     }
 
     #[test]
