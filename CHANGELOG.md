@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.56] — 하드웨어 빈 상태 안내 개선
+
+### Added
+- **Settings에 Hardware Availability 카드 추가** — 팬, 배터리, 네트워크가 감지됐는지
+  한눈에 확인할 수 있게 함.
+- **팬 화면 empty state 추가** — 제어 가능한 팬이 없거나 읽기 전용 팬만 있는 Mac에서도
+  화면이 비어 보이지 않고, PeterFan이 계속 모니터링할 수 있는 항목을 설명함.
+
+### Changed
+- **로드맵 갱신** — unsupported fans, missing battery, no network empty state 항목을
+  완료 상태로 반영함.
+
 ## [1.26.55] — 로드맵 정리와 팬 제어 상태 카드
 
 ### Added

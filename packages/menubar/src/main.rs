@@ -1788,6 +1788,8 @@ fn update(app: &mut App) {
             if let Some(h) = b.health_percent { s.push_str(&format!("   health {h:.0}%")); }
             s
         }).unwrap_or_default(),
+        "network_count": nets.len(),
+        "network_active": nets.iter().any(|n| n.ip.is_some() || n.rx_rate > 0.0 || n.tx_rate > 0.0),
         "net_sub": format!("↓ {}/s     ↑ {}/s", bytes(rx as u64), bytes(tx as u64)),
         "net_ip": net_ip_line,
         "cpu_hist": to_vec(app.cpu_h.range(chart_range)),
@@ -2791,6 +2793,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">General Settings<", ">일반 설정<")
             .replace(">App Preferences<", ">앱 설정<")
             .replace(">Fan Control Health<", ">팬 제어 상태<")
+            .replace(">Hardware Availability<", ">하드웨어 감지 상태<")
             .replace(">Daemon<", ">데몬<")
             .replace(">Control Path<", ">제어 경로<")
             .replace(">Last Command<", ">마지막 명령<")
@@ -2817,6 +2820,10 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(
                 "Open a larger dashboard window, use the native menu for advanced settings, or quit PeterFan.",
                 "큰 대시보드 창을 열거나, 고급 설정은 기본 메뉴에서 조정하고, PeterFan을 종료할 수 있습니다.",
+            )
+            .replace(
+                "No controllable fans detected. PeterFan can still monitor CPU, memory, temperature, and network activity.",
+                "제어 가능한 팬을 찾지 못했습니다. PeterFan은 CPU, 메모리, 온도, 네트워크 상태는 계속 모니터링합니다.",
             )
             .replace(
                 "Manage startup and app behavior from one place.",
@@ -2940,6 +2947,7 @@ body.compact .compact-extra{display:none!important;}
 .fan-rpm-row input[type=number]{width:44px;background:var(--track);border:1px solid transparent;border-radius:4px;color:var(--text);font:inherit;font-size:9px;font-variant-numeric:tabular-nums;text-align:center;padding:3px 0;-moz-appearance:textfield;}
 .fan-rpm-row input[type=number]::-webkit-inner-spin-button,.fan-rpm-row input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}
 .fan-rpm-row input[type=number]:focus{border-color:var(--accent);outline:none;}
+.empty-state{padding:9px 10px;border:1px dashed var(--line);border-radius:8px;color:var(--dim);font-size:10.5px;line-height:1.45;background:rgba(255,255,255,.018);}
 .ctl-note{font-size:10.5px;color:var(--dim);line-height:1.5;margin-top:6px;}
 .note-fix-btn{margin-top:5px;background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:10px;font-weight:600;padding:5px 10px;border-radius:6px;cursor:pointer;}
 .note-fix-btn:hover{background:rgba(91,157,255,.32);}
@@ -3031,6 +3039,14 @@ body.compact .compact-extra{display:none!important;}
 <div class="health-row"><span class="health-label">App</span><span class="health-value" id="health-app">—</span></div>
 </div>
 </div>
+<div class="health-card" id="hardware-availability-card">
+<div class="health-head"><div class="health-title">Hardware Availability</div><span class="panel-pill info" id="hardware-pill">Ready</span></div>
+<div class="health-grid">
+<div class="health-row"><span class="health-label">Fans Detected</span><span class="health-value" id="hardware-fans">—</span></div>
+<div class="health-row"><span class="health-label">Battery</span><span class="health-value" id="hardware-battery">—</span></div>
+<div class="health-row"><span class="health-label">Network</span><span class="health-value" id="hardware-network">—</span></div>
+</div>
+</div>
 <div class="settings-item">
 <div><div class="settings-item-title">Detail Window</div><div class="settings-item-copy">Open the full dashboard when you need more room.</div></div>
 <button class="panel-action secondary" onclick="window.ipc.postMessage('open_detail')">Open Detail Window…</button>
@@ -3058,6 +3074,7 @@ body.compact .compact-extra{display:none!important;}
 <button data-mode="profile" data-profile="maximum" title="Maximum" onclick="setProfile('maximum')">Max</button>
 </div>
 <div class="fan-cards" id="fan-cards"></div>
+<div class="empty-state" id="fan-empty-state" style="display:none">No controllable fans detected. PeterFan can still monitor CPU, memory, temperature, and network activity.</div>
 <div class="ctl-note" id="ctl-note" style="display:none"></div>
 </div>
 
@@ -3250,8 +3267,9 @@ window.__pf={
  function bar(id,p,c){var b=document.getElementById(id);if(b){b.style.width=Math.max(0,Math.min(100,p))+'%';b.className='bar-fill '+(c||cls(p));}}
  function set(id,t){var e=document.getElementById(id);if(e)e.textContent=t;}
  function show(id,on){var e=document.getElementById(id);if(e)e.style.display=on?'':'none';}
- updateSetup(d);
- updateRail(d);
+  updateSetup(d);
+  updateRail(d);
+  updateHardwareAvailability(d);
  set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
  var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span');s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title='Core '+(i+1)+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
  set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
@@ -3328,11 +3346,13 @@ window.__pf={
      }
    }
    renderFanCards(d.fans);
+   updateFanEmptyState(d);
  } else {
    set('ctl-status',LANG==='ko'?'사용 불가':'unavailable');
    updateProfileStrip(d);
    if(note){note.style.display='';note.textContent=LANG==='ko'?'이 Mac에서는 팬 제어를 사용할 수 없습니다. 실시간 RPM만 표시합니다.':'Fan control unavailable on this Mac — showing live RPM only.';}
    var fc=document.getElementById('fan-cards');if(fc)fc.innerHTML='';
+   updateFanEmptyState(d);
  }
  if(SHOW_CURVE_EDITOR==='1'&&d.can_control){
    var ces=document.getElementById('curve-editor-section');
@@ -3839,6 +3859,37 @@ function updateHealthPanel(d){
   setHealthValue('health-approval',approval,d.daemon_running&&!d.daemon_update_needed?'ok':(d.can_control?'warn':'info'));
   setHealthValue('health-app','v'+(d.app_version||''),'info');
 }
+function updateHardwareAvailability(d){
+  var fanCount=d.fan_count||0, controllable=d.controllable_fan_count||0;
+  var battery=!!d.batt_present;
+  var networkCount=d.network_count||0, networkActive=!!d.network_active;
+  var allGood=(controllable>0)&&battery&&networkActive;
+  setPanelPill('hardware-pill',allGood?(LANG==='ko'?'감지됨':'Detected'):(LANG==='ko'?'확인 필요':'Check'),allGood?'ok':'info');
+  setHealthValue('hardware-fans',
+    controllable>0
+      ?(controllable+' / '+fanCount)
+      :(fanCount>0?(LANG==='ko'?'읽기 전용 팬 '+fanCount+'개':fanCount+' read-only fans'):(LANG==='ko'?'감지 안 됨':'not detected')),
+    controllable>0?'ok':'info');
+  setHealthValue('hardware-battery',battery?(LANG==='ko'?'감지됨':'detected'):(LANG==='ko'?'배터리 없음':'not present'),battery?'ok':'info');
+  setHealthValue('hardware-network',
+    networkActive
+      ?(LANG==='ko'?'활성':'active')
+      :(networkCount>0?(LANG==='ko'?'비활성':'idle'):(LANG==='ko'?'감지 안 됨':'not detected')),
+    networkActive?'ok':'info');
+}
+function updateFanEmptyState(d){
+  var empty=document.getElementById('fan-empty-state');
+  if(!empty)return;
+  var fans=d.fans||[];
+  var controllable=fans.filter(function(f){return !!f.controllable;}).length;
+  var show=controllable===0;
+  empty.style.display=show?'':'none';
+  if(show){
+    empty.textContent=fans.length>0
+      ?(LANG==='ko'?'이 Mac의 팬은 감지됐지만 앱에서 직접 제어할 수 없습니다. 실시간 RPM은 계속 확인할 수 있습니다.':'Fans are detected, but this Mac does not expose controllable fan writes. Live RPM is still monitored.')
+      :(LANG==='ko'?'제어 가능한 팬을 찾지 못했습니다. PeterFan은 CPU, 메모리, 온도, 네트워크 상태는 계속 모니터링합니다.':'No controllable fans detected. PeterFan can still monitor CPU, memory, temperature, and network activity.');
+  }
+}
 // Draws a filled area + line sparkline of `data` into the <canvas id=id>.
 // `fixedMax` pins the y-axis (e.g. 100 for percentages); null auto-scales to the data's own peak.
 // `fmt(v)` formats a raw sample for the hover tooltip.
@@ -4332,6 +4383,29 @@ mod tests {
         assert!(ko.contains(">제어 경로<"));
         assert!(ko.contains(">마지막 명령<"));
         assert!(ko.contains(">관리자 승인<"));
+    }
+
+    #[test]
+    fn settings_panel_contains_hardware_empty_states() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+
+        assert!(en.contains(r#"id="hardware-availability-card""#));
+        assert!(en.contains(">Hardware Availability<"));
+        assert!(en.contains(r#"id="hardware-fans""#));
+        assert!(en.contains(r#"id="hardware-battery""#));
+        assert!(en.contains(r#"id="hardware-network""#));
+        assert!(en.contains(r#"id="fan-empty-state""#));
+        assert!(en.contains("function updateHardwareAvailability(d)"));
+        assert!(en.contains("updateHardwareAvailability(d);"));
+        assert!(en.contains("d.network_count"));
+        assert!(en.contains("d.network_active"));
+        assert!(en.contains("No controllable fans detected"));
+
+        assert!(ko.contains(">하드웨어 감지 상태<"));
+        assert!(ko.contains(">배터리<"));
+        assert!(ko.contains(">네트워크<"));
+        assert!(ko.contains("제어 가능한 팬을 찾지 못했습니다"));
     }
 
     #[test]
