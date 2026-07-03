@@ -317,6 +317,9 @@ struct App {
     net_h: RangedHistory,
     /// Combined disk read+write throughput (bytes/sec), same reasoning.
     disk_io_h: RangedHistory,
+    /// Small animation frame for the RunCat-style menu-bar character. It
+    /// advances on each refresh, with bigger CPU load taking larger strides.
+    runner_frame: u8,
     /// Trial/license state, resolved at startup and after `license:<key>` IPC.
     entitlement: Entitlement,
 }
@@ -756,6 +759,7 @@ fn main() {
         temp_h: RangedHistory::new(),
         net_h: RangedHistory::new(),
         disk_io_h: RangedHistory::new(),
+        runner_frame: 0,
         entitlement,
     };
 
@@ -1504,6 +1508,9 @@ fn update(app: &mut App) {
     app.mem_h.push(mem.used_percent);
     app.temp_h.push(display_temp.unwrap_or(0.0));
     app.net_h.push((rx + tx) as f32);
+    app.runner_frame = app
+        .runner_frame
+        .wrapping_add(runner_frame_step(cpu.usage_percent));
 
     // Menu-bar item: number, graph, or both, tracking whichever metric the
     // user picked from the right-click menu (persisted across relaunches).
@@ -1535,19 +1542,18 @@ fn update(app: &mut App) {
             }
         };
 
+        let runner_icon = menubar_runner_icon(cpu.usage_percent, app.runner_frame);
         match app.display {
             MenubarDisplay::Number => {
-                let _ = tray.set_icon(None);
+                let _ = tray.set_icon_with_as_template(Some(runner_icon), false);
                 set_menubar_text(tray, &title);
             }
             MenubarDisplay::Graph => {
-                let icon = menubar_graph_icon(app);
-                let _ = tray.set_icon_with_as_template(Some(icon), false);
+                let _ = tray.set_icon_with_as_template(Some(runner_icon), false);
                 set_menubar_text(tray, "");
             }
             MenubarDisplay::Both => {
-                let icon = menubar_graph_icon(app);
-                let _ = tray.set_icon_with_as_template(Some(icon), false);
+                let _ = tray.set_icon_with_as_template(Some(runner_icon), false);
                 set_menubar_text(tray, &title);
             }
         }
@@ -2430,69 +2436,172 @@ fn temp_cls(c: Celsius) -> &'static str {
     }
 }
 
-/// Render a small colored bar-chart sparkline of recent samples for the menu-bar
-/// icon — the "graph at a glance" look iStat-style monitors are known for.
-/// Bar color reflects the latest sample's load band (green/yellow/red).
-/// Build the menu-bar sparkline icon for whichever metric is currently
-/// selected, pulling from that metric's own rolling history buffer.
-fn menubar_graph_icon(app: &App) -> Icon {
-    // Always the short-term (2-minute) trend, independent of whatever range
-    // the popover's chart tabs are set to.
-    match app.metric {
-        MenubarMetric::Cpu => make_graph_icon(&to_vec(&app.cpu_h.minute), Some(100.0)),
-        MenubarMetric::Memory => make_graph_icon(&to_vec(&app.mem_h.minute), Some(100.0)),
-        MenubarMetric::Temp => make_graph_icon(&to_vec(&app.temp_h.minute), Some(100.0)),
-        MenubarMetric::Fan => make_graph_icon(&to_vec(&app.fan_hist), Some(100.0)),
-        MenubarMetric::Network => make_graph_icon(&to_vec(&app.net_h.minute), None),
-    }
-}
-
 fn to_vec(hist: &VecDeque<f32>) -> Vec<f32> {
     hist.iter().copied().collect()
 }
 
-/// `max_val`: `Some(v)` pins the y-axis (e.g. 100 for a percentage); `None`
-/// auto-scales to the visible window's own peak (used for network throughput,
-/// which has no fixed ceiling).
-fn make_graph_icon(history: &[f32], max_val: Option<f32>) -> Icon {
+fn runner_frame_step(cpu_pct: f32) -> u8 {
+    match cpu_pct.clamp(0.0, 100.0) {
+        x if x < 20.0 => 1,
+        x if x < 50.0 => 2,
+        x if x < 80.0 => 3,
+        _ => 4,
+    }
+}
+
+fn menubar_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
+    make_runner_icon(cpu_pct, frame)
+}
+
+fn make_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
     const W: u32 = 32;
     const H: u32 = 32;
     let mut rgba = vec![0u8; (W * H * 4) as usize];
-    if history.is_empty() {
-        return Icon::from_rgba(rgba, W, H).expect("valid icon");
-    }
 
-    let n = history.len().clamp(1, 20);
-    let recent: Vec<f32> = history[history.len() - n..].to_vec();
-    let max_val =
-        max_val.unwrap_or_else(|| recent.iter().cloned().fold(1.0_f32, f32::max).max(1.0));
-    let latest = *recent.last().unwrap_or(&0.0);
-    let latest_frac = (latest / max_val).clamp(0.0, 1.0);
-    let (r, g, b) = match latest_frac {
-        x if x < 0.5 => (48u8, 209u8, 88u8),  // green
-        x if x < 0.8 => (255u8, 214u8, 10u8), // yellow
-        _ => (255u8, 69u8, 58u8),             // red
+    let (r, g, b) = match cpu_pct.clamp(0.0, 100.0) {
+        x if x < 20.0 => (91u8, 157u8, 255u8), // calm blue
+        x if x < 55.0 => (48u8, 209u8, 88u8),  // green
+        x if x < 80.0 => (255u8, 214u8, 10u8), // yellow
+        _ => (255u8, 69u8, 58u8),              // red
     };
 
-    let bar_w = W as f32 / recent.len() as f32;
-    for (i, &v) in recent.iter().enumerate() {
-        let frac = (v / max_val).clamp(0.0, 1.0);
-        let bar_h = ((H as f32 - 2.0) * frac).round().max(1.0) as u32;
-        let x0 = (i as f32 * bar_w).round() as u32;
-        let x1 = (((i + 1) as f32) * bar_w).round().max((x0 + 1) as f32) as u32;
-        for y in H.saturating_sub(bar_h)..H {
-            for x in x0..x1.min(W) {
-                let idx = ((y * W + x) * 4) as usize;
-                if idx + 3 < rgba.len() {
-                    rgba[idx] = r;
-                    rgba[idx + 1] = g;
-                    rgba[idx + 2] = b;
-                    rgba[idx + 3] = 225;
-                }
+    let phase = frame % 4;
+    let lean = if cpu_pct >= 80.0 { 2.0 } else { 1.0 };
+    let stride = match phase {
+        0 => 7.0,
+        1 => 3.0,
+        2 => -7.0,
+        _ => -3.0,
+    };
+
+    draw_disc(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(16.0 + lean, 6.0),
+        3.2,
+        (r, g, b, 245),
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(16.0 + lean, 10.0),
+        Pt::new(14.0 + lean, 18.0),
+        2.4,
+        (r, g, b, 235),
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(15.0 + lean, 12.0),
+        Pt::new(15.0 - stride * 0.75, 16.0),
+        2.0,
+        (r, g, b, 220),
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(15.0 + lean, 12.0),
+        Pt::new(16.0 + stride * 0.75, 9.0),
+        2.0,
+        (r, g, b, 220),
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(14.0 + lean, 18.0),
+        Pt::new(14.0 - stride, 26.0),
+        2.2,
+        (r, g, b, 235),
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(14.0 + lean, 18.0),
+        Pt::new(15.0 + stride, 25.0),
+        2.2,
+        (r, g, b, 235),
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(5.0, 28.0),
+        Pt::new(27.0, 28.0),
+        1.0,
+        (r, g, b, 80),
+    );
+
+    Icon::from_rgba(rgba, W, H).expect("valid icon")
+}
+
+#[derive(Clone, Copy)]
+struct Pt {
+    x: f32,
+    y: f32,
+}
+
+impl Pt {
+    fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+}
+
+fn draw_disc(rgba: &mut [u8], w: u32, h: u32, center: Pt, radius: f32, color: (u8, u8, u8, u8)) {
+    let min_x = (center.x - radius - 1.0).floor().max(0.0) as u32;
+    let max_x = (center.x + radius + 1.0).ceil().min((w - 1) as f32) as u32;
+    let min_y = (center.y - radius - 1.0).floor().max(0.0) as u32;
+    let max_y = (center.y + radius + 1.0).ceil().min((h - 1) as f32) as u32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dx = x as f32 - center.x;
+            let dy = y as f32 - center.y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist <= radius + 0.5 {
+                let coverage = (radius + 0.5 - dist).clamp(0.0, 1.0);
+                blend_pixel(rgba, w, x, y, color, coverage);
             }
         }
     }
-    Icon::from_rgba(rgba, W, H).expect("valid icon")
+}
+
+fn draw_line(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    from: Pt,
+    to: Pt,
+    thickness: f32,
+    color: (u8, u8, u8, u8),
+) {
+    let steps = ((to.x - from.x).abs().max((to.y - from.y).abs()) * 2.0)
+        .ceil()
+        .max(1.0) as u32;
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let x = from.x + (to.x - from.x) * t;
+        let y = from.y + (to.y - from.y) * t;
+        draw_disc(rgba, w, h, Pt::new(x, y), thickness / 2.0, color);
+    }
+}
+
+fn blend_pixel(rgba: &mut [u8], w: u32, x: u32, y: u32, color: (u8, u8, u8, u8), coverage: f32) {
+    let idx = ((y * w + x) * 4) as usize;
+    if idx + 3 >= rgba.len() {
+        return;
+    }
+    let alpha = (color.3 as f32 * coverage).round().clamp(0.0, 255.0) as u8;
+    if alpha >= rgba[idx + 3] {
+        rgba[idx] = color.0;
+        rgba[idx + 1] = color.1;
+        rgba[idx + 2] = color.2;
+        rgba[idx + 3] = alpha;
+    }
 }
 
 fn make_ring_icon() -> Icon {
@@ -2543,7 +2652,6 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
         ResolvedLanguage::En => html,
         ResolvedLanguage::Ko => html
             .replace(">Fan control<", ">팬 제어<")
-            .replace(">Runner<", ">러너<")
             .replace(">Status<", ">상태<")
             .replace(">Memory<", ">메모리<")
             .replace(">Storage<", ">저장공간<")
@@ -2618,25 +2726,6 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .dashboard-shell{display:grid;grid-template-columns:minmax(0,1fr) 78px;gap:8px;padding:7px;height:100vh;max-height:100vh;}
 .main-pane{min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:9px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:none;background:rgba(255,255,255,.015);}
 .main-pane::-webkit-scrollbar{display:none;}
-.runner-strip{padding:9px 15px 7px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(91,157,255,.07),rgba(255,255,255,.01));}
-.runner-meta{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
-.runner-name{font-size:9.5px;font-weight:800;color:var(--dim);letter-spacing:0;text-transform:uppercase;}
-.runner-load{font-size:10px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;}
-.runner-track{position:relative;height:28px;border-radius:99px;background:var(--track);overflow:hidden;}
-.runner-track:before{content:"";position:absolute;left:0;right:0;bottom:7px;height:1px;background:linear-gradient(90deg,transparent,rgba(91,157,255,.55),transparent);}
-.runner-character{position:absolute;left:2px;bottom:7px;width:24px;height:20px;animation:runnerTravel var(--runner-speed,1100ms) linear infinite;}
-.runner-character span{position:absolute;display:block;background:var(--accent);}
-.runner-head{width:6px;height:6px;border-radius:50%;left:10px;top:0;}
-.runner-torso{width:3px;height:10px;left:11px;top:6px;border-radius:99px;transform:rotate(10deg);transform-origin:top center;}
-.runner-arm{width:3px;height:10px;left:11px;top:7px;border-radius:99px;transform-origin:top center;animation:runnerStride var(--runner-speed,1100ms) ease-in-out infinite;}
-.runner-arm.a{transform:rotate(58deg);}
-.runner-arm.b{transform:rotate(-58deg);animation-delay:calc(var(--runner-speed,1100ms) / -2);}
-.runner-leg{width:3px;height:11px;left:11px;top:14px;border-radius:99px;transform-origin:top center;animation:runnerStride var(--runner-speed,1100ms) ease-in-out infinite reverse;}
-.runner-leg.a{transform:rotate(58deg);}
-.runner-leg.b{transform:rotate(-58deg);animation-delay:calc(var(--runner-speed,1100ms) / -2);}
-@keyframes runnerTravel{0%{transform:translateX(-24px)}100%{transform:translateX(250px)}}
-@keyframes runnerStride{0%,100%{transform:rotate(58deg)}50%{transform:rotate(-58deg)}}
-@media (prefers-reduced-motion: reduce){.runner-character,.runner-arm,.runner-leg{animation:none}.runner-character{transform:translateX(118px)}}
 body.compact .compact-extra{display:none!important;}
 .action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;}
 .rail-btn{height:56px;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;background:var(--chip-bg);border:1px solid var(--panel-border);border-radius:8px;color:var(--text);font:inherit;font-size:9.5px;font-weight:700;cursor:pointer;transition:background .15s,border-color .15s,transform .15s;color-scheme:inherit;}
@@ -2774,17 +2863,6 @@ body.compact .compact-extra{display:none!important;}
 .range-tab:hover{background:var(--chip-hover);}
 .range-tab.active{background:rgba(91,157,255,.22);color:var(--accent);}
 </style></head><body class="compact" data-rail-view="overview"><div class="panel"><div class="dashboard-shell"><main class="main-pane">
-
-<div class="runner-strip" id="runner-strip">
-<div class="runner-meta"><span class="runner-name">Runner</span><span class="runner-load" id="runner-load">CPU —</span></div>
-<div class="runner-track" aria-hidden="true">
-<div class="runner-character" id="runner-character">
-<span class="runner-head"></span><span class="runner-torso"></span>
-<span class="runner-arm a"></span><span class="runner-arm b"></span>
-<span class="runner-leg a"></span><span class="runner-leg b"></span>
-</div>
-</div>
-</div>
 
 <div class="range-tabs" id="range-tabs">
 <button class="range-tab active" data-range="2m" onclick="setChartRange('2m')">2m</button>
@@ -3042,13 +3120,6 @@ function setPanelPill(id,text,tone){
   el.textContent=text;
   el.className='panel-pill '+(tone||'');
 }
-function updateRunner(cpuPct){
-  var pct=Math.max(0,Math.min(100,Number(cpuPct)||0));
-  var speed=Math.round(1400-(pct*9));
-  document.documentElement.style.setProperty('--runner-speed',Math.max(420,speed)+'ms');
-  var load=document.getElementById('runner-load');
-  if(load)load.textContent='CPU '+pct.toFixed(0)+'%';
-}
 function runRailAction(action,btn){
   flashRailButton(btn);
   switch(action){
@@ -3068,7 +3139,6 @@ window.__pf={
  function show(id,on){var e=document.getElementById(id);if(e)e.style.display=on?'':'none';}
  updateSetup(d);
  updateRail(d);
- updateRunner(d.cpu_pct);
  set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
  var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span');s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title='Core '+(i+1)+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
  set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
@@ -3878,24 +3948,37 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_has_cpu_driven_runner_character() {
+    fn dashboard_keeps_runner_character_out_of_popover() {
         let en = dashboard_html(ResolvedLanguage::En, false);
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
 
-        assert!(en.contains(r#"id="runner-strip""#));
-        assert!(en.contains(r#"id="runner-load""#));
-        assert!(en.contains(r#"class="runner-character""#));
-        assert!(en.contains("runner-head"));
-        assert!(en.contains("runner-torso"));
-        assert!(en.contains("runner-arm a"));
-        assert!(en.contains("runner-leg b"));
-        assert!(en.contains("@keyframes runnerTravel"));
-        assert!(en.contains("@keyframes runnerStride"));
-        assert!(en.contains("@media (prefers-reduced-motion: reduce)"));
-        assert!(en.contains("function updateRunner(cpuPct)"));
-        assert!(en.contains("--runner-speed"));
-        assert!(en.contains("updateRunner(d.cpu_pct);"));
-        assert!(ko.contains(">러너<"));
+        for html in [&en, &ko] {
+            assert!(!html.contains(r#"id="runner-strip""#));
+            assert!(!html.contains(r#"id="runner-load""#));
+            assert!(!html.contains(r#"class="runner-character""#));
+            assert!(!html.contains("runner-head"));
+            assert!(!html.contains("runner-torso"));
+            assert!(!html.contains("runner-arm a"));
+            assert!(!html.contains("runner-leg b"));
+            assert!(!html.contains("@keyframes runnerTravel"));
+            assert!(!html.contains("@keyframes runnerStride"));
+            assert!(!html.contains("function updateRunner(cpuPct)"));
+            assert!(!html.contains("--runner-speed"));
+            assert!(!html.contains("updateRunner(d.cpu_pct);"));
+            assert!(!html.contains(">Runner<"));
+            assert!(!html.contains(">러너<"));
+        }
+    }
+
+    #[test]
+    fn menu_bar_uses_cpu_driven_runner_icon() {
+        assert_eq!(runner_frame_step(0.0), 1);
+        assert_eq!(runner_frame_step(35.0), 2);
+        assert_eq!(runner_frame_step(70.0), 3);
+        assert_eq!(runner_frame_step(95.0), 4);
+
+        let _idle = menubar_runner_icon(8.0, 0);
+        let _busy = make_runner_icon(92.0, 3);
     }
 
     #[test]
