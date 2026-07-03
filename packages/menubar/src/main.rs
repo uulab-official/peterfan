@@ -2683,6 +2683,7 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 .setup-menu.show{display:block;}
 .setup-actions .setup-menu-item{display:block;width:100%;padding:6px 8px;border-radius:6px;text-align:left;color:var(--text);font-size:10.5px;font-weight:600;background:transparent;}
 .setup-actions .setup-menu-item:hover{background:var(--track-hover);}
+.setup-actions .setup-menu-item:focus-visible,.setup-actions .setup-more:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
 .setup-actions .setup-menu-item.active{color:var(--g);border-color:transparent;}
 .row{display:grid;grid-template-columns:24px 1fr;gap:12px;padding:8px 15px;align-items:center;}
 .row + .row{border-top:1px solid var(--line);}
@@ -2785,10 +2786,10 @@ html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;
 <div class="setup-actions">
 <button id="setup-fan" class="primary" onclick="startFanControlSetup(this)">Set Up</button>
 <div class="setup-menu-wrap">
-<button id="setup-more" class="setup-more" onclick="toggleSetupMenu(event)" aria-label="Setup actions" title="Setup actions">…</button>
-<div class="setup-menu" id="setup-menu">
-<button class="setup-menu-item" id="setup-login" onclick="closeSetupMenu();window.ipc.postMessage('togglelogin')">Login</button>
-<button class="setup-menu-item" id="setup-update" onclick="closeSetupMenu();checkAppUpdates(this)">Update</button>
+<button id="setup-more" class="setup-more" onclick="toggleSetupMenu(event)" onkeydown="handleSetupMoreKey(event)" aria-label="Setup actions" aria-haspopup="menu" aria-expanded="false" title="Setup actions">…</button>
+<div class="setup-menu" id="setup-menu" role="menu" onkeydown="handleSetupMenuKey(event)">
+<button class="setup-menu-item" role="menuitem" id="setup-login" onclick="closeSetupMenu();window.ipc.postMessage('togglelogin')">Login</button>
+<button class="setup-menu-item" role="menuitem" id="setup-update" onclick="closeSetupMenu();checkAppUpdates(this)">Update</button>
 </div>
 </div>
 </div>
@@ -3153,14 +3154,60 @@ function checkAppUpdates(btn){
   window.ipc.postMessage('checkupdates');
   setTimeout(function(){APP_UPDATE_CHECK_PENDING=false;},12000);
 }
-function closeSetupMenu(){
+function setSetupMenuOpen(open){
   var menu=document.getElementById('setup-menu');
-  if(menu)menu.classList.remove('show');
+  var more=document.getElementById('setup-more');
+  if(menu)menu.classList.toggle('show',!!open);
+  if(more)more.setAttribute('aria-expanded',open?'true':'false');
+}
+function closeSetupMenu(returnFocus){
+  setSetupMenuOpen(false);
+  if(returnFocus){
+    var more=document.getElementById('setup-more');
+    if(more)more.focus();
+  }
 }
 function toggleSetupMenu(ev){
   if(ev&&ev.stopPropagation)ev.stopPropagation();
   var menu=document.getElementById('setup-menu');
-  if(menu)menu.classList.toggle('show');
+  if(menu)setSetupMenuOpen(!menu.classList.contains('show'));
+}
+function setupMenuItems(){
+  return Array.prototype.slice.call(document.querySelectorAll('.setup-menu-item')).filter(function(item){return !item.disabled;});
+}
+function focusSetupMenuItem(index){
+  var items=setupMenuItems();
+  if(!items.length)return;
+  items[(index+items.length)%items.length].focus();
+}
+function handleSetupMoreKey(ev){
+  if(ev.key==='ArrowDown'||ev.key==='Enter'||ev.key===' '){
+    ev.preventDefault();
+    setSetupMenuOpen(true);
+    focusSetupMenuItem(0);
+  } else if(ev.key==='Escape'){
+    closeSetupMenu();
+  }
+}
+function handleSetupMenuKey(ev){
+  var items=setupMenuItems();
+  var idx=items.indexOf(document.activeElement);
+  if(ev.key==='Escape'){
+    ev.preventDefault();
+    closeSetupMenu(true);
+  } else if(ev.key==='ArrowDown'){
+    ev.preventDefault();
+    focusSetupMenuItem(idx+1);
+  } else if(ev.key==='ArrowUp'){
+    ev.preventDefault();
+    focusSetupMenuItem(idx-1);
+  } else if(ev.key==='Home'){
+    ev.preventDefault();
+    focusSetupMenuItem(0);
+  } else if(ev.key==='End'){
+    ev.preventDefault();
+    focusSetupMenuItem(items.length-1);
+  }
 }
 document.addEventListener('click',function(ev){
   var wrap=document.querySelector('.setup-menu-wrap');
@@ -3530,9 +3577,15 @@ mod tests {
             assert!(html.contains("cmd:profile:"));
             assert!(html.contains(r#"id="setup-row""#));
             assert!(html.contains(r#"id="setup-more""#));
+            assert!(html.contains(r#"aria-haspopup="menu""#));
+            assert!(html.contains(r#"aria-expanded="false""#));
             assert!(html.contains(r#"id="setup-menu""#));
+            assert!(html.contains(r#"role="menu""#));
             assert!(html.contains("toggleSetupMenu"));
+            assert!(html.contains("handleSetupMenuKey"));
+            assert!(html.contains("focusSetupMenuItem"));
             assert!(html.contains("setup-menu-item"));
+            assert!(html.contains(r#"role="menuitem""#));
             assert!(html.contains(r#"id="setup-login""#));
             assert!(html.contains("togglelogin"));
             assert!(html.contains("checkupdates"));

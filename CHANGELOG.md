@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.33] — Setup 메뉴 접근성 보강
+
+### Changed
+- **상단 `…` 보조 메뉴 완성도 개선** — 첫 화면 버튼 수는 그대로 유지하면서
+  `aria-expanded`, 메뉴 역할, 키보드 포커스, Escape/화살표 이동을 추가해
+  자동 실행/업데이트 확인 메뉴를 더 예측 가능하게 만듦.
+
 ## [1.26.32] — 상단 Setup 메뉴 정리
 
 ### Changed
