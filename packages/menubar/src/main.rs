@@ -345,10 +345,19 @@ fn hottest_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
     })
 }
 
+#[cfg(test)]
 fn display_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
     temps
         .iter()
         .find(|t| t.id == "cpu.die")
+        .or_else(|| hottest_temperature(temps))
+}
+
+fn primary_menu_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
+    temps
+        .iter()
+        .find(|t| t.id == "cpu.die")
+        .or_else(|| temps.iter().find(|t| t.id == "cpu.die.hot"))
         .or_else(|| hottest_temperature(temps))
 }
 
@@ -500,6 +509,10 @@ fn clear_daemon_version_cache() {
         .expect("daemon version cache poisoned") = None;
 }
 
+fn daemon_control_usable(daemon_version: Option<&str>) -> bool {
+    daemon_version.is_some_and(|version| !peterfan_platform::daemon_update_required(version))
+}
+
 fn clear_daemon_update_prompt_state(cfg: &mut peterfan_core::config::Config) {
     cfg.menubar.daemon_update_prompt_dismissed_for = None;
     cfg.menubar.daemon_update_prompt_snoozed_until_unix = None;
@@ -573,7 +586,9 @@ fn save_custom_curve(provider: &dyn HardwareProvider, points_json: &str) -> Stri
     // without a daemon, same "best effort, no persistent loop" contract as
     // every other local-fallback path in this file.
     #[cfg(unix)]
-    if peterfan_platform::ipc::send_command("reload").is_some() {
+    if daemon_control_usable(cached_installed_daemon_version().as_deref())
+        && peterfan_platform::ipc::send_command("reload").is_some()
+    {
         let _ = peterfan_platform::ipc::send_command("profile custom");
         return "custom curve saved".into();
     }
@@ -1547,7 +1562,7 @@ fn update(app: &mut App) {
     let nets = app.monitor.networks();
     let temps = app.provider.temperatures().unwrap_or_default();
     let fans = app.provider.fans().unwrap_or_default();
-    let display_temp = representative_temperature_c(&temps);
+    let display_temp = primary_menu_temperature(&temps).map(|t| t.value.0);
     let hottest = hottest_temperature_c(&temps);
     let fastest_rpm = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
     let fastest_pct = fans
@@ -1713,8 +1728,8 @@ fn update(app: &mut App) {
 
     // Temperatures: CPU average is the headline users compare with iStat/Stats;
     // the hottest sensor is still listed below and remains the fan-control input.
-    let display_temp = display_temperature(&temps);
-    let display_temp_value = representative_temperature_c(&temps);
+    let display_temp = primary_menu_temperature(&temps);
+    let display_temp_value = display_temp.map(|t| t.value.0);
     let temp_rows: Vec<_> = temps
         .iter()
         .map(|t| {
@@ -1743,19 +1758,28 @@ fn update(app: &mut App) {
         && daemon_version
             .as_deref()
             .is_some_and(peterfan_platform::daemon_update_required);
-    let active_profile = daemon_json
-        .as_ref()
-        .and_then(|v| v.get("mode").and_then(|m| m.as_str()))
-        .and_then(active_profile_from_mode)
-        .unwrap_or_default();
-    let active_control_mode = daemon_json
-        .as_ref()
-        .and_then(|v| v.get("mode").and_then(|m| m.as_str()))
-        .map(active_control_mode_from_mode)
-        .unwrap_or_default();
+    let daemon_usable = daemon_running && daemon_control_usable(daemon_version.as_deref());
+    let active_profile = if daemon_usable {
+        daemon_json
+            .as_ref()
+            .and_then(|v| v.get("mode").and_then(|m| m.as_str()))
+            .and_then(active_profile_from_mode)
+            .unwrap_or_default()
+    } else {
+        ""
+    };
+    let active_control_mode = if daemon_usable {
+        daemon_json
+            .as_ref()
+            .and_then(|v| v.get("mode").and_then(|m| m.as_str()))
+            .map(active_control_mode_from_mode)
+            .unwrap_or_default()
+    } else {
+        ""
+    };
     // Without a daemon to ask, fall back to the local shadow state that
     // `apply_local` maintains for its one-shot direct writes.
-    let fan_overrides = if daemon_running {
+    let fan_overrides = if daemon_usable {
         daemon_json
             .as_ref()
             .and_then(|v| v.get("fan_overrides").cloned())
@@ -1786,8 +1810,13 @@ fn update(app: &mut App) {
         })
         .collect();
 
-    let can_control = app.provider.capabilities().control_fans || !daemon_st.is_empty();
-    let ctl_status = if !daemon_st.is_empty() {
+    let can_control = app.provider.capabilities().control_fans || daemon_usable;
+    let ctl_status = if daemon_update_needed {
+        match app.language.resolve() {
+            ResolvedLanguage::Ko => "팬 제어 재설치 필요".to_string(),
+            ResolvedLanguage::En => "reinstall fan control".to_string(),
+        }
+    } else if daemon_usable {
         daemon_st.clone()
     } else {
         STATUS.lock().expect("status poisoned").clone()
@@ -1940,14 +1969,16 @@ fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
     };
 
     #[cfg(unix)]
-    if let Some(mut stream) = peterfan_platform::ipc::connect() {
-        use std::io::{Read, Write};
-        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-        if stream.write_all(line.as_bytes()).is_ok() {
-            let mut buf = [0u8; 96];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            let reply = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-            return format!("daemon: {}", if reply.is_empty() { "ok" } else { &reply });
+    if daemon_control_usable(cached_installed_daemon_version().as_deref()) {
+        if let Some(mut stream) = peterfan_platform::ipc::connect() {
+            use std::io::{Read, Write};
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+            if stream.write_all(line.as_bytes()).is_ok() {
+                let mut buf = [0u8; 96];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let reply = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+                return format!("daemon: {}", if reply.is_empty() { "ok" } else { &reply });
+            }
         }
     }
 
@@ -4909,6 +4940,20 @@ mod tests {
     }
 
     #[test]
+    fn primary_menu_temperature_prefers_calibrated_cpu_headline_over_raw_hottest() {
+        let temps = vec![
+            temp("cpu.die", SensorKind::Cpu, 87.0),
+            temp("cpu.die.hot", SensorKind::Cpu, 97.0),
+            temp("ssd", SensorKind::Storage, 41.0),
+        ];
+
+        assert_eq!(
+            primary_menu_temperature(&temps).map(|t| (t.id.as_str(), t.value.0)),
+            Some(("cpu.die", 87.0))
+        );
+    }
+
+    #[test]
     fn display_temperature_source_labels_cpu_average() {
         let cpu = temp("cpu.die", SensorKind::Cpu, 52.0);
         let hot = temp("cpu.die.hot", SensorKind::Cpu, 67.0);
@@ -5039,6 +5084,15 @@ mod tests {
             daemon_reinstall_hint(ResolvedLanguage::En, Some("1.26.37")),
             "no prompt"
         );
+    }
+
+    #[test]
+    fn stale_daemon_is_not_usable_for_control_or_cached_state() {
+        assert!(!daemon_control_usable(Some("1.26.24")));
+        assert!(daemon_control_usable(Some(
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
+        )));
+        assert!(!daemon_control_usable(None));
     }
 
     #[test]

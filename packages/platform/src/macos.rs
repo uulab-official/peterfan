@@ -152,7 +152,9 @@ const M3_CPU_CORE_AVERAGE_TEMP_KEYS: &[&str] = &["TV0s", "TV1s", "TVsa", "TVss"]
 
 // CPU die/hotspot keys observed on the local Mac15,10 M3 Max. These track
 // sustained load into the 80s while aggregate average keys can stay near 75°C.
-const M3_CPU_HOTSPOT_TEMP_KEYS: &[&str] = &["TVD0", "TCMb"];
+// The `Tf1*/Tf2*/Tf3*` keys move like CPU performance/cluster hotspots; the
+// higher `Tf06`/`Tf46` outliers are intentionally excluded until identified.
+const M3_CPU_HOTSPOT_TEMP_KEYS: &[&str] = &["TVD0", "TCMb", "Tf16", "Tf26", "Tf36"];
 
 fn deduped_name_average_max<'a, I>(temps: I) -> Option<f32>
 where
@@ -970,7 +972,10 @@ mod tests {
 
     #[test]
     fn m3_cpu_hotspot_key_map_includes_cpu_die_keys() {
-        assert_eq!(super::M3_CPU_HOTSPOT_TEMP_KEYS, &["TVD0", "TCMb"]);
+        assert_eq!(
+            super::M3_CPU_HOTSPOT_TEMP_KEYS,
+            &["TVD0", "TCMb", "Tf16", "Tf26", "Tf36"]
+        );
     }
 
     #[test]

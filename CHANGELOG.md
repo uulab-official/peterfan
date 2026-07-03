@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.73] — CPU hotspot 후보와 stale 데몬 보정
+
+### Fixed
+- **CPU 대표 온도를 외부 앱의 CPU hotspot 기준에 더 가깝게 보정** —
+  로컬 SMC 샘플에서 `TVD0`/`TCMb`만으로는 76~79°C에 머물 때
+  `Tf16`/`Tf26`/`Tf36` CPU performance/cluster hotspot 후보가 82~87°C까지
+  올라가는 것을 확인하고 대표 `CPU Temperature` 계산에 포함함. 상단 메뉴바는
+  순간 outlier가 섞일 수 있는 raw hottest가 아니라 보정된 `CPU Temperature`를
+  표시하고, 상세 목록에는 `CPU Hottest`를 별도로 유지함.
+- **구버전 데몬 캐시/제어 경로 차단** — 앱이 최신이어도 `/usr/local/bin/peterfand`
+  같은 오래된 데몬(예: v1.26.24)이 떠 있으면 팬 제어와 fan override 상태를
+  신뢰하지 않고 `팬 제어 재설치 필요`로 표시함. 낡은 데몬의 예전 온도 계산이
+  최신 앱 UI/제어 상태를 오염시키지 않도록 함.
+
 ## [1.26.72] — CPU hotspot 대표 온도 보정
 
 ### Fixed
