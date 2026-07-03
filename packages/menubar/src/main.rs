@@ -2814,6 +2814,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Update<", ">업데이트<")
             .replace(">Current<", ">현재<")
             .replace(">Latest<", ">최신<")
+            .replace(">Release Notes<", ">릴리즈 노트<")
             .replace(">Auto<", ">자동<")
             .replace(">Silent<", ">저소음<")
             .replace(">Balanced<", ">균형<")
@@ -2992,6 +2993,9 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .rail-panel .panel-action.secondary{background:var(--chip-bg);border-color:transparent;color:var(--text);}
 .rail-panel .panel-action.danger{background:rgba(255,69,58,.16);border-color:rgba(255,69,58,.36);color:var(--r);}
 .rail-panel .panel-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.release-notes-card{margin-top:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
+.release-notes-title{font-size:10px;font-weight:800;color:var(--text);margin-bottom:5px;}
+.release-notes-body{font-size:9.5px;line-height:1.45;color:var(--dim);white-space:pre-wrap;max-height:118px;overflow:hidden;}
 .settings-list{display:flex;flex-direction:column;gap:8px;}
 .settings-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
 .settings-item-title{font-size:11px;font-weight:700;color:var(--text);}
@@ -3042,6 +3046,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="health-row"><span class="health-label">Latest</span><span class="health-value" id="update-latest-version">—</span></div>
 <div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result">—</span></div>
 </div>
+<div class="release-notes-card" id="update-release-notes-card" style="display:none"><div class="release-notes-title">Release Notes</div><div class="release-notes-body" id="update-release-notes">—</div></div>
 <div class="panel-actions" style="margin-top:10px"><button class="panel-action" id="rail-update-check" onclick="checkAppUpdates(this)">Check Updates</button><button class="panel-action secondary" id="update-release-link" onclick="openLatestRelease()" style="display:none">View Release</button></div>
 </div>
 
@@ -3292,6 +3297,27 @@ function compareVersions(a,b){
   }
   return 0;
 }
+function formatReleaseNotes(body){
+  var raw=String(body||'').replace(/\r/g,'');
+  var lines=raw.split('\n');
+  var out=[];
+  for(var i=0;i<lines.length;i++){
+    var line=lines[i]
+      .replace(/^#{1,6}\s*/,'')
+      .replace(/\*\*/g,'')
+      .replace(/`/g,'')
+      .trim();
+    if(!line){
+      if(out.length&&out[out.length-1]!=='')out.push('');
+      continue;
+    }
+    out.push(line);
+    if(out.join('\n').length>700)break;
+  }
+  var text=out.join('\n').trim();
+  if(text.length>700)text=text.slice(0,697)+'...';
+  return text;
+}
 function renderUpdateStatus(status){
   if(status)APP_UPDATE_STATUS=status;
   var s=APP_UPDATE_STATUS||{};
@@ -3300,10 +3326,16 @@ function renderUpdateStatus(status){
   setText('update-latest-version',s.latest?('v'+String(s.latest).replace(/^v/,'')):'—');
   var result=document.getElementById('update-check-result');
   var link=document.getElementById('update-release-link');
+  var notesCard=document.getElementById('update-release-notes-card');
+  var notesBody=document.getElementById('update-release-notes');
   var copy=document.getElementById('rail-update-copy');
   var pillText=LANG==='ko'?'준비':'Ready';
   var pillTone='info';
   var msg=LANG==='ko'?'업데이트 확인을 실행할 수 있습니다.':'PeterFan is ready to check for updates.';
+  if(notesCard){
+    notesCard.style.display=s.notes?'':'none';
+    if(notesBody)notesBody.textContent=s.notes||'';
+  }
   if(s.checking){
     msg=LANG==='ko'?'GitHub 최신 릴리즈를 확인 중입니다.':'Checking the latest GitHub release.';
     pillText=LANG==='ko'?'확인 중':'Checking';
@@ -3342,7 +3374,7 @@ function fetchLatestReleaseStatus(){
       return r.json();
     })
     .then(function(j){
-      renderUpdateStatus({current:current,latest:String(j.tag_name||'').replace(/^v/,''),tag:j.tag_name||'',url:j.html_url||''});
+      renderUpdateStatus({current:current,latest:String(j.tag_name||'').replace(/^v/,''),tag:j.tag_name||'',url:j.html_url||'',notes:formatReleaseNotes(j.body||'')});
     })
     .catch(function(e){
       renderUpdateStatus({current:current,error:e&&e.message?e.message:String(e)});
@@ -4522,10 +4554,14 @@ mod tests {
         assert!(en.contains(r#"id="update-latest-version""#));
         assert!(en.contains(r#"id="update-check-result""#));
         assert!(en.contains(r#"id="update-release-link""#));
+        assert!(en.contains(r#"id="update-release-notes-card""#));
+        assert!(en.contains(r#"id="update-release-notes""#));
         assert!(en.contains("function compareVersions(a,b)"));
+        assert!(en.contains("function formatReleaseNotes(body)"));
         assert!(en.contains("function fetchLatestReleaseStatus()"));
         assert!(en.contains("function renderUpdateStatus(status)"));
         assert!(en.contains("https://api.github.com/repos/uulab-official/peterfan/releases/latest"));
+        assert!(en.contains("notes:formatReleaseNotes(j.body||'')"));
         assert!(en.contains("fetchLatestReleaseStatus();"));
         assert!(en.contains("APP_UPDATE_STATUS.current=d.app_version||APP_UPDATE_STATUS.current;"));
         assert!(en.contains("d.app_version"));

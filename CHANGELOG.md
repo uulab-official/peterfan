@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.59] — 업데이트 화면에 릴리즈 노트 미리보기
+
+### Added
+- **Update 화면 릴리즈 노트 미리보기 추가** — GitHub latest 릴리즈를 확인하면
+  앱 안에서 최신 버전의 변경 요약을 바로 볼 수 있게 함.
+
+### Changed
+- **업데이트 UX 보강** — 사용자가 릴리즈 페이지로 이동하기 전에도 현재/최신/상태와
+  변경 요약을 함께 확인할 수 있도록 Update 패널을 정리함.
+- **로드맵 갱신** — in-app release notes preview 항목을 완료 상태로 반영함.
+
 ## [1.26.58] — 업데이트 패널 버전 상태 표시
 
 ### Added

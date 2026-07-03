@@ -75,8 +75,8 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] Local signed/notarized release workflow
 - [x] DMG install smoke test against `/Applications/PeterFan.app`
 - [x] In-app update panel shows current/latest version and check result
+- [x] In-app release notes preview before install
 - [ ] Homebrew cask
-- [ ] In-app release notes preview before install
 - [ ] Update channel preference: stable / pre-release
 - [ ] Rollback path when an update fails after download
 - [ ] Clearer docs for moving signing material to another Mac
