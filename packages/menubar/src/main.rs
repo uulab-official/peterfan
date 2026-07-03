@@ -3000,7 +3000,9 @@ function setRailView(view){
 }
 function setVisible(id,on){
   var el=document.getElementById(id);
-  if(el)el.style.display=on?'':'none';
+  if(!el)return;
+  if(on&&el.classList.contains('rail-panel'))el.style.display='block';
+  else el.style.display=on?'':'none';
 }
 function setRailButtonActive(id,on){
   var el=document.getElementById(id);
@@ -3995,6 +3997,15 @@ mod tests {
         assert!(en.contains("case 'license':setRailView('license');break;"));
         assert!(en.contains("case 'more':setRailView('more');break;"));
         assert!(!en.contains("case 'license':toggleLicForm();break;"));
+    }
+
+    #[test]
+    fn rail_view_panels_override_default_hidden_css() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains(".rail-panel{display:none"));
+        assert!(en.contains("if(on&&el.classList.contains('rail-panel'))el.style.display='block';"));
+        assert!(!en.contains("if(el)el.style.display=on?'':'none';"));
     }
 
     #[test]
