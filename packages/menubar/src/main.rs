@@ -44,6 +44,8 @@ use peterfan_core::types::{Celsius, SensorKind, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
+const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(70);
+const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(340);
 /// Samples kept for the menu-bar graph icon (always shows the short-term
 /// trend, independent of the popover's chart range selector) — 120 samples
 /// at a 1s tick is a 2-minute rolling window.
@@ -315,6 +317,7 @@ struct App {
     /// Small animation frame for the RunCat-style menu-bar character. It
     /// advances on each refresh, with bigger CPU load taking larger strides.
     runner_frame: u8,
+    runner_cpu_pct: f32,
 }
 
 /// Persist the menu-bar's metric + display choice so it survives a relaunch.
@@ -694,11 +697,12 @@ fn main() {
         net_h: RangedHistory::new(),
         disk_io_h: RangedHistory::new(),
         runner_frame: 0,
+        runner_cpu_pct: 0.0,
     };
 
+    let mut next_metric_at = Instant::now();
+    let mut next_runner_at = Instant::now();
     event_loop.run(move |event, target, control_flow| {
-        *control_flow = ControlFlow::WaitUntil(Instant::now() + REFRESH);
-
         if QUIT.load(Ordering::Relaxed) {
             *control_flow = ControlFlow::Exit;
             return;
@@ -713,7 +717,6 @@ fn main() {
             Event::NewEvents(StartCause::Init) => {
                 build_tray(&mut app);
                 build_popover(&mut app, target);
-                update(&mut app);
                 // Offer one-time setup right away instead of leaving it
                 // buried in the right-click menu — other fan-control apps
                 // ask for this during their installer; we don't have one,
@@ -731,9 +734,7 @@ fn main() {
                     std::thread::spawn(check_for_updates_on_launch);
                 }
             }
-            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
-                update(&mut app);
-            }
+            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {}
             Event::WindowEvent {
                 event: WindowEvent::Focused(false),
                 ..
@@ -756,6 +757,18 @@ fn main() {
             }
             _ => {}
         }
+
+        let now = Instant::now();
+        if now >= next_metric_at {
+            update(&mut app);
+            next_metric_at = now + REFRESH;
+        }
+        if now >= next_runner_at {
+            animate_runner(&mut app);
+            next_runner_at = now + runner_frame_interval(app.runner_cpu_pct);
+        }
+        let next_tick = next_metric_at.min(next_runner_at);
+        *control_flow = ControlFlow::WaitUntil(next_tick);
 
         // Run any control commands (or a license key) queued by the popover.
         let cmds: Vec<String> = std::mem::take(&mut *PENDING.lock().expect("pending poisoned"));
@@ -1426,9 +1439,7 @@ fn update(app: &mut App) {
     app.mem_h.push(mem.used_percent);
     app.temp_h.push(display_temp.unwrap_or(0.0));
     app.net_h.push((rx + tx) as f32);
-    app.runner_frame = app
-        .runner_frame
-        .wrapping_add(runner_frame_step(cpu.usage_percent));
+    app.runner_cpu_pct = cpu.usage_percent;
 
     // Menu-bar item: number, graph, or both, tracking whichever metric the
     // user picked from the right-click menu (persisted across relaunches).
@@ -1729,6 +1740,20 @@ fn update(app: &mut App) {
     if detail_visible {
         if let Some(wv) = &app.detail_webview {
             let _ = wv.evaluate_script(&script);
+        }
+    }
+}
+
+fn animate_runner(app: &mut App) {
+    app.runner_frame = app
+        .runner_frame
+        .wrapping_add(runner_frame_step(app.runner_cpu_pct));
+    if let Some(tray) = &app.tray {
+        let icon = menubar_runner_icon(app.runner_cpu_pct, app.runner_frame);
+        match app.display {
+            MenubarDisplay::Number | MenubarDisplay::Graph | MenubarDisplay::Both => {
+                let _ = tray.set_icon_with_as_template(Some(icon), false);
+            }
         }
     }
 }
@@ -2343,6 +2368,14 @@ fn runner_frame_step(cpu_pct: f32) -> u8 {
         x if x < 80.0 => 3,
         _ => 4,
     }
+}
+
+fn runner_frame_interval(cpu_pct: f32) -> Duration {
+    let pct = cpu_pct.clamp(0.0, 100.0);
+    let min_ms = RUNNER_MIN_INTERVAL.as_millis() as f32;
+    let max_ms = RUNNER_MAX_INTERVAL.as_millis() as f32;
+    let ms = max_ms - (max_ms - min_ms) * (pct / 100.0);
+    Duration::from_millis(ms.round() as u64)
 }
 
 fn menubar_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
@@ -3924,6 +3957,23 @@ mod tests {
         assert!(idle.chunks_exact(4).any(|px| px[3] > 0));
         assert!(active.chunks_exact(4).any(|px| px[3] > 0));
         assert_ne!(idle, active);
+    }
+
+    #[test]
+    fn runner_animation_speed_tracks_cpu_load() {
+        let idle = runner_frame_interval(5.0);
+        let normal = runner_frame_interval(45.0);
+        let busy = runner_frame_interval(95.0);
+
+        assert!(idle > normal);
+        assert!(normal > busy);
+        assert!(idle <= RUNNER_MAX_INTERVAL);
+        assert!(busy >= RUNNER_MIN_INTERVAL);
+
+        let source = include_str!("main.rs");
+        assert!(source.contains("next_runner_at"));
+        assert!(source.contains("animate_runner(&mut app);"));
+        assert!(source.contains("next_tick = next_metric_at.min(next_runner_at);"));
     }
 
     #[test]
