@@ -24,8 +24,8 @@ working product map we use to decide what to polish next.
 
 - [x] Universal notarized macOS DMG with `PeterFan.app`
 - [x] CLI, TUI, menu-bar app, and privileged `peterfand`
-- [x] Apple Silicon CPU average/hottest temperature via SMC core keys, with
-      IOHID die readings as fallback
+- [x] Apple Silicon CPU average/hottest temperature via SMC aggregate/core keys,
+      with IOHID die readings as fallback
 - [x] SMC fan RPM, fan control, per-fan manual pins, and auto restore
 - [x] RunCat-style compact popover with a right-side action rail
 - [x] Menu-bar metric selection, graph/number/both styles, and hover tooltip
@@ -67,7 +67,7 @@ These are the highest-leverage improvements before adding large new surfaces.
       into named groups
 - [ ] Distinguish Apple Silicon GPU die sensors from CPU die sensors
 - [ ] Add sensor-source metadata to JSON output (`iohid`, `smc`, `battery`)
-- [ ] Add "sensor debugger" output for comparing PeterFan with iStat/Stats
+- [x] Add "sensor debugger" output for comparing PeterFan with iStat/Stats
 - [ ] Make benchmark/log commands record both average and hottest temperature
 - [ ] Add tests for representative temperature selection across mixed sensors
 

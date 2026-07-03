@@ -274,7 +274,10 @@ peterfan login-item remove
 
 Diagnoses the active backend, sensor capabilities, fan-control readiness, app
 version, installed root-daemon version, and whether the daemon is compatible
-with the current app. Start here when something looks off.
+with the current app. On macOS it also prints CPU temperature calibration
+candidates: selected average/hottest, SMC aggregate average, P-core average,
+all-core average, and the underlying `TV*`/`Te*`/`Tf*` SMC keys. Start here
+when something looks off.
 
 ```bash
 peterfan doctor

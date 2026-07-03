@@ -44,6 +44,31 @@ struct CpuCoreTemp {
     temp: f32,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct CpuTemperatureKeyReading {
+    pub key: String,
+    pub value_c: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CpuTemperatureCoreReading {
+    pub key: String,
+    pub class: &'static str,
+    pub value_c: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CpuTemperatureProbe {
+    pub selected_average_c: Option<f32>,
+    pub selected_hottest_c: Option<f32>,
+    pub aggregate_average_c: Option<f32>,
+    pub performance_core_average_c: Option<f32>,
+    pub all_core_average_c: Option<f32>,
+    pub core_hottest_c: Option<f32>,
+    pub aggregate_keys: Vec<CpuTemperatureKeyReading>,
+    pub core_keys: Vec<CpuTemperatureCoreReading>,
+}
+
 const M3_CPU_CORE_TEMP_KEYS: &[CpuCoreTempKey] = &[
     CpuCoreTempKey {
         key: "Te05",
@@ -180,6 +205,82 @@ fn apple_silicon_cpu_average_temperatures() -> Vec<f32> {
         .into_iter()
         .map(|(_, temp)| temp)
         .collect()
+}
+
+fn cpu_core_class_label(class: CpuCoreClass) -> &'static str {
+    match class {
+        CpuCoreClass::Efficiency => "efficiency",
+        CpuCoreClass::Performance => "performance",
+    }
+}
+
+fn cpu_temperature_probe_from_readings(
+    aggregate_raw: Vec<(String, f32)>,
+    core_raw: Vec<(String, f32)>,
+) -> Option<CpuTemperatureProbe> {
+    let aggregate_values: Vec<f32> = aggregate_raw.iter().map(|(_, temp)| *temp).collect();
+    let aggregate_keys: Vec<_> = aggregate_raw
+        .into_iter()
+        .map(|(key, value_c)| CpuTemperatureKeyReading { key, value_c })
+        .collect();
+
+    let mut cores = Vec::new();
+    let mut core_keys = Vec::new();
+    for (key, value_c) in core_raw {
+        let Some(sensor) = M3_CPU_CORE_TEMP_KEYS.iter().find(|known| known.key == key) else {
+            continue;
+        };
+        cores.push(CpuCoreTemp {
+            class: sensor.class,
+            temp: value_c,
+        });
+        core_keys.push(CpuTemperatureCoreReading {
+            key,
+            class: cpu_core_class_label(sensor.class),
+            value_c,
+        });
+    }
+
+    let (selected_average_c, selected_hottest_c) =
+        match apple_silicon_cpu_average_and_hot_from_values(&cores, &aggregate_values) {
+            Some((avg, hot)) => (Some(avg), Some(hot)),
+            None => (None, None),
+        };
+    let aggregate_average_c = average_and_hot(&aggregate_values).map(|(avg, _)| avg);
+    let all_core_values: Vec<f32> = cores.iter().map(|sensor| sensor.temp).collect();
+    let performance_values: Vec<f32> = cores
+        .iter()
+        .filter(|sensor| sensor.class == CpuCoreClass::Performance)
+        .map(|sensor| sensor.temp)
+        .collect();
+    let performance_core_average_c = average_and_hot(&performance_values).map(|(avg, _)| avg);
+    let all_core_average_c = average_and_hot(&all_core_values).map(|(avg, _)| avg);
+    let core_hottest_c = average_and_hot(&all_core_values).map(|(_, hot)| hot);
+
+    if aggregate_keys.is_empty() && core_keys.is_empty() {
+        return None;
+    }
+
+    Some(CpuTemperatureProbe {
+        selected_average_c,
+        selected_hottest_c,
+        aggregate_average_c,
+        performance_core_average_c,
+        all_core_average_c,
+        core_hottest_c,
+        aggregate_keys,
+        core_keys,
+    })
+}
+
+pub fn cpu_temperature_probe() -> Option<CpuTemperatureProbe> {
+    let aggregate_raw = crate::smc_write::read_temperature_keys(M3_CPU_CORE_AVERAGE_TEMP_KEYS);
+    let core_keys: Vec<&str> = M3_CPU_CORE_TEMP_KEYS
+        .iter()
+        .map(|sensor| sensor.key)
+        .collect();
+    let core_raw = crate::smc_write::read_temperature_keys(&core_keys);
+    cpu_temperature_probe_from_readings(aggregate_raw, core_raw)
 }
 
 fn apple_silicon_cpu_average_and_hot_from_values(
@@ -724,6 +825,40 @@ mod tests {
             super::M3_CPU_CORE_AVERAGE_TEMP_KEYS,
             &["TV0s", "TV1s", "TVsa", "TVss"]
         );
+    }
+
+    #[test]
+    fn cpu_temperature_probe_reports_selection_and_candidates() {
+        let probe = super::cpu_temperature_probe_from_readings(
+            vec![("TV0s".to_string(), 74.0), ("TVss".to_string(), 76.0)],
+            vec![
+                ("Te05".to_string(), 62.0),
+                ("Tf04".to_string(), 64.0),
+                ("Tf09".to_string(), 66.0),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(probe.selected_average_c, Some(75.0));
+        assert_eq!(probe.selected_hottest_c, Some(75.0));
+        assert_eq!(probe.aggregate_average_c, Some(75.0));
+        assert_eq!(probe.performance_core_average_c, Some(65.0));
+        assert_eq!(probe.all_core_average_c, Some(64.0));
+        assert_eq!(probe.core_hottest_c, Some(66.0));
+        assert_eq!(probe.aggregate_keys.len(), 2);
+        assert_eq!(
+            probe
+                .core_keys
+                .iter()
+                .filter(|sensor| sensor.class == "performance")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn cpu_temperature_probe_returns_none_without_readings() {
+        assert!(super::cpu_temperature_probe_from_readings(Vec::new(), Vec::new()).is_none());
     }
 
     #[test]

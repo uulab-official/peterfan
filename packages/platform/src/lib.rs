@@ -58,6 +58,9 @@ pub fn gpu_usage_percent() -> Option<f32> {
 #[cfg(target_os = "macos")]
 pub use smc_write::FanProbe;
 
+#[cfg(target_os = "macos")]
+pub use macos::{CpuTemperatureCoreReading, CpuTemperatureKeyReading, CpuTemperatureProbe};
+
 /// Read-only probe of the SMC fan-control keys, for `peterfan doctor`.
 /// `None` on platforms without this backend.
 #[cfg(target_os = "macos")]
@@ -66,6 +69,15 @@ pub fn fan_control_probe() -> Option<FanProbe> {
 }
 #[cfg(not(target_os = "macos"))]
 pub fn fan_control_probe() -> Option<()> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+pub fn cpu_temperature_probe() -> Option<CpuTemperatureProbe> {
+    macos::cpu_temperature_probe()
+}
+#[cfg(not(target_os = "macos"))]
+pub fn cpu_temperature_probe() -> Option<()> {
     None
 }
 

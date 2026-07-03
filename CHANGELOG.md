@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.66] — CPU 온도 비교 진단 강화
+
+### Added
+- **`peterfan doctor` CPU 온도 calibration 섹션 추가** — 현재 선택된
+  `CPU Core Average`/`CPU Core Hottest`와 SMC aggregate 평균, P-core 평균,
+  all-core 평균, core hottest 후보를 함께 출력해 Macs Fan Control/iStat과
+  비교할 때 어떤 센서 기준을 쓰는지 바로 확인할 수 있게 함.
+- **`peterfan --json doctor` 센서 디버거 필드 추가** — support/release 확인용으로
+  `thermal.cpu_temperature_probe`에 선택 정책, `TV*` aggregate 키 값, `Te*`/`Tf*`
+  core 키 값을 포함함.
+
 ## [1.26.65] — CPU 평균 온도 aggregate 기준 보정
 
 ### Fixed

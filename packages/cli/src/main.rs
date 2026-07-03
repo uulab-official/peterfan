@@ -2591,6 +2591,8 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     let daemon_update_required = installed_daemon_version
         .as_deref()
         .is_some_and(peterfan_platform::daemon_update_required);
+    #[cfg(target_os = "macos")]
+    let cpu_temperature_probe = peterfan_platform::cpu_temperature_probe();
 
     if json {
         let mut fan_control = serde_json::json!({
@@ -2609,6 +2611,13 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             fan_control["ftst_key"] = serde_json::json!(p.ftst);
             fan_control["fs_key"] = serde_json::json!(p.fs);
         }
+        #[cfg(target_os = "macos")]
+        let cpu_temperature = cpu_temperature_probe
+            .as_ref()
+            .map(cpu_temperature_probe_json)
+            .unwrap_or(serde_json::Value::Null);
+        #[cfg(not(target_os = "macos"))]
+        let cpu_temperature = serde_json::Value::Null;
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -2624,6 +2633,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                 "thermal": {
                     "read_temps": caps.read_temps, "read_fans": caps.read_fans,
                     "control_fans": caps.control_fans,
+                    "cpu_temperature_probe": cpu_temperature,
                 },
                 "fan_control": fan_control,
             }))?
@@ -2653,6 +2663,67 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     print_check("read temperatures", caps.read_temps);
     print_check("read fans", caps.read_fans);
     print_check("control fans", caps.control_fans);
+
+    #[cfg(target_os = "macos")]
+    if let Some(probe) = cpu_temperature_probe.as_ref() {
+        println!();
+        println!("{}", render::heading("CPU temperature calibration"));
+        print_kv(
+            "  selected avg",
+            &format_temp_opt(probe.selected_average_c, "—"),
+        );
+        print_kv(
+            "  selected hottest",
+            &format_temp_opt(probe.selected_hottest_c, "—"),
+        );
+        print_kv(
+            "  SMC aggregate",
+            &format_temp_opt(probe.aggregate_average_c, "not found"),
+        );
+        print_kv(
+            "  P-core average",
+            &format_temp_opt(probe.performance_core_average_c, "not found"),
+        );
+        print_kv(
+            "  all-core average",
+            &format_temp_opt(probe.all_core_average_c, "not found"),
+        );
+        print_kv(
+            "  core hottest",
+            &format_temp_opt(probe.core_hottest_c, "not found"),
+        );
+        if !probe.aggregate_keys.is_empty() {
+            print_kv(
+                "  aggregate keys",
+                &probe
+                    .aggregate_keys
+                    .iter()
+                    .map(|r| format!("{}={:.1}°C", r.key, r.value_c))
+                    .collect::<Vec<_>>()
+                    .join("  "),
+            );
+        }
+        if !probe.core_keys.is_empty() {
+            let p_core_count = probe
+                .core_keys
+                .iter()
+                .filter(|r| r.class == "performance")
+                .count();
+            let e_core_count = probe
+                .core_keys
+                .iter()
+                .filter(|r| r.class == "efficiency")
+                .count();
+            print_kv(
+                "  core keys",
+                &format!("{} performance, {} efficiency", p_core_count, e_core_count),
+            );
+        }
+        println!(
+            "    {} selected avg uses SMC aggregate first, then falls back to P-core/all-core",
+            "→".dimmed()
+        );
+    }
 
     if !mock {
         println!();
@@ -3017,6 +3088,31 @@ fn print_fans(fans: &[Fan]) {
 
 fn print_kv(key: &str, value: &str) {
     println!("  {:<16} {}", format!("{key}:").dimmed(), value);
+}
+
+fn format_temp_opt(value: Option<f32>, empty: &str) -> String {
+    value
+        .map(|temp| format!("{temp:.1}°C"))
+        .unwrap_or_else(|| empty.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn cpu_temperature_probe_json(probe: &peterfan_platform::CpuTemperatureProbe) -> serde_json::Value {
+    serde_json::json!({
+        "selected_average_c": probe.selected_average_c,
+        "selected_hottest_c": probe.selected_hottest_c,
+        "aggregate_average_c": probe.aggregate_average_c,
+        "performance_core_average_c": probe.performance_core_average_c,
+        "all_core_average_c": probe.all_core_average_c,
+        "core_hottest_c": probe.core_hottest_c,
+        "aggregate_keys": probe.aggregate_keys.iter().map(|r| {
+            serde_json::json!({ "key": r.key, "value_c": r.value_c })
+        }).collect::<Vec<_>>(),
+        "core_keys": probe.core_keys.iter().map(|r| {
+            serde_json::json!({ "key": r.key, "class": r.class, "value_c": r.value_c })
+        }).collect::<Vec<_>>(),
+        "selection_policy": "smc_aggregate_then_performance_core_then_all_core",
+    })
 }
 
 fn print_check(label: &str, ok: bool) {
@@ -3897,6 +3993,43 @@ mod tests {
         assert_eq!(super::temp_display_label(&cpu), "Average");
         assert_eq!(super::temp_display_label(&hot), "Hottest");
         assert_eq!(super::temp_display_label(&ssd), "SSD");
+    }
+
+    #[test]
+    fn format_temp_opt_prints_one_decimal_or_empty_text() {
+        assert_eq!(super::format_temp_opt(Some(74.04), "—"), "74.0°C");
+        assert_eq!(super::format_temp_opt(None, "not found"), "not found");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cpu_temperature_probe_json_contains_policy_and_key_values() {
+        let probe = peterfan_platform::CpuTemperatureProbe {
+            selected_average_c: Some(75.0),
+            selected_hottest_c: Some(78.0),
+            aggregate_average_c: Some(75.0),
+            performance_core_average_c: Some(65.0),
+            all_core_average_c: Some(64.0),
+            core_hottest_c: Some(78.0),
+            aggregate_keys: vec![peterfan_platform::CpuTemperatureKeyReading {
+                key: "TV0s".to_string(),
+                value_c: 75.0,
+            }],
+            core_keys: vec![peterfan_platform::CpuTemperatureCoreReading {
+                key: "Tf04".to_string(),
+                class: "performance",
+                value_c: 65.0,
+            }],
+        };
+
+        let json = super::cpu_temperature_probe_json(&probe);
+        assert_eq!(json["selected_average_c"], 75.0);
+        assert_eq!(
+            json["selection_policy"],
+            "smc_aggregate_then_performance_core_then_all_core"
+        );
+        assert_eq!(json["aggregate_keys"][0]["key"], "TV0s");
+        assert_eq!(json["core_keys"][0]["class"], "performance");
     }
 
     #[test]
