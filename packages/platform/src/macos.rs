@@ -111,6 +111,11 @@ const M3_CPU_CORE_TEMP_KEYS: &[CpuCoreTempKey] = &[
     },
 ];
 
+// Apple Silicon aggregate CPU average keys observed on M3 Pro/Max. These track
+// Macs Fan Control's "CPU Core Average" much more closely than computing an
+// average from the visible `Te*`/`Tf*` core keys, whose mapping differs by SoC.
+const M3_CPU_CORE_AVERAGE_TEMP_KEYS: &[&str] = &["TV0s", "TV1s", "TVsa", "TVss"];
+
 fn deduped_name_average_max<'a, I>(temps: I) -> Option<f32>
 where
     I: IntoIterator<Item = (&'a str, f32)>,
@@ -170,7 +175,17 @@ fn apple_silicon_cpu_core_temperatures() -> Vec<CpuCoreTemp> {
         .collect()
 }
 
-fn apple_silicon_cpu_average_and_hot(cores: &[CpuCoreTemp]) -> Option<(f32, f32)> {
+fn apple_silicon_cpu_average_temperatures() -> Vec<f32> {
+    crate::smc_write::read_temperature_keys(M3_CPU_CORE_AVERAGE_TEMP_KEYS)
+        .into_iter()
+        .map(|(_, temp)| temp)
+        .collect()
+}
+
+fn apple_silicon_cpu_average_and_hot_from_values(
+    cores: &[CpuCoreTemp],
+    aggregate_values: &[f32],
+) -> Option<(f32, f32)> {
     let all_core_values: Vec<f32> = cores.iter().map(|sensor| sensor.temp).collect();
     let mut average_values: Vec<f32> = cores
         .iter()
@@ -180,9 +195,18 @@ fn apple_silicon_cpu_average_and_hot(cores: &[CpuCoreTemp]) -> Option<(f32, f32)
     if average_values.is_empty() {
         average_values.clone_from(&all_core_values);
     }
-    let avg = average_and_hot(&average_values)?.0;
-    let hot = average_and_hot(&all_core_values)?.1;
+    let computed_avg = average_and_hot(&average_values).map(|(avg, _)| avg);
+    let aggregate_avg = average_and_hot(aggregate_values).map(|(avg, _)| avg);
+    let avg = aggregate_avg.or(computed_avg)?;
+    let hot = average_and_hot(&all_core_values)
+        .map(|(_, hot)| hot.max(avg))
+        .unwrap_or(avg);
     Some((avg, hot))
+}
+
+fn apple_silicon_cpu_average_and_hot(cores: &[CpuCoreTemp]) -> Option<(f32, f32)> {
+    let aggregate_values = apple_silicon_cpu_average_temperatures();
+    apple_silicon_cpu_average_and_hot_from_values(cores, &aggregate_values)
 }
 
 impl HardwareProvider for MacosProvider {
@@ -237,11 +261,10 @@ impl HardwareProvider for MacosProvider {
         }
         let mut temps: Vec<TempSensor> = Vec::new();
 
-        // M3 Pro/Max expose Apple-Silicon CPU core sensors through SMC keys
-        // (`Te*` efficiency cores, `Tf*` performance cores). Macs Fan Control's
-        // "CPU Core Average" tracks the performance-core group much more
-        // closely than an all-E/P-core average, so prefer P-core average for
-        // the user-facing CPU reading and keep hottest across every core.
+        // M3 Pro/Max expose an aggregate CPU average through `TV*` SMC keys.
+        // Prefer that for the user-facing CPU reading because it tracks Macs
+        // Fan Control's "CPU Core Average"; fall back to computed core averages
+        // when those aggregate keys are absent on another Apple Silicon model.
         let smc_cpu_cores = apple_silicon_cpu_core_temperatures();
         if let Some((avg, hot)) = apple_silicon_cpu_average_and_hot(&smc_cpu_cores) {
             temps.push(TempSensor {
@@ -576,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn apple_silicon_cpu_average_prefers_performance_cores() {
+    fn apple_silicon_cpu_average_prefers_aggregate_keys() {
         let cores = vec![
             super::CpuCoreTemp {
                 class: super::CpuCoreClass::Efficiency,
@@ -597,7 +620,53 @@ mod tests {
         ];
 
         assert_eq!(
-            super::apple_silicon_cpu_average_and_hot(&cores),
+            super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[74.0, 76.0]),
+            Some((75.0, 78.0))
+        );
+    }
+
+    #[test]
+    fn apple_silicon_cpu_hottest_never_drops_below_aggregate_average() {
+        let cores = vec![
+            super::CpuCoreTemp {
+                class: super::CpuCoreClass::Performance,
+                temp: 62.0,
+            },
+            super::CpuCoreTemp {
+                class: super::CpuCoreClass::Performance,
+                temp: 64.0,
+            },
+        ];
+
+        assert_eq!(
+            super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[74.0]),
+            Some((74.0, 74.0))
+        );
+    }
+
+    #[test]
+    fn apple_silicon_cpu_average_falls_back_to_performance_cores_without_aggregate_keys() {
+        let cores = vec![
+            super::CpuCoreTemp {
+                class: super::CpuCoreClass::Efficiency,
+                temp: 60.0,
+            },
+            super::CpuCoreTemp {
+                class: super::CpuCoreClass::Efficiency,
+                temp: 62.0,
+            },
+            super::CpuCoreTemp {
+                class: super::CpuCoreClass::Performance,
+                temp: 74.0,
+            },
+            super::CpuCoreTemp {
+                class: super::CpuCoreClass::Performance,
+                temp: 78.0,
+            },
+        ];
+
+        assert_eq!(
+            super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[]),
             Some((76.0, 78.0))
         );
     }
@@ -616,7 +685,7 @@ mod tests {
         ];
 
         assert_eq!(
-            super::apple_silicon_cpu_average_and_hot(&cores),
+            super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[]),
             Some((61.0, 62.0))
         );
     }
@@ -647,6 +716,14 @@ mod tests {
 
         assert_eq!(efficiency, 4);
         assert_eq!(performance, 12);
+    }
+
+    #[test]
+    fn m3_cpu_average_key_map_includes_aggregate_keys() {
+        assert_eq!(
+            super::M3_CPU_CORE_AVERAGE_TEMP_KEYS,
+            &["TV0s", "TV1s", "TVsa", "TVss"]
+        );
     }
 
     #[test]
@@ -688,6 +765,37 @@ mod tests {
             .enumerate()
         {
             println!("{:?} {:02}: {:.2}", sensor.class, idx + 1, sensor.temp);
+        }
+    }
+
+    #[test]
+    #[ignore = "prints PeterFan's Apple Silicon CPU temperature candidates"]
+    fn print_cpu_temperature_candidates() {
+        let aggregate_values = super::apple_silicon_cpu_average_temperatures();
+        let core_values = super::apple_silicon_cpu_core_temperatures();
+        if let Some((avg, hot)) =
+            super::apple_silicon_cpu_average_and_hot_from_values(&core_values, &aggregate_values)
+        {
+            println!("selected avg/hot: {avg:.2} / {hot:.2}");
+        }
+        if let Some((avg, hot)) = super::average_and_hot(&aggregate_values) {
+            println!("aggregate avg/hot: {avg:.2} / {hot:.2}");
+        }
+        let performance: Vec<f32> = core_values
+            .iter()
+            .filter(|sensor| sensor.class == super::CpuCoreClass::Performance)
+            .map(|sensor| sensor.temp)
+            .collect();
+        if let Some((avg, hot)) = super::average_and_hot(&performance) {
+            println!("p-core avg/hot: {avg:.2} / {hot:.2}");
+        }
+        for (idx, temp) in aggregate_values.iter().enumerate() {
+            println!(
+                "aggregate {} {}: {:.2}",
+                super::M3_CPU_CORE_AVERAGE_TEMP_KEYS[idx],
+                idx + 1,
+                temp
+            );
         }
     }
 }

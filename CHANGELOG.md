@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.65] — CPU 평균 온도 aggregate 기준 보정
+
+### Fixed
+- **Macs Fan Control보다 5~10°C 낮게 보이던 CPU 평균 온도 재수정** —
+  M3 Pro/Max에서 `Te*`/`Tf*` 코어 키 계산값보다 Macs Fan Control의
+  `CPU Core Average`와 더 잘 맞는 SMC `TV0s`/`TV1s`/`TVsa`/`TVss`
+  aggregate 키를 대표 CPU 평균으로 우선 사용함.
+- **CPU 최고 온도 표시 일관성 보강** — aggregate 평균이 개별 코어 계산 최고값보다
+  높게 나오는 모델에서도 `CPU Core Hottest`가 평균보다 낮게 표시되지 않도록 보정함.
+- **온도 진단 테스트 추가** — 로컬 SMC에서 aggregate 평균/P-core 평균/선택된 평균을
+  한 번에 출력하는 ignored test를 추가해 다음 센서 보정 때 비교가 쉬워짐.
+
 ## [1.26.64] — Macs Fan Control CPU 평균 기준 재보정
 
 ### Fixed

@@ -52,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.26.64.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.26.65.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -62,7 +62,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 | 코어 모델(타입, 지표, 커브, 프로파일, 트레이트) | ✅ 구현 및 테스트 완료 |
 | Mock 백엔드(완전히 시뮬레이션된 머신 + 지표) | ✅ 구현 완료 |
 | macOS 하드웨어 정보(`sysctl` 기반 CPU/RAM/OS) | ✅ 실측치, 읽기 전용 |
-| **macOS 온도 & 팬 RPM** | ✅ 실측치 — M3 Pro/Max CPU 평균은 SMC Performance Core 키 우선(Macs Fan Control 기준에 맞춤), 최고 온도는 E/P 전체 코어 기준, IOHID `tdie`는 fallback |
+| **macOS 온도 & 팬 RPM** | ✅ 실측치 — M3 Pro/Max CPU 평균은 SMC `TV*` aggregate 키 우선(Macs Fan Control 기준에 맞춤), 없을 때 Performance Core 평균 fallback, 최고 온도는 평균보다 낮아지지 않게 보정, IOHID `tdie`는 fallback |
 | Windows 온도/팬 정보 읽기(EC) | 🚧 계획 중 |
 | GPU 사용률 | 🔬 조사 완료 — IOReport 연동 자체는 동작하지만, 노출되는 residency 값이 Activity Monitor의 GPU % 값과 일치하지 않아 부정확한 값을 내보내느니 보류함 ([`docs/RESEARCH.md`](./docs/RESEARCH.md)) |
 | 팬 **제어** | ⚙️ SMC 쓰기, **root 권한 필요** (`sudo peterfan fan set N` 또는 데몬 사용). `fan set`은 **RPM을 다시 읽어들여 검증**하므로 가짜 "성공" 메시지가 아니라 진짜 ✓/✗를 확인할 수 있습니다. Intel에서는 검증 완료, Apple Silicon에서는 시도 및 검증되지만(일부 모델은 펌웨어가 이를 무시할 수 있음) |
@@ -172,7 +172,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.26.64
+PeterFan v1.26.65
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
@@ -193,7 +193,7 @@ Battery
   214 cycles  ·  41.8 W
 
 Temperatures
-  CPU Core Average   75°C  █████████░░░   (SMC P-core average)
+  CPU Core Average   75°C  █████████░░░   (SMC aggregate average)
   CPU Hottest        79°C  █████████░░░
   SSD SSD            36°C  ████░░░░░░░░
   BATT Battery       31°C  ███░░░░░░░░░
