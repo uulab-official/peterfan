@@ -37,16 +37,11 @@ use peterfan_core::config::{
     CustomCurveConfig, Language, MenubarDisplay, MenubarMetric, ResolvedLanguage,
 };
 use peterfan_core::error::CoreError;
-use peterfan_core::license::{self, Entitlement};
 use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
 use peterfan_core::thermals::{hottest_temperature_c, representative_temperature_c};
 use peterfan_core::types::{Celsius, SensorKind, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
-
-/// Placeholder purchase link — point this at the real store page once one
-/// exists (Gumroad/Paddle/Stripe checkout).
-const BUY_URL: &str = "https://peterfan.dev/buy";
 
 const REFRESH: Duration = Duration::from_secs(1);
 /// Samples kept for the menu-bar graph icon (always shows the short-term
@@ -320,8 +315,6 @@ struct App {
     /// Small animation frame for the RunCat-style menu-bar character. It
     /// advances on each refresh, with bigger CPU load taking larger strides.
     runner_frame: u8,
-    /// Trial/license state, resolved at startup and after `license:<key>` IPC.
-    entitlement: Entitlement,
 }
 
 /// Persist the menu-bar's metric + display choice so it survives a relaunch.
@@ -405,12 +398,8 @@ fn temperature_row_label(lang: ResolvedLanguage, sensor: &TempSensor) -> String 
     }
 }
 
-fn setup_tone(
-    daemon_running: bool,
-    daemon_update_needed: bool,
-    trial_expired: bool,
-) -> &'static str {
-    if trial_expired || daemon_update_needed {
+fn setup_tone(daemon_running: bool, daemon_update_needed: bool) -> &'static str {
+    if daemon_update_needed {
         "warn"
     } else if daemon_running {
         "ok"
@@ -423,17 +412,14 @@ fn setup_title(
     lang: ResolvedLanguage,
     daemon_running: bool,
     daemon_update_needed: bool,
-    trial_expired: bool,
 ) -> &'static str {
-    match (lang, trial_expired, daemon_update_needed, daemon_running) {
-        (ResolvedLanguage::Ko, true, _, _) => "라이선스 필요",
-        (ResolvedLanguage::Ko, false, true, _) => "팬 제어 재설치",
-        (ResolvedLanguage::Ko, false, false, true) => "준비 완료",
-        (ResolvedLanguage::Ko, false, false, false) => "설정 필요",
-        (ResolvedLanguage::En, true, _, _) => "License needed",
-        (ResolvedLanguage::En, false, true, _) => "Reinstall Fan Control",
-        (ResolvedLanguage::En, false, false, true) => "Ready",
-        (ResolvedLanguage::En, false, false, false) => "Setup needed",
+    match (lang, daemon_update_needed, daemon_running) {
+        (ResolvedLanguage::Ko, true, _) => "팬 제어 재설치",
+        (ResolvedLanguage::Ko, false, true) => "준비 완료",
+        (ResolvedLanguage::Ko, false, false) => "설정 필요",
+        (ResolvedLanguage::En, true, _) => "Reinstall Fan Control",
+        (ResolvedLanguage::En, false, true) => "Ready",
+        (ResolvedLanguage::En, false, false) => "Setup needed",
     }
 }
 
@@ -442,45 +428,38 @@ fn setup_detail(
     daemon_running: bool,
     daemon_update_needed: bool,
     daemon_version: Option<&str>,
-    trial_expired: bool,
 ) -> String {
-    match (lang, trial_expired, daemon_update_needed, daemon_running) {
-        (ResolvedLanguage::Ko, true, _, _) => {
-            format!("v{} · 체험판 만료", env!("CARGO_PKG_VERSION"))
-        }
-        (ResolvedLanguage::Ko, false, true, _) => format!(
+    match (lang, daemon_update_needed, daemon_running) {
+        (ResolvedLanguage::Ko, true, _) => format!(
             "앱 v{} · 데몬 v{} · 팬 제어 재설치 · {}",
             env!("CARGO_PKG_VERSION"),
             daemon_version.unwrap_or("unknown"),
             daemon_reinstall_hint(lang, daemon_version)
         ),
-        (ResolvedLanguage::Ko, false, false, true) => {
+        (ResolvedLanguage::Ko, false, true) => {
             format!(
                 "앱 v{} · 데몬 v{} 정상 · 암호 불필요",
                 env!("CARGO_PKG_VERSION"),
                 daemon_version.unwrap_or("unknown")
             )
         }
-        (ResolvedLanguage::Ko, false, false, false) => {
+        (ResolvedLanguage::Ko, false, false) => {
             format!("v{} · 데몬 미실행", env!("CARGO_PKG_VERSION"))
         }
-        (ResolvedLanguage::En, true, _, _) => {
-            format!("v{} · trial expired", env!("CARGO_PKG_VERSION"))
-        }
-        (ResolvedLanguage::En, false, true, _) => format!(
+        (ResolvedLanguage::En, true, _) => format!(
             "app v{} · daemon v{} · reinstall fan control · {}",
             env!("CARGO_PKG_VERSION"),
             daemon_version.unwrap_or("unknown"),
             daemon_reinstall_hint(lang, daemon_version)
         ),
-        (ResolvedLanguage::En, false, false, true) => {
+        (ResolvedLanguage::En, false, true) => {
             format!(
                 "app v{} · daemon v{} OK · no admin prompt",
                 env!("CARGO_PKG_VERSION"),
                 daemon_version.unwrap_or("unknown")
             )
         }
-        (ResolvedLanguage::En, false, false, false) => {
+        (ResolvedLanguage::En, false, false) => {
             format!("v{} · daemon not running", env!("CARGO_PKG_VERSION"))
         }
     }
@@ -614,50 +593,6 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// Resolve trial/license state, stamping `first_run_unix` into config on the
-/// very first launch (shared with the daemon, so either one starts the clock).
-fn resolve_entitlement() -> Entitlement {
-    let mut cfg = peterfan_platform::config::load();
-    let now = now_unix();
-    if cfg.license.first_run_unix.is_none() {
-        cfg.license.first_run_unix = Some(now);
-        let _ = peterfan_platform::config::save(&cfg);
-    }
-    license::check_entitlement(cfg.license.key.as_deref(), cfg.license.first_run_unix, now)
-}
-
-/// Verify and persist a license key submitted from the popover. Returns the
-/// new entitlement plus a short status line to display.
-fn activate_license(key: &str) -> (Entitlement, String) {
-    let now = now_unix();
-    match license::verify_key(key, now) {
-        license::LicenseStatus::Valid { email, .. } => {
-            let mut cfg = peterfan_platform::config::load();
-            cfg.license.key = Some(key.to_string());
-            let _ = peterfan_platform::config::save(&cfg);
-            (
-                Entitlement::Licensed {
-                    email: email.clone(),
-                },
-                format!("licensed to {email}"),
-            )
-        }
-        license::LicenseStatus::Expired { email, .. } => {
-            // Unlike Invalid (garbage input, not worth remembering), this is
-            // a genuine, validly-signed key that just aged out — save it so
-            // it doesn't vanish from config the moment the popover closes.
-            let mut cfg = peterfan_platform::config::load();
-            cfg.license.key = Some(key.to_string());
-            let _ = peterfan_platform::config::save(&cfg);
-            (
-                resolve_entitlement(),
-                format!("license for {email} has expired"),
-            )
-        }
-        license::LicenseStatus::Invalid(reason) => (resolve_entitlement(), reason),
-    }
-}
-
 /// Push a sample, dropping the oldest once past [`HIST_CAP`].
 fn push_hist<T>(buf: &mut VecDeque<T>, v: T) {
     push_capped(buf, v, HIST_CAP);
@@ -732,7 +667,6 @@ fn main() {
             )
         };
     let has_battery = monitor.capabilities().battery;
-    let entitlement = resolve_entitlement();
 
     #[allow(unused_mut)]
     let mut event_loop = EventLoopBuilder::<()>::new().build();
@@ -760,7 +694,6 @@ fn main() {
         net_h: RangedHistory::new(),
         disk_io_h: RangedHistory::new(),
         runner_frame: 0,
-        entitlement,
     };
 
     event_loop.run(move |event, target, control_flow| {
@@ -828,29 +761,14 @@ fn main() {
         let cmds: Vec<String> = std::mem::take(&mut *PENDING.lock().expect("pending poisoned"));
         if !cmds.is_empty() {
             for c in &cmds {
-                if let Some(key) = c.strip_prefix("license:") {
-                    let (entitlement, msg) = activate_license(key);
-                    app.entitlement = entitlement;
-                    *STATUS.lock().expect("status poisoned") = msg;
-                } else if let Some(json) = c.strip_prefix("savecurve:") {
-                    // A custom curve is persistent fan control, same paid
-                    // feature as the fan cards it's a sibling of — the JS
-                    // side hides the editor once the trial expires, but that
-                    // only stops the button; without this check a raw
-                    // `savecurve:` IPC message would still bypass the
-                    // paywall entirely.
-                    if !app.entitlement.allowed() {
-                        *STATUS.lock().expect("status poisoned") =
-                            "error: fan control requires a license or active trial".into();
-                    } else {
-                        *STATUS.lock().expect("status poisoned") = "saving curve…".into();
-                        let provider = std::sync::Arc::clone(&app.provider);
-                        let json = json.to_string();
-                        std::thread::spawn(move || {
-                            let status = save_custom_curve(provider.as_ref(), &json);
-                            *STATUS.lock().expect("status poisoned") = status;
-                        });
-                    }
+                if let Some(json) = c.strip_prefix("savecurve:") {
+                    *STATUS.lock().expect("status poisoned") = "saving curve…".into();
+                    let provider = std::sync::Arc::clone(&app.provider);
+                    let json = json.to_string();
+                    std::thread::spawn(move || {
+                        let status = save_custom_curve(provider.as_ref(), &json);
+                        *STATUS.lock().expect("status poisoned") = status;
+                    });
                 } else if c == "enablefancontrol" {
                     // Same admin-prompt install the right-click menu item
                     // triggers — exposed here too so the "update the daemon"
@@ -1295,7 +1213,7 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
                     .lock()
                     .expect("pending poisoned")
                     .push(cmd.to_string());
-            } else if body.starts_with("license:") || body.starts_with("savecurve:") {
+            } else if body.starts_with("savecurve:") {
                 // Keep the prefix so the drain loop can tell these apart
                 // from a daemon control command.
                 PENDING
@@ -1375,7 +1293,7 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
                     .lock()
                     .expect("pending poisoned")
                     .push(cmd.to_string());
-            } else if body.starts_with("license:") || body.starts_with("savecurve:") {
+            } else if body.starts_with("savecurve:") {
                 PENDING
                     .lock()
                     .expect("pending poisoned")
@@ -1719,30 +1637,11 @@ fn update(app: &mut App) {
         })
         .collect();
 
-    // Persistent fan control is the paid feature — read-only metrics above
-    // stay visible regardless of entitlement.
-    let can_control = (app.provider.capabilities().control_fans || !daemon_st.is_empty())
-        && app.entitlement.allowed();
+    let can_control = app.provider.capabilities().control_fans || !daemon_st.is_empty();
     let ctl_status = if !daemon_st.is_empty() {
         daemon_st.clone()
     } else {
         STATUS.lock().expect("status poisoned").clone()
-    };
-    let (license_line, trial_expired) = match (app.language.resolve(), &app.entitlement) {
-        (ResolvedLanguage::Ko, Entitlement::Licensed { email }) => {
-            (format!("라이선스 등록됨 — {email}"), false)
-        }
-        (ResolvedLanguage::Ko, Entitlement::Trial { days_left }) => {
-            (format!("체험판 — {days_left}일 남음"), false)
-        }
-        (ResolvedLanguage::Ko, Entitlement::TrialExpired) => ("체험판 만료됨".to_string(), true),
-        (ResolvedLanguage::En, Entitlement::Licensed { email }) => {
-            (format!("Licensed — {email}"), false)
-        }
-        (ResolvedLanguage::En, Entitlement::Trial { days_left }) => {
-            (format!("Trial — {days_left} day(s) left"), false)
-        }
-        (ResolvedLanguage::En, Entitlement::TrialExpired) => ("Trial expired".to_string(), true),
     };
     let chart_range = ChartRange::from_u8(CHART_RANGE.load(Ordering::Relaxed));
     // Seeds the Detail Window's curve editor: the user's saved custom curve
@@ -1813,12 +1712,9 @@ fn update(app: &mut App) {
         "active_control_mode": active_control_mode,
         "fan_setup_needed": (!daemon_running || daemon_update_needed) && can_control,
         "app_version": env!("CARGO_PKG_VERSION"),
-        "setup_tone": setup_tone(!daemon_st.is_empty(), daemon_update_needed, trial_expired),
-        "setup_title": setup_title(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, trial_expired),
-        "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, daemon_version.as_deref(), trial_expired),
-        "license_line": license_line,
-        "trial_expired": trial_expired,
-        "buy_url": BUY_URL,
+        "setup_tone": setup_tone(!daemon_st.is_empty(), daemon_update_needed),
+        "setup_title": setup_title(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed),
+        "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, daemon_version.as_deref()),
         "curve_points": curve_points,
         "last_cmd_status": STATUS.lock().expect("status poisoned").clone(),
     });
@@ -2454,77 +2350,135 @@ fn menubar_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
 }
 
 fn make_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
+    let rgba = make_cat_runner_rgba(cpu_pct, frame);
+    Icon::from_rgba(rgba, 32, 32).expect("valid icon")
+}
+
+fn make_cat_runner_rgba(_cpu_pct: f32, _frame: u8) -> Vec<u8> {
     const W: u32 = 32;
     const H: u32 = 32;
     let mut rgba = vec![0u8; (W * H * 4) as usize];
 
-    let (r, g, b) = match cpu_pct.clamp(0.0, 100.0) {
+    let (r, g, b) = match _cpu_pct.clamp(0.0, 100.0) {
         x if x < 20.0 => (91u8, 157u8, 255u8), // calm blue
         x if x < 55.0 => (48u8, 209u8, 88u8),  // green
         x if x < 80.0 => (255u8, 214u8, 10u8), // yellow
         _ => (255u8, 69u8, 58u8),              // red
     };
 
-    let phase = frame % 4;
-    let lean = if cpu_pct >= 80.0 { 2.0 } else { 1.0 };
+    let phase = _frame % 4;
     let stride = match phase {
-        0 => 7.0,
-        1 => 3.0,
-        2 => -7.0,
-        _ => -3.0,
+        0 => -2.4,
+        1 => 1.8,
+        2 => 2.4,
+        _ => -1.8,
     };
+    let bounce = if matches!(phase, 1 | 3) { -0.8 } else { 0.0 };
+    let tail_lift = if matches!(phase, 0 | 1) { -2.0 } else { 1.4 };
 
+    draw_ellipse(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(15.2, 17.2 + bounce),
+        8.4,
+        5.2,
+        (r, g, b, 238),
+    );
     draw_disc(
         &mut rgba,
         W,
         H,
-        Pt::new(16.0 + lean, 6.0),
-        3.2,
+        Pt::new(23.0, 13.0 + bounce),
+        4.1,
         (r, g, b, 245),
     );
-    draw_line(
+    draw_triangle(
         &mut rgba,
         W,
         H,
-        Pt::new(16.0 + lean, 10.0),
-        Pt::new(14.0 + lean, 18.0),
-        2.4,
+        Pt::new(20.4, 10.4 + bounce),
+        Pt::new(21.7, 6.6 + bounce),
+        Pt::new(23.3, 10.6 + bounce),
+        (r, g, b, 235),
+    );
+    draw_triangle(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(24.0, 10.3 + bounce),
+        Pt::new(26.0, 7.0 + bounce),
+        Pt::new(26.4, 11.3 + bounce),
         (r, g, b, 235),
     );
     draw_line(
         &mut rgba,
         W,
         H,
-        Pt::new(15.0 + lean, 12.0),
-        Pt::new(15.0 - stride * 0.75, 16.0),
-        2.0,
-        (r, g, b, 220),
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(15.0 + lean, 12.0),
-        Pt::new(16.0 + stride * 0.75, 9.0),
-        2.0,
-        (r, g, b, 220),
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(14.0 + lean, 18.0),
-        Pt::new(14.0 - stride, 26.0),
-        2.2,
+        Pt::new(8.4, 15.0 + bounce),
+        Pt::new(4.8, 11.0 + tail_lift),
+        2.7,
         (r, g, b, 235),
     );
     draw_line(
         &mut rgba,
         W,
         H,
-        Pt::new(14.0 + lean, 18.0),
-        Pt::new(15.0 + stride, 25.0),
-        2.2,
+        Pt::new(4.8, 11.0 + tail_lift),
+        Pt::new(3.4, 6.7 + tail_lift * 0.6),
+        2.5,
+        (r, g, b, 225),
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(10.2, 20.5 + bounce),
+        Pt::new(8.4 + stride, 27.0),
+        2.3,
+        (r, g, b, 220),
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(14.4, 21.0 + bounce),
+        Pt::new(14.1 - stride, 27.0),
+        2.3,
+        (r, g, b, 220),
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(18.6, 20.5 + bounce),
+        Pt::new(19.2 + stride, 26.6),
+        2.3,
+        (r, g, b, 220),
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(22.0, 18.4 + bounce),
+        Pt::new(23.8 - stride, 25.8),
+        2.1,
+        (r, g, b, 220),
+    );
+    draw_disc(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(24.2, 12.5 + bounce),
+        0.8,
+        (0, 0, 0, 150),
+    );
+    draw_disc(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(27.2, 13.5 + bounce),
+        0.9,
         (r, g, b, 235),
     );
     draw_line(
@@ -2532,12 +2486,12 @@ fn make_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
         W,
         H,
         Pt::new(5.0, 28.0),
-        Pt::new(27.0, 28.0),
+        Pt::new(28.0, 28.0),
         1.0,
-        (r, g, b, 80),
+        (r, g, b, 65),
     );
 
-    Icon::from_rgba(rgba, W, H).expect("valid icon")
+    rgba
 }
 
 #[derive(Clone, Copy)]
@@ -2568,6 +2522,57 @@ fn draw_disc(rgba: &mut [u8], w: u32, h: u32, center: Pt, radius: f32, color: (u
             }
         }
     }
+}
+
+fn draw_ellipse(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    center: Pt,
+    rx: f32,
+    ry: f32,
+    color: (u8, u8, u8, u8),
+) {
+    let min_x = (center.x - rx - 1.0).floor().max(0.0) as u32;
+    let max_x = (center.x + rx + 1.0).ceil().min((w - 1) as f32) as u32;
+    let min_y = (center.y - ry - 1.0).floor().max(0.0) as u32;
+    let max_y = (center.y + ry + 1.0).ceil().min((h - 1) as f32) as u32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dx = (x as f32 - center.x) / rx;
+            let dy = (y as f32 - center.y) / ry;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist <= 1.08 {
+                blend_pixel(rgba, w, x, y, color, (1.08 - dist).clamp(0.0, 1.0));
+            }
+        }
+    }
+}
+
+fn draw_triangle(rgba: &mut [u8], w: u32, h: u32, a: Pt, b: Pt, c: Pt, color: (u8, u8, u8, u8)) {
+    let min_x = a.x.min(b.x).min(c.x).floor().max(0.0) as u32;
+    let max_x = a.x.max(b.x).max(c.x).ceil().min((w - 1) as f32) as u32;
+    let min_y = a.y.min(b.y).min(c.y).floor().max(0.0) as u32;
+    let max_y = a.y.max(b.y).max(c.y).ceil().min((h - 1) as f32) as u32;
+    let area = edge(a, b, c);
+    if area.abs() < f32::EPSILON {
+        return;
+    }
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let p = Pt::new(x as f32 + 0.5, y as f32 + 0.5);
+            let w0 = edge(b, c, p);
+            let w1 = edge(c, a, p);
+            let w2 = edge(a, b, p);
+            if (w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0) || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0) {
+                blend_pixel(rgba, w, x, y, color, 1.0);
+            }
+        }
+    }
+}
+
+fn edge(a: Pt, b: Pt, p: Pt) -> f32 {
+    (p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x)
 }
 
 fn draw_line(
@@ -2674,14 +2679,11 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Gaming<", ">게임<")
             .replace(">Performance<", ">성능<")
             .replace(">Max<", ">최대<")
-            .replace("Buy License →", "라이선스 구매 →")
-            .replace(">Activate<", ">활성화<")
             .replace("Open Detailed Window…", "상세 창 열기…")
             .replace(">Quit PeterFan<", ">PeterFan 종료<")
             .replace(">Fan Curve<", ">팬 커브<")
             .replace(">Detail<", ">상세<")
             .replace(">Updates<", ">업데이트<")
-            .replace(">License<", ">라이선스<")
             .replace(">More<", ">더보기<")
             .replace(">Quit<", ">종료<")
             .replace(">More Actions<", ">더보기<")
@@ -2845,15 +2847,6 @@ body.compact .compact-extra{display:none!important;}
 .settings-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
 .settings-item-title{font-size:11px;font-weight:700;color:var(--text);}
 .settings-item-copy{font-size:9.5px;color:var(--dim);line-height:1.35;margin-top:2px;}
-.lic{padding:8px 15px;border-top:1px solid var(--line);font-size:10.5px;color:var(--dim);display:flex;align-items:center;justify-content:space-between;gap:8px;}
-.lic.expired{background:rgba(255,159,10,.14);color:var(--text);}
-.lic-actions{display:flex;align-items:center;gap:10px;flex:0 0 auto;}
-.lic-link{color:var(--accent);cursor:pointer;font-weight:600;background:none;border:0;font:inherit;font-size:10.5px;padding:0;}
-.lic-buy{color:var(--accent);text-decoration:none;font-weight:600;display:none;}
-.lic-form{display:none;gap:6px;padding:0 15px 9px;}
-.lic-form.show{display:flex;}
-.lic-form input{flex:1;min-width:0;background:var(--chip-bg);border:1px solid var(--panel-border);border-radius:6px;color:var(--text);font:inherit;font-size:10.5px;padding:6px 8px;outline:none;}
-.lic-form button{background:var(--accent);color:#fff;border:0;border-radius:6px;font:inherit;font-size:10.5px;font-weight:600;padding:6px 10px;cursor:pointer;white-space:nowrap;}
 .foot{border-top:1px solid var(--line);padding:3px;}
 .quit{display:block;width:100%;background:transparent;border:0;color:var(--dim);font:inherit;font-size:10.5px;letter-spacing:.02em;padding:8px;border-radius:8px;cursor:pointer;transition:background .15s,color .15s;}
 .quit:hover{background:var(--track-hover);color:var(--text);}
@@ -2897,15 +2890,6 @@ body.compact .compact-extra{display:none!important;}
 <div><div class="settings-item-title">Detail Window</div><div class="settings-item-copy">Open the full dashboard when you need more room.</div></div>
 <button class="panel-action secondary" onclick="window.ipc.postMessage('open_detail')">Open Detail Window…</button>
 </div>
-</div>
-</div>
-
-<div class="rail-panel" id="rail-license-panel">
-<div class="panel-title-row"><div class="panel-title">License</div><span class="panel-pill" id="rail-license-pill">Trial</span></div>
-<div class="panel-copy" id="rail-license-copy">Activate PeterFan or review your current license state.</div>
-<div class="lic-form show" id="rail-license-form">
-<input type="text" id="rail-lic-input" placeholder="PFAN1-..." spellcheck="false">
-<button onclick="submitLicenseInput('rail-lic-input')">Activate</button>
 </div>
 </div>
 
@@ -2985,18 +2969,6 @@ body.compact .compact-extra{display:none!important;}
 <div class="content"><div class="head"><span class="name">Top Processes</span><span class="sort-tabs"><button class="range-tab" id="ps-cpu" onclick="setProcSort('cpu')">CPU</button><button class="range-tab" id="ps-mem" onclick="setProcSort('mem')">MEM</button></span></div>
 <div id="procs-list"></div></div></div>
 
-<div class="lic compact-extra" id="lic-row" data-compact-extra="license">
-<span id="lic-text"></span>
-<span class="lic-actions">
-<a class="lic-buy" id="lic-buy" href="#" target="_blank" rel="noopener">Buy License →</a>
-<button class="lic-link" id="lic-toggle" onclick="toggleLicForm()">Activate</button>
-</span>
-</div>
-<div class="lic-form compact-extra" id="lic-form" data-compact-extra="license-form">
-<input type="text" id="lic-input" placeholder="PFAN1-..." spellcheck="false">
-<button onclick="submitLicense()">Activate</button>
-</div>
-
 <div class="foot compact-extra" data-compact-extra="quit"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
 </main>
 <aside class="action-rail" aria-label="Quick actions">
@@ -3004,7 +2976,6 @@ body.compact .compact-extra{display:none!important;}
 <button class="rail-btn" id="railFan" data-rail-action="fan" aria-pressed="false" onclick="runRailAction('fan',this)" title="Fan control"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fan</span></button>
 <button class="rail-btn" id="railUpdate" data-rail-action="update" aria-pressed="false" onclick="runRailAction('update',this)" title="Check for Updates…"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
 <button class="rail-btn" id="railSettings" data-rail-action="settings" aria-pressed="false" onclick="runRailAction('settings',this)" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.2-.1a1.7 1.7 0 0 0-1.9-.1 8 8 0 0 1-1.4.8 1.7 1.7 0 0 0-1.1 1.5V23h-4v-.5A1.7 1.7 0 0 0 8.1 21a8 8 0 0 1-1.4-.8 1.7 1.7 0 0 0-1.9.1l-.2.1-2-3.4.1-.1A1.7 1.7 0 0 0 3 15a8.6 8.6 0 0 1 0-1.7 1.7 1.7 0 0 0-.3-1.9l-.1-.1 2-3.4.2.1a1.7 1.7 0 0 0 1.9.1A8 8 0 0 1 8.1 7a1.7 1.7 0 0 0 1.1-1.5V5h4v.5A1.7 1.7 0 0 0 14.3 7a8 8 0 0 1 1.4.8 1.7 1.7 0 0 0 1.9-.1l.2-.1 2 3.4-.1.1a1.7 1.7 0 0 0-.3 1.9 8.6 8.6 0 0 1 0 2z"/></svg><span>Settings</span></button>
-<button class="rail-btn" id="railLicense" data-rail-action="license" aria-pressed="false" onclick="runRailAction('license',this)" title="License"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="3"/><path d="M11 12h9M16 12v3M19 12v2"/></svg><span>License</span></button>
 <button class="rail-btn" id="railMore" data-rail-action="more" aria-pressed="false" onclick="runRailAction('more',this)" title="Show more"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg><span>More</span></button>
 </aside></div></div>
 <div class="chart-tip" id="chart-tip"></div>
@@ -3063,7 +3034,7 @@ function resetRailPaneScroll(){
 function applyRailView(resetScroll){
   var view=railView();
   document.body.setAttribute('data-rail-view',view);
-  var all=['range-tabs','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','lic-row','lic-form','foot','rail-update-panel','rail-settings-panel','rail-license-panel','rail-more-panel'];
+  var all=['range-tabs','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','foot','rail-update-panel','rail-settings-panel','rail-more-panel'];
   all.forEach(function(id){setVisible(id,false);});
   if(view==='fan'){
     ['setup-row','fan-control-section'].forEach(function(id){setVisible(id,true);});
@@ -3072,14 +3043,12 @@ function applyRailView(resetScroll){
     setVisible('rail-update-panel',true);
   } else if(view==='settings'){
     setVisible('rail-settings-panel',true);
-  } else if(view==='license'){
-    setVisible('rail-license-panel',true);
   } else if(view==='more'){
     setVisible('rail-more-panel',true);
   } else {
     ['range-tabs','setup-row','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
   }
-  ['Detail','Fan','Update','Settings','License','More'].forEach(function(name){
+  ['Detail','Fan','Update','Settings','More'].forEach(function(name){
     var key=name.toLowerCase();
     if(key==='detail')key='overview';
     setRailButtonActive('rail'+name,view===key);
@@ -3127,7 +3096,6 @@ function runRailAction(action,btn){
     case 'fan':setRailView('fan');break;
     case 'update':setRailView('update');checkAppUpdates(btn);break;
     case 'settings':setRailView('settings');break;
-    case 'license':setRailView('license');break;
     case 'more':setRailView('more');break;
   }
 }
@@ -3164,15 +3132,6 @@ window.__pf={
  if(d.temp_present) drawChart('temp-chart', d.temp_hist, '#ff9f0a', null, function(v){return v.toFixed(0)+'°C';});
  drawChart('net-chart', d.net_hist, '#30d158', null, fmtBytesPerSec);
  document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){b.classList.toggle('active',b.dataset.range===d.chart_range);});
- set('lic-text', d.license_line);
- var licRow=document.getElementById('lic-row');
- if(licRow)licRow.className='lic'+(d.trial_expired?' expired':'');
- var licBuy=document.getElementById('lic-buy');
- if(licBuy){licBuy.style.display=d.trial_expired?'':'none';licBuy.href=d.buy_url||'#';}
- var licForm=document.getElementById('lic-form');
- if(d.trial_expired&&licForm)licForm.classList.add('show');
- var licToggle=document.getElementById('lic-toggle');
- if(licToggle)licToggle.style.display=d.trial_expired?'none':'';
  var note=document.getElementById('ctl-note');
  if(d.can_control){
    set('ctl-status', d.ctl_status||'');
@@ -3596,10 +3555,6 @@ function saveCurve(){
   if(!CURVE_POINTS||CURVE_POINTS.length<2)return;
   window.ipc.postMessage('savecurve:'+JSON.stringify(CURVE_POINTS));
 }
-function toggleLicForm(){
-  setPopoverExpanded(true);
-  var f=document.getElementById('lic-form');if(f)f.classList.toggle('show');
-}
 function focusFanControl(){
   var el=document.getElementById('fan-control-section');
   if(el){
@@ -3644,16 +3599,6 @@ function quitProcess(pid,name){
   var msg=LANG==='ko'?('"'+name+'" 프로세스를 종료할까요?'):('Quit "'+name+'"?');
   if(!confirm(msg))return;
   window.ipc.postMessage('killproc:'+pid);
-}
-function submitLicense(){
-  submitLicenseInput('lic-input');
-}
-function submitLicenseInput(id){
-  var inp=document.getElementById(id);
-  var v=inp&&inp.value.trim();
-  if(!v)return;
-  window.ipc.postMessage('license:'+v);
-  inp.value='';
 }
 function updateSetup(d){
   var title=document.getElementById('setup-title');
@@ -3716,15 +3661,6 @@ function updateRail(d){
     settings.title=LANG==='ko'?'설정 열기':'Open settings';
   }
   setPanelPill('rail-settings-pill',LANG==='ko'?'앱 설정':'App Preferences','info');
-  var lic=document.getElementById('railLicense');
-  if(lic){
-    setButtonLabel(lic,d.trial_expired?(LANG==='ko'?'활성화':'Activate'):(LANG==='ko'?'라이선스':'License'));
-    lic.title=LANG==='ko'?'라이선스 입력':'License';
-    lic.classList.toggle('active',!!d.trial_expired);
-  }
-  var licCopy=document.getElementById('rail-license-copy');
-  if(licCopy)licCopy.textContent=d.license_line||'';
-  setPanelPill('rail-license-pill',d.trial_expired?(LANG==='ko'?'필요':'Required'):(LANG==='ko'?'활성':'Active'),d.trial_expired?'warn':'ok');
   setPanelPill('rail-more-pill',LANG==='ko'?'도구':'Tools','info');
 }
 // Draws a filled area + line sparkline of `data` into the <canvas id=id>.
@@ -3926,24 +3862,23 @@ mod tests {
             assert!(html.contains("railFan"));
             assert!(html.contains("railUpdate"));
             assert!(html.contains("railSettings"));
-            assert!(html.contains("railLicense"));
             assert!(html.contains("railMore"));
             assert!(html.contains("focusFanControl"));
             assert!(html.contains("rail-settings-panel"));
             assert!(html.contains("rail-more-panel"));
+            assert!(!html.contains("railLicense"));
+            assert!(!html.contains("rail-license-panel"));
         }
 
         assert!(en.contains(">Status<"));
         assert!(en.contains(">Fan<"));
         assert!(en.contains(">Updates<"));
         assert!(en.contains(">Settings<"));
-        assert!(en.contains(">License<"));
         assert!(en.contains(">More<"));
         assert!(ko.contains(">상태<"));
         assert!(ko.contains(">팬<"));
         assert!(ko.contains(">업데이트<"));
         assert!(ko.contains(">설정<"));
-        assert!(ko.contains(">라이선스<"));
         assert!(ko.contains(">더보기<"));
     }
 
@@ -3982,6 +3917,40 @@ mod tests {
     }
 
     #[test]
+    fn menu_bar_runner_is_cat_like_and_animated() {
+        let idle = make_cat_runner_rgba(12.0, 0);
+        let active = make_cat_runner_rgba(72.0, 1);
+
+        assert!(idle.chunks_exact(4).any(|px| px[3] > 0));
+        assert!(active.chunks_exact(4).any(|px| px[3] > 0));
+        assert_ne!(idle, active);
+    }
+
+    #[test]
+    fn dashboard_has_no_license_or_login_entry_points() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+
+        for html in [&en, &ko] {
+            assert!(!html.contains("railLicense"));
+            assert!(!html.contains("rail-license-panel"));
+            assert!(!html.contains("rail-license-form"));
+            assert!(!html.contains("lic-row"));
+            assert!(!html.contains("lic-form"));
+            assert!(!html.contains("Buy License"));
+            assert!(!html.contains("Activate"));
+            assert!(!html.contains("License"));
+            assert!(!html.contains("라이선스"));
+            assert!(!html.contains("license:"));
+            assert!(!html.contains("submitLicense"));
+            assert!(!html.contains("togglelogin"));
+            assert!(!html.contains("Launch at Login"));
+            assert!(!html.contains("로그인"));
+            assert!(!html.contains("자동 실행"));
+        }
+    }
+
+    #[test]
     fn dashboard_html_supports_compact_popover_mode() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
@@ -3990,7 +3959,6 @@ mod tests {
         assert!(en.contains(r#"data-compact-extra="battery""#));
         assert!(en.contains(r#"data-compact-extra="network""#));
         assert!(en.contains(r#"data-compact-extra="processes""#));
-        assert!(en.contains(r#"data-compact-extra="license""#));
         assert!(en.contains("applyPopoverMode"));
         assert!(en.contains("setPopoverExpanded"));
         assert!(en.contains("pf.compact"));
@@ -4022,7 +3990,6 @@ mod tests {
             ("railFan", "fan"),
             ("railUpdate", "update"),
             ("railSettings", "settings"),
-            ("railLicense", "license"),
             ("railMore", "more"),
         ] {
             assert!(en.contains(&format!(r#"id="{id}""#)));
@@ -4038,7 +4005,7 @@ mod tests {
         assert!(!en.contains(
             "case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;"
         ));
-        assert!(en.contains("case 'license':setRailView('license');break;"));
+        assert!(!en.contains("case 'license':setRailView('license');break;"));
         assert!(en.contains("case 'more':setRailView('more');break;"));
         assert!(en.contains("function setButtonLabel(btn,label)"));
         assert!(en.contains("btn.querySelector('span')"));
@@ -4063,12 +4030,7 @@ mod tests {
     fn rail_panels_show_live_status_pills() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
-        for id in [
-            "rail-update-pill",
-            "rail-settings-pill",
-            "rail-license-pill",
-            "rail-more-pill",
-        ] {
+        for id in ["rail-update-pill", "rail-settings-pill", "rail-more-pill"] {
             assert!(en.contains(&format!(r#"id="{id}""#)));
         }
 
@@ -4076,7 +4038,6 @@ mod tests {
         assert!(en.contains(".panel-pill{"));
         assert!(en.contains("setPanelPill('rail-update-pill'"));
         assert!(en.contains("setPanelPill('rail-settings-pill'"));
-        assert!(en.contains("setPanelPill('rail-license-pill'"));
         assert!(en.contains("setPanelPill('rail-more-pill'"));
         assert!(en.contains("function setPanelPill(id,text,tone)"));
     }
@@ -4110,9 +4071,9 @@ mod tests {
         assert!(en.contains("RAIL_VIEW=view;"));
         assert!(en.contains(r#"id="rail-update-panel""#));
         assert!(en.contains(r#"id="rail-settings-panel""#));
-        assert!(en.contains(r#"id="rail-license-panel""#));
-        assert!(en.contains("rail-license-form"));
-        assert!(en.contains("submitLicenseInput('rail-lic-input')"));
+        assert!(!en.contains(r#"id="rail-license-panel""#));
+        assert!(!en.contains("rail-license-form"));
+        assert!(!en.contains("submitLicenseInput('rail-lic-input')"));
         assert!(en.contains(r#"id="sec-cpu""#));
         assert!(en.contains(r#"id="sec-mem""#));
         assert!(en.contains(r#"id="sec-storage""#));
@@ -4123,7 +4084,7 @@ mod tests {
         assert!(!en.contains(
             "case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;"
         ));
-        assert!(en.contains("case 'license':setRailView('license');break;"));
+        assert!(!en.contains("case 'license':setRailView('license');break;"));
         assert!(en.contains("case 'more':setRailView('more');break;"));
         assert!(!en.contains("case 'license':toggleLicForm();break;"));
     }
@@ -4395,19 +4356,19 @@ mod tests {
     #[test]
     fn setup_copy_calls_out_stale_daemon() {
         assert_eq!(
-            setup_title(ResolvedLanguage::En, true, true, false),
+            setup_title(ResolvedLanguage::En, true, true),
             "Reinstall Fan Control"
         );
         assert_eq!(
-            setup_title(ResolvedLanguage::Ko, true, true, false),
+            setup_title(ResolvedLanguage::Ko, true, true),
             "팬 제어 재설치"
         );
         assert!(
-            setup_detail(ResolvedLanguage::En, true, true, Some("1.26.8"), false)
+            setup_detail(ResolvedLanguage::En, true, true, Some("1.26.8"))
                 .contains("daemon v1.26.8 · reinstall fan control · one approval this time")
         );
         assert!(
-            setup_detail(ResolvedLanguage::Ko, true, true, Some("1.26.8"), false)
+            setup_detail(ResolvedLanguage::Ko, true, true, Some("1.26.8"))
                 .contains("팬 제어 재설치 · 이번 한 번 승인 필요")
         );
     }
@@ -4434,13 +4395,13 @@ mod tests {
 
     #[test]
     fn setup_detail_shows_daemon_version_when_ready() {
-        let en = setup_detail(ResolvedLanguage::En, true, false, Some("1.26.18"), false);
+        let en = setup_detail(ResolvedLanguage::En, true, false, Some("1.26.18"));
         assert!(en.contains("app v"));
         assert!(en.contains("daemon v1.26.18 OK"));
         assert!(en.contains("no admin prompt"));
         assert!(!en.contains("login"));
 
-        let ko = setup_detail(ResolvedLanguage::Ko, true, false, Some("1.26.18"), false);
+        let ko = setup_detail(ResolvedLanguage::Ko, true, false, Some("1.26.18"));
         assert!(ko.contains("앱 v"));
         assert!(ko.contains("데몬 v1.26.18 정상"));
         assert!(ko.contains("암호 불필요"));
@@ -4451,11 +4412,11 @@ mod tests {
     fn setup_detail_reassures_when_daemon_is_compatible_but_older_than_app() {
         assert!(!peterfan_platform::daemon_update_required("1.26.24"));
 
-        let en = setup_detail(ResolvedLanguage::En, true, false, Some("1.26.24"), false);
+        let en = setup_detail(ResolvedLanguage::En, true, false, Some("1.26.24"));
         assert!(en.contains("daemon v1.26.24 OK"));
         assert!(en.contains("no admin prompt"));
 
-        let ko = setup_detail(ResolvedLanguage::Ko, true, false, Some("1.26.24"), false);
+        let ko = setup_detail(ResolvedLanguage::Ko, true, false, Some("1.26.24"));
         assert!(ko.contains("데몬 v1.26.24 정상"));
         assert!(ko.contains("암호 불필요"));
     }

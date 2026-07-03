@@ -23,11 +23,9 @@ Menus](https://bjango.com/mac/istatmenus/)나 [Stats](https://github.com/exelban
 Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 ```
 
-**CLI, TUI, 팬 제어 데몬은 영원히 무료이며 MIT 라이선스입니다.**
-메뉴바 앱은 14일 무료 체험을 제공하며, 이후에는 상시 구동되는 메뉴바 위젯과 지속적인
-백그라운드 팬 제어를 계속 쓰려면 1회성 라이선스(`peterfan license activate <key>`)가
-필요합니다 — 읽기 전용 명령어들은 언제나 그대로 동작합니다. 아래 [가격 정책](#pricing--licensing)을
-참고하세요.
+**PeterFan은 MIT 라이선스의 오픈소스 앱입니다.** 계정 생성, 로그인, 라이선스 입력 없이
+다운로드 후 바로 사용할 수 있습니다. 팬 제어는 macOS 보안 정책상 최초 1회 root 헬퍼
+설치 승인이 필요하지만, 앱 자체 기능을 쓰기 위한 가입 절차는 없습니다.
 
 ---
 
@@ -39,15 +37,15 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 3. Applications(또는 Spotlight)에서 **PeterFan**을 실행합니다. 공식 `.dmg`는
    Developer ID 서명과 Apple 공증을 거쳐 배포됩니다.
 
-이게 끝입니다 — PeterFan은 이제 조용히 메뉴바에 자리잡습니다. 14일 무료 체험이며 계정
-생성이나 가입 절차는 필요 없습니다. 커맨드라인을 선호하거나 Windows가 필요하다면 아래
+이게 끝입니다 — PeterFan은 이제 조용히 메뉴바에 자리잡습니다. 계정 생성, 로그인,
+라이선스 입력은 필요 없습니다. 커맨드라인을 선호하거나 Windows가 필요하다면 아래
 [다운로드](#download) 섹션에서 `.tar.gz`/`.zip` 아카이브와 소스 빌드 방법을 확인하세요.
 
 ---
 
 ## 현재 상태
 
-**베타 — v1.26.50.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.26.51.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -61,13 +59,12 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 | Windows 온도/팬 정보 읽기(EC) | 🚧 계획 중 |
 | GPU 사용률 | 🔬 조사 완료 — IOReport 연동 자체는 동작하지만, 노출되는 residency 값이 Activity Monitor의 GPU % 값과 일치하지 않아 부정확한 값을 내보내느니 보류함 ([`docs/RESEARCH.md`](./docs/RESEARCH.md)) |
 | 팬 **제어** | ⚙️ SMC 쓰기, **root 권한 필요** (`sudo peterfan fan set N` 또는 데몬 사용). `fan set`은 **RPM을 다시 읽어들여 검증**하므로 가짜 "성공" 메시지가 아니라 진짜 ✓/✗를 확인할 수 있습니다. Intel에서는 검증 완료, Apple Silicon에서는 시도 및 검증되지만(일부 모델은 펌웨어가 이를 무시할 수 있음) |
-| CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`/`serve`/`benchmark`/`log`/`alert`/`license`/`completions`, 전역 `--watch` & `--json` | ✅ 실행 가능 |
+| CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`/`serve`/`benchmark`/`log`/`alert`/`completions`, 전역 `--watch` & `--json` | ✅ 실행 가능 |
 | TUI 시스템 대시보드(ratatui) — CPU/메모리/디스크/네트워크/배터리/프로세스 + 온도/팬/전력 | ✅ 실행 가능 |
-| **메뉴바 앱** — 스파크라인 그래프 아이콘(숫자/그래프/둘 다 선택 가능), 상단 온도는 CPU 평균 기준, RunCat식 오른쪽 액션 레일이 있는 간결한 팝오버, 호버 시 간단 요약 툴팁, 2분/1시간/1일 히스토리 차트(호버로 정확한 값 + 평균/피크 확인), **각 팬의 실제 범위에 맞춰진 RPM 슬라이더로 팬별 Auto/Manual 제어**, 프로파일/Auto/Rules 제어, Top Processes에서 프로세스 종료, 영어/한국어 지원, 별도의 크기 조절 가능한 상세 창, 라이트/다크 모드 | ✅ 실행 가능 |
+| **메뉴바 앱** — RunCat처럼 움직이는 고양이 메뉴바 캐릭터(숫자/캐릭터/둘 다 선택 가능), 상단 온도는 CPU 평균 기준, 로그인/라이선스 없이 바로 쓰는 간결한 팝오버, 호버 시 간단 요약 툴팁, 2분/1시간/1일 히스토리 차트(호버로 정확한 값 + 평균/피크 확인), **각 팬의 실제 범위에 맞춰진 RPM 슬라이더로 팬별 Auto/Manual 제어**, 프로파일/Auto/Rules 제어, Top Processes에서 프로세스 종료, 영어/한국어 지원, 별도의 크기 조절 가능한 상세 창, 라이트/다크 모드 | ✅ 실행 가능 |
 | **데몬**(`peterfand`) — 지속적인 커브 적용 + 종료 시 복원 + 임계 온도 오버라이드 + IPC 서버, LaunchDaemon 설치 지원 | ✅ 실행 가능 |
 | **자동 업데이트** — 메뉴바의 "Check for Updates…"(그리고 `peterfan update`)가 GitHub Releases를 확인하고 제자리에서 설치 | ✅ 실행 가능 |
 | **로컬 HTTP API**(`peterfan serve`) — 연동을 위한 JSON 지표 제공 및 제어 | ✅ 실행 가능 |
-| 라이선싱 — 14일 체험판, Ed25519 오프라인 검증 키 | ✅ 구현 완료 (메뉴바 앱과 데몬의 팬 제어 기능에만 적용) |
 | 데스크톱 GUI(Tauri), 플러그인 | 🗺️ 로드맵 |
 
 아직 실제 센서를 읽을 수 없는 백엔드의 경우, CLI/TUI는 **자동으로 mock 백엔드로
@@ -75,26 +72,6 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 데모를 볼 수 있고, 실제가 아닌 값을 실제인 척 보여주는 일은 절대 없습니다.
 
 전체 계획은 [`docs/ROADMAP.md`](./docs/ROADMAP.md)를 참고하세요.
-
----
-
-## 가격 및 라이선스 (Pricing & licensing)
-
-- **CLI(`peterfan`), TUI(`peterfan-tui`), 그리고 데몬의 팬 제어 핵심 로직은 MIT
-  라이선스이며 영원히 무료입니다** — 자유롭게 스크립트로 활용하고, 임베드하고,
-  포크하세요.
-- **메뉴바 앱**(`peterfan-menubar` / `PeterFan.app`)은 최초 실행 시점부터 **14일간**
-  무료로 체험할 수 있습니다. 체험 기간이 끝난 뒤에도 이를 계속 실행하려면(그리고
-  데몬의 *지속적인* 백그라운드 팬 제어를 쓰려면) 라이선스가 필요합니다:
-  ```sh
-  peterfan license status              # 남은 체험 일수 / 라이선스 상태 확인
-  peterfan license activate <key>      # 구매 시 받은 PFAN1-... 키
-  ```
-  체험 기간이 끝난 뒤에도 라이선스 없이 메뉴바 앱은 계속 실시간 지표를 보여줍니다 —
-  제한되는 것은 상시 구동되는 백그라운드 위젯과 지속적인 팬 제어뿐이며,
-  `sudo peterfan fan set N`으로 팬을 수동 제어하는 것은 여전히 가능합니다.
-- 라이선스 키는 Ed25519로 서명되며 완전히 오프라인으로 검증됩니다(서버 통신 없음,
-  서버 의존성 없음). 라이선스 구매: *(스토어 링크 준비 중)*.
 
 ---
 
@@ -188,7 +165,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.26.50
+PeterFan v1.26.51
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
@@ -265,7 +242,7 @@ peterfan/
 │   └── daemon/      peterfand          — fan-control daemon (curve + safety)
 ├── tools/
 │   ├── icongen/          generates the app icon PNG — dev-only, excluded from workspace
-│   └── license-keygen/   issues license keys — dev-only, never shipped, excluded from workspace
+│   └── license-keygen/   legacy dev-only key tool, never shipped, excluded from workspace
 ├── apps/
 │   └── landing/     static marketing website (open apps/landing/index.html)
 ├── packaging/       LaunchDaemon plist · Homebrew formula · scripts/ install helpers
@@ -300,10 +277,5 @@ EC/WMI 백엔드 등).
 
 ## 라이선스
 
-이 저장소의 코드는 [MIT](./LICENSE) © PeterFan contributors 라이선스를 따릅니다 —
-메뉴바 앱의 소스 코드도 포함해서요. *제품으로서 라이선스가 필요한* 부분은
-**14일 체험 기간이 지난 뒤에도 메뉴바 앱의 상시 백그라운드 위젯과 지속적인 팬
-제어를 계속 실행할 권리**뿐입니다(위의 [가격 및 라이선스](#pricing--licensing)
-참고). 그 아래에 있는 CLI, TUI, 데몬의 팬 커브 로직에는 그런 제약이 전혀 없으며,
-프로젝트의 나머지 부분과 마찬가지로 MIT 조건 아래 자유롭게 사용, 학습, 수정할 수
-있습니다.
+이 저장소의 코드는 [MIT](./LICENSE) © PeterFan contributors 라이선스를 따릅니다.
+메뉴바 앱, CLI, TUI, 데몬 모두 계정 생성이나 라이선스 입력 없이 사용할 수 있습니다.

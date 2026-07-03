@@ -134,12 +134,6 @@ struct State {
     last_fans: Vec<peterfan_core::types::Fan>,
     /// Most recent power draw in watts.
     last_power_w: Option<f32>,
-    /// Whether persistent fan control is licensed/in-trial. Checked by both
-    /// the control loop (forces OS-managed auto when false) and the
-    /// `fanhold`/`fanauto` IPC handlers (refuse to set/clear per-fan
-    /// overrides when false) — per-fan overrides are the same paid feature
-    /// as the global hold/profile/rules modes, just applied per-fan.
-    entitled: bool,
 }
 
 #[derive(Parser)]
@@ -174,47 +168,10 @@ fn main() {
     }
 }
 
-/// Seconds since the Unix epoch, or 0 if the system clock is before 1970.
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 fn run(cli: Cli) -> Result<()> {
     // Resolve settings: explicit flags win, otherwise fall back to the config
     // file, otherwise the built-in defaults.
-    let mut cfg = peterfan_platform::config::load();
-
-    // Persistent fan curve control is the paid feature; read-only commands
-    // (the CLI's `temps`/`status`/etc.) never check this. Shares its trial
-    // clock with the menu-bar app via the same config file.
-    let now = now_unix();
-    if cfg.license.first_run_unix.is_none() {
-        cfg.license.first_run_unix = Some(now);
-        let _ = peterfan_platform::config::save(&cfg);
-    }
-    let entitlement = peterfan_core::license::check_entitlement(
-        cfg.license.key.as_deref(),
-        cfg.license.first_run_unix,
-        now,
-    );
-    let entitled = entitlement.allowed();
-    match &entitlement {
-        peterfan_core::license::Entitlement::Licensed { email } => {
-            println!("peterfand: licensed to {email}");
-        }
-        peterfan_core::license::Entitlement::Trial { days_left } => {
-            println!("peterfand: trial — {days_left} day(s) left");
-        }
-        peterfan_core::license::Entitlement::TrialExpired => {
-            println!(
-                "peterfand: trial expired — fans will stay on automatic control. \
-                 Run `peterfan license activate <key>` to restore persistent control."
-            );
-        }
-    }
+    let cfg = peterfan_platform::config::load();
 
     let profile = match &cli.profile {
         Some(name) => {
@@ -274,7 +231,6 @@ fn run(cli: Cli) -> Result<()> {
             last_temps: Vec::new(),
             last_fans: Vec::new(),
             last_power_w: None,
-            entitled,
         };
         // Restore the last user-chosen mode so a reboot doesn't reset fan settings.
         if let Some(saved) = load_saved_state() {
@@ -381,11 +337,7 @@ fn control_loop(
         let state = shared.lock().expect("state poisoned").clone();
         // Read interval/critical from live config so `reload` takes effect immediately.
         let interval = state.config.interval_secs.max(1);
-        // Trial expired and no license: fall back to automatic control every
-        // tick, same as `auto`, regardless of the user's chosen mode. Read-only
-        // status queries over IPC keep working — temps/fans are cached below
-        // unconditionally, whichever branch runs.
-        let auto = state.auto || !state.entitled;
+        let auto = state.auto;
         let critical = state.config.critical_temp_c;
 
         let temps = provider.temperatures().unwrap_or_default();
@@ -402,16 +354,12 @@ fn control_loop(
 
         if auto {
             // Per-fan overrides still apply on top of the global "auto" mode
-            // (e.g. pin one fan manually while the rest follow the OS) — but
-            // only when entitled: overrides are the same paid feature as
-            // hold/profile/rules, just applied per-fan, and `!entitled`
-            // forcing `auto` true must not leave a back door into it. Even
-            // when entitled, an override never survives a critical
-            // temperature — `effective_duty` forces the fan to 100% exactly
-            // like the non-auto branch below does.
+            // (e.g. pin one fan manually while the rest follow the OS). An
+            // override never survives a critical temperature — `effective_duty`
+            // forces the fan to 100% exactly like the non-auto branch below.
             let critical_now = hottest >= critical;
             for id in fan_ids {
-                let has_override = state.entitled && state.fan_overrides.contains_key(id);
+                let has_override = state.fan_overrides.contains_key(id);
                 let result = if has_override {
                     provider.set_fan_duty(
                         id,
@@ -425,11 +373,7 @@ fn control_loop(
                 }
             }
             if !auto_applied {
-                if !state.entitled {
-                    println!("peterfand: trial expired -> auto (OS-managed)");
-                } else {
-                    println!("peterfand: auto (OS-managed)");
-                }
+                println!("peterfand: auto (OS-managed)");
                 auto_applied = true;
             }
         } else {
@@ -666,9 +610,6 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             match (id, pct) {
                 (Some(id), Some(pct)) => {
                     let mut s = shared.lock().expect("state poisoned");
-                    if !s.entitled {
-                        return "error: fan control requires a license or active trial".into();
-                    }
                     let d = pct.min(100);
                     s.fan_overrides.insert(id.clone(), d);
                     save_state(&s);
@@ -867,7 +808,7 @@ mod tests {
         assert!(back.fan_overrides.is_empty());
     }
 
-    fn test_state(entitled: bool) -> Arc<Mutex<State>> {
+    fn test_state() -> Arc<Mutex<State>> {
         Arc::new(Mutex::new(State {
             profile: Profile::Balanced,
             held_duty: None,
@@ -879,21 +820,23 @@ mod tests {
             last_temps: Vec::new(),
             last_fans: Vec::new(),
             last_power_w: None,
-            entitled,
         }))
     }
 
     #[test]
-    fn fanhold_is_refused_when_not_entitled() {
-        let shared = test_state(false);
+    fn fanhold_succeeds_without_entitlement_gate() {
+        let shared = test_state();
         let reply = handle_command("fanhold fan.left 30", &shared);
-        assert!(reply.starts_with("error:"), "unexpected reply: {reply}");
-        assert!(shared.lock().unwrap().fan_overrides.is_empty());
+        assert!(reply.starts_with("ok "), "unexpected reply: {reply}");
+        assert_eq!(
+            shared.lock().unwrap().fan_overrides.get("fan.left"),
+            Some(&30)
+        );
     }
 
     #[test]
-    fn fanhold_succeeds_when_entitled() {
-        let shared = test_state(true);
+    fn fanhold_succeeds_normally() {
+        let shared = test_state();
         let reply = handle_command("fanhold fan.left 30", &shared);
         assert!(reply.starts_with("ok "), "unexpected reply: {reply}");
         assert_eq!(
@@ -905,7 +848,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn self_reinstall_rejects_non_app_bundle_sources() {
-        let reply = handle_command("reinstall-fan-control /tmp/peterfand", &test_state(true));
+        let reply = handle_command("reinstall-fan-control /tmp/peterfand", &test_state());
         assert!(reply.starts_with("No such file") || reply.starts_with("reinstall source"));
     }
 }
