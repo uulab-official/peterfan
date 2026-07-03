@@ -48,6 +48,12 @@ The screenshot above shows the two surfaces PeterFan is built around: a quiet
 menu-bar dashboard for daily use, and a scriptable `peterfan doctor` path for
 debugging release, daemon, and hardware state.
 
+![PeterFan popover visual QA: dark/light, English/Korean](./docs/images/peterfan-popover-qa.png)
+
+The visual QA sheet above is regenerated from
+`scripts/render-popover-qa.swift` and is meant to catch dark/light and
+English/Korean text-fit regressions before a release.
+
 PeterFan ships as multiple interfaces over the same core:
 
 - `PeterFan.app`: menu-bar app for macOS
@@ -244,6 +250,7 @@ Maintainer reminder before every version bump:
 - update `CHANGELOG.md`, `Cargo.toml`, and `Cargo.lock`
 - refresh README screenshots when the menu-bar or diagnostics UI changes
 - run `scripts/render-readme-overview.swift`
+- run `scripts/render-popover-qa.swift`
 - run `scripts/check-docs.sh`
 - run `cargo fmt --check`, `cargo test --workspace`, and
   `cargo clippy --workspace --all-targets -- -D warnings`

@@ -11,6 +11,12 @@
 
 ![PeterFan 메뉴바 대시보드와 CLI 진단 화면](./docs/images/peterfan-readme-overview.png)
 
+![PeterFan 팝오버 시각 QA: 다크/라이트, 영어/한국어](./docs/images/peterfan-popover-qa.png)
+
+위 QA 이미지는 `scripts/render-popover-qa.swift`로 재생성할 수 있으며, 릴리즈 전에
+다크/라이트 모드와 영어/한국어 텍스트가 작은 팝오버 안에서 깨지지 않는지 빠르게
+확인하기 위한 리뷰용 스냅샷입니다.
+
 PeterFan은 단순한 팬 속도 슬라이더가 아닙니다. 개발자와 파워유저를 위한 작고 안전하며
 스크립트로 다룰 수 있는 시스템 모니터 *겸* 팬 제어 플랫폼입니다 — `lazygit`, `btop`,
 `mise` 옆에 나란히 `brew install`해두는 그런 종류의 도구이면서, [iStat
@@ -46,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.26.59.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.26.60.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -166,7 +172,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.26.59
+PeterFan v1.26.60
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max

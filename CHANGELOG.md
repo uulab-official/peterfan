@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.60] — 팝오버 시각 QA 스냅샷
+
+### Added
+- **팝오버 시각 QA 이미지 추가** — 다크/라이트 모드와 영어/한국어 UI를 한 장에서
+  비교하는 `docs/images/peterfan-popover-qa.png`를 추가함.
+- **QA 이미지 렌더러 추가** — `scripts/render-popover-qa.swift`로 README/릴리즈 리뷰용
+  contact sheet를 재생성할 수 있게 함.
+
+### Changed
+- **문서 검사 강화** — `scripts/check-docs.sh`가 팝오버 QA 이미지와 렌더러도 확인함.
+- **로드맵 갱신** — visual QA screenshots 항목을 완료 상태로 반영함.
+
 ## [1.26.59] — 업데이트 화면에 릴리즈 노트 미리보기
 
 ### Added

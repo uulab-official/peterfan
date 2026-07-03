@@ -80,12 +80,31 @@ else
   fail "README overview image is missing"
 fi
 
+if [[ -f "$ROOT/docs/images/peterfan-popover-qa.png" ]]; then
+  size=$(wc -c < "$ROOT/docs/images/peterfan-popover-qa.png" | tr -d ' ')
+  if [[ "$size" -gt 0 ]]; then
+    ok "popover QA image is non-empty (${size} bytes)"
+  else
+    fail "popover QA image is empty"
+  fi
+else
+  fail "popover QA image is missing"
+fi
+
 if [[ -x "$ROOT/scripts/render-readme-overview.swift" ]]; then
   ok "README overview renderer exists and is executable"
 elif [[ -f "$ROOT/scripts/render-readme-overview.swift" ]]; then
   fail "README overview renderer exists but is not executable"
 else
   fail "README overview renderer is missing"
+fi
+
+if [[ -x "$ROOT/scripts/render-popover-qa.swift" ]]; then
+  ok "popover QA renderer exists and is executable"
+elif [[ -f "$ROOT/scripts/render-popover-qa.swift" ]]; then
+  fail "popover QA renderer exists but is not executable"
+else
+  fail "popover QA renderer is missing"
 fi
 
 echo

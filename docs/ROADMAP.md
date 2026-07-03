@@ -47,7 +47,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] Fan Control Health card in Settings: daemon, approval, command status
 - [x] Hide low-priority sections from the first viewport when they are idle
 - [x] Better empty states for unsupported fans, missing battery, and no network
-- [ ] Visual QA screenshots for dark/light mode and Korean/English text fit
+- [x] Visual QA screenshots for dark/light mode and Korean/English text fit
 - [ ] More stable popover height when fan cards or setup copy changes
 
 ### v1.27 — Fan Control Confidence
