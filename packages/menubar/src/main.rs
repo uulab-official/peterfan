@@ -2706,6 +2706,7 @@ body.compact .compact-extra{display:none!important;}
 .rail-btn.primary{background:rgba(91,157,255,.18);border-color:rgba(91,157,255,.35);color:var(--accent);}
 .rail-btn.primary svg{color:var(--accent);}
 .rail-btn.active{background:rgba(91,157,255,.16);border-color:rgba(91,157,255,.38);color:var(--accent);}
+.rail-btn.pulse{border-color:rgba(91,157,255,.7);background:rgba(91,157,255,.24);}
 .setup{position:relative;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 15px 7px;border-bottom:1px solid var(--line);}
 .setup-main{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;}
 .setup-dot{width:7px;height:7px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 3px transparent;flex:0 0 auto;}
@@ -2753,6 +2754,7 @@ body.compact .compact-extra{display:none!important;}
 .prow .c{color:var(--accent);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .prow .m{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .ctl{padding:7px 15px 8px;border-top:1px solid var(--line);}
+.ctl.focus-pulse{background:rgba(91,157,255,.09);box-shadow:inset 0 0 0 1px rgba(91,157,255,.45);}
 .ctl-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;}
 .ctl-head .name{font-size:9.5px;font-weight:600;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;}
 .ctl-status{font-size:10px;color:var(--dim);font-variant-numeric:tabular-nums;}
@@ -2919,12 +2921,12 @@ body.compact .compact-extra{display:none!important;}
 <div class="foot compact-extra" data-compact-extra="quit"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
 </main>
 <aside class="action-rail" aria-label="Quick actions">
-<button class="rail-btn primary" id="railDetail" onclick="window.ipc.postMessage('open_detail')" title="Open Detailed Window…"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Detail</span></button>
-<button class="rail-btn" id="railFan" onclick="focusFanControl()" title="Fan control"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fan</span></button>
-<button class="rail-btn" id="railUpdate" onclick="checkAppUpdates(this)" title="Check for Updates…"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
-<button class="rail-btn" id="railLogin" onclick="window.ipc.postMessage('togglelogin')" title="Launch at Login"><svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M7.1 6.2a8 8 0 1 0 9.8 0"/></svg><span>Login</span></button>
-<button class="rail-btn" id="railLicense" onclick="toggleLicForm()" title="License"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="3"/><path d="M11 12h9M16 12v3M19 12v2"/></svg><span>License</span></button>
-<button class="rail-btn" id="railMore" onclick="togglePopoverExpanded()" title="Show more"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg><span>More</span></button>
+<button class="rail-btn primary" id="railDetail" data-rail-action="detail" onclick="runRailAction('detail',this)" title="Open Detailed Window…"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Detail</span></button>
+<button class="rail-btn" id="railFan" data-rail-action="fan" onclick="runRailAction('fan',this)" title="Fan control"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fan</span></button>
+<button class="rail-btn" id="railUpdate" data-rail-action="update" onclick="runRailAction('update',this)" title="Check for Updates…"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
+<button class="rail-btn" id="railLogin" data-rail-action="login" onclick="runRailAction('login',this)" title="Launch at Login"><svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M7.1 6.2a8 8 0 1 0 9.8 0"/></svg><span>Login</span></button>
+<button class="rail-btn" id="railLicense" data-rail-action="license" onclick="runRailAction('license',this)" title="License"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="3"/><path d="M11 12h9M16 12v3M19 12v2"/></svg><span>License</span></button>
+<button class="rail-btn" id="railMore" data-rail-action="more" onclick="runRailAction('more',this)" title="Show more"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg><span>More</span></button>
 </aside></div></div>
 <div class="chart-tip" id="chart-tip"></div>
 <script>
@@ -2956,6 +2958,30 @@ function applyPopoverMode(){
   reportHeight();
 }
 applyPopoverMode();
+function flashRailButton(btn){
+  if(!btn)return;
+  btn.classList.remove('pulse');
+  void btn.offsetWidth;
+  btn.classList.add('pulse');
+  setTimeout(function(){btn.classList.remove('pulse');},650);
+}
+function setButtonLabel(btn,label){
+  if(!btn)return;
+  var span=btn.querySelector('span');
+  if(span)span.textContent=label;
+  else btn.textContent=label;
+}
+function runRailAction(action,btn){
+  flashRailButton(btn);
+  switch(action){
+    case 'detail':window.ipc.postMessage('open_detail');break;
+    case 'fan':focusFanControl();break;
+    case 'update':checkAppUpdates(btn);break;
+    case 'login':window.ipc.postMessage('togglelogin');break;
+    case 'license':toggleLicForm();break;
+    case 'more':togglePopoverExpanded();break;
+  }
+}
 window.__pf={
  update:function(d){
  function cls(p){return p<50?'g':p<80?'y':'r';}
@@ -3205,12 +3231,12 @@ function startFanControlSetup(btn){
   FAN_CONTROL_FIX_PENDING=true;
   if(btn){
     btn.disabled=true;
-    btn.textContent=LANG==='ko'?'설치 중…':'Installing…';
+    setButtonLabel(btn,LANG==='ko'?'설치 중…':'Installing…');
   }
   var top=document.getElementById('setup-fan');
   if(top&&top!==btn){
     top.disabled=true;
-    top.textContent=LANG==='ko'?'설치 중…':'Installing…';
+    setButtonLabel(top,LANG==='ko'?'설치 중…':'Installing…');
   }
   window.ipc.postMessage('cmd:enablefancontrol');
   // No completion callback reaches JS (the result lands as a native macOS
@@ -3222,11 +3248,21 @@ function checkAppUpdates(btn){
   if(APP_UPDATE_CHECK_PENDING)return;
   APP_UPDATE_CHECK_PENDING=true;
   if(btn){
+    if(!btn.dataset.defaultLabel){
+      var current=btn.querySelector('span');
+      btn.dataset.defaultLabel=current?current.textContent:btn.textContent;
+    }
     btn.disabled=true;
-    btn.textContent=LANG==='ko'?'확인 중…':'Checking…';
+    setButtonLabel(btn,LANG==='ko'?'확인 중…':'Checking…');
   }
   window.ipc.postMessage('checkupdates');
-  setTimeout(function(){APP_UPDATE_CHECK_PENDING=false;},12000);
+  setTimeout(function(){
+    APP_UPDATE_CHECK_PENDING=false;
+    if(btn){
+      btn.disabled=false;
+      setButtonLabel(btn,btn.dataset.defaultLabel||(LANG==='ko'?'업데이트':'Updates'));
+    }
+  },12000);
 }
 function setSetupMenuOpen(open){
   var menu=document.getElementById('setup-menu');
@@ -3411,7 +3447,13 @@ function toggleLicForm(){
 }
 function focusFanControl(){
   var el=document.getElementById('fan-control-section');
-  if(el)el.scrollIntoView({block:'nearest',behavior:'auto'});
+  if(el){
+    el.scrollIntoView({block:'nearest',behavior:'auto'});
+    el.classList.remove('focus-pulse');
+    void el.offsetWidth;
+    el.classList.add('focus-pulse');
+    setTimeout(function(){el.classList.remove('focus-pulse');},900);
+  }
 }
 function setChartRange(r){
   document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){b.classList.toggle('active',b.dataset.range===r);});
@@ -3751,6 +3793,35 @@ mod tests {
         assert!(en.contains("scrollbar-gutter:stable"));
         assert!(en.contains(".action-rail{"));
         assert!(!en.contains("position:sticky;top:7px"));
+    }
+
+    #[test]
+    fn action_rail_buttons_route_through_clickable_handlers() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        for (id, action) in [
+            ("railDetail", "detail"),
+            ("railFan", "fan"),
+            ("railUpdate", "update"),
+            ("railLogin", "login"),
+            ("railLicense", "license"),
+            ("railMore", "more"),
+        ] {
+            assert!(en.contains(&format!(r#"id="{id}""#)));
+            assert!(en.contains(&format!(r#"data-rail-action="{action}""#)));
+        }
+
+        assert!(en.contains("function runRailAction(action,btn)"));
+        assert!(en.contains("flashRailButton(btn)"));
+        assert!(en.contains("case 'detail':window.ipc.postMessage('open_detail');break;"));
+        assert!(en.contains("case 'update':checkAppUpdates(btn);break;"));
+        assert!(en.contains("case 'login':window.ipc.postMessage('togglelogin');break;"));
+        assert!(en.contains("case 'license':toggleLicForm();break;"));
+        assert!(en.contains("case 'more':togglePopoverExpanded();break;"));
+        assert!(en.contains("function setButtonLabel(btn,label)"));
+        assert!(en.contains("btn.querySelector('span')"));
+        assert!(en.contains("btn.dataset.defaultLabel"));
+        assert!(en.contains("el.classList.add('focus-pulse')"));
     }
 
     #[test]
