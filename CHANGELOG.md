@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.28] — App Bundle CLI 오사용 안내
+
+### Fixed
+- **GUI 바이너리에 CLI 명령을 넘겼을 때 조용히 실행되는 문제 수정** —
+  `PeterFan.app/Contents/MacOS/PeterFan doctor`처럼 앱 번들의 메뉴바 실행 파일에
+  CLI 하위 명령을 넘기면 GUI 이벤트 루프로 들어가 멈춘 것처럼 보이던 문제를
+  막고, release tarball의 `peterfan` CLI를 쓰라는 안내와 함께 즉시 종료하게 함.
+
 ## [1.26.27] — Doctor 데몬 호환성 진단
 
 ### Changed

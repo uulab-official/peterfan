@@ -720,6 +720,15 @@ fn main() {
         );
         return;
     }
+    if let Some(arg) = unsupported_menubar_arg(&args) {
+        eprintln!(
+            "PeterFan.app contains the menu-bar app, not the peterfan CLI.\n\
+             Unsupported argument: {arg}\n\n\
+             For CLI commands such as doctor, status, or update, use the \
+             `peterfan` binary from the release tarball."
+        );
+        std::process::exit(2);
+    }
     let use_mock = args.iter().any(|a| a == "--mock");
 
     let saved = peterfan_platform::config::load().menubar;
@@ -1055,6 +1064,24 @@ fn main() {
             }
         }
     });
+}
+
+fn unsupported_menubar_arg(args: &[String]) -> Option<&str> {
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--mock" => i += 1,
+            "--metric" | "--display" => {
+                if i + 1 >= args.len() {
+                    return Some(args[i].as_str());
+                }
+                i += 2;
+            }
+            arg if arg.starts_with("-psn_") => i += 1,
+            arg => return Some(arg),
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -3519,6 +3546,26 @@ mod tests {
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         ));
         assert!(!peterfan_platform::daemon_update_required("1.26.24"));
+    }
+
+    #[test]
+    fn menubar_rejects_cli_subcommands_before_launching_gui() {
+        let ok_args = vec![
+            "PeterFan".to_string(),
+            "--mock".to_string(),
+            "--metric".to_string(),
+            "temp".to_string(),
+            "--display".to_string(),
+            "graph".to_string(),
+            "-psn_0_12345".to_string(),
+        ];
+        assert_eq!(unsupported_menubar_arg(&ok_args), None);
+
+        let cli_args = vec!["PeterFan".to_string(), "doctor".to_string()];
+        assert_eq!(unsupported_menubar_arg(&cli_args), Some("doctor"));
+
+        let missing_value = vec!["PeterFan".to_string(), "--metric".to_string()];
+        assert_eq!(unsupported_menubar_arg(&missing_value), Some("--metric"));
     }
 
     fn temp(id: &str, kind: SensorKind, value: f32) -> TempSensor {
