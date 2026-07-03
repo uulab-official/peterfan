@@ -140,7 +140,7 @@ impl RangedHistory {
     }
 }
 
-const POPOVER_W: f64 = 372.0;
+const POPOVER_W: f64 = 440.0;
 /// Initial height; the popover then reports its real content height (below) and
 /// the window is resized to fit exactly.
 const POPOVER_H: f64 = 520.0;
@@ -817,6 +817,7 @@ fn main() {
         }
 
         if OPEN_DETAIL.swap(false, Ordering::Relaxed) {
+            hide_popover(&mut app);
             open_detail_window(&mut app, target);
         }
 
@@ -1473,6 +1474,8 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
         .build(&window)
     {
         Ok(webview) => {
+            window.set_visible(true);
+            window.set_focus();
             app.detail_window = Some(window);
             app.detail_webview = Some(webview);
             update(app);
@@ -3006,6 +3009,7 @@ window.__pf={
  function set(id,t){var e=document.getElementById(id);if(e)e.textContent=t;}
  function show(id,on){var e=document.getElementById(id);if(e)e.style.display=on?'':'none';}
  updateSetup(d);
+ updateRail(d);
  set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
  var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span');s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title='Core '+(i+1)+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
  set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
@@ -3281,7 +3285,7 @@ function checkAppUpdates(btn){
       btn.disabled=false;
       setButtonLabel(btn,btn.dataset.defaultLabel||(LANG==='ko'?'업데이트':'Updates'));
     }
-  },12000);
+  },2500);
 }
 function setSetupMenuOpen(open){
   var menu=document.getElementById('setup-menu');
@@ -3550,6 +3554,41 @@ function updateSetup(d){
     update.disabled=APP_UPDATE_CHECK_PENDING;
     update.textContent=APP_UPDATE_CHECK_PENDING?(LANG==='ko'?'확인 중…':'Checking…'):(LANG==='ko'?'업데이트 확인':'Check Updates');
     update.title=LANG==='ko'?'앱 업데이트 확인':'Check for app updates';
+  }
+}
+function updateRail(d){
+  var detail=document.getElementById('railDetail');
+  if(detail){
+    setButtonLabel(detail,LANG==='ko'?'상세':'Detail');
+    detail.title=LANG==='ko'?'상세 창 열기':'Open detailed window';
+  }
+  var fan=document.getElementById('railFan');
+  if(fan){
+    setButtonLabel(fan,d.fan_setup_needed?(LANG==='ko'?'설정':'Set Up'):(LANG==='ko'?'팬 제어':'Fans'));
+    fan.title=d.fan_setup_needed
+      ?(LANG==='ko'?'팬 제어 설정':'Set up fan control')
+      :(LANG==='ko'?'팬 제어로 이동':'Jump to fan control');
+    fan.classList.toggle('active',!!d.can_control);
+  }
+  var upd=document.getElementById('railUpdate');
+  if(upd&&!APP_UPDATE_CHECK_PENDING){
+    setButtonLabel(upd,LANG==='ko'?'업데이트':'Update');
+    upd.title=LANG==='ko'?'업데이트 확인':'Check for updates';
+    upd.disabled=false;
+  }
+  var login=document.getElementById('railLogin');
+  if(login){
+    setButtonLabel(login,d.login_item_installed?(LANG==='ko'?'자동 켬':'Login On'):(LANG==='ko'?'자동 실행':'Login'));
+    login.title=d.login_item_installed
+      ?(LANG==='ko'?'로그인 시 실행 켜짐':'Launch at login is on')
+      :(LANG==='ko'?'로그인 시 실행 켜기':'Launch at login');
+    login.classList.toggle('active',!!d.login_item_installed);
+  }
+  var lic=document.getElementById('railLicense');
+  if(lic){
+    setButtonLabel(lic,d.trial_expired?(LANG==='ko'?'활성화':'Activate'):(LANG==='ko'?'라이선스':'License'));
+    lic.title=LANG==='ko'?'라이선스 입력':'License';
+    lic.classList.toggle('active',!!d.trial_expired);
   }
 }
 // Draws a filled area + line sparkline of `data` into the <canvas id=id>.
@@ -3833,6 +3872,7 @@ mod tests {
         assert!(en.contains("function runRailAction(action,btn)"));
         assert!(en.contains("flashRailButton(btn)"));
         assert!(en.contains("case 'detail':window.ipc.postMessage('open_detail');break;"));
+        assert!(en.contains("case 'fan':focusFanControl();break;"));
         assert!(en.contains("case 'update':checkAppUpdates(btn);break;"));
         assert!(en.contains("case 'login':window.ipc.postMessage('togglelogin');break;"));
         assert!(en.contains("case 'license':toggleLicForm();break;"));
@@ -3841,6 +3881,23 @@ mod tests {
         assert!(en.contains("btn.querySelector('span')"));
         assert!(en.contains("btn.dataset.defaultLabel"));
         assert!(en.contains("el.classList.add('focus-pulse')"));
+    }
+
+    #[test]
+    fn popover_left_dashboard_has_room_for_real_controls() {
+        let popover_w = std::hint::black_box(POPOVER_W);
+        assert!(
+            popover_w >= 430.0,
+            "the dashboard pane needs enough width for fan controls and sensor rows"
+        );
+
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        assert!(en.contains("grid-template-columns:minmax(0,1fr) 78px"));
+        assert!(en.contains("function updateRail(d)"));
+        assert!(en.contains("railLogin"));
+        assert!(en.contains("login_item_installed"));
+        assert!(en.contains("setTimeout(function(){"));
+        assert!(en.contains("},2500);"));
     }
 
     #[test]

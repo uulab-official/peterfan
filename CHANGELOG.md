@@ -18,6 +18,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **WebView 초기 업데이트 안정화** — 대시보드가 준비되기 전에 전달된 metrics
   payload를 보관하고, WebView ready 신호에서 즉시 다시 갱신해 값이 `—`로 남는
   빈 화면 상태를 방지함.
+- **팝오버 레이아웃/레일 UX 개선** — 왼쪽 대시보드 폭을 넓히고, 오른쪽 버튼
+  라벨·활성 상태·업데이트 확인 피드백·상세 창 포커스를 실제 기능 흐름에 맞게
+  정리함.
 
 ### Documentation
 - **제품 로드맵 재정리** — 예전 v0.x 중심 체크리스트를 현재 v1.26.x 제품 상태,
