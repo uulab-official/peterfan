@@ -2669,7 +2669,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
         println!();
         println!("{}", render::heading("CPU temperature calibration"));
         print_kv(
-            "  selected avg",
+            "  selected temp",
             &format_temp_opt(probe.selected_average_c, "—"),
         );
         print_kv(
@@ -2683,6 +2683,14 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
         print_kv(
             "  SMC aggregate",
             &format_temp_opt(probe.aggregate_average_c, "not found"),
+        );
+        print_kv(
+            "  CPU hotspot",
+            &format_temp_opt(probe.hotspot_average_c, "not found"),
+        );
+        print_kv(
+            "  hotspot hottest",
+            &format_temp_opt(probe.hotspot_hottest_c, "not found"),
         );
         print_kv(
             "  P-core average",
@@ -2718,6 +2726,17 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                     .join("  "),
             );
         }
+        if !probe.hotspot_keys.is_empty() {
+            print_kv(
+                "  hotspot keys",
+                &probe
+                    .hotspot_keys
+                    .iter()
+                    .map(|r| format!("{}={:.1}°C", r.key, r.value_c))
+                    .collect::<Vec<_>>()
+                    .join("  "),
+            );
+        }
         if !probe.core_keys.is_empty() {
             let p_core_count = probe
                 .core_keys
@@ -2735,7 +2754,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             );
         }
         println!(
-            "    {} selected avg uses the higher of SMC aggregate and CPU summary; live core average is fallback",
+            "    {} selected temp uses the hottest of CPU hotspot, SMC aggregate, and CPU summary; live core average is fallback",
             "→".dimmed()
         );
     }
@@ -3081,7 +3100,7 @@ fn print_temps(temps: &[TempSensor]) {
 
 fn temp_display_label(sensor: &TempSensor) -> &str {
     match sensor.id.as_str() {
-        "cpu.die" => "Average",
+        "cpu.die" => "Temperature",
         "cpu.die.hot" => "Hottest",
         _ => &sensor.label,
     }
@@ -3118,6 +3137,8 @@ fn cpu_temperature_probe_json(probe: &peterfan_platform::CpuTemperatureProbe) ->
         "selected_hottest_c": probe.selected_hottest_c,
         "summary_average_c": probe.summary_average_c,
         "aggregate_average_c": probe.aggregate_average_c,
+        "hotspot_average_c": probe.hotspot_average_c,
+        "hotspot_hottest_c": probe.hotspot_hottest_c,
         "performance_core_average_c": probe.performance_core_average_c,
         "all_core_average_c": probe.all_core_average_c,
         "core_hottest_c": probe.core_hottest_c,
@@ -3127,10 +3148,13 @@ fn cpu_temperature_probe_json(probe: &peterfan_platform::CpuTemperatureProbe) ->
         "aggregate_keys": probe.aggregate_keys.iter().map(|r| {
             serde_json::json!({ "key": r.key, "value_c": r.value_c })
         }).collect::<Vec<_>>(),
+        "hotspot_keys": probe.hotspot_keys.iter().map(|r| {
+            serde_json::json!({ "key": r.key, "value_c": r.value_c })
+        }).collect::<Vec<_>>(),
         "core_keys": probe.core_keys.iter().map(|r| {
             serde_json::json!({ "key": r.key, "class": r.class, "value_c": r.value_c })
         }).collect::<Vec<_>>(),
-        "selection_policy": "max_smc_aggregate_cpu_summary_then_live_core_average_fallback",
+        "selection_policy": "max_cpu_hotspot_smc_aggregate_cpu_summary_then_live_core_average_fallback",
     })
 }
 
@@ -4015,12 +4039,12 @@ mod tests {
     }
 
     #[test]
-    fn temp_display_label_normalizes_cached_cpu_average_labels() {
+    fn temp_display_label_normalizes_cached_cpu_temperature_labels() {
         let cpu = temp("cpu.die", "CPU", SensorKind::Cpu, 43.0);
         let hot = temp("cpu.die.hot", "CPU hottest", SensorKind::Cpu, 45.0);
         let ssd = temp("ssd", "SSD", SensorKind::Storage, 33.0);
 
-        assert_eq!(super::temp_display_label(&cpu), "Average");
+        assert_eq!(super::temp_display_label(&cpu), "Temperature");
         assert_eq!(super::temp_display_label(&hot), "Hottest");
         assert_eq!(super::temp_display_label(&ssd), "SSD");
     }
@@ -4039,6 +4063,8 @@ mod tests {
             selected_hottest_c: Some(78.0),
             summary_average_c: Some(75.0),
             aggregate_average_c: Some(75.0),
+            hotspot_average_c: Some(77.0),
+            hotspot_hottest_c: Some(78.0),
             performance_core_average_c: Some(65.0),
             all_core_average_c: Some(64.0),
             core_hottest_c: Some(78.0),
@@ -4049,6 +4075,10 @@ mod tests {
             aggregate_keys: vec![peterfan_platform::CpuTemperatureKeyReading {
                 key: "TV0s".to_string(),
                 value_c: 75.0,
+            }],
+            hotspot_keys: vec![peterfan_platform::CpuTemperatureKeyReading {
+                key: "TVD0".to_string(),
+                value_c: 78.0,
             }],
             core_keys: vec![peterfan_platform::CpuTemperatureCoreReading {
                 key: "Tf04".to_string(),
@@ -4061,10 +4091,11 @@ mod tests {
         assert_eq!(json["selected_average_c"], 75.0);
         assert_eq!(
             json["selection_policy"],
-            "max_smc_aggregate_cpu_summary_then_live_core_average_fallback"
+            "max_cpu_hotspot_smc_aggregate_cpu_summary_then_live_core_average_fallback"
         );
         assert_eq!(json["summary_keys"][0]["key"], "TCDX");
         assert_eq!(json["aggregate_keys"][0]["key"], "TV0s");
+        assert_eq!(json["hotspot_keys"][0]["key"], "TVD0");
         assert_eq!(json["core_keys"][0]["class"], "performance");
     }
 

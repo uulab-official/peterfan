@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.72] — CPU hotspot 대표 온도 보정
+
+### Fixed
+- **CPU 온도가 75°C 근처에서 낮게 보이던 문제 수정** — 로컬 Mac15,10
+  M3 Max SMC 샘플에서 짧은 부하에도 `TV*` aggregate 평균은 74~75°C 근처에
+  머무는 반면 `TVD0`/`TCMb` CPU die/hotspot 키는 83~88°C까지 실제 부하를
+  따라가는 것을 확인하고, 대표 `cpu.die` 온도 후보에 hotspot 평균/최고를
+  반영함.
+- **온도 라벨 의미 정리** — 메뉴바/CLI 표시를 `CPU 평균`에서 `CPU 온도`로
+  바꾸고, `doctor` 텍스트/JSON에 `hotspot_average_c`,
+  `hotspot_hottest_c`, `hotspot_keys`를 추가해 외부 앱과 비교할 때 어떤
+  센서가 선택됐는지 바로 볼 수 있게 함.
+
 ## [1.26.71] — 고급 릴리즈 무결성 검증
 
 ### Added
