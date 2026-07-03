@@ -3476,6 +3476,7 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
                 "asset_url": release.asset_url,
                 "archive_url": release.archive_url,
                 "dmg_url": release.dmg_url,
+                "checksum_url": release.checksum_url,
             })
         );
         return Ok(());
@@ -3496,6 +3497,14 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
         if let Some(url) = &release.asset_url {
             println!("  {}", url.dimmed());
         }
+        if release.checksum_url.is_some() {
+            println!(
+                "  integrity: {}",
+                "checksums.txt + codesign + notarization".green()
+            );
+        } else {
+            println!("  integrity: {}", "missing checksums.txt".yellow());
+        }
     } else {
         println!("  {} already up to date", "✓".green());
     }
@@ -3509,15 +3518,15 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
             println!("  {} nothing to install", "✓".green());
             return Ok(());
         }
-        let Some(asset_url) = release.asset_url.as_deref() else {
+        if release.asset_url.is_none() {
             anyhow::bail!(
                 "release {} has no macOS app update asset; open {}",
                 release.tag,
                 release.html_url
             );
-        };
+        }
         println!("  {} downloading and installing update…", "→".cyan());
-        install_update(asset_url)?;
+        install_update(&release)?;
         println!(
             "  {} update queued; PeterFan will relaunch after the current app quits",
             "✓".green()
@@ -3547,12 +3556,12 @@ fn open_release_page(url: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn install_update(asset_url: &str) -> Result<()> {
-    peterfan_platform::updater::download_and_install(asset_url).map_err(anyhow::Error::msg)
+fn install_update(release: &peterfan_platform::updater::ReleaseInfo) -> Result<()> {
+    peterfan_platform::updater::download_and_install_release(release).map_err(anyhow::Error::msg)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn install_update(_asset_url: &str) -> Result<()> {
+fn install_update(_release: &peterfan_platform::updater::ReleaseInfo) -> Result<()> {
     anyhow::bail!("OTA app installation is macOS-only; use the release URL instead")
 }
 

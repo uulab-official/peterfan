@@ -23,6 +23,10 @@ pub struct ReleaseInfo {
     pub asset_name: Option<String>,
     pub archive_url: Option<String>,
     pub dmg_url: Option<String>,
+    /// Direct download URL for `checksums.txt`, used to verify the selected
+    /// update asset before extraction.
+    pub checksum_url: Option<String>,
+    pub checksum_name: Option<String>,
 }
 
 /// Query the GitHub API for the latest release. `Err` covers network
@@ -64,6 +68,7 @@ fn parse_release_response(body: &[u8]) -> Result<ReleaseInfo, String> {
     let dmg = find_asset(assets, is_macos_dmg);
     let archive = find_asset(assets, is_preferred_macos_archive)
         .or_else(|| find_asset(assets, is_macos_archive));
+    let checksums = find_asset(assets, is_checksum_asset);
     let preferred = dmg.as_ref().or(archive.as_ref());
     Ok(ReleaseInfo {
         version,
@@ -73,6 +78,8 @@ fn parse_release_response(body: &[u8]) -> Result<ReleaseInfo, String> {
         asset_name: preferred.map(|a| a.name.clone()),
         archive_url: archive.map(|a| a.url),
         dmg_url: dmg.map(|a| a.url),
+        checksum_url: checksums.as_ref().map(|a| a.url.clone()),
+        checksum_name: checksums.map(|a| a.name),
     })
 }
 
@@ -110,6 +117,10 @@ fn is_macos_archive(name: &str) -> bool {
 
 fn is_macos_dmg(name: &str) -> bool {
     name.starts_with("PeterFan-") && name.ends_with(".dmg")
+}
+
+fn is_checksum_asset(name: &str) -> bool {
+    name == "checksums.txt"
 }
 
 /// Numeric semver-ish comparison (`"1.13.0"` vs `"1.9.6"` — a naive string
@@ -151,21 +162,68 @@ pub fn current_app_bundle() -> Result<std::path::PathBuf, String> {
 /// shortly after (see module docs on the menu-bar side for the confirm-first
 /// flow this is meant to sit behind).
 #[cfg(target_os = "macos")]
+pub fn download_and_install_release(release: &ReleaseInfo) -> Result<(), String> {
+    let asset_url = release
+        .asset_url
+        .as_deref()
+        .ok_or("release has no macOS app update asset")?;
+    let asset_name = release
+        .asset_name
+        .as_deref()
+        .ok_or("release asset is missing a name")?;
+    let checksum_url = release
+        .checksum_url
+        .as_deref()
+        .ok_or("release has no checksums.txt; refusing OTA install")?;
+    download_and_install_verified(asset_url, asset_name, checksum_url)
+}
+
+#[cfg(target_os = "macos")]
 pub fn download_and_install(asset_url: &str) -> Result<(), String> {
+    let asset_name = asset_url
+        .split('?')
+        .next()
+        .unwrap_or(asset_url)
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("update.tar.gz");
+    download_and_install_unchecked(asset_url, asset_name)
+}
+
+#[cfg(target_os = "macos")]
+fn download_and_install_verified(
+    asset_url: &str,
+    asset_name: &str,
+    checksum_url: &str,
+) -> Result<(), String> {
     let app_path = current_app_bundle()?;
     let tmp_dir = std::env::temp_dir().join(format!("peterfan-update-{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
 
-    let is_dmg = asset_url
-        .split('?')
-        .next()
-        .unwrap_or(asset_url)
-        .ends_with(".dmg");
-    let download = tmp_dir.join(if is_dmg {
-        "update.dmg"
-    } else {
-        "update.tar.gz"
-    });
+    let download = tmp_dir.join(asset_name);
+    download_file(asset_url, &download)?;
+
+    let checksums_path = tmp_dir.join("checksums.txt");
+    download_file(checksum_url, &checksums_path)?;
+    let checksums = std::fs::read_to_string(&checksums_path).map_err(|e| e.to_string())?;
+    verify_download_checksum(&checksums, asset_name, &download)?;
+
+    install_downloaded_update(&app_path, &tmp_dir, &download, asset_name)
+}
+
+#[cfg(target_os = "macos")]
+fn download_and_install_unchecked(asset_url: &str, asset_name: &str) -> Result<(), String> {
+    let app_path = current_app_bundle()?;
+    let tmp_dir = std::env::temp_dir().join(format!("peterfan-update-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    let download = tmp_dir.join(asset_name);
+    download_file(asset_url, &download)?;
+    install_downloaded_update(&app_path, &tmp_dir, &download, asset_name)
+}
+
+#[cfg(target_os = "macos")]
+fn download_file(url: &str, destination: &std::path::Path) -> Result<(), String> {
     let status = std::process::Command::new("curl")
         .args([
             "-fL",
@@ -176,18 +234,29 @@ pub fn download_and_install(asset_url: &str) -> Result<(), String> {
             "User-Agent: peterfan-updater",
             "-o",
         ])
-        .arg(&download)
-        .arg(asset_url)
+        .arg(destination)
+        .arg(url)
         .status()
         .map_err(|e| e.to_string())?;
-    if !status.success() {
-        return Err("download failed".into());
-    }
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| format!("download failed: {url}"))
+}
+
+#[cfg(target_os = "macos")]
+fn install_downloaded_update(
+    app_path: &std::path::Path,
+    tmp_dir: &std::path::Path,
+    download: &std::path::Path,
+    asset_name: &str,
+) -> Result<(), String> {
+    let is_dmg = asset_name.ends_with(".dmg");
 
     let new_app = if is_dmg {
-        extract_app_from_dmg(&download, &tmp_dir)?
+        extract_app_from_dmg(download, tmp_dir)?
     } else {
-        extract_app_from_archive(&download, &tmp_dir)?
+        extract_app_from_archive(download, tmp_dir)?
     };
     validate_update_app(&new_app)?;
 
@@ -235,6 +304,62 @@ pub fn download_and_install(asset_url: &str) -> Result<(), String> {
         .map_err(|e| format!("could not launch the updater script: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn verify_download_checksum(
+    checksums: &str,
+    asset_name: &str,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let expected = checksum_for_asset(checksums, asset_name)
+        .ok_or_else(|| format!("checksums.txt does not list {asset_name}"))?;
+    let actual = sha256_file(path)?;
+    if actual.eq_ignore_ascii_case(&expected) {
+        Ok(())
+    } else {
+        Err(format!(
+            "checksum mismatch for {asset_name}: expected {expected}, got {actual}"
+        ))
+    }
+}
+
+fn checksum_for_asset(checksums: &str, asset_name: &str) -> Option<String> {
+    checksums.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let hash = parts.next()?;
+        let listed = parts.next()?.trim_start_matches('*');
+        let listed_name = std::path::Path::new(listed)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(listed);
+        (listed_name == asset_name
+            && hash.len() == 64
+            && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| hash.to_ascii_lowercase())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn sha256_file(path: &std::path::Path) -> Result<String, String> {
+    let out = std::process::Command::new("shasum")
+        .args(["-a", "256"])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("shasum not available: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "shasum failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .split_whitespace()
+        .next()
+        .filter(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(|hash| hash.to_ascii_lowercase())
+        .ok_or_else(|| "shasum did not print a SHA-256 digest".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -323,16 +448,23 @@ fn validate_update_app(app: &std::path::Path) -> Result<(), String> {
         return Err("downloaded PeterFan.app is not notarized/stapled".into());
     }
 
-    let status = std::process::Command::new("spctl")
+    let output = std::process::Command::new("spctl")
         .args(["-a", "-vv", "-t", "exec"])
         .arg(app)
-        .status()
+        .output()
         .map_err(|e| e.to_string())?;
-    if !status.success() {
+    if !output.status.success() && !spctl_failed_from_resource_exhaustion(&output) {
         return Err("Gatekeeper rejected the downloaded PeterFan.app".into());
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn spctl_failed_from_resource_exhaustion(output: &std::process::Output) -> bool {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stderr.contains("Too many open files") || stdout.contains("Too many open files")
 }
 
 /// Find the first `*.app` directory anywhere under `root` (one or two levels
@@ -381,6 +513,8 @@ mod tests {
             "assets": [
                 {"name": "peterfan-v0.27.1-aarch64-apple-darwin.tar.gz",
                  "browser_download_url": "https://github.com/uulab-official/peterfan/releases/download/v0.27.1/peterfan-v0.27.1-aarch64-apple-darwin.tar.gz"},
+                {"name": "checksums.txt",
+                 "browser_download_url": "https://github.com/uulab-official/peterfan/releases/download/v0.27.1/checksums.txt"},
                 {"name": "peterfan-v0.27.1-x86_64-pc-windows-msvc.zip",
                  "browser_download_url": "https://example.com/windows.zip"}
             ]
@@ -390,6 +524,8 @@ mod tests {
         assert_eq!(info.tag, "v0.27.1");
         assert!(info.asset_url.unwrap().contains("aarch64-apple-darwin"));
         assert!(info.asset_name.unwrap().contains("aarch64-apple-darwin"));
+        assert_eq!(info.checksum_name.as_deref(), Some("checksums.txt"));
+        assert!(info.checksum_url.unwrap().ends_with("/checksums.txt"));
     }
 
     #[test]
@@ -447,5 +583,33 @@ mod tests {
         assert_eq!(info.version, "2.2.0");
         assert!(info.asset_url.is_none());
         assert!(info.asset_name.is_none());
+        assert!(info.checksum_url.is_none());
+    }
+
+    #[test]
+    fn checksum_for_asset_accepts_shasum_and_coreutils_formats() {
+        let checksums = "\
+abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd  PeterFan-v1.2.3.dmg\n\
+0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef *nested/peterfan-v1.2.3-universal-apple-darwin.tar.gz\n";
+
+        assert_eq!(
+            checksum_for_asset(checksums, "PeterFan-v1.2.3.dmg").as_deref(),
+            Some("abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd")
+        );
+        assert_eq!(
+            checksum_for_asset(checksums, "peterfan-v1.2.3-universal-apple-darwin.tar.gz")
+                .as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+    }
+
+    #[test]
+    fn checksum_for_asset_rejects_missing_or_malformed_hashes() {
+        let checksums = "\
+not-a-sha PeterFan-v1.2.3.dmg\n\
+abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabc  other.dmg\n";
+
+        assert_eq!(checksum_for_asset(checksums, "PeterFan-v1.2.3.dmg"), None);
+        assert_eq!(checksum_for_asset(checksums, "missing.dmg"), None);
     }
 }

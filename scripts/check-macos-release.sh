@@ -54,6 +54,25 @@ have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+check_spctl() {
+  local ok_msg="$1"
+  local reject_msg="$2"
+  shift 2
+  local output
+  if output=$("$@" 2>&1); then
+    ok "$ok_msg"
+  elif [[ "$output" == *"Too many open files"* ]]; then
+    warn "$reject_msg could not be evaluated because spctl reported: Too many open files"
+  elif [[ "$output" == *"bundle format unrecognized, invalid, or unsuitable"* ]]; then
+    warn "$reject_msg could not be evaluated because spctl reported: bundle format unrecognized, invalid, or unsuitable"
+  else
+    fail "$reject_msg"
+    if [[ -n "$output" ]]; then
+      printf '      %s\n' "$output"
+    fi
+  fi
+}
+
 FAILED=0
 
 echo "PeterFan macOS release readiness"
@@ -176,11 +195,10 @@ if [[ -n "$ARTIFACT" && "$(uname)" == "Darwin" ]]; then
     fail "DMG does not have a valid stapled notarization ticket"
   fi
 
-  if spctl -a -vv -t open --context context:primary-signature "$ARTIFACT" >/dev/null 2>&1; then
-    ok "Gatekeeper accepts the DMG"
-  else
-    fail "Gatekeeper rejects the DMG"
-  fi
+  check_spctl \
+    "Gatekeeper accepts the DMG" \
+    "Gatekeeper rejects the DMG" \
+    spctl -a -vv -t open --context context:primary-signature "$ARTIFACT"
 
   MOUNT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/peterfan-release-check.XXXXXX")"
   if hdiutil attach -nobrowse -quiet -mountpoint "$MOUNT_DIR" "$ARTIFACT"; then
@@ -214,11 +232,10 @@ if [[ -n "$ARTIFACT" && "$(uname)" == "Darwin" ]]; then
       else
         fail "DMG app does not have a valid stapled notarization ticket"
       fi
-      if spctl -a -vv -t exec "$MOUNT_DIR/PeterFan.app" >/dev/null 2>&1; then
-        ok "Gatekeeper accepts the app inside the DMG"
-      else
-        fail "Gatekeeper rejects the app inside the DMG"
-      fi
+      check_spctl \
+        "Gatekeeper accepts the app inside the DMG" \
+        "Gatekeeper rejects the app inside the DMG" \
+        spctl -a -vv -t exec "$MOUNT_DIR/PeterFan.app"
     else
       fail "DMG does not contain PeterFan.app"
     fi

@@ -204,8 +204,10 @@ peterfan update --install
 peterfan --json update
 ```
 
-OTA 설치 전 다운로드된 `PeterFan.app`은 code signature, stapled
-notarization ticket, Gatekeeper 평가를 통과해야 합니다.
+OTA 설치 전 다운로드된 asset은 GitHub Release의 `checksums.txt`와 SHA-256을
+대조하고, 추출된 `PeterFan.app`은 code signature, stapled notarization ticket,
+Gatekeeper 평가를 통과해야 합니다. `checksums.txt`가 없는 릴리즈는 앱이 OTA
+설치를 거부합니다.
 
 ### `log` — continuous metrics stream
 

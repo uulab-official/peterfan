@@ -2420,7 +2420,7 @@ fn check_for_updates_interactive() {}
 /// `peterfan_platform::updater::download_and_install`.
 #[cfg(target_os = "macos")]
 fn prompt_update_available(release: &peterfan_platform::updater::ReleaseInfo) {
-    let Some(asset_url) = release.asset_url.clone() else {
+    if release.asset_url.is_none() {
         // No macOS asset on this release — all we can offer is the page.
         let script = format!(
             r#"display dialog "PeterFan {} is available (you have {}), but this release has no macOS download yet." with title "PeterFan Update" buttons {{"OK", "View Release"}} default button "View Release""#,
@@ -2439,7 +2439,7 @@ fn prompt_update_available(release: &peterfan_platform::updater::ReleaseInfo) {
             }
         }
         return;
-    };
+    }
 
     let script = format!(
         r#"display dialog "PeterFan {} is available — you have {}.\n\nUpdate now? PeterFan will quit and relaunch." with title "PeterFan Update" buttons {{"View Release", "Not Now", "Update Now"}} default button "Update Now" cancel button "Not Now""#,
@@ -2456,7 +2456,7 @@ fn prompt_update_available(release: &peterfan_platform::updater::ReleaseInfo) {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     if stdout.contains("Update Now") {
-        match peterfan_platform::updater::download_and_install(&asset_url) {
+        match peterfan_platform::updater::download_and_install_release(release) {
             Ok(()) => QUIT.store(true, Ordering::Relaxed),
             Err(e) => {
                 notify_control_result("Update PeterFan", false, &format!("Update failed: {e}"))

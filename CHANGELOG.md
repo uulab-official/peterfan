@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.70] — OTA 업데이트 무결성 검증 강화
+
+### Added
+- **OTA 다운로드 SHA-256 대조 추가** — `peterfan update --install`과 메뉴바
+  업데이트 설치가 GitHub Release의 `checksums.txt`를 함께 내려받아 선택된
+  `.dmg`/`.tar.gz` asset의 SHA-256을 먼저 대조한 뒤에만 압축 해제와 앱 교체를
+  진행함. `checksums.txt`가 없는 릴리즈는 OTA 설치를 거부함.
+
+### Fixed
+- **Gatekeeper 평가 오류와 실제 reject 구분** — code signature와 stapled
+  notarization ticket 검증은 계속 필수로 유지하면서, macOS `spctl`가 시스템
+  리소스 문제(`Too many open files`)로 자체 평가에 실패하는 경우를 실제 앱
+  거부와 구분해 OTA 설치가 불필요하게 막히지 않도록 함.
+- **업데이트 JSON/CLI 진단 확장** — `peterfan --json update`에 `checksum_url`을
+  포함하고, 일반 출력에는 적용되는 무결성 검증 계층을 표시함.
+- **릴리즈 artifact 검사 안정화** — `scripts/check-macos-release.sh`도
+  `spctl`의 시스템 리소스/평가 오류를 실제 Gatekeeper reject와 구분해, 이미
+  통과한 code signature/stapled notarization 검증 결과를 가리지 않도록 함.
+
 ## [1.26.69] — Macs Fan Control CPU 평균 기준 재보정
 
 ### Fixed
