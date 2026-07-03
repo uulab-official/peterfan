@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.58] — 업데이트 패널 버전 상태 표시
+
+### Added
+- **Update 화면에 현재/최신/상태 표시 추가** — 앱 안에서 `Current`, `Latest`,
+  `Status`를 함께 보여줘, 릴리즈 버전이 올라갔는지 바로 확인할 수 있게 함.
+- **릴리즈 보기 버튼 추가** — 업데이트 확인 후 GitHub 최신 릴리즈 페이지로 바로
+  이동할 수 있게 함.
+
+### Fixed
+- **버전이 올라가지 않는 것처럼 보이던 문제 완화** — 기존 Update 패널은 현재 버전만
+  표시하고 최신 릴리즈 비교 결과를 패널 안에 남기지 않아, 실제 릴리즈가 올라가도
+  화면상 변화가 부족했음. 이제 GitHub latest를 패널에 직접 반영함.
+
+### Changed
+- **로드맵 갱신** — in-app update panel current/latest/check-result 항목을 배포
+  신뢰성 작업 완료 상태로 반영함.
+
 ## [1.26.57] — More 화면에 추가 지표 배치
 
 ### Changed

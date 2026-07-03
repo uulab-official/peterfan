@@ -968,6 +968,13 @@ fn help_text() -> String {
     )
 }
 
+fn open_external_url(url: &str) {
+    if !url.starts_with("https://github.com/uulab-official/peterfan/releases/") {
+        return;
+    }
+    let _ = std::process::Command::new("open").arg(url).status();
+}
+
 fn unsupported_menubar_arg(args: &[String]) -> Option<&str> {
     let mut i = 1;
     while i < args.len() {
@@ -1217,6 +1224,8 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
                 QUIT.store(true, Ordering::Relaxed);
             } else if body == "open_detail" {
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
+            } else if let Some(url) = body.strip_prefix("open:") {
+                open_external_url(url);
             } else if body == "ready" || body == "checkupdates" {
                 PENDING
                     .lock()
@@ -1301,6 +1310,8 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
                 QUIT.store(true, Ordering::Relaxed);
             } else if body == "open_detail" {
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
+            } else if let Some(url) = body.strip_prefix("open:") {
+                open_external_url(url);
             } else if body == "ready" || body == "checkupdates" {
                 PENDING
                     .lock()
@@ -2801,6 +2812,8 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Admin Approval<", ">관리자 승인<")
             .replace(">App<", ">앱<")
             .replace(">Update<", ">업데이트<")
+            .replace(">Current<", ">현재<")
+            .replace(">Latest<", ">최신<")
             .replace(">Auto<", ">자동<")
             .replace(">Silent<", ">저소음<")
             .replace(">Balanced<", ">균형<")
@@ -3024,7 +3037,12 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="rail-panel" id="rail-update-panel">
 <div class="panel-title-row"><div class="panel-title">Updates</div><span class="panel-pill info" id="rail-update-pill">Ready</span></div>
 <div class="panel-copy" id="rail-update-copy">PeterFan is ready to check for updates.</div>
-<div class="panel-actions"><button class="panel-action" id="rail-update-check" onclick="checkAppUpdates(this)">Check Updates</button></div>
+<div class="health-grid" id="update-version-grid">
+<div class="health-row"><span class="health-label">Current</span><span class="health-value" id="update-current-version">—</span></div>
+<div class="health-row"><span class="health-label">Latest</span><span class="health-value" id="update-latest-version">—</span></div>
+<div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result">—</span></div>
+</div>
+<div class="panel-actions" style="margin-top:10px"><button class="panel-action" id="rail-update-check" onclick="checkAppUpdates(this)">Check Updates</button><button class="panel-action secondary" id="update-release-link" onclick="openLatestRelease()" style="display:none">View Release</button></div>
 </div>
 
 <div class="rail-panel" id="rail-settings-panel">
@@ -3149,6 +3167,7 @@ var LANG='__LANG__';
 var SHOW_CURVE_EDITOR='__SHOWCURVE__';
 var FAN_CONTROL_FIX_PENDING=false;
 var APP_UPDATE_CHECK_PENDING=false;
+var APP_UPDATE_STATUS=null;
 if(!('__pf_pending' in window))window.__pf_pending=null;
 function applyPendingUpdate(){
   if(window.__pf&&window.__pf.update&&window.__pf_pending)window.__pf.update(window.__pf_pending);
@@ -3253,6 +3272,86 @@ function setPanelPill(id,text,tone){
   if(!el)return;
   el.textContent=text;
   el.className='panel-pill '+(tone||'');
+}
+function setText(id,text){
+  var el=document.getElementById(id);
+  if(el)el.textContent=text||'—';
+}
+function compareVersions(a,b){
+  function parts(v){
+    return String(v||'').replace(/^v/,'').split('.').slice(0,3).map(function(p){
+      var n=parseInt(p,10);
+      return isNaN(n)?0:n;
+    });
+  }
+  var aa=parts(a),bb=parts(b);
+  for(var i=0;i<3;i++){
+    var av=aa[i]||0,bv=bb[i]||0;
+    if(av<bv)return -1;
+    if(av>bv)return 1;
+  }
+  return 0;
+}
+function renderUpdateStatus(status){
+  if(status)APP_UPDATE_STATUS=status;
+  var s=APP_UPDATE_STATUS||{};
+  var current=s.current||(window.__pf_pending&&window.__pf_pending.app_version)||'';
+  setText('update-current-version',current?('v'+String(current).replace(/^v/,'')):'—');
+  setText('update-latest-version',s.latest?('v'+String(s.latest).replace(/^v/,'')):'—');
+  var result=document.getElementById('update-check-result');
+  var link=document.getElementById('update-release-link');
+  var copy=document.getElementById('rail-update-copy');
+  var pillText=LANG==='ko'?'준비':'Ready';
+  var pillTone='info';
+  var msg=LANG==='ko'?'업데이트 확인을 실행할 수 있습니다.':'PeterFan is ready to check for updates.';
+  if(s.checking){
+    msg=LANG==='ko'?'GitHub 최신 릴리즈를 확인 중입니다.':'Checking the latest GitHub release.';
+    pillText=LANG==='ko'?'확인 중':'Checking';
+    pillTone='info';
+    setText('update-check-result',LANG==='ko'?'확인 중…':'checking…');
+  } else if(s.error){
+    msg=(LANG==='ko'?'업데이트 확인 실패: ':'Update check failed: ')+s.error;
+    pillText=LANG==='ko'?'실패':'Failed';
+    pillTone='warn';
+    setText('update-check-result',LANG==='ko'?'확인 실패':'check failed');
+  } else if(s.latest){
+    var newer=compareVersions(current,s.latest)<0;
+    msg=newer
+      ?(LANG==='ko'?'새 버전을 사용할 수 있습니다.':'A newer PeterFan release is available.')
+      :(LANG==='ko'?'최신 버전을 사용 중입니다.':'You are up to date.');
+    pillText=newer?(LANG==='ko'?'업데이트 있음':'Update'):(LANG==='ko'?'최신':'Current');
+    pillTone=newer?'warn':'ok';
+    setText('update-check-result',newer?(LANG==='ko'?'업데이트 가능':'update available'):(LANG==='ko'?'최신 상태':'up to date'));
+  } else {
+    setText('update-check-result',LANG==='ko'?'대기 중':'ready');
+  }
+  if(copy)copy.textContent=msg;
+  setPanelPill('rail-update-pill',pillText,pillTone);
+  if(link){
+    link.style.display=s.url?'':'none';
+    link.dataset.url=s.url||'';
+    link.textContent=LANG==='ko'?'릴리즈 보기':'View Release';
+  }
+}
+function fetchLatestReleaseStatus(){
+  var current=(window.__pf_pending&&window.__pf_pending.app_version)||'';
+  renderUpdateStatus({current:current,checking:true});
+  return fetch('https://api.github.com/repos/uulab-official/peterfan/releases/latest',{headers:{'Accept':'application/vnd.github+json'}})
+    .then(function(r){
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      return r.json();
+    })
+    .then(function(j){
+      renderUpdateStatus({current:current,latest:String(j.tag_name||'').replace(/^v/,''),tag:j.tag_name||'',url:j.html_url||''});
+    })
+    .catch(function(e){
+      renderUpdateStatus({current:current,error:e&&e.message?e.message:String(e)});
+    });
+}
+function openLatestRelease(){
+  var link=document.getElementById('update-release-link');
+  var url=link&&link.dataset?link.dataset.url:'';
+  if(url)window.ipc.postMessage('open:'+url);
 }
 function runRailAction(action,btn){
   flashRailButton(btn);
@@ -3537,6 +3636,7 @@ function checkAppUpdates(btn){
     btn.disabled=true;
     setButtonLabel(btn,LANG==='ko'?'확인 중…':'Checking…');
   }
+  fetchLatestReleaseStatus();
   window.ipc.postMessage('checkupdates');
   setTimeout(function(){
     APP_UPDATE_CHECK_PENDING=false;
@@ -3818,9 +3918,12 @@ function updateRail(d){
     upd.title=LANG==='ko'?'업데이트 확인':'Check for updates';
     upd.disabled=false;
   }
-  var updCopy=document.getElementById('rail-update-copy');
-  if(updCopy)updCopy.textContent=(LANG==='ko'?'현재 버전 ':'Current version ')+(d.app_version||'');
-  setPanelPill('rail-update-pill',APP_UPDATE_CHECK_PENDING?(LANG==='ko'?'확인 중':'Checking'):(LANG==='ko'?'준비':'Ready'),APP_UPDATE_CHECK_PENDING?'info':'ok');
+  if(APP_UPDATE_STATUS){
+    APP_UPDATE_STATUS.current=d.app_version||APP_UPDATE_STATUS.current;
+    renderUpdateStatus();
+  } else {
+    renderUpdateStatus({current:d.app_version||''});
+  }
   var updCheck=document.getElementById('rail-update-check');
   if(updCheck&&!APP_UPDATE_CHECK_PENDING)updCheck.textContent=LANG==='ko'?'업데이트 확인':'Check Updates';
  var settings=document.getElementById('railSettings');
@@ -4409,6 +4512,23 @@ mod tests {
         assert!(ko.contains(">배터리<"));
         assert!(ko.contains(">네트워크<"));
         assert!(ko.contains("제어 가능한 팬을 찾지 못했습니다"));
+    }
+
+    #[test]
+    fn update_panel_shows_current_latest_and_check_result() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains(r#"id="update-current-version""#));
+        assert!(en.contains(r#"id="update-latest-version""#));
+        assert!(en.contains(r#"id="update-check-result""#));
+        assert!(en.contains(r#"id="update-release-link""#));
+        assert!(en.contains("function compareVersions(a,b)"));
+        assert!(en.contains("function fetchLatestReleaseStatus()"));
+        assert!(en.contains("function renderUpdateStatus(status)"));
+        assert!(en.contains("https://api.github.com/repos/uulab-official/peterfan/releases/latest"));
+        assert!(en.contains("fetchLatestReleaseStatus();"));
+        assert!(en.contains("APP_UPDATE_STATUS.current=d.app_version||APP_UPDATE_STATUS.current;"));
+        assert!(en.contains("d.app_version"));
     }
 
     #[test]
