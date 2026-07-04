@@ -226,16 +226,22 @@ Team ID, code signature, stapled notarization ticket, Gatekeeper 평가를 통�
 peterfan integrity
 peterfan integrity --app /Applications/PeterFan.app
 peterfan integrity --latest
-peterfan integrity --tag v1.26.87
+peterfan integrity --tag v1.26.88
+peterfan integrity --dmg ~/Downloads/PeterFan-v1.26.88.dmg
+peterfan integrity --dmg ~/Downloads/PeterFan-v1.26.88.dmg --checksums ~/Downloads/checksums.txt
+peterfan integrity --dmg ~/Downloads/PeterFan-v1.26.88.dmg --expected-sha256 <sha256>
 peterfan --json integrity
 peterfan --json integrity --latest
+peterfan --json integrity --dmg ~/Downloads/PeterFan-v1.26.88.dmg --checksums ~/Downloads/checksums.txt
 ```
 
 검사 항목은 bundle id(`kr.co.uulab.peterfan`), Developer ID Team ID, code
 signature, stapled notarization ticket, Gatekeeper 평가, bundled `peterfand`
 helper 존재 여부입니다. `--latest`와 `--tag`는 GitHub 릴리즈 산출물까지 내려받아
 GitHub asset digest, `checksums.txt`, DMG trust policy, 내부 앱 무결성을 모두
-검증합니다.
+검증합니다. `--dmg`는 이미 내려받은 로컬 산출물을 네트워크 없이 검증하며,
+`--checksums` 또는 `--expected-sha256`를 같이 넘기면 파일 해시까지 고정해서
+확인합니다.
 
 ### `log` — continuous metrics stream
 

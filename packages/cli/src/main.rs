@@ -218,6 +218,15 @@ enum Command {
         /// App bundle to verify (default: running PeterFan.app, then /Applications/PeterFan.app).
         #[arg(long)]
         app: Option<PathBuf>,
+        /// Local release artifact to verify without network access.
+        #[arg(long)]
+        dmg: Option<PathBuf>,
+        /// Optional checksums.txt to verify the local release artifact against.
+        #[arg(long)]
+        checksums: Option<PathBuf>,
+        /// Optional expected SHA-256 digest for the local release artifact.
+        #[arg(long)]
+        expected_sha256: Option<String>,
         /// Download and verify the latest GitHub Release asset.
         #[arg(long)]
         latest: bool,
@@ -482,7 +491,14 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::UninstallDaemon { dry_run } => cmd_uninstall_daemon(dry_run),
         Command::Watch { interval } => cmd_watch(mock, interval),
         Command::Update { install, open } => cmd_update(json, install, open),
-        Command::Integrity { app, latest, tag } => cmd_integrity(json, app, latest, tag),
+        Command::Integrity {
+            app,
+            dmg,
+            checksums,
+            expected_sha256,
+            latest,
+            tag,
+        } => cmd_integrity(json, app, dmg, checksums, expected_sha256, latest, tag),
         Command::Alert {
             cpu,
             memory,
@@ -3660,9 +3676,32 @@ fn install_update(_release: &peterfan_platform::updater::ReleaseInfo) -> Result<
 fn cmd_integrity(
     json: bool,
     app: Option<PathBuf>,
+    dmg: Option<PathBuf>,
+    checksums: Option<PathBuf>,
+    expected_sha256: Option<String>,
     latest: bool,
     tag: Option<String>,
 ) -> Result<()> {
+    if let Some(dmg) = dmg {
+        if app.is_some() || latest || tag.is_some() {
+            anyhow::bail!("--dmg cannot be combined with --app, --latest, or --tag");
+        }
+        let report = peterfan_platform::updater::verify_local_artifact_integrity(
+            &dmg,
+            checksums.as_deref(),
+            expected_sha256.as_deref(),
+        );
+        if json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            return Ok(());
+        }
+        print_artifact_integrity_report(&report);
+        return Ok(());
+    }
+    if checksums.is_some() || expected_sha256.is_some() {
+        anyhow::bail!("--checksums and --expected-sha256 require --dmg");
+    }
+
     if latest || tag.is_some() {
         if app.is_some() {
             anyhow::bail!("--app cannot be combined with --latest or --tag");
@@ -3694,6 +3733,42 @@ fn cmd_integrity(
 
     print_app_integrity_report(&report);
     Ok(())
+}
+
+fn print_artifact_integrity_report(report: &peterfan_platform::updater::ArtifactIntegrityReport) {
+    println!("{}", render::heading("PeterFan artifact integrity"));
+    print_kv("Artifact", &report.path);
+    print_kv("Asset", &report.asset_name);
+    if let Some(sha) = report.asset_sha256.as_deref() {
+        print_kv("SHA-256", sha);
+    }
+    println!();
+    for check in &report.checks {
+        print_check_detail(&check.name, check.ok, &check.detail);
+    }
+    if let Some(app) = report.app.as_ref() {
+        println!();
+        println!("{}", render::heading("App inside artifact"));
+        if let Some(version) = app.version.as_deref() {
+            print_kv("Version", &format!("v{version}"));
+        }
+        if let Some(bundle_id) = app.bundle_id.as_deref() {
+            print_kv("Bundle ID", bundle_id);
+        }
+        if let Some(team_id) = app.team_id.as_deref() {
+            print_kv("Team ID", team_id);
+        }
+        println!();
+        for check in &app.checks {
+            print_check_detail(&check.name, check.ok, &check.detail);
+        }
+    }
+    println!();
+    if report.ok {
+        println!("  {} local artifact integrity verified", "✓".green().bold());
+    } else {
+        println!("  {} artifact integrity needs attention", "✗".red().bold());
+    }
 }
 
 fn print_app_integrity_report(report: &peterfan_platform::updater::AppIntegrityReport) {

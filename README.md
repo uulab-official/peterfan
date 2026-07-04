@@ -36,7 +36,7 @@ It combines:
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
 | Automation | JSON output, local HTTP API, shell completions |
 | Updates | GitHub Release checks from CLI and menu-bar app |
-| Integrity | Installed-app and GitHub release artifact verification for SHA-256, bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |
+| Integrity | Installed-app, GitHub release, and offline local DMG verification for SHA-256, bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |
 | Windows | Basic system metrics; fan/sensor control is planned |
 
 When PeterFan cannot read a real sensor, it labels data as simulated rather than

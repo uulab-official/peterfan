@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.88] — 로컬 릴리즈 산출물 무결성 검증 추가
+
+### Added
+- **`peterfan integrity --dmg` 추가** — 이미 내려받은 `PeterFan-vX.Y.Z.dmg`를
+  네트워크 없이 검증함. 선택적으로 `--checksums checksums.txt`와
+  `--expected-sha256 <hex>`를 함께 넘기면 파일 해시를 대조하고, 이어서 DMG
+  서명/공증/Gatekeeper와 내부 `PeterFan.app`의 bundle id/Team ID/code
+  signature/공증/Gatekeeper/helper까지 한 번에 확인함.
+
 ## [1.26.87] — 릴리즈 산출물 무결성 검증 추가
 
 ### Added

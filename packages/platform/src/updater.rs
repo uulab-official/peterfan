@@ -95,6 +95,48 @@ impl ReleaseIntegrityReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ArtifactIntegrityReport {
+    pub path: String,
+    pub asset_name: String,
+    pub asset_sha256: Option<String>,
+    pub ok: bool,
+    pub checks: Vec<IntegrityCheck>,
+    pub app: Option<AppIntegrityReport>,
+}
+
+impl ArtifactIntegrityReport {
+    fn new(asset: &std::path::Path) -> Self {
+        Self {
+            path: asset.display().to_string(),
+            asset_name: asset
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("artifact")
+                .to_string(),
+            asset_sha256: None,
+            ok: false,
+            checks: Vec::new(),
+            app: None,
+        }
+    }
+
+    fn push(&mut self, name: impl Into<String>, ok: bool, detail: impl Into<String>) {
+        self.checks.push(IntegrityCheck {
+            name: name.into(),
+            ok,
+            detail: detail.into(),
+        });
+    }
+
+    fn finish(mut self) -> Self {
+        self.ok = !self.checks.is_empty()
+            && self.checks.iter().all(|check| check.ok)
+            && self.app.as_ref().map(|app| app.ok).unwrap_or(false);
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReleaseInfo {
     /// Without the leading `v`, e.g. `"1.13.0"`.
@@ -528,6 +570,127 @@ pub fn verify_release_integrity(release: &ReleaseInfo) -> ReleaseIntegrityReport
     let mut report = ReleaseIntegrityReport::new(release);
     report.push(
         "macOS release integrity",
+        false,
+        "release artifact integrity checks are only available on macOS",
+    );
+    report.finish()
+}
+
+#[cfg(target_os = "macos")]
+pub fn verify_local_artifact_integrity(
+    asset: &std::path::Path,
+    checksums: Option<&std::path::Path>,
+    expected_sha256: Option<&str>,
+) -> ArtifactIntegrityReport {
+    let mut report = ArtifactIntegrityReport::new(asset);
+    let asset_name = report.asset_name.clone();
+
+    if !asset.is_file() {
+        report.push("artifact exists", false, "release artifact was not found");
+        return report.finish();
+    }
+    report.push("artifact exists", true, asset.display().to_string());
+
+    let actual_sha = sha256_file(asset).ok();
+    report.asset_sha256 = actual_sha.clone();
+    if let Some(expected) = expected_sha256 {
+        let ok = actual_sha
+            .as_deref()
+            .is_some_and(|actual| actual.eq_ignore_ascii_case(expected));
+        report.push(
+            "expected SHA-256",
+            ok,
+            actual_sha
+                .as_deref()
+                .map(|actual| format!("expected {expected}, got {actual}"))
+                .unwrap_or_else(|| format!("expected {expected}, but SHA-256 failed")),
+        );
+    } else if let Some(actual) = actual_sha.as_deref() {
+        report.push("SHA-256", true, actual);
+    } else {
+        report.push("SHA-256", false, "could not compute SHA-256");
+    }
+
+    if let Some(checksums_path) = checksums {
+        if !checksums_path.is_file() {
+            report.push("checksums.txt", false, "checksums.txt was not found");
+        } else {
+            match std::fs::read_to_string(checksums_path) {
+                Ok(text) => match verify_download_checksum(&text, &asset_name, asset) {
+                    Ok(()) => report.push("checksums.txt asset hash", true, &asset_name),
+                    Err(err) => report.push("checksums.txt asset hash", false, err),
+                },
+                Err(err) => report.push("checksums.txt", false, err.to_string()),
+            }
+        }
+    }
+
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "peterfan-artifact-integrity-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    if let Err(err) = std::fs::create_dir_all(&tmp_dir) {
+        report.push(
+            "workspace",
+            false,
+            format!("could not create temp dir: {err}"),
+        );
+        return report.finish();
+    }
+
+    let app_path = if asset_name.ends_with(".dmg") {
+        match validate_update_dmg(asset) {
+            Ok(()) => report.push(
+                "DMG trust policy",
+                true,
+                "signature, notarization, Gatekeeper",
+            ),
+            Err(err) => report.push("DMG trust policy", false, err),
+        }
+        match extract_app_from_dmg(asset, &tmp_dir) {
+            Ok(path) => Some(path),
+            Err(err) => {
+                report.push("extract PeterFan.app", false, err);
+                None
+            }
+        }
+    } else if asset_name.ends_with(".tar.gz") {
+        report.push("DMG trust policy", true, "not a DMG asset; skipped");
+        match extract_app_from_archive(asset, &tmp_dir) {
+            Ok(path) => Some(path),
+            Err(err) => {
+                report.push("extract PeterFan.app", false, err);
+                None
+            }
+        }
+    } else {
+        report.push(
+            "artifact format",
+            false,
+            "expected PeterFan .dmg or macOS .tar.gz release artifact",
+        );
+        None
+    };
+
+    if let Some(app_path) = app_path {
+        report.push("extract PeterFan.app", true, app_path.display().to_string());
+        report.app = Some(verify_app_integrity(&app_path));
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    report.finish()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn verify_local_artifact_integrity(
+    asset: &std::path::Path,
+    _checksums: Option<&std::path::Path>,
+    _expected_sha256: Option<&str>,
+) -> ArtifactIntegrityReport {
+    let mut report = ArtifactIntegrityReport::new(asset);
+    report.push(
+        "macOS artifact integrity",
         false,
         "release artifact integrity checks are only available on macOS",
     );
@@ -1208,6 +1371,29 @@ TeamIdentifier=N99FMBQ662
             AppIntegrityReport::new(std::path::Path::new("/Applications/PeterFan.app"));
         report.push("one", true, "ok");
         report.push("two", true, "ok");
+        assert!(report.finish().ok);
+    }
+
+    #[test]
+    fn artifact_integrity_report_ok_requires_artifact_checks_and_app_ok() {
+        let artifact = std::path::Path::new("/tmp/PeterFan-v1.2.3.dmg");
+
+        let mut report = ArtifactIntegrityReport::new(artifact);
+        report.push("artifact", true, "ok");
+        assert!(!report.finish().ok);
+
+        let mut bad_app = AppIntegrityReport::new(std::path::Path::new("/tmp/PeterFan.app"));
+        bad_app.push("app", false, "bad");
+        let mut report = ArtifactIntegrityReport::new(artifact);
+        report.push("artifact", true, "ok");
+        report.app = Some(bad_app.finish());
+        assert!(!report.finish().ok);
+
+        let mut good_app = AppIntegrityReport::new(std::path::Path::new("/tmp/PeterFan.app"));
+        good_app.push("app", true, "ok");
+        let mut report = ArtifactIntegrityReport::new(artifact);
+        report.push("artifact", true, "ok");
+        report.app = Some(good_app.finish());
         assert!(report.finish().ok);
     }
 }
