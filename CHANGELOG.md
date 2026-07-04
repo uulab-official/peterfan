@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.85] — 상단 온도는 CPU 평균으로 정리
+
+### Changed
+- **메뉴바 온도 기본값을 `CPU Core Average`로 복귀** — 상단 메뉴바에는
+  일상적으로 보기 쉬운 CPU 평균만 기본 표시하고, `CPU Hottest`와 raw SMC/IOHID
+  센서는 상세 목록과 전체 센서 목록에 계속 노출함.
+- **온도 metric 라벨 정리** — 메뉴바 표시 항목 이름을 `CPU Hottest`/`CPU 최고`에서
+  `CPU Average`/`CPU 평균`으로 바꿔 상단 숫자의 의미를 분명히 함.
+
 ## [1.26.84] — 전체 센서 이름 일반화
 
 ### Changed

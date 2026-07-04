@@ -253,7 +253,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             language: "Language",
             show_cpu: "CPU",
             show_memory: "Memory",
-            show_temperature: "CPU Hottest",
+            show_temperature: "CPU Average",
             show_fan: "Fan",
             show_network: "Network",
             style_number: "Number",
@@ -279,7 +279,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             language: "언어",
             show_cpu: "CPU",
             show_memory: "메모리",
-            show_temperature: "CPU 최고",
+            show_temperature: "CPU 평균",
             show_fan: "팬",
             show_network: "네트워크",
             style_number: "숫자",
@@ -5203,11 +5203,11 @@ mod tests {
     }
 
     #[test]
-    fn menu_bar_temperature_metric_names_cpu_hottest() {
-        assert_eq!(strings(ResolvedLanguage::Ko).show_temperature, "CPU 최고");
+    fn menu_bar_temperature_metric_names_cpu_average() {
+        assert_eq!(strings(ResolvedLanguage::Ko).show_temperature, "CPU 평균");
         assert_eq!(
             strings(ResolvedLanguage::En).show_temperature,
-            "CPU Hottest"
+            "CPU Average"
         );
     }
 

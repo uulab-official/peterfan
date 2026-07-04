@@ -241,6 +241,7 @@ pub enum ResolvedLanguage {
 #[serde(rename_all = "kebab-case")]
 pub enum TemperatureSource {
     /// Live Apple Silicon CPU core average (`cpu.die`).
+    #[default]
     CoreAverage,
     /// IOHID PMU tdie average, often close to iStat-style die readings.
     IohidTdie,
@@ -249,7 +250,6 @@ pub enum TemperatureSource {
     /// SMC `TV*` aggregate, matching some Macs Fan Control views.
     SmcAggregate,
     /// Hottest CPU-related reading.
-    #[default]
     Hottest,
 }
 
@@ -304,7 +304,7 @@ impl MenubarConfig {
     pub fn is_default(&self) -> bool {
         self.metric == MenubarMetric::Cpu
             && self.display == MenubarDisplay::Both
-            && self.temperature_source == TemperatureSource::Hottest
+            && self.temperature_source == TemperatureSource::CoreAverage
             && !self.setup_prompt_dismissed
             && self.daemon_update_prompt_dismissed_for.is_none()
             && self.daemon_update_prompt_snoozed_until_unix.is_none()
@@ -556,7 +556,7 @@ mod tests {
         assert_eq!(legacy.menubar.display, MenubarDisplay::Graph);
         assert_eq!(
             legacy.menubar.temperature_source,
-            TemperatureSource::Hottest
+            TemperatureSource::CoreAverage
         );
     }
 
