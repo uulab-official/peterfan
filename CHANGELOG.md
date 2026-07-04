@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.80] — CPU 평균 센서 가족 분리
+
+### Fixed
+- **상단 CPU 평균이 `TV*` SMC aggregate에 묶여 실제 코어 평균보다 높게 보이던 문제 수정** —
+  대표 `CPU Core Average`는 live P-core 평균을 우선 사용하고, P-core가 없을 때만
+  전체 core/`TCDX` summary/`TV*` aggregate 순서로 fallback하도록 조정함.
+- **Apple Silicon core key coverage 보강** — 로컬 M3 계열에서 보이는 `Tf1*`~`Tf3*`
+  성능 코어 그룹과 추가 `Te*` 효율 코어 그룹을 평균 후보에 포함해 일부 코어만
+  평균내던 문제를 줄임.
+
+### Changed
+- **온도 후보를 앱에서 구분 가능하게 표시** — `CPU SMC aggregate`, `CPU SMC summary`,
+  `CPU IOHID tdie`를 별도 온도 행으로 노출해 iStat/Macs Fan Control과 비교할 때
+  어떤 센서 계열 차이인지 바로 볼 수 있게 함.
+- **`doctor` 진단 문구 갱신** — selection policy를 새 계산 순서와 일치시켜
+  “PeterFan이 뭘 측정하는지”를 CLI에서도 확인 가능하게 함.
+
 ## [1.26.79] — CPU Core Average 기준을 TV* aggregate로 재정렬
 
 ### Fixed

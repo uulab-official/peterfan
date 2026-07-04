@@ -2768,7 +2768,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             );
         }
         println!(
-            "    {} selected temp follows the SMC TV* CPU Core Average aggregate; hotspot stays in selected hottest",
+            "    {} selected temp follows live CPU core sensors; SMC TV* aggregate is diagnostic/fallback",
             "→".dimmed()
         );
     }
@@ -3168,7 +3168,7 @@ fn cpu_temperature_probe_json(probe: &peterfan_platform::CpuTemperatureProbe) ->
         "core_keys": probe.core_keys.iter().map(|r| {
             serde_json::json!({ "key": r.key, "class": r.class, "value_c": r.value_c })
         }).collect::<Vec<_>>(),
-        "selection_policy": "smc_tv_aggregate_then_performance_core_average_then_all_core_average_then_summary_then_hotspot_fallback",
+        "selection_policy": "performance_core_average_then_all_core_average_then_summary_then_smc_tv_aggregate_fallback_then_hotspot_fallback",
     })
 }
 
@@ -4073,7 +4073,7 @@ mod tests {
     #[test]
     fn cpu_temperature_probe_json_contains_policy_and_key_values() {
         let probe = peterfan_platform::CpuTemperatureProbe {
-            selected_average_c: Some(75.0),
+            selected_average_c: Some(65.0),
             selected_hottest_c: Some(78.0),
             summary_average_c: Some(75.0),
             aggregate_average_c: Some(75.0),
@@ -4102,10 +4102,10 @@ mod tests {
         };
 
         let json = super::cpu_temperature_probe_json(&probe);
-        assert_eq!(json["selected_average_c"], 75.0);
+        assert_eq!(json["selected_average_c"], 65.0);
         assert_eq!(
             json["selection_policy"],
-            "smc_tv_aggregate_then_performance_core_average_then_all_core_average_then_summary_then_hotspot_fallback"
+            "performance_core_average_then_all_core_average_then_summary_then_smc_tv_aggregate_fallback_then_hotspot_fallback"
         );
         assert_eq!(json["summary_keys"][0]["key"], "TCDX");
         assert_eq!(json["aggregate_keys"][0]["key"], "TV0s");

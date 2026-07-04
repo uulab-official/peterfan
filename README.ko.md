@@ -52,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.26.79.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.26.80.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -62,7 +62,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 | 코어 모델(타입, 지표, 커브, 프로파일, 트레이트) | ✅ 구현 및 테스트 완료 |
 | Mock 백엔드(완전히 시뮬레이션된 머신 + 지표) | ✅ 구현 완료 |
 | macOS 하드웨어 정보(`sysctl` 기반 CPU/RAM/OS) | ✅ 실측치, 읽기 전용 |
-| **macOS 온도 & 팬 RPM** | ✅ 실측치 — M3 Pro/Max CPU 대표 온도는 Macs Fan Control의 `CPU Core Average`와 가장 가깝게 움직이는 `TV0s`/`TV1s`/`TVsa`/`TVss` SMC aggregate 우선 기준. `TVD0`/`TCMb` hotspot은 `CPU Hottest`로 분리하고, aggregate가 없을 때만 P-core/전체 core/`TCDX` summary/IOHID `tdie` fallback 사용. 메뉴바 `전체 센서`와 `peterfan temps --all`은 원시 SMC/IOHID 온도 센서를 모두 표시 |
+| **macOS 온도 & 팬 RPM** | ✅ 실측치 — M3 Pro/Max CPU 대표 온도는 live P-core/전체 core 센서 평균을 우선 사용. `TV0s`/`TV1s`/`TVsa`/`TVss` SMC aggregate, `TCDX` summary, IOHID `tdie`, `TVD0`/`TCMb` hotspot은 별도 행/진단값으로 노출해서 iStat/Macs Fan Control과 비교할 때 어떤 센서 계열이 다른지 바로 확인 가능. 메뉴바 `전체 센서`와 `peterfan temps --all`은 원시 SMC/IOHID 온도 센서를 모두 표시 |
 | Windows 온도/팬 정보 읽기(EC) | 🚧 계획 중 |
 | GPU 사용률 | 🔬 조사 완료 — IOReport 연동 자체는 동작하지만, 노출되는 residency 값이 Activity Monitor의 GPU % 값과 일치하지 않아 부정확한 값을 내보내느니 보류함 ([`docs/RESEARCH.md`](./docs/RESEARCH.md)) |
 | 팬 **제어** | ⚙️ SMC 쓰기, **root 권한 필요** (`sudo peterfan fan set N` 또는 데몬 사용). `fan set`은 **RPM을 다시 읽어들여 검증**하므로 가짜 "성공" 메시지가 아니라 진짜 ✓/✗를 확인할 수 있습니다. Intel에서는 검증 완료, Apple Silicon에서는 시도 및 검증되지만(일부 모델은 펌웨어가 이를 무시할 수 있음) |
@@ -172,7 +172,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.26.79
+PeterFan v1.26.80
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
