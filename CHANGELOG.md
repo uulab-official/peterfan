@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.74] — 저부하 CPU 온도 과대 표시 수정
+
+### Fixed
+- **실제 55°C 근처인데 75°C로 보이던 CPU 온도 과대 표시 수정** —
+  v1.26.73에서 추가한 `Tf16`/`Tf26`/`Tf36` 후보가 저부하에서도
+  82~84°C 근처에 머물며 대표 온도를 끌어올리는 것을 확인하고 CPU 대표
+  후보에서 제거함.
+- **저부하/고부하 온도 선택 정책 분리** — 저부하에서는 live core hottest와
+  `TCDX` summary를 우선 사용하고, `TVD0`/`TCMb` hotspot은 70°C 이상으로
+  올라온 실제 부하 상태에서만 대표값에 반영함. `TV*` aggregate는 60~75°C
+  근처에 붙어 있을 수 있어 진단값/최후 fallback으로만 사용함.
+
 ## [1.26.73] — CPU hotspot 후보와 stale 데몬 보정
 
 ### Fixed

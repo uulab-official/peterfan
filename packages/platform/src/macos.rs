@@ -151,10 +151,10 @@ const M3_CPU_SUMMARY_TEMP_KEYS: &[&str] = &["TCDX"];
 const M3_CPU_CORE_AVERAGE_TEMP_KEYS: &[&str] = &["TV0s", "TV1s", "TVsa", "TVss"];
 
 // CPU die/hotspot keys observed on the local Mac15,10 M3 Max. These track
-// sustained load into the 80s while aggregate average keys can stay near 75°C.
-// The `Tf1*/Tf2*/Tf3*` keys move like CPU performance/cluster hotspots; the
-// higher `Tf06`/`Tf46` outliers are intentionally excluded until identified.
-const M3_CPU_HOTSPOT_TEMP_KEYS: &[&str] = &["TVD0", "TCMb", "Tf16", "Tf26", "Tf36"];
+// sustained load into the 80s, but can sit above live core readings at idle, so
+// they are used as the headline only once they cross the active-load floor.
+const M3_CPU_HOTSPOT_TEMP_KEYS: &[&str] = &["TVD0", "TCMb"];
+const CPU_HOTSPOT_ACTIVE_FLOOR_C: f32 = 70.0;
 
 fn deduped_name_average_max<'a, I>(temps: I) -> Option<f32>
 where
@@ -353,20 +353,26 @@ fn apple_silicon_cpu_average_and_hot_from_values(
 ) -> Option<(f32, f32)> {
     let all_core_values: Vec<f32> = cores.iter().map(|sensor| sensor.temp).collect();
     let summary_avg = average_and_hot(summary_values).map(|(avg, _)| avg);
-    let computed_avg = average_and_hot(&all_core_values).map(|(avg, _)| avg);
+    let (computed_avg, computed_hot) = match average_and_hot(&all_core_values) {
+        Some((avg, hot)) => (Some(avg), Some(hot)),
+        None => (None, None),
+    };
     let aggregate_avg = average_and_hot(aggregate_values).map(|(avg, _)| avg);
     let (hotspot_avg, hotspot_hot) = match average_and_hot(hotspot_values) {
         Some((avg, hot)) => (Some(avg), Some(hot)),
         None => (None, None),
     };
-    let avg = [summary_avg, aggregate_avg, hotspot_avg, computed_avg]
+    let active_hotspot_avg = hotspot_avg.filter(|value| *value >= CPU_HOTSPOT_ACTIVE_FLOOR_C);
+    let live_core_headline = computed_hot.or(summary_avg).or(computed_avg);
+    let avg = [active_hotspot_avg, summary_avg, live_core_headline]
         .into_iter()
         .flatten()
-        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))?;
-    let hot = average_and_hot(&all_core_values)
-        .map(|(_, hot)| hot)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .or(aggregate_avg)?;
+    let active_hotspot_hot = hotspot_hot.filter(|value| *value >= CPU_HOTSPOT_ACTIVE_FLOOR_C);
+    let hot = computed_hot
         .into_iter()
-        .chain(hotspot_hot)
+        .chain(active_hotspot_hot)
         .fold(avg, f32::max);
     Some((avg, hot))
 }
@@ -772,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn apple_silicon_cpu_average_prefers_external_core_average() {
+    fn apple_silicon_cpu_temperature_uses_live_core_when_hotspot_is_inactive() {
         let cores = vec![
             super::CpuCoreTemp {
                 class: super::CpuCoreClass::Efficiency,
@@ -797,9 +803,9 @@ mod tests {
                 &cores,
                 &[72.0],
                 &[74.0, 76.0],
-                &[]
+                &[64.0, 66.0]
             ),
-            Some((75.0, 78.0))
+            Some((78.0, 78.0))
         );
     }
 
@@ -874,7 +880,7 @@ mod tests {
 
         assert_eq!(
             super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[], &[74.0, 76.0], &[]),
-            Some((75.0, 78.0))
+            Some((78.0, 78.0))
         );
     }
 
@@ -911,7 +917,7 @@ mod tests {
 
         assert_eq!(
             super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[], &[], &[]),
-            Some((68.5, 78.0))
+            Some((78.0, 78.0))
         );
     }
 
@@ -930,7 +936,7 @@ mod tests {
 
         assert_eq!(
             super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[], &[], &[]),
-            Some((61.0, 62.0))
+            Some((62.0, 62.0))
         );
     }
 
@@ -972,10 +978,7 @@ mod tests {
 
     #[test]
     fn m3_cpu_hotspot_key_map_includes_cpu_die_keys() {
-        assert_eq!(
-            super::M3_CPU_HOTSPOT_TEMP_KEYS,
-            &["TVD0", "TCMb", "Tf16", "Tf26", "Tf36"]
-        );
+        assert_eq!(super::M3_CPU_HOTSPOT_TEMP_KEYS, &["TVD0", "TCMb"]);
     }
 
     #[test]

@@ -2754,7 +2754,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             );
         }
         println!(
-            "    {} selected temp uses the hottest of CPU hotspot, SMC aggregate, and CPU summary; live core average is fallback",
+            "    {} selected temp uses live core/summary at idle, active CPU hotspot above 70°C, and SMC aggregate only as fallback",
             "→".dimmed()
         );
     }
@@ -3154,7 +3154,7 @@ fn cpu_temperature_probe_json(probe: &peterfan_platform::CpuTemperatureProbe) ->
         "core_keys": probe.core_keys.iter().map(|r| {
             serde_json::json!({ "key": r.key, "class": r.class, "value_c": r.value_c })
         }).collect::<Vec<_>>(),
-        "selection_policy": "max_cpu_hotspot_smc_aggregate_cpu_summary_then_live_core_average_fallback",
+        "selection_policy": "live_core_summary_then_active_cpu_hotspot_above_70c_then_smc_aggregate_fallback",
     })
 }
 
@@ -4091,7 +4091,7 @@ mod tests {
         assert_eq!(json["selected_average_c"], 75.0);
         assert_eq!(
             json["selection_policy"],
-            "max_cpu_hotspot_smc_aggregate_cpu_summary_then_live_core_average_fallback"
+            "live_core_summary_then_active_cpu_hotspot_above_70c_then_smc_aggregate_fallback"
         );
         assert_eq!(json["summary_keys"][0]["key"], "TCDX");
         assert_eq!(json["aggregate_keys"][0]["key"], "TV0s");
