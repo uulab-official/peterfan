@@ -52,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.26.89.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.26.90.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -70,7 +70,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 | TUI 시스템 대시보드(ratatui) — CPU/메모리/디스크/네트워크/배터리/프로세스 + 온도/팬/전력 | ✅ 실행 가능 |
 | **메뉴바 앱** — RunCat처럼 CPU 사용량에 따라 더 빠르게/느리게 뛰는 고양이 메뉴바 캐릭터(숫자/캐릭터/둘 다 선택 가능), 상단 온도는 CPU 평균 기준, 로그인/라이선스 없이 바로 쓰는 간결한 팝오버, 호버 시 간단 요약 툴팁, 2분/1시간/1일 히스토리 차트(호버로 정확한 값 + 평균/피크 확인), **각 팬의 실제 범위에 맞춰진 RPM 슬라이더로 팬별 Auto/Manual 제어**, 프로파일/Auto/Rules 제어, Top Processes에서 프로세스 종료, 영어/한국어 지원, 별도의 크기 조절 가능한 상세 창, 라이트/다크 모드 | ✅ 실행 가능 |
 | **데몬**(`peterfand`) — 지속적인 커브 적용 + 종료 시 복원 + 임계 온도 오버라이드 + IPC 서버, LaunchDaemon 설치 지원 | ✅ 실행 가능 |
-| **자동 업데이트 & 무결성** — 메뉴바의 "Check for Updates…"(그리고 `peterfan update`)가 GitHub Releases를 확인하고, GitHub asset digest + `checksums.txt` SHA-256 대조 + UULab Developer ID/Bundle ID + code signature + 공증 ticket 검증 후 제자리에서 설치. `peterfan integrity`로 현재 설치된 앱을, `peterfan integrity --latest`/`--tag`로 GitHub 릴리즈 산출물을, `peterfan integrity --dmg ~/Downloads/PeterFan-vX.Y.Z.dmg --checksums ~/Downloads/checksums.txt`로 내려받은 DMG를, `peterfan integrity --release-dir dist/local-release/vX.Y.Z`로 배포 폴더 전체를 같은 기준으로 검증 가능 | ✅ 실행 가능 |
+| **자동 업데이트 & 무결성** — 메뉴바의 "Check for Updates…"(그리고 `peterfan update`)가 GitHub Releases를 확인하고, GitHub asset digest + `checksums.txt` SHA-256 대조 + UULab Developer ID/Bundle ID + code signature + 공증 ticket 검증 후 제자리에서 설치. `peterfan integrity`로 현재 설치된 앱을, `peterfan integrity --latest`/`--tag`로 GitHub 릴리즈 산출물을, `peterfan integrity --dmg ~/Downloads/PeterFan-vX.Y.Z.dmg --checksums ~/Downloads/checksums.txt`로 내려받은 DMG를, `peterfan integrity --release-dir dist/local-release/vX.Y.Z`로 배포 폴더 전체를 같은 기준으로 검증 가능. 릴리즈 폴더 검증은 DMG/tar.gz/checksums/내부 앱 버전이 서로 어긋나면 실패 | ✅ 실행 가능 |
 | **로컬 HTTP API**(`peterfan serve`) — 연동을 위한 JSON 지표 제공 및 제어 | ✅ 실행 가능 |
 | 데스크톱 GUI(Tauri), 플러그인 | 🗺️ 로드맵 |
 
@@ -172,7 +172,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.26.89
+PeterFan v1.26.90
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max

@@ -3778,6 +3778,9 @@ fn print_release_directory_integrity_report(
         render::heading("PeterFan release directory integrity")
     );
     print_kv("Directory", &report.path);
+    if let Some(version) = report.expected_version.as_deref() {
+        print_kv("Expected version", &format!("v{version}"));
+    }
     if let Some(checksums) = report.checksums.as_deref() {
         print_kv("Checksums", checksums);
     }

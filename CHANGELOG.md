@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.90] — 릴리즈 폴더 버전 일관성 검증 강화
+
+### Added
+- **`peterfan integrity --release-dir` 엄격 모드 강화** — 릴리즈 폴더명/산출물
+  파일명에서 기대 버전을 추론하고, DMG와 universal macOS tar.gz가 모두 존재하는지,
+  `checksums.txt`가 실제 산출물 목록과 정확히 일치하는지, 각 산출물 안의
+  `PeterFan.app` 버전이 기대 버전과 같은지 추가 검증함. 이제 배포 폴더에 오래된
+  파일이나 잘못 섞인 버전이 있으면 성공으로 보이지 않음.
+
 ## [1.26.89] — 릴리즈 폴더 전체 무결성 검증 추가
 
 ### Added

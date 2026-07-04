@@ -141,6 +141,7 @@ impl ArtifactIntegrityReport {
 pub struct ReleaseDirectoryIntegrityReport {
     pub path: String,
     pub ok: bool,
+    pub expected_version: Option<String>,
     pub checksums: Option<String>,
     pub checks: Vec<IntegrityCheck>,
     pub artifacts: Vec<ArtifactIntegrityReport>,
@@ -151,6 +152,7 @@ impl ReleaseDirectoryIntegrityReport {
         Self {
             path: dir.display().to_string(),
             ok: false,
+            expected_version: None,
             checksums: None,
             checks: Vec::new(),
             artifacts: Vec::new(),
@@ -777,6 +779,22 @@ pub fn verify_release_directory_integrity(
     };
     artifacts.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
 
+    let artifact_names = artifacts
+        .iter()
+        .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let inferred_version = infer_release_directory_version(dir, &artifact_names);
+    report.expected_version = inferred_version.clone();
+    match inferred_version.as_deref() {
+        Some(version) => report.push("expected version", true, format!("v{version}")),
+        None => report.push(
+            "expected version",
+            false,
+            "could not infer one release version from directory/artifact names",
+        ),
+    }
+
     if artifacts.is_empty() {
         report.push(
             "release artifacts",
@@ -785,15 +803,51 @@ pub fn verify_release_directory_integrity(
         );
         return report.finish();
     }
+    report.push("release artifacts", true, artifact_names.join(", "));
+
+    let dmg_count = artifact_names
+        .iter()
+        .filter(|name| name.starts_with("PeterFan-") && name.ends_with(".dmg"))
+        .count();
     report.push(
-        "release artifacts",
-        true,
-        artifacts
-            .iter()
-            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
-            .collect::<Vec<_>>()
-            .join(", "),
+        "DMG artifact",
+        dmg_count == 1,
+        format!("found {dmg_count} PeterFan DMG artifact(s)"),
     );
+    let archive_count = artifact_names
+        .iter()
+        .filter(|name| {
+            name.starts_with("peterfan-")
+                && name.contains("universal-apple-darwin")
+                && name.ends_with(".tar.gz")
+        })
+        .count();
+    report.push(
+        "universal macOS archive",
+        archive_count == 1,
+        format!("found {archive_count} universal apple-darwin archive(s)"),
+    );
+
+    if let Some(checksums_path) = checksums.as_deref() {
+        match std::fs::read_to_string(checksums_path) {
+            Ok(text) => {
+                let mut listed = checksum_release_artifact_names(&text);
+                let mut expected = artifact_names.clone();
+                listed.sort();
+                expected.sort();
+                report.push(
+                    "checksums manifest coverage",
+                    listed == expected,
+                    format!(
+                        "listed [{}], found [{}]",
+                        listed.join(", "),
+                        expected.join(", ")
+                    ),
+                );
+            }
+            Err(err) => report.push("checksums manifest coverage", false, err.to_string()),
+        }
+    }
 
     for artifact in artifacts {
         report.artifacts.push(verify_local_artifact_integrity(
@@ -801,6 +855,46 @@ pub fn verify_release_directory_integrity(
             checksums.as_deref(),
             None,
         ));
+    }
+
+    if let Some(expected) = inferred_version.as_deref() {
+        let mismatches = report
+            .artifacts
+            .iter()
+            .filter_map(|artifact| {
+                let name_version = release_artifact_version(&artifact.asset_name);
+                (name_version.as_deref() != Some(expected))
+                    .then(|| format!("{} -> {:?}", artifact.asset_name, name_version))
+            })
+            .collect::<Vec<_>>();
+        report.push(
+            "artifact filename versions",
+            mismatches.is_empty(),
+            if mismatches.is_empty() {
+                format!("all artifacts use v{expected}")
+            } else {
+                mismatches.join(", ")
+            },
+        );
+
+        let app_mismatches = report
+            .artifacts
+            .iter()
+            .filter_map(|artifact| {
+                let app_version = artifact.app.as_ref().and_then(|app| app.version.as_deref());
+                (app_version != Some(expected))
+                    .then(|| format!("{} app -> {:?}", artifact.asset_name, app_version))
+            })
+            .collect::<Vec<_>>();
+        report.push(
+            "app bundle versions",
+            app_mismatches.is_empty(),
+            if app_mismatches.is_empty() {
+                format!("all embedded apps report v{expected}")
+            } else {
+                app_mismatches.join(", ")
+            },
+        );
     }
 
     report.finish()
@@ -824,6 +918,68 @@ fn is_release_artifact_name(name: &str) -> bool {
         || (name.starts_with("peterfan-")
             && name.contains("apple-darwin")
             && name.ends_with(".tar.gz"))
+}
+
+fn infer_release_directory_version(
+    dir: &std::path::Path,
+    artifact_names: &[String],
+) -> Option<String> {
+    let dir_version = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix('v'))
+        .filter(|version| is_semverish(version))
+        .map(ToString::to_string);
+    if dir_version.is_some() {
+        return dir_version;
+    }
+
+    let mut versions = artifact_names
+        .iter()
+        .filter_map(|name| release_artifact_version(name))
+        .collect::<Vec<_>>();
+    versions.sort();
+    versions.dedup();
+    (versions.len() == 1).then(|| versions.remove(0))
+}
+
+fn release_artifact_version(name: &str) -> Option<String> {
+    if let Some(rest) = name
+        .strip_prefix("PeterFan-v")
+        .and_then(|rest| rest.strip_suffix(".dmg"))
+    {
+        return is_semverish(rest).then(|| rest.to_string());
+    }
+    let rest = name.strip_prefix("peterfan-v")?;
+    let version = rest.split('-').next()?;
+    is_semverish(version).then(|| version.to_string())
+}
+
+fn checksum_release_artifact_names(checksums: &str) -> Vec<String> {
+    checksums
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let hash = parts.next()?;
+            if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            let listed = parts.next()?.trim_start_matches('*');
+            let name = std::path::Path::new(listed)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(listed);
+            is_release_artifact_name(name).then(|| name.to_string())
+        })
+        .collect()
+}
+
+fn is_semverish(version: &str) -> bool {
+    let parts = version.split('.').collect::<Vec<_>>();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Locate the `.app` bundle containing the currently running executable
@@ -1474,6 +1630,48 @@ abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabc  other.dmg\n";
         assert!(!is_release_artifact_name("checksums.txt"));
         assert!(!is_release_artifact_name("peterfan-v1.2.3-windows.zip"));
         assert!(!is_release_artifact_name("PeterFan-v1.2.3.zip"));
+    }
+
+    #[test]
+    fn release_version_helpers_infer_directory_and_artifact_versions() {
+        let names = vec![
+            "PeterFan-v1.2.3.dmg".to_string(),
+            "peterfan-v1.2.3-universal-apple-darwin.tar.gz".to_string(),
+        ];
+        assert_eq!(
+            infer_release_directory_version(std::path::Path::new("/tmp/v1.2.3"), &names).as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            infer_release_directory_version(std::path::Path::new("/tmp/release"), &names)
+                .as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            release_artifact_version("PeterFan-v1.2.3.dmg").as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            release_artifact_version("peterfan-v1.2.3-universal-apple-darwin.tar.gz").as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(release_artifact_version("PeterFan-latest.dmg"), None);
+    }
+
+    #[test]
+    fn checksum_release_artifact_names_returns_only_macos_release_assets() {
+        let checksums = "\
+abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd  PeterFan-v1.2.3.dmg\n\
+0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef *nested/peterfan-v1.2.3-universal-apple-darwin.tar.gz\n\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  peterfan-v1.2.3-windows.zip\n";
+
+        assert_eq!(
+            checksum_release_artifact_names(checksums),
+            vec![
+                "PeterFan-v1.2.3.dmg".to_string(),
+                "peterfan-v1.2.3-universal-apple-darwin.tar.gz".to_string(),
+            ]
+        );
     }
 
     #[test]
