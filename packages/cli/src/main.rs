@@ -2768,7 +2768,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             );
         }
         println!(
-            "    {} selected temp uses live core/summary at idle, active CPU hotspot above 70°C, and SMC aggregate only as fallback",
+            "    {} selected temp is the CPU core average; hotspot stays in selected hottest so the menu bar does not show a hotspot as an average",
             "→".dimmed()
         );
     }
@@ -3114,7 +3114,7 @@ fn print_temps(temps: &[TempSensor]) {
 
 fn temp_display_label(sensor: &TempSensor) -> &str {
     match sensor.id.as_str() {
-        "cpu.die" => "Temperature",
+        "cpu.die" => "Core Average",
         "cpu.die.hot" => "Hottest",
         _ => &sensor.label,
     }
@@ -3168,7 +3168,7 @@ fn cpu_temperature_probe_json(probe: &peterfan_platform::CpuTemperatureProbe) ->
         "core_keys": probe.core_keys.iter().map(|r| {
             serde_json::json!({ "key": r.key, "class": r.class, "value_c": r.value_c })
         }).collect::<Vec<_>>(),
-        "selection_policy": "live_core_summary_then_active_cpu_hotspot_above_70c_then_smc_aggregate_fallback",
+        "selection_policy": "performance_core_average_then_all_core_average_then_smc_aggregate_then_summary_then_hotspot_fallback",
     })
 }
 
@@ -4058,7 +4058,7 @@ mod tests {
         let hot = temp("cpu.die.hot", "CPU hottest", SensorKind::Cpu, 45.0);
         let ssd = temp("ssd", "SSD", SensorKind::Storage, 33.0);
 
-        assert_eq!(super::temp_display_label(&cpu), "Temperature");
+        assert_eq!(super::temp_display_label(&cpu), "Core Average");
         assert_eq!(super::temp_display_label(&hot), "Hottest");
         assert_eq!(super::temp_display_label(&ssd), "SSD");
     }
@@ -4105,7 +4105,7 @@ mod tests {
         assert_eq!(json["selected_average_c"], 75.0);
         assert_eq!(
             json["selection_policy"],
-            "live_core_summary_then_active_cpu_hotspot_above_70c_then_smc_aggregate_fallback"
+            "performance_core_average_then_all_core_average_then_smc_aggregate_then_summary_then_hotspot_fallback"
         );
         assert_eq!(json["summary_keys"][0]["key"], "TCDX");
         assert_eq!(json["aggregate_keys"][0]["key"], "TV0s");

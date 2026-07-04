@@ -152,7 +152,7 @@ const M3_CPU_CORE_AVERAGE_TEMP_KEYS: &[&str] = &["TV0s", "TV1s", "TVsa", "TVss"]
 
 // CPU die/hotspot keys observed on the local Mac15,10 M3 Max. These track
 // sustained load into the 80s, but can sit above live core readings at idle, so
-// they are used as the headline only once they cross the active-load floor.
+// they are reported as "CPU Hottest" only; the headline stays a core average.
 const M3_CPU_HOTSPOT_TEMP_KEYS: &[&str] = &["TVD0", "TCMb"];
 const CPU_HOTSPOT_ACTIVE_FLOOR_C: f32 = 70.0;
 
@@ -457,27 +457,39 @@ fn apple_silicon_cpu_average_and_hot_from_values(
     hotspot_values: &[f32],
 ) -> Option<(f32, f32)> {
     let all_core_values: Vec<f32> = cores.iter().map(|sensor| sensor.temp).collect();
-    let summary_avg = average_and_hot(summary_values).map(|(avg, _)| avg);
-    let (computed_avg, computed_hot) = match average_and_hot(&all_core_values) {
+    let (summary_avg, summary_hot) = match average_and_hot(summary_values) {
         Some((avg, hot)) => (Some(avg), Some(hot)),
         None => (None, None),
     };
+    let (all_core_avg, computed_hot) = match average_and_hot(&all_core_values) {
+        Some((avg, hot)) => (Some(avg), Some(hot)),
+        None => (None, None),
+    };
+    let performance_values: Vec<f32> = cores
+        .iter()
+        .filter(|sensor| sensor.class == CpuCoreClass::Performance)
+        .map(|sensor| sensor.temp)
+        .collect();
+    let performance_avg = average_and_hot(&performance_values).map(|(avg, _)| avg);
     let aggregate_avg = average_and_hot(aggregate_values).map(|(avg, _)| avg);
     let (hotspot_avg, hotspot_hot) = match average_and_hot(hotspot_values) {
         Some((avg, hot)) => (Some(avg), Some(hot)),
         None => (None, None),
     };
-    let active_hotspot_avg = hotspot_avg.filter(|value| *value >= CPU_HOTSPOT_ACTIVE_FLOOR_C);
-    let live_core_headline = computed_hot.or(summary_avg).or(computed_avg);
-    let avg = [active_hotspot_avg, summary_avg, live_core_headline]
+    let avg = [
+        performance_avg,
+        all_core_avg,
+        aggregate_avg,
+        summary_avg,
+        hotspot_avg,
+    ]
+    .into_iter()
+    .flatten()
+    .next()?;
+    let active_hotspot_hot = hotspot_hot.filter(|value| *value >= CPU_HOTSPOT_ACTIVE_FLOOR_C);
+    let hot = [computed_hot, summary_hot, active_hotspot_hot]
         .into_iter()
         .flatten()
-        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .or(aggregate_avg)?;
-    let active_hotspot_hot = hotspot_hot.filter(|value| *value >= CPU_HOTSPOT_ACTIVE_FLOOR_C);
-    let hot = computed_hot
-        .into_iter()
-        .chain(active_hotspot_hot)
         .fold(avg, f32::max);
     Some((avg, hot))
 }
@@ -546,14 +558,14 @@ impl HardwareProvider for MacosProvider {
         }
         let mut temps: Vec<TempSensor> = Vec::new();
 
-        // M3 Pro/Max expose `TV*` aggregate keys, `TCDX` summary, and die
-        // hotspot keys. Use the hottest trustworthy CPU headline so the menu
-        // follows real load rises instead of sticking to smoothed averages.
+        // M3 Pro/Max expose per-core keys, `TV*` aggregate keys, `TCDX`
+        // summary, and die hotspot keys. The headline is a CPU core average;
+        // hotspot readings are listed separately as CPU Hottest.
         let smc_cpu_cores = apple_silicon_cpu_core_temperatures();
         if let Some((avg, hot)) = apple_silicon_cpu_average_and_hot(&smc_cpu_cores) {
             temps.push(TempSensor {
                 id: "cpu.die".into(),
-                label: "CPU Temperature".into(),
+                label: "CPU Core Average".into(),
                 kind: SensorKind::Cpu,
                 value: Celsius(avg),
             });
@@ -579,7 +591,7 @@ impl HardwareProvider for MacosProvider {
                 let hot = dies.iter().map(|(_, t)| *t).fold(0.0, f32::max);
                 temps.push(TempSensor {
                     id: "cpu.die".into(),
-                    label: "CPU Temperature".into(),
+                    label: "CPU Core Average".into(),
                     kind: SensorKind::Cpu,
                     value: Celsius(avg),
                 });
@@ -939,12 +951,12 @@ mod tests {
                 &[74.0, 76.0],
                 &[64.0, 66.0]
             ),
-            Some((78.0, 78.0))
+            Some((76.0, 78.0))
         );
     }
 
     #[test]
-    fn apple_silicon_cpu_average_uses_summary_when_it_is_hotter_than_aggregate() {
+    fn apple_silicon_cpu_average_stays_on_core_average_when_summary_is_hotter() {
         let cores = vec![
             super::CpuCoreTemp {
                 class: super::CpuCoreClass::Efficiency,
@@ -963,12 +975,12 @@ mod tests {
                 &[74.0, 76.0],
                 &[]
             ),
-            Some((82.0, 82.0))
+            Some((78.0, 82.0))
         );
     }
 
     #[test]
-    fn apple_silicon_cpu_temperature_uses_hotspot_when_hotter_than_average() {
+    fn apple_silicon_cpu_temperature_keeps_hotspot_out_of_average() {
         let cores = vec![
             super::CpuCoreTemp {
                 class: super::CpuCoreClass::Efficiency,
@@ -987,7 +999,7 @@ mod tests {
                 &[74.0, 76.0],
                 &[84.0, 86.0]
             ),
-            Some((85.0, 86.0))
+            Some((78.0, 86.0))
         );
     }
 
@@ -1014,7 +1026,7 @@ mod tests {
 
         assert_eq!(
             super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[], &[74.0, 76.0], &[]),
-            Some((78.0, 78.0))
+            Some((76.0, 78.0))
         );
     }
 
@@ -1051,7 +1063,7 @@ mod tests {
 
         assert_eq!(
             super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[], &[], &[]),
-            Some((78.0, 78.0))
+            Some((76.0, 78.0))
         );
     }
 
@@ -1070,7 +1082,7 @@ mod tests {
 
         assert_eq!(
             super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[], &[], &[]),
-            Some((62.0, 62.0))
+            Some((61.0, 62.0))
         );
     }
 
@@ -1129,7 +1141,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(probe.selected_average_c, Some(85.0));
+        assert_eq!(probe.selected_average_c, Some(65.0));
         assert_eq!(probe.selected_hottest_c, Some(86.0));
         assert_eq!(probe.summary_average_c, Some(72.0));
         assert_eq!(probe.aggregate_average_c, Some(75.0));

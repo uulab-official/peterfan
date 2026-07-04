@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.76] — CPU 평균과 hotspot 온도 분리
+
+### Fixed
+- **상단 CPU 온도가 hotspot을 평균처럼 표시하던 문제 수정** — `TVD0`/`TCMb`
+  CPU hotspot은 `CPU Hottest`에만 반영하고, 메뉴바 상단과 `cpu.die` 대표값은
+  Performance Core 평균을 우선 사용하는 `CPU Core Average`로 되돌림.
+- **55°C/75°C처럼 부하가 바뀐 뒤 hotspot 잔상이 평균값을 끌어올리는 문제 완화** —
+  평균 계산 순서를 P-core 평균 → 전체 core 평균 → `TV*` aggregate → `TCDX`
+  summary → 최후 hotspot fallback으로 정리함.
+- **UI 라벨 명확화** — 메뉴바 표시 항목과 온도 섹션에서 대표값을
+  `CPU 평균`/`CPU average`로 표시해, 최고 온도와 혼동하지 않게 함.
+
 ## [1.26.75] — 전체 온도 센서 표시와 계산 기준 분리
 
 ### Added

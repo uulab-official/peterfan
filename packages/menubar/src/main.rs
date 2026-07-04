@@ -246,7 +246,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             language: "Language",
             show_cpu: "CPU",
             show_memory: "Memory",
-            show_temperature: "CPU Temperature",
+            show_temperature: "CPU Average",
             show_fan: "Fan",
             show_network: "Network",
             style_number: "Number",
@@ -271,7 +271,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             language: "언어",
             show_cpu: "CPU",
             show_memory: "메모리",
-            show_temperature: "CPU 온도",
+            show_temperature: "CPU 평균",
             show_fan: "팬",
             show_network: "네트워크",
             style_number: "숫자",
@@ -367,8 +367,8 @@ fn display_temperature_source(lang: ResolvedLanguage, sensor: Option<&TempSensor
     };
     if sensor.id == "cpu.die" {
         match lang {
-            ResolvedLanguage::Ko => "CPU 온도".to_string(),
-            ResolvedLanguage::En => "CPU temp".to_string(),
+            ResolvedLanguage::Ko => "CPU 평균".to_string(),
+            ResolvedLanguage::En => "CPU average".to_string(),
         }
     } else if sensor.id.contains("hot") {
         match lang {
@@ -390,8 +390,8 @@ fn display_temperature_source_for_temps(
         .any(|t| t.kind == SensorKind::Cpu && !t.id.contains("hot"))
     {
         return match lang {
-            ResolvedLanguage::Ko => "CPU 온도".to_string(),
-            ResolvedLanguage::En => "CPU temp".to_string(),
+            ResolvedLanguage::Ko => "CPU 평균".to_string(),
+            ResolvedLanguage::En => "CPU average".to_string(),
         };
     }
     display_temperature_source(lang, sensor)
@@ -400,8 +400,8 @@ fn display_temperature_source_for_temps(
 fn temperature_row_label(lang: ResolvedLanguage, sensor: &TempSensor) -> String {
     match sensor.id.as_str() {
         "cpu.die" => match lang {
-            ResolvedLanguage::Ko => "CPU 온도".to_string(),
-            ResolvedLanguage::En => "CPU temp".to_string(),
+            ResolvedLanguage::Ko => "CPU 평균".to_string(),
+            ResolvedLanguage::En => "CPU average".to_string(),
         },
         "cpu.die.hot" => match lang {
             ResolvedLanguage::Ko => "CPU 최고".to_string(),
@@ -5011,11 +5011,11 @@ mod tests {
 
         assert_eq!(
             display_temperature_source(ResolvedLanguage::Ko, Some(&cpu)),
-            "CPU 온도"
+            "CPU 평균"
         );
         assert_eq!(
             display_temperature_source(ResolvedLanguage::En, Some(&cpu)),
-            "CPU temp"
+            "CPU average"
         );
         assert_eq!(
             display_temperature_source(ResolvedLanguage::Ko, Some(&hot)),
@@ -5039,11 +5039,11 @@ mod tests {
 
         assert_eq!(
             display_temperature_source_for_temps(ResolvedLanguage::Ko, &temps, display),
-            "CPU 온도"
+            "CPU 평균"
         );
         assert_eq!(
             display_temperature_source_for_temps(ResolvedLanguage::En, &temps, display),
-            "CPU temp"
+            "CPU average"
         );
     }
 
@@ -5055,11 +5055,11 @@ mod tests {
 
         assert_eq!(
             temperature_row_label(ResolvedLanguage::Ko, &cpu),
-            "CPU 온도"
+            "CPU 평균"
         );
         assert_eq!(
             temperature_row_label(ResolvedLanguage::En, &cpu),
-            "CPU temp"
+            "CPU average"
         );
         assert_eq!(
             temperature_row_label(ResolvedLanguage::Ko, &hot),
@@ -5088,10 +5088,10 @@ mod tests {
 
     #[test]
     fn menu_bar_temperature_metric_names_cpu_average() {
-        assert_eq!(strings(ResolvedLanguage::Ko).show_temperature, "CPU 온도");
+        assert_eq!(strings(ResolvedLanguage::Ko).show_temperature, "CPU 평균");
         assert_eq!(
             strings(ResolvedLanguage::En).show_temperature,
-            "CPU Temperature"
+            "CPU Average"
         );
     }
 
