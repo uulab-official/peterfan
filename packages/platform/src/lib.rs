@@ -81,6 +81,15 @@ pub fn cpu_temperature_probe() -> Option<()> {
     None
 }
 
+#[cfg(target_os = "macos")]
+pub fn all_temperature_sensors() -> Vec<peterfan_core::types::TempSensor> {
+    macos::all_temperature_sensors()
+}
+#[cfg(not(target_os = "macos"))]
+pub fn all_temperature_sensors() -> Vec<peterfan_core::types::TempSensor> {
+    Vec::new()
+}
+
 /// Whether a `peterfand` daemon is currently reachable over the local IPC socket.
 #[cfg(unix)]
 pub fn daemon_reachable() -> bool {

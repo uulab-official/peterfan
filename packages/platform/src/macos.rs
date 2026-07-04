@@ -243,6 +243,40 @@ fn cpu_core_class_label(class: CpuCoreClass) -> &'static str {
     }
 }
 
+fn temp_sensor_id_fragment(raw: &str) -> String {
+    let mut out: String = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '.'
+            }
+        })
+        .collect();
+    while out.contains("..") {
+        out = out.replace("..", ".");
+    }
+    out.trim_matches('.').to_string()
+}
+
+fn hid_sensor_kind(name: &str) -> SensorKind {
+    let lower = name.to_lowercase();
+    if lower.contains("battery") || lower.contains("gas gauge") {
+        SensorKind::Battery
+    } else if lower.contains("nand") || lower.contains("ssd") {
+        SensorKind::Storage
+    } else if lower.contains("gpu") {
+        SensorKind::Gpu
+    } else if lower.contains("memory") || lower.contains("dram") {
+        SensorKind::Memory
+    } else if lower.contains("tdie") || lower.contains("cpu") {
+        SensorKind::Cpu
+    } else {
+        SensorKind::Other
+    }
+}
+
 fn cpu_temperature_probe_from_readings(
     summary_raw: Vec<(String, f32)>,
     aggregate_raw: Vec<(String, f32)>,
@@ -343,6 +377,77 @@ pub fn cpu_temperature_probe() -> Option<CpuTemperatureProbe> {
         .collect();
     let core_raw = crate::smc_write::read_temperature_keys(&core_keys);
     cpu_temperature_probe_from_readings(summary_raw, aggregate_raw, hotspot_raw, core_raw)
+}
+
+pub fn all_temperature_sensors() -> Vec<TempSensor> {
+    let mut temps = MacosProvider::new()
+        .and_then(|provider| provider.temperatures())
+        .unwrap_or_default();
+
+    if let Ok(mut smc) = Smc::connect() {
+        if let Ok(iter) = smc.all_data() {
+            let mut raw_smc = Vec::new();
+            for data in iter {
+                let Ok(data) = data else { continue };
+                if !data.key.starts_with('T') {
+                    continue;
+                }
+                let Ok(Some(macsmc::DataValue::Float(value))) = data.value else {
+                    continue;
+                };
+                if !(1.0..=130.0).contains(&value) {
+                    continue;
+                }
+                raw_smc.push(TempSensor {
+                    id: format!("smc.raw.{}", data.key),
+                    label: format!("SMC {}", data.key),
+                    kind: SensorKind::Other,
+                    value: Celsius(value),
+                });
+            }
+            raw_smc.sort_by(|a, b| {
+                b.value
+                    .0
+                    .partial_cmp(&a.value.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            temps.extend(raw_smc);
+        }
+    }
+
+    let mut hid = crate::macos_hid::read_temps()
+        .into_iter()
+        .enumerate()
+        .map(|(idx, (name, value))| {
+            let label = if name.is_empty() {
+                format!("IOHID sensor {}", idx + 1)
+            } else {
+                format!("IOHID {name}")
+            };
+            let fragment = if name.is_empty() {
+                format!("sensor.{}", idx + 1)
+            } else {
+                temp_sensor_id_fragment(&name)
+            };
+            TempSensor {
+                id: format!("hid.raw.{fragment}.{idx}"),
+                label,
+                kind: hid_sensor_kind(&name),
+                value: Celsius(value),
+            }
+        })
+        .collect::<Vec<_>>();
+    hid.sort_by(|a, b| {
+        b.value
+            .0
+            .partial_cmp(&a.value.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    temps.extend(hid);
+
+    temps
 }
 
 fn apple_silicon_cpu_average_and_hot_from_values(
@@ -766,6 +871,35 @@ mod tests {
     #[test]
     fn deduped_name_average_empty_input_is_none() {
         assert!(super::deduped_name_average_max([]).is_none());
+    }
+
+    #[test]
+    fn temp_sensor_id_fragment_normalizes_for_stable_raw_ids() {
+        assert_eq!(
+            super::temp_sensor_id_fragment("PMU tdie 1 / CPU"),
+            "pmu.tdie.1.cpu"
+        );
+        assert_eq!(super::temp_sensor_id_fragment(""), "");
+    }
+
+    #[test]
+    fn hid_sensor_kind_classifies_common_raw_sensor_names() {
+        assert_eq!(
+            super::hid_sensor_kind("CPU Performance Core 1"),
+            peterfan_core::types::SensorKind::Cpu
+        );
+        assert_eq!(
+            super::hid_sensor_kind("GPU Cluster 1"),
+            peterfan_core::types::SensorKind::Gpu
+        );
+        assert_eq!(
+            super::hid_sensor_kind("APPLE SSD AP1024Z"),
+            peterfan_core::types::SensorKind::Storage
+        );
+        assert_eq!(
+            super::hid_sensor_kind("Battery Gas Gauge"),
+            peterfan_core::types::SensorKind::Battery
+        );
     }
 
     #[test]

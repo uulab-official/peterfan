@@ -62,8 +62,13 @@ Temperature sensors with colored severity bars.
 
 ```bash
 peterfan temps
+peterfan temps --all      # every raw SMC T* and IOHID temperature sensor
 peterfan --json temps     # array of {id,label,kind,value}
 ```
+
+By default, `temps` shows the calibrated sensors used by the menu-bar headline
+and fan-control logic. Use `--all` when comparing PeterFan with iStat Menus,
+Stats, or Macs Fan Control and you need the raw sensor inventory.
 
 ### `fans`
 

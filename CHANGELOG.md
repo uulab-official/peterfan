@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.75] — 전체 온도 센서 표시와 계산 기준 분리
+
+### Added
+- **전체 온도 센서 인벤토리 표시** — 메뉴바 온도 섹션에 SMC `T*` 키와
+  IOHID 온도 센서를 모두 보여주는 `전체 센서` 목록을 추가함. 외부 앱과
+  숫자가 다를 때 어떤 raw 센서가 실제로 몇 도인지 바로 대조할 수 있음.
+- **`peterfan temps --all` 진단 명령 추가** — 기본 `temps`는 팬 제어와
+  상단 표시가 쓰는 보정 센서만 보여주고, `--all`은 원시 SMC/IOHID 센서를
+  모두 덤프함. JSON 출력도 지원함.
+
+### Changed
+- **대표 온도와 원시 센서 목록을 분리** — `CPU Temperature`/`CPU Hottest`
+  계산은 기존 보정 정책을 유지하고, 새 원시 센서 목록은 비교/진단용으로만
+  사용함. 튀는 raw 센서가 팬 제어와 메뉴바 대표값을 오염시키지 않도록 함.
+
 ## [1.26.74] — 저부하 CPU 온도 과대 표시 수정
 
 ### Fixed

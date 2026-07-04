@@ -411,6 +411,10 @@ fn temperature_row_label(lang: ResolvedLanguage, sensor: &TempSensor) -> String 
     }
 }
 
+fn raw_temperature_row_label(sensor: &TempSensor) -> String {
+    format!("{} · {}", sensor.label, sensor.id)
+}
+
 fn setup_tone(daemon_running: bool, daemon_update_needed: bool) -> &'static str {
     if daemon_update_needed {
         "warn"
@@ -1740,6 +1744,16 @@ fn update(app: &mut App) {
             })
         })
         .collect();
+    let all_temp_rows: Vec<_> = peterfan_platform::all_temperature_sensors()
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "l": raw_temperature_row_label(t),
+                "c": format!("{:.0}°C", t.value.0),
+                "cls": temp_cls(t.value),
+            })
+        })
+        .collect();
 
     // Fans: every fan listed with its own RPM and a speed bar (rpm / max).
     // Daemon status: poll every tick so the popover always shows current mode.
@@ -1863,6 +1877,7 @@ fn update(app: &mut App) {
         "temp_cls": display_temp_value.map(|t| temp_cls(Celsius(t))).unwrap_or("g"),
         "temp_source": display_temperature_source_for_temps(app.language.resolve(), &temps, display_temp),
         "temps": temp_rows,
+        "all_temps": all_temp_rows,
         "fans": fan_rows,
         "batt_present": battery.is_some(),
         "batt_pct": battery.as_ref().map(|b| b.charge_percent).unwrap_or(0.0),
@@ -3003,6 +3018,10 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .trow .l{color:var(--dim);}
 .trow .v{font-weight:600;font-variant-numeric:tabular-nums;}
 .v.g{color:var(--g);}.v.y{color:var(--y);}.v.r{color:var(--r);}
+.all-temp-head{font-size:9px;font-weight:700;color:var(--dim);text-transform:uppercase;margin-top:8px;padding-top:7px;border-top:1px solid var(--line);letter-spacing:.08em;cursor:pointer;}
+.all-temp-head:hover{color:var(--accent);}
+.all-temp-list .trow{font-size:9.5px;margin-top:4px;gap:10px;}
+.all-temp-list .trow .l{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .prow{display:grid;grid-template-columns:1fr auto auto auto;gap:9px;align-items:baseline;font-size:10.5px;margin-top:5px;}
 .pkill{opacity:0;background:none;border:0;color:var(--r);font:inherit;font-size:13px;font-weight:700;line-height:1;padding:0 1px;cursor:pointer;transition:opacity .15s;}
 .prow:hover .pkill{opacity:1;}
@@ -3217,6 +3236,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="row" id="sec-temp"><span class="ic"><svg viewBox="0 0 24 24"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg></span>
 <div class="content"><div class="head"><span class="name" id="temp-name">Temperature</span><span class="val" id="temp-val">—</span></div>
 <div class="bar"><div class="bar-fill" id="temp-bar"></div></div><div id="temp-list"></div>
+<div class="all-temp-head" id="all-temp-head" onclick="toggleRawTemps()">All sensors</div><div class="all-temp-list" id="all-temp-list"></div>
 <canvas class="chart" id="temp-chart"></canvas><div class="chart-stats" id="temp-chart-stats"></div></div></div>
 
 <div class="row compact-extra" id="sec-batt" data-compact-extra="battery"><span class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="18" height="9" rx="2"/><path d="M22 11v3"/></svg></span>
@@ -3471,6 +3491,23 @@ function runRailAction(action,btn){
     case 'more':setRailView('more');break;
   }
 }
+var RAW_TEMP_OPEN=false;
+function toggleRawTemps(){
+  RAW_TEMP_OPEN=!RAW_TEMP_OPEN;
+  renderRawTempList(window.__pf_pending||{});
+}
+function renderRawTempList(d){
+  var ah=document.getElementById('all-temp-head'),al=document.getElementById('all-temp-list'),all=d.all_temps||[];
+  if(ah){
+    ah.textContent=(RAW_TEMP_OPEN?'▾ ':'▸ ')+(LANG==='ko'?'전체 센서':'All sensors')+(all.length?' · '+all.length:'');
+    ah.style.display=all.length?'':'none';
+  }
+  if(al){
+    al.style.display=RAW_TEMP_OPEN?'':'none';
+    al.innerHTML='';
+    if(RAW_TEMP_OPEN){all.forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[0].title=t.l;r.children[1].textContent=t.c;r.children[1].className='v '+t.cls;al.appendChild(r);});}
+  }
+}
 window.__pf={
  update:function(d){
  function cls(p){return p<50?'g':p<80?'y':'r';}
@@ -3489,7 +3526,8 @@ window.__pf={
  show('disk-io-chart-stats',d.disk_io_present);
  if(d.disk_io_present)drawChart('disk-io-chart', d.disk_io_hist, '#ff9f0a', null, fmtBytesPerSec);
  show('sec-temp',d.temp_present);if(d.temp_present){set('temp-name',(LANG==='ko'?'온도':'Temperature')+(d.temp_source?' · '+d.temp_source:''));set('temp-val',d.temp_text);bar('temp-bar',d.temp_pct,d.temp_cls);
-   var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c;r.children[1].className='v '+t.cls;tl.appendChild(r);});}}
+   var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c;r.children[1].className='v '+t.cls;tl.appendChild(r);});}
+   renderRawTempList(d);}
  show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
  var battSec=document.getElementById('sec-batt');if(battSec)battSec.dataset.present=d.batt_present?'1':'0';
  set('net-sub',d.net_sub);
@@ -4673,6 +4711,18 @@ mod tests {
     }
 
     #[test]
+    fn temperature_section_contains_raw_sensor_inventory() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains(r#"id="all-temp-head""#));
+        assert!(en.contains(r#"id="all-temp-list""#));
+        assert!(en.contains("function toggleRawTemps()"));
+        assert!(en.contains("function renderRawTempList(d)"));
+        assert!(en.contains("d.all_temps||[]"));
+        assert!(en.contains("All sensors"));
+    }
+
+    #[test]
     fn rail_view_switch_resets_scroll_and_marks_pressed_state() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
@@ -5022,6 +5072,17 @@ mod tests {
         assert_eq!(
             temperature_row_label(ResolvedLanguage::Ko, &airport),
             "airport"
+        );
+    }
+
+    #[test]
+    fn raw_temperature_row_label_keeps_sensor_identity_visible() {
+        let mut sensor = temp("smc.raw.TVD0", SensorKind::Cpu, 84.0);
+        sensor.label = "SMC TVD0".to_string();
+
+        assert_eq!(
+            raw_temperature_row_label(&sensor),
+            "SMC TVD0 · smc.raw.TVD0"
         );
     }
 

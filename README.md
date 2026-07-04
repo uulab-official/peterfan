@@ -28,10 +28,10 @@ It combines:
 | Area | Status |
 | --- | --- |
 | macOS menu-bar app | Live menu-bar sparkline, popover dashboard, detail window, light/dark mode |
-| CLI | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `temps`, `fans`, `fan`, `doctor`, `serve`, `update`, `license`, and more |
+| CLI | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `temps`, `temps --all`, `fans`, `fan`, `doctor`, `serve`, `update`, and more |
 | TUI | Terminal dashboard built with ratatui |
 | System metrics | CPU, memory, disks, network, processes, battery |
-| macOS sensors | CPU/GPU die temperature, SSD and battery temperature, fan RPM, SMC-backed readings |
+| macOS sensors | Calibrated CPU temperature, CPU hottest, SSD and battery temperature, fan RPM, plus a full raw SMC/IOHID temperature inventory for diagnostics |
 | Fan control | Manual fan setting, profiles, editable curves, daemon-driven persistent control |
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
 | Automation | JSON output, local HTTP API, shell completions |
@@ -62,10 +62,9 @@ PeterFan ships as multiple interfaces over the same core:
 - `peterfand`: root helper daemon used for persistent fan control
 - `peterfan serve`: local JSON HTTP API
 
-The CLI, TUI, core libraries, and daemon fan-control core are MIT-licensed. The
-menu-bar app source is also in this repository, but running the always-on
-menu-bar product and persistent background fan control after the trial requires
-a license key. See [Licensing](#licensing).
+PeterFan is MIT-licensed open source. The menu-bar app, CLI, TUI, and daemon
+source live in this repository, and the app runs without account creation,
+login, or a license key.
 
 ## Install
 
@@ -108,11 +107,16 @@ Run the CLI:
 
 ```bash
 target/release/peterfan status
+target/release/peterfan temps --all
 target/release/peterfan doctor
 target/release/peterfan fans
 target/release/peterfan update
 target/release/peterfan --json status
 ```
+
+`peterfan temps --all` prints every raw SMC `T*` and IOHID temperature sensor.
+The normal menu-bar headline temperature remains a calibrated representative CPU
+temperature so raw outliers do not drive fan-control decisions.
 
 Run the TUI:
 

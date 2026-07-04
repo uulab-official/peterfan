@@ -93,7 +93,11 @@ enum Command {
     /// Static system information (host, OS, kernel, cores, uptime).
     System,
     /// Temperature sensors.
-    Temps,
+    Temps {
+        /// Include every raw SMC/IOHID temperature sensor used for diagnosis.
+        #[arg(long)]
+        all: bool,
+    },
     /// Fans and their current speeds.
     Fans,
     /// Control fans: `peterfan fan set 60` (forced) or `peterfan fan auto`.
@@ -431,7 +435,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Top { mem, count } => cmd_top(mock, json, mem, count),
         Command::Battery => cmd_battery(mock, json),
         Command::System => cmd_system(mock, json),
-        Command::Temps => cmd_temps(mock, json),
+        Command::Temps { all } => cmd_temps(mock, json, all),
         Command::Fans => cmd_fans(mock, json),
         Command::Fan { action } => cmd_fan(provider(mock).as_ref(), action, json),
         Command::Profile { name, sub } => {
@@ -2090,7 +2094,17 @@ fn simulated_note() -> String {
     )
 }
 
-fn cmd_temps(mock: bool, json: bool) -> Result<()> {
+fn cmd_temps(mock: bool, json: bool, all: bool) -> Result<()> {
+    if all && !mock {
+        let temps = peterfan_platform::all_temperature_sensors();
+        if json {
+            println!("{}", serde_json::to_string_pretty(&temps)?);
+            return Ok(());
+        }
+        print_temps(&temps);
+        return Ok(());
+    }
+
     let sensors = if !mock {
         if let Some(ds) = daemon_sensors_if_compatible() {
             ds
