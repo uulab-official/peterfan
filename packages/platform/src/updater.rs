@@ -7,8 +7,51 @@
 //! `launchctl`, and keeps the menu-bar binary's dependency footprint small.
 
 pub const REPO: &str = "uulab-official/peterfan";
-const EXPECTED_BUNDLE_ID: &str = "kr.co.uulab.peterfan";
-const EXPECTED_TEAM_ID: &str = "N99FMBQ662";
+pub const EXPECTED_BUNDLE_ID: &str = "kr.co.uulab.peterfan";
+pub const EXPECTED_TEAM_ID: &str = "N99FMBQ662";
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct IntegrityCheck {
+    pub name: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct AppIntegrityReport {
+    pub path: String,
+    pub ok: bool,
+    pub bundle_id: Option<String>,
+    pub version: Option<String>,
+    pub team_id: Option<String>,
+    pub checks: Vec<IntegrityCheck>,
+}
+
+impl AppIntegrityReport {
+    fn new(app: &std::path::Path) -> Self {
+        Self {
+            path: app.display().to_string(),
+            ok: false,
+            bundle_id: None,
+            version: None,
+            team_id: None,
+            checks: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, name: impl Into<String>, ok: bool, detail: impl Into<String>) {
+        self.checks.push(IntegrityCheck {
+            name: name.into(),
+            ok,
+            detail: detail.into(),
+        });
+    }
+
+    fn finish(mut self) -> Self {
+        self.ok = !self.checks.is_empty() && self.checks.iter().all(|check| check.ok);
+        self
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReleaseInfo {
@@ -152,6 +195,147 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
         out
     }
     parts(latest) > parts(current)
+}
+
+#[cfg(target_os = "macos")]
+pub fn default_installed_app_bundle() -> std::path::PathBuf {
+    std::path::PathBuf::from("/Applications/PeterFan.app")
+}
+
+#[cfg(target_os = "macos")]
+pub fn default_integrity_app_bundle() -> std::path::PathBuf {
+    current_app_bundle()
+        .ok()
+        .filter(|path| path.exists())
+        .unwrap_or_else(default_installed_app_bundle)
+}
+
+#[cfg(target_os = "macos")]
+pub fn verify_app_integrity(app: &std::path::Path) -> AppIntegrityReport {
+    let mut report = AppIntegrityReport::new(app);
+
+    if !app.is_dir() {
+        report.push("app bundle exists", false, "PeterFan.app was not found");
+        return report.finish();
+    }
+    report.push("app bundle exists", true, "found PeterFan.app");
+
+    report.bundle_id = plist_value(app, "CFBundleIdentifier");
+    report.version = plist_value(app, "CFBundleShortVersionString");
+    let bundle_ok = report.bundle_id.as_deref() == Some(EXPECTED_BUNDLE_ID);
+    report.push(
+        "bundle identifier",
+        bundle_ok,
+        report
+            .bundle_id
+            .as_deref()
+            .map(|id| format!("{id} (expected {EXPECTED_BUNDLE_ID})"))
+            .unwrap_or_else(|| format!("missing (expected {EXPECTED_BUNDLE_ID})")),
+    );
+
+    let helper = app.join("Contents/MacOS/peterfand");
+    report.push(
+        "bundled fan-control helper",
+        helper.is_file() && is_executable(&helper),
+        helper.display().to_string(),
+    );
+
+    let signature_ok = silent_status(
+        std::process::Command::new("codesign")
+            .args(["--verify", "--deep", "--strict", "--verbose=2"])
+            .arg(app),
+    );
+    report.push(
+        "code signature",
+        signature_ok,
+        if signature_ok {
+            "codesign --verify --deep --strict passed"
+        } else {
+            "codesign verification failed"
+        },
+    );
+
+    match codesign_details(app) {
+        Ok(text) => {
+            report.team_id = codesign_field(&text, "TeamIdentifier");
+            let team_ok = report.team_id.as_deref() == Some(EXPECTED_TEAM_ID);
+            report.push(
+                "Developer ID team",
+                team_ok && has_developer_id_authority(&text),
+                report
+                    .team_id
+                    .as_deref()
+                    .map(|team| format!("{team} (expected {EXPECTED_TEAM_ID})"))
+                    .unwrap_or_else(|| format!("missing (expected {EXPECTED_TEAM_ID})")),
+            );
+            let signed_identifier = codesign_field(&text, "Identifier");
+            report.push(
+                "signed identifier",
+                signed_identifier.as_deref() == Some(EXPECTED_BUNDLE_ID),
+                signed_identifier
+                    .map(|id| format!("{id} (expected {EXPECTED_BUNDLE_ID})"))
+                    .unwrap_or_else(|| format!("missing (expected {EXPECTED_BUNDLE_ID})")),
+            );
+        }
+        Err(err) => {
+            report.push("Developer ID team", false, err.clone());
+            report.push("signed identifier", false, err);
+        }
+    }
+
+    let notarized = silent_status(
+        std::process::Command::new("xcrun")
+            .args(["stapler", "validate"])
+            .arg(app),
+    );
+    report.push(
+        "notarization ticket",
+        notarized,
+        if notarized {
+            "stapled ticket is valid"
+        } else {
+            "stapler validation failed"
+        },
+    );
+
+    match std::process::Command::new("spctl")
+        .args(["-a", "-vv", "-t", "exec"])
+        .arg(app)
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            report.push("Gatekeeper", true, "accepted by spctl");
+        }
+        Ok(output) if spctl_failed_from_resource_exhaustion(&output) => {
+            report.push(
+                "Gatekeeper",
+                true,
+                "spctl skipped because the system reported too many open files",
+            );
+        }
+        Ok(output) => {
+            let detail = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            report.push("Gatekeeper", false, detail.trim());
+        }
+        Err(err) => report.push("Gatekeeper", false, format!("spctl failed: {err}")),
+    }
+
+    report.finish()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn verify_app_integrity(app: &std::path::Path) -> AppIntegrityReport {
+    let mut report = AppIntegrityReport::new(app);
+    report.push(
+        "macOS app integrity",
+        false,
+        "PeterFan.app integrity checks are only available on macOS",
+    );
+    report.finish()
 }
 
 /// Locate the `.app` bundle containing the currently running executable
@@ -540,39 +724,81 @@ fn validate_update_app(app: &std::path::Path) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn validate_update_app_identity(app: &std::path::Path) -> Result<(), String> {
+    let text = codesign_details(app)?;
+    if !has_developer_id_authority(&text) {
+        return Err(
+            "downloaded PeterFan.app is not signed by the expected Developer ID team".into(),
+        );
+    }
+    if codesign_field(&text, "Identifier").as_deref() != Some(EXPECTED_BUNDLE_ID) {
+        return Err("downloaded PeterFan.app has the wrong bundle identifier".into());
+    }
+    if codesign_field(&text, "TeamIdentifier").as_deref() != Some(EXPECTED_TEAM_ID) {
+        return Err("downloaded PeterFan.app has the wrong Team ID".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn codesign_details(app: &std::path::Path) -> Result<String, String> {
     let output = std::process::Command::new("codesign")
         .args(["-dv", "--verbose=4"])
         .arg(app)
         .output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
-        return Err("could not inspect downloaded PeterFan.app signature".into());
+        return Err("could not inspect PeterFan.app signature".into());
     }
-    let text = format!(
+    Ok(format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
-    );
-    if !text.lines().any(|line| {
+    ))
+}
+
+fn codesign_field(text: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    text.lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix(&prefix).map(ToString::to_string))
+}
+
+fn has_developer_id_authority(text: &str) -> bool {
+    text.lines().any(|line| {
         line.contains("Authority=Developer ID Application:") && line.contains(EXPECTED_TEAM_ID)
-    }) {
-        return Err(
-            "downloaded PeterFan.app is not signed by the expected Developer ID team".into(),
-        );
-    }
-    if !text
-        .lines()
-        .any(|line| line.trim() == format!("Identifier={EXPECTED_BUNDLE_ID}"))
-    {
-        return Err("downloaded PeterFan.app has the wrong bundle identifier".into());
-    }
-    if !text
-        .lines()
-        .any(|line| line.trim() == format!("TeamIdentifier={EXPECTED_TEAM_ID}"))
-    {
-        return Err("downloaded PeterFan.app has the wrong Team ID".into());
-    }
-    Ok(())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn silent_status(command: &mut std::process::Command) -> bool {
+    command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn plist_value(app: &std::path::Path, key: &str) -> Option<String> {
+    let plist = app.join("Contents/Info.plist");
+    let out = std::process::Command::new("plutil")
+        .args(["-extract", key, "raw", "-o", "-"])
+        .arg(plist)
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "macos")]
@@ -752,5 +978,43 @@ abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabc  other.dmg\n";
 
         assert_eq!(checksum_for_asset(checksums, "PeterFan-v1.2.3.dmg"), None);
         assert_eq!(checksum_for_asset(checksums, "missing.dmg"), None);
+    }
+
+    #[test]
+    fn codesign_detail_helpers_extract_identity_fields() {
+        let details = "\
+Executable=/Applications/PeterFan.app/Contents/MacOS/PeterFan
+Identifier=kr.co.uulab.peterfan
+Format=app bundle with Mach-O thin (arm64)
+Authority=Developer ID Application: Choi Tae Ho (N99FMBQ662)
+Authority=Developer ID Certification Authority
+Authority=Apple Root CA
+TeamIdentifier=N99FMBQ662
+";
+
+        assert_eq!(
+            codesign_field(details, "Identifier").as_deref(),
+            Some(EXPECTED_BUNDLE_ID)
+        );
+        assert_eq!(
+            codesign_field(details, "TeamIdentifier").as_deref(),
+            Some(EXPECTED_TEAM_ID)
+        );
+        assert!(has_developer_id_authority(details));
+    }
+
+    #[test]
+    fn app_integrity_report_ok_requires_every_check_to_pass() {
+        let mut report =
+            AppIntegrityReport::new(std::path::Path::new("/Applications/PeterFan.app"));
+        report.push("one", true, "ok");
+        report.push("two", false, "bad");
+        assert!(!report.finish().ok);
+
+        let mut report =
+            AppIntegrityReport::new(std::path::Path::new("/Applications/PeterFan.app"));
+        report.push("one", true, "ok");
+        report.push("two", true, "ok");
+        assert!(report.finish().ok);
     }
 }

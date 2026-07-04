@@ -12,6 +12,7 @@
 mod render;
 
 use std::borrow::Cow;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -211,6 +212,12 @@ enum Command {
         /// Open the GitHub release page in the default browser.
         #[arg(long)]
         open: bool,
+    },
+    /// Verify the installed PeterFan.app signature, notarization, identity, and helper.
+    Integrity {
+        /// App bundle to verify (default: running PeterFan.app, then /Applications/PeterFan.app).
+        #[arg(long)]
+        app: Option<PathBuf>,
     },
     /// Watch metrics and send a desktop notification when a threshold is exceeded.
     /// Run with no args to use saved thresholds from config.
@@ -469,6 +476,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::UninstallDaemon { dry_run } => cmd_uninstall_daemon(dry_run),
         Command::Watch { interval } => cmd_watch(mock, interval),
         Command::Update { install, open } => cmd_update(json, install, open),
+        Command::Integrity { app } => cmd_integrity(json, app),
         Command::Alert {
             cpu,
             memory,
@@ -3641,6 +3649,55 @@ fn install_update(release: &peterfan_platform::updater::ReleaseInfo) -> Result<(
 #[cfg(not(target_os = "macos"))]
 fn install_update(_release: &peterfan_platform::updater::ReleaseInfo) -> Result<()> {
     anyhow::bail!("OTA app installation is macOS-only; use the release URL instead")
+}
+
+fn cmd_integrity(json: bool, app: Option<PathBuf>) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let app = app.unwrap_or_else(peterfan_platform::updater::default_integrity_app_bundle);
+    #[cfg(not(target_os = "macos"))]
+    let app = app.unwrap_or_else(|| PathBuf::from("PeterFan.app"));
+
+    let report = peterfan_platform::updater::verify_app_integrity(&app);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    println!("{}", render::heading("PeterFan integrity"));
+    print_kv("App", &report.path);
+    if let Some(version) = report.version.as_deref() {
+        print_kv("Version", &format!("v{version}"));
+    }
+    if let Some(bundle_id) = report.bundle_id.as_deref() {
+        print_kv("Bundle ID", bundle_id);
+    }
+    if let Some(team_id) = report.team_id.as_deref() {
+        print_kv("Team ID", team_id);
+    }
+    println!();
+    for check in &report.checks {
+        print_check_detail(&check.name, check.ok, &check.detail);
+    }
+    println!();
+    if report.ok {
+        println!("  {} installed app integrity verified", "✓".green().bold());
+        Ok(())
+    } else {
+        println!("  {} integrity needs attention", "✗".red().bold());
+        Ok(())
+    }
+}
+
+fn print_check_detail(label: &str, ok: bool, detail: &str) {
+    let icon = if ok {
+        "✓".green().to_string()
+    } else {
+        "✗".red().to_string()
+    };
+    println!("  {icon} {label}");
+    if !detail.is_empty() {
+        println!("    {}", detail.dimmed());
+    }
 }
 
 // ---------------------------------------------------------------------------

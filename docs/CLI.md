@@ -216,6 +216,22 @@ SHA-256을 대조하고, 이어서 `checksums.txt`와 한 번 더 대조합니�
 Team ID, code signature, stapled notarization ticket, Gatekeeper 평가를 통과해야
 합니다. `checksums.txt`가 없는 릴리즈는 앱이 OTA 설치를 거부합니다.
 
+### `integrity` — 설치된 macOS 앱 무결성 검증
+
+현재 설치된 `PeterFan.app`가 공식 배포본인지 확인합니다. 기본값은 실행 중인
+앱 bundle을 우선 사용하고, CLI처럼 앱 밖에서 실행 중이면 `/Applications/PeterFan.app`를
+검사합니다.
+
+```bash
+peterfan integrity
+peterfan integrity --app /Applications/PeterFan.app
+peterfan --json integrity
+```
+
+검사 항목은 bundle id(`kr.co.uulab.peterfan`), Developer ID Team ID, code
+signature, stapled notarization ticket, Gatekeeper 평가, bundled `peterfand`
+helper 존재 여부입니다.
+
 ### `log` — continuous metrics stream
 
 Emits one row of metrics per interval (time, CPU %, memory %, disk %, hottest

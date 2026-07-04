@@ -128,11 +128,13 @@ echo "== read-only CLI commands must not crash (--mock) =="
 for cmd in status cpu memory disk network "top -n 5" battery system temps fans hardware doctor config "curve balanced" "profile list"; do
     run_bounded "peterfan --mock $cmd" 10 "$PETERFAN" --mock $cmd
 done
+run_bounded "peterfan integrity" 15 "$PETERFAN" integrity
 
 echo "== --json output must be valid JSON =="
 for cmd in status cpu memory disk network temps fans hardware; do
     run_json "peterfan --mock --json $cmd" 10 "$PETERFAN" --mock --json $cmd
 done
+run_json "peterfan --json integrity" 15 "$PETERFAN" --json integrity
 
 echo "== daemon one-shot run must apply a curve and exit cleanly =="
 run_bounded_contains "peterfand --mock --once" 10 "restored" "$PETERFAND" --mock --once

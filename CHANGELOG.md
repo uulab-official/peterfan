@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.86] — 설치본 무결성 진단 추가
+
+### Added
+- **`peterfan integrity` 명령 추가** — 설치된 `PeterFan.app`의 bundle id,
+  Developer ID Team ID, code signature, stapled notarization ticket, Gatekeeper
+  평가, bundled `peterfand` helper 존재 여부를 한 번에 검증함. `--json` 출력과
+  `--app /path/PeterFan.app` 지정도 지원해 릴리즈 검증/지원/자동화에 사용할 수 있음.
+
 ## [1.26.85] — 상단 온도는 CPU 평균으로 정리
 
 ### Changed

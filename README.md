@@ -28,7 +28,7 @@ It combines:
 | Area | Status |
 | --- | --- |
 | macOS menu-bar app | Live menu-bar sparkline, popover dashboard, detail window, light/dark mode |
-| CLI | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `temps`, `temps --all`, `fans`, `fan`, `doctor`, `serve`, `update`, and more |
+| CLI | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `temps`, `temps --all`, `fans`, `fan`, `doctor`, `integrity`, `serve`, `update`, and more |
 | TUI | Terminal dashboard built with ratatui |
 | System metrics | CPU, memory, disks, network, processes, battery |
 | macOS sensors | The menu-bar headline temperature defaults to CPU core average, while CPU Hottest, SMC summary/aggregate diagnostics, IOHID tdie, SSD and battery temperature, fan RPM, and the full SMC/IOHID inventory remain visible in the detailed lists |
@@ -36,6 +36,7 @@ It combines:
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
 | Automation | JSON output, local HTTP API, shell completions |
 | Updates | GitHub Release checks from CLI and menu-bar app |
+| Integrity | Installed-app verification for bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |
 | Windows | Basic system metrics; fan/sensor control is planned |
 
 When PeterFan cannot read a real sensor, it labels data as simulated rather than
@@ -109,6 +110,7 @@ Run the CLI:
 target/release/peterfan status
 target/release/peterfan temps --all
 target/release/peterfan doctor
+target/release/peterfan integrity
 target/release/peterfan fans
 target/release/peterfan update
 target/release/peterfan --json status
