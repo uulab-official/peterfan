@@ -393,8 +393,8 @@ fn display_temperature_source(lang: ResolvedLanguage, sensor: Option<&TempSensor
     };
     if sensor.id == "cpu.die" {
         match lang {
-            ResolvedLanguage::Ko => "P-core 평균".to_string(),
-            ResolvedLanguage::En => "P-core average".to_string(),
+            ResolvedLanguage::Ko => "CPU core 평균".to_string(),
+            ResolvedLanguage::En => "CPU core average".to_string(),
         }
     } else if sensor.id.contains("hot") {
         match lang {
@@ -416,12 +416,12 @@ fn display_temperature_source_for_temps(
 
 fn temperature_source_label(lang: ResolvedLanguage, source: TemperatureSource) -> &'static str {
     match (lang, source) {
-        (ResolvedLanguage::Ko, TemperatureSource::CoreAverage) => "P-core 평균",
+        (ResolvedLanguage::Ko, TemperatureSource::CoreAverage) => "CPU core 평균",
         (ResolvedLanguage::Ko, TemperatureSource::IohidTdie) => "IOHID tdie",
         (ResolvedLanguage::Ko, TemperatureSource::SmcSummary) => "SMC summary",
         (ResolvedLanguage::Ko, TemperatureSource::SmcAggregate) => "SMC aggregate",
         (ResolvedLanguage::Ko, TemperatureSource::Hottest) => "CPU 최고",
-        (ResolvedLanguage::En, TemperatureSource::CoreAverage) => "P-core average",
+        (ResolvedLanguage::En, TemperatureSource::CoreAverage) => "CPU core average",
         (ResolvedLanguage::En, TemperatureSource::IohidTdie) => "IOHID tdie",
         (ResolvedLanguage::En, TemperatureSource::SmcSummary) => "SMC summary",
         (ResolvedLanguage::En, TemperatureSource::SmcAggregate) => "SMC aggregate",
@@ -432,8 +432,8 @@ fn temperature_source_label(lang: ResolvedLanguage, source: TemperatureSource) -
 fn temperature_row_label(lang: ResolvedLanguage, sensor: &TempSensor) -> String {
     match sensor.id.as_str() {
         "cpu.die" => match lang {
-            ResolvedLanguage::Ko => "CPU 평균 · P-core".to_string(),
-            ResolvedLanguage::En => "CPU average · P-core".to_string(),
+            ResolvedLanguage::Ko => "CPU 평균 · 전체 core".to_string(),
+            ResolvedLanguage::En => "CPU average · all cores".to_string(),
         },
         "cpu.die.hot" => match lang {
             ResolvedLanguage::Ko => "CPU 최고".to_string(),
@@ -5127,11 +5127,11 @@ mod tests {
 
         assert_eq!(
             display_temperature_source(ResolvedLanguage::Ko, Some(&cpu)),
-            "P-core 평균"
+            "CPU core 평균"
         );
         assert_eq!(
             display_temperature_source(ResolvedLanguage::En, Some(&cpu)),
-            "P-core average"
+            "CPU core average"
         );
         assert_eq!(
             display_temperature_source(ResolvedLanguage::Ko, Some(&hot)),
@@ -5171,11 +5171,11 @@ mod tests {
 
         assert_eq!(
             temperature_row_label(ResolvedLanguage::Ko, &cpu),
-            "CPU 평균 · P-core"
+            "CPU 평균 · 전체 core"
         );
         assert_eq!(
             temperature_row_label(ResolvedLanguage::En, &cpu),
-            "CPU average · P-core"
+            "CPU average · all cores"
         );
         assert_eq!(
             temperature_row_label(ResolvedLanguage::Ko, &hot),

@@ -240,7 +240,7 @@ pub enum ResolvedLanguage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TemperatureSource {
-    /// Live Apple Silicon performance-core average (`cpu.die`).
+    /// Live Apple Silicon CPU core average (`cpu.die`).
     #[default]
     CoreAverage,
     /// IOHID PMU tdie average, often close to iStat-style die readings.
@@ -256,9 +256,8 @@ pub enum TemperatureSource {
 impl TemperatureSource {
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
-            "core" | "core-average" | "cpu" | "cpu-average" | "p-core" | "pcore" => {
-                Some(Self::CoreAverage)
-            }
+            "core" | "core-average" | "cpu" | "cpu-average" | "all-core" | "all-cores"
+            | "p-core" | "pcore" => Some(Self::CoreAverage),
             "iohid" | "iohid-tdie" | "tdie" => Some(Self::IohidTdie),
             "summary" | "smc-summary" | "tcdx" => Some(Self::SmcSummary),
             "aggregate" | "smc-aggregate" | "tv" | "tv-aggregate" | "tv*" => {

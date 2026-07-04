@@ -549,8 +549,8 @@ fn apple_silicon_cpu_average_and_hot_from_values(
         None => (None, None),
     };
     let avg = [
-        performance_avg,
         all_core_avg,
+        performance_avg,
         summary_avg,
         aggregate_avg,
         hotspot_avg,
@@ -1052,7 +1052,7 @@ mod tests {
                 &[74.0, 76.0],
                 &[64.0, 66.0]
             ),
-            Some((76.0, 78.0))
+            Some((68.5, 78.0))
         );
     }
 
@@ -1076,7 +1076,7 @@ mod tests {
                 &[74.0, 76.0],
                 &[]
             ),
-            Some((78.0, 82.0))
+            Some((69.0, 82.0))
         );
     }
 
@@ -1100,7 +1100,7 @@ mod tests {
                 &[74.0, 76.0],
                 &[84.0, 86.0]
             ),
-            Some((78.0, 86.0))
+            Some((69.0, 86.0))
         );
     }
 
@@ -1127,7 +1127,7 @@ mod tests {
 
         assert_eq!(
             super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[], &[74.0, 76.0], &[]),
-            Some((76.0, 78.0))
+            Some((68.5, 78.0))
         );
     }
 
@@ -1164,7 +1164,7 @@ mod tests {
 
         assert_eq!(
             super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[], &[], &[]),
-            Some((76.0, 78.0))
+            Some((68.5, 78.0))
         );
     }
 
@@ -1211,8 +1211,8 @@ mod tests {
             .filter(|sensor| sensor.class == super::CpuCoreClass::Performance)
             .count();
 
-        assert_eq!(efficiency, 4);
-        assert_eq!(performance, 12);
+        assert_eq!(efficiency, 10);
+        assert_eq!(performance, 24);
     }
 
     #[test]
@@ -1242,7 +1242,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(probe.selected_average_c, Some(65.0));
+        assert_eq!(probe.selected_average_c, Some(64.0));
         assert_eq!(probe.selected_hottest_c, Some(86.0));
         assert_eq!(probe.summary_average_c, Some(72.0));
         assert_eq!(probe.aggregate_average_c, Some(75.0));

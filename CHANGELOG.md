@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.82] — CPU 온도 기준을 전체 core 평균으로 정리
+
+### Fixed
+- **`core-average`가 P-core만 우선하던 문제 수정** — 상단 기본 CPU 온도는
+  Apple Silicon의 전체 CPU core 센서 평균을 먼저 사용하고, 전체 core 센서가 없을
+  때만 P-core/summary/aggregate 순서로 fallback하도록 정리함.
+- **CPU 온도 라벨 명확화** — `P-core 평균` 대신 `CPU core 평균` /
+  `CPU 평균 · 전체 core`로 표시해, 상단 기본 온도가 진짜 대표 CPU 온도임을
+  앱 안에서 바로 알 수 있게 함.
+
 ## [1.26.81] — 상단 CPU 온도 기준 선택
 
 ### Added
