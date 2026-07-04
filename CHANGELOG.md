@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.78] — 앱 재실행 포커스 침범 방지
+
+### Fixed
+- **OTA 업데이트 후 앱 재실행이 현재 작업 포커스를 가져갈 수 있던 문제 수정** —
+  업데이트 교체 스크립트의 `open` 호출을 `open -g`로 바꿔, 앱은 다시 띄우되
+  사용자가 보던 앱을 앞으로 유지하도록 함.
+- **정적 분석 경고 정리** — `cargo clippy --workspace --all-targets -- -D warnings`
+  기준으로 updater의 불필요한 borrow 경고를 수정함.
+
 ## [1.26.77] — 팬 재설치 안내 노출 범위 축소
 
 ### Fixed

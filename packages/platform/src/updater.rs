@@ -304,18 +304,18 @@ fn install_downloaded_update(
          mv {app} {backup}\n\
          if ditto {new_app} {app}; then\n\
          \txcrun stapler validate {app} >/dev/null 2>&1 || true\n\
-         \topen {app}\n\
+         \topen -g {app}\n\
          \trm -rf {tmp}\n\
          else\n\
          \trm -rf {app}\n\
          \tmv {backup} {app}\n\
-         \topen {app}\n\
+         \topen -g {app}\n\
          \texit 1\n\
          fi\n",
-        app = shell_quote(&app_path),
+        app = shell_quote(app_path),
         new_app = shell_quote(&new_app),
         backup = shell_quote(&backup_path),
-        tmp = shell_quote(&tmp_dir),
+        tmp = shell_quote(tmp_dir),
         log = shell_quote(&log_path),
     );
     std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
@@ -353,7 +353,7 @@ fn verify_expected_sha256(
     path: &std::path::Path,
 ) -> Result<(), String> {
     let actual = sha256_file(path)?;
-    if actual.eq_ignore_ascii_case(&expected) {
+    if actual.eq_ignore_ascii_case(expected) {
         Ok(())
     } else {
         Err(format!(
