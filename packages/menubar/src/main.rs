@@ -3331,7 +3331,7 @@ function applyRailView(resetScroll){
   } else if(view==='more'){
     ['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach(function(id){setVisible(id,true);});
   } else {
-    ['range-tabs','setup-row','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
+    ['range-tabs','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
   }
   ['Detail','Fan','Update','Settings','More'].forEach(function(name){
     var key=name.toLowerCase();
@@ -4052,11 +4052,8 @@ function updateRail(d){
   }
   var fan=document.getElementById('railFan');
   if(fan){
-    setButtonLabel(fan,d.fan_setup_needed?(LANG==='ko'?'설정':'Set Up'):(LANG==='ko'?'팬 제어':'Fans'));
-    fan.title=d.fan_setup_needed
-      ?(LANG==='ko'?'팬 제어 설정':'Set up fan control')
-      :(LANG==='ko'?'팬 제어로 이동':'Jump to fan control');
-    fan.classList.toggle('active',!!d.can_control);
+    setButtonLabel(fan,LANG==='ko'?'팬 제어':'Fans');
+    fan.title=LANG==='ko'?'팬 제어로 이동':'Jump to fan control';
   }
   var upd=document.getElementById('railUpdate');
   if(upd&&!APP_UPDATE_CHECK_PENDING){
@@ -4767,6 +4764,18 @@ mod tests {
         assert!(!en.contains("case 'license':setRailView('license');break;"));
         assert!(en.contains("case 'more':setRailView('more');break;"));
         assert!(!en.contains("case 'license':toggleLicForm();break;"));
+    }
+
+    #[test]
+    fn fan_setup_prompt_is_scoped_to_fan_and_settings_views() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains("if(view==='fan'){\n    ['setup-row','fan-control-section'].forEach"));
+        assert!(en.contains("} else {\n    ['range-tabs','sec-cpu','sec-mem','sec-temp'].forEach"));
+        assert!(!en.contains("['range-tabs','setup-row','sec-cpu','sec-mem','sec-temp'].forEach"));
+        assert!(en.contains("setButtonLabel(fan,LANG==='ko'?'팬 제어':'Fans');"));
+        assert!(!en.contains("setButtonLabel(fan,d.fan_setup_needed"));
+        assert!(!en.contains("fan.classList.toggle('active',!!d.can_control);"));
     }
 
     #[test]

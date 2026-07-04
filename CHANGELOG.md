@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.77] — 팬 재설치 안내 노출 범위 축소
+
+### Fixed
+- **모든 탭에 팬 제어 재설치가 떠 보이던 문제 수정** — Overview 화면에서는
+  팬 제어 설정 배너를 숨기고, 재설치/설정 안내는 Fan 화면과 Settings의 팬 제어
+  상태 카드에만 남김.
+- **오른쪽 Fan 레일 버튼이 전역 설정 버튼처럼 보이던 문제 수정** — 데몬 업데이트가
+  필요해도 레일 버튼 라벨은 항상 `팬 제어`/`Fans`로 유지하고, active 상태는 현재
+  선택된 탭만 반영하도록 함.
+
 ## [1.26.76] — CPU 평균과 hotspot 온도 분리
 
 ### Fixed
