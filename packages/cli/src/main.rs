@@ -2768,7 +2768,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             );
         }
         println!(
-            "    {} selected temp is the CPU core average; hotspot stays in selected hottest so the menu bar does not show a hotspot as an average",
+            "    {} selected temp follows the SMC TV* CPU Core Average aggregate; hotspot stays in selected hottest",
             "→".dimmed()
         );
     }
@@ -3168,7 +3168,7 @@ fn cpu_temperature_probe_json(probe: &peterfan_platform::CpuTemperatureProbe) ->
         "core_keys": probe.core_keys.iter().map(|r| {
             serde_json::json!({ "key": r.key, "class": r.class, "value_c": r.value_c })
         }).collect::<Vec<_>>(),
-        "selection_policy": "performance_core_average_then_all_core_average_then_smc_aggregate_then_summary_then_hotspot_fallback",
+        "selection_policy": "smc_tv_aggregate_then_performance_core_average_then_all_core_average_then_summary_then_hotspot_fallback",
     })
 }
 
@@ -4105,7 +4105,7 @@ mod tests {
         assert_eq!(json["selected_average_c"], 75.0);
         assert_eq!(
             json["selection_policy"],
-            "performance_core_average_then_all_core_average_then_smc_aggregate_then_summary_then_hotspot_fallback"
+            "smc_tv_aggregate_then_performance_core_average_then_all_core_average_then_summary_then_hotspot_fallback"
         );
         assert_eq!(json["summary_keys"][0]["key"], "TCDX");
         assert_eq!(json["aggregate_keys"][0]["key"], "TV0s");

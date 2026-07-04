@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.79] — CPU Core Average 기준을 TV* aggregate로 재정렬
+
+### Fixed
+- **상단 CPU 평균이 외부 앱보다 10도 이상 낮게 보이던 문제 수정** —
+  대표 `CPU Core Average`를 P-core 평균보다 `TV0s`/`TV1s`/`TVsa`/`TVss`
+  SMC aggregate 우선으로 다시 맞춤. 로컬 샘플에서 PeterFan이 56.7°C를
+  고를 때 같은 순간 `TV*` aggregate가 73.2°C로, Macs Fan Control의
+  `CPU Core Average` 예시와 더 가까운 후보였음.
+- **진단 문구 정리** — `doctor`와 JSON의 selection policy를
+  `smc_tv_aggregate_then_performance_core_average...`로 바꿔 무엇을
+  상단 평균으로 쓰는지 바로 보이게 함.
+
 ## [1.26.78] — 앱 재실행 포커스 침범 방지
 
 ### Fixed

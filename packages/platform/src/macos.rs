@@ -477,9 +477,9 @@ fn apple_silicon_cpu_average_and_hot_from_values(
         None => (None, None),
     };
     let avg = [
+        aggregate_avg,
         performance_avg,
         all_core_avg,
-        aggregate_avg,
         summary_avg,
         hotspot_avg,
     ]
@@ -559,7 +559,8 @@ impl HardwareProvider for MacosProvider {
         let mut temps: Vec<TempSensor> = Vec::new();
 
         // M3 Pro/Max expose per-core keys, `TV*` aggregate keys, `TCDX`
-        // summary, and die hotspot keys. The headline is a CPU core average;
+        // summary, and die hotspot keys. Macs Fan Control's "CPU Core Average"
+        // on this local M3 Max tracks the `TV*` aggregate family most closely;
         // hotspot readings are listed separately as CPU Hottest.
         let smc_cpu_cores = apple_silicon_cpu_core_temperatures();
         if let Some((avg, hot)) = apple_silicon_cpu_average_and_hot(&smc_cpu_cores) {
@@ -951,12 +952,12 @@ mod tests {
                 &[74.0, 76.0],
                 &[64.0, 66.0]
             ),
-            Some((76.0, 78.0))
+            Some((75.0, 78.0))
         );
     }
 
     #[test]
-    fn apple_silicon_cpu_average_stays_on_core_average_when_summary_is_hotter() {
+    fn apple_silicon_cpu_average_prefers_aggregate_over_summary_and_core_average() {
         let cores = vec![
             super::CpuCoreTemp {
                 class: super::CpuCoreClass::Efficiency,
@@ -975,7 +976,7 @@ mod tests {
                 &[74.0, 76.0],
                 &[]
             ),
-            Some((78.0, 82.0))
+            Some((75.0, 82.0))
         );
     }
 
@@ -999,7 +1000,7 @@ mod tests {
                 &[74.0, 76.0],
                 &[84.0, 86.0]
             ),
-            Some((78.0, 86.0))
+            Some((75.0, 86.0))
         );
     }
 
@@ -1026,7 +1027,7 @@ mod tests {
 
         assert_eq!(
             super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[], &[74.0, 76.0], &[]),
-            Some((76.0, 78.0))
+            Some((75.0, 78.0))
         );
     }
 
@@ -1141,7 +1142,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(probe.selected_average_c, Some(65.0));
+        assert_eq!(probe.selected_average_c, Some(75.0));
         assert_eq!(probe.selected_hottest_c, Some(86.0));
         assert_eq!(probe.summary_average_c, Some(72.0));
         assert_eq!(probe.aggregate_average_c, Some(75.0));
