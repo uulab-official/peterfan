@@ -226,13 +226,15 @@ Team ID, code signature, stapled notarization ticket, Gatekeeper 평가를 통�
 peterfan integrity
 peterfan integrity --app /Applications/PeterFan.app
 peterfan integrity --latest
-peterfan integrity --tag v1.26.88
-peterfan integrity --dmg ~/Downloads/PeterFan-v1.26.88.dmg
-peterfan integrity --dmg ~/Downloads/PeterFan-v1.26.88.dmg --checksums ~/Downloads/checksums.txt
-peterfan integrity --dmg ~/Downloads/PeterFan-v1.26.88.dmg --expected-sha256 <sha256>
+peterfan integrity --tag v1.26.89
+peterfan integrity --dmg ~/Downloads/PeterFan-v1.26.89.dmg
+peterfan integrity --dmg ~/Downloads/PeterFan-v1.26.89.dmg --checksums ~/Downloads/checksums.txt
+peterfan integrity --dmg ~/Downloads/PeterFan-v1.26.89.dmg --expected-sha256 <sha256>
+peterfan integrity --release-dir dist/local-release/v1.26.89
 peterfan --json integrity
 peterfan --json integrity --latest
-peterfan --json integrity --dmg ~/Downloads/PeterFan-v1.26.88.dmg --checksums ~/Downloads/checksums.txt
+peterfan --json integrity --dmg ~/Downloads/PeterFan-v1.26.89.dmg --checksums ~/Downloads/checksums.txt
+peterfan --json integrity --release-dir dist/local-release/v1.26.89
 ```
 
 검사 항목은 bundle id(`kr.co.uulab.peterfan`), Developer ID Team ID, code
@@ -241,7 +243,8 @@ helper 존재 여부입니다. `--latest`와 `--tag`는 GitHub 릴리즈 산출�
 GitHub asset digest, `checksums.txt`, DMG trust policy, 내부 앱 무결성을 모두
 검증합니다. `--dmg`는 이미 내려받은 로컬 산출물을 네트워크 없이 검증하며,
 `--checksums` 또는 `--expected-sha256`를 같이 넘기면 파일 해시까지 고정해서
-확인합니다.
+확인합니다. `--release-dir`는 로컬 릴리즈 폴더 안의 `checksums.txt`, DMG,
+macOS tar.gz 산출물을 모두 검사해 배포 직전 최종 점검에 사용할 수 있습니다.
 
 ### `log` — continuous metrics stream
 

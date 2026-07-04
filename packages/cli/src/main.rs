@@ -221,6 +221,9 @@ enum Command {
         /// Local release artifact to verify without network access.
         #[arg(long)]
         dmg: Option<PathBuf>,
+        /// Local release directory to verify as a complete distributable set.
+        #[arg(long)]
+        release_dir: Option<PathBuf>,
         /// Optional checksums.txt to verify the local release artifact against.
         #[arg(long)]
         checksums: Option<PathBuf>,
@@ -494,11 +497,21 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::Integrity {
             app,
             dmg,
+            release_dir,
             checksums,
             expected_sha256,
             latest,
             tag,
-        } => cmd_integrity(json, app, dmg, checksums, expected_sha256, latest, tag),
+        } => cmd_integrity(
+            json,
+            app,
+            dmg,
+            release_dir,
+            checksums,
+            expected_sha256,
+            latest,
+            tag,
+        ),
         Command::Alert {
             cpu,
             memory,
@@ -3677,11 +3690,33 @@ fn cmd_integrity(
     json: bool,
     app: Option<PathBuf>,
     dmg: Option<PathBuf>,
+    release_dir: Option<PathBuf>,
     checksums: Option<PathBuf>,
     expected_sha256: Option<String>,
     latest: bool,
     tag: Option<String>,
 ) -> Result<()> {
+    if let Some(release_dir) = release_dir {
+        if app.is_some()
+            || dmg.is_some()
+            || checksums.is_some()
+            || expected_sha256.is_some()
+            || latest
+            || tag.is_some()
+        {
+            anyhow::bail!(
+                "--release-dir cannot be combined with --app, --dmg, --checksums, --expected-sha256, --latest, or --tag"
+            );
+        }
+        let report = peterfan_platform::updater::verify_release_directory_integrity(&release_dir);
+        if json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            return Ok(());
+        }
+        print_release_directory_integrity_report(&report);
+        return Ok(());
+    }
+
     if let Some(dmg) = dmg {
         if app.is_some() || latest || tag.is_some() {
             anyhow::bail!("--dmg cannot be combined with --app, --latest, or --tag");
@@ -3733,6 +3768,62 @@ fn cmd_integrity(
 
     print_app_integrity_report(&report);
     Ok(())
+}
+
+fn print_release_directory_integrity_report(
+    report: &peterfan_platform::updater::ReleaseDirectoryIntegrityReport,
+) {
+    println!(
+        "{}",
+        render::heading("PeterFan release directory integrity")
+    );
+    print_kv("Directory", &report.path);
+    if let Some(checksums) = report.checksums.as_deref() {
+        print_kv("Checksums", checksums);
+    }
+    println!();
+    for check in &report.checks {
+        print_check_detail(&check.name, check.ok, &check.detail);
+    }
+    for artifact in &report.artifacts {
+        println!();
+        println!("{}", render::heading(&artifact.asset_name));
+        if let Some(sha) = artifact.asset_sha256.as_deref() {
+            print_kv("SHA-256", sha);
+        }
+        for check in &artifact.checks {
+            print_check_detail(&check.name, check.ok, &check.detail);
+        }
+        if let Some(app) = artifact.app.as_ref() {
+            if let Some(version) = app.version.as_deref() {
+                print_kv("App version", &format!("v{version}"));
+            }
+            if let Some(team_id) = app.team_id.as_deref() {
+                print_kv("Team ID", team_id);
+            }
+            print_check_detail(
+                "app integrity",
+                app.ok,
+                if app.ok {
+                    "bundle id, Team ID, signature, notarization, Gatekeeper, helper"
+                } else {
+                    "one or more app checks failed"
+                },
+            );
+        }
+    }
+    println!();
+    if report.ok {
+        println!(
+            "  {} release directory integrity verified",
+            "✓".green().bold()
+        );
+    } else {
+        println!(
+            "  {} release directory integrity needs attention",
+            "✗".red().bold()
+        );
+    }
 }
 
 fn print_artifact_integrity_report(report: &peterfan_platform::updater::ArtifactIntegrityReport) {

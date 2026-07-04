@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.89] — 릴리즈 폴더 전체 무결성 검증 추가
+
+### Added
+- **`peterfan integrity --release-dir` 추가** — `dist/local-release/vX.Y.Z`처럼
+  배포 산출물이 모인 폴더를 한 번에 검증함. `checksums.txt` 존재 여부를 확인하고,
+  폴더 안의 `PeterFan-*.dmg`와 `peterfan-*-apple-darwin.tar.gz`를 모두
+  SHA-256/서명/공증/Gatekeeper/내부 앱 무결성 기준으로 검사해 배포 전 최종
+  sanity check로 사용할 수 있게 함.
+
 ## [1.26.88] — 로컬 릴리즈 산출물 무결성 검증 추가
 
 ### Added

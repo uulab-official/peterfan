@@ -137,6 +137,43 @@ impl ArtifactIntegrityReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ReleaseDirectoryIntegrityReport {
+    pub path: String,
+    pub ok: bool,
+    pub checksums: Option<String>,
+    pub checks: Vec<IntegrityCheck>,
+    pub artifacts: Vec<ArtifactIntegrityReport>,
+}
+
+impl ReleaseDirectoryIntegrityReport {
+    fn new(dir: &std::path::Path) -> Self {
+        Self {
+            path: dir.display().to_string(),
+            ok: false,
+            checksums: None,
+            checks: Vec::new(),
+            artifacts: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, name: impl Into<String>, ok: bool, detail: impl Into<String>) {
+        self.checks.push(IntegrityCheck {
+            name: name.into(),
+            ok,
+            detail: detail.into(),
+        });
+    }
+
+    fn finish(mut self) -> Self {
+        self.ok = !self.checks.is_empty()
+            && self.checks.iter().all(|check| check.ok)
+            && !self.artifacts.is_empty()
+            && self.artifacts.iter().all(|artifact| artifact.ok);
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReleaseInfo {
     /// Without the leading `v`, e.g. `"1.13.0"`.
@@ -695,6 +732,98 @@ pub fn verify_local_artifact_integrity(
         "release artifact integrity checks are only available on macOS",
     );
     report.finish()
+}
+
+#[cfg(target_os = "macos")]
+pub fn verify_release_directory_integrity(
+    dir: &std::path::Path,
+) -> ReleaseDirectoryIntegrityReport {
+    let mut report = ReleaseDirectoryIntegrityReport::new(dir);
+
+    if !dir.is_dir() {
+        report.push(
+            "release directory",
+            false,
+            "release directory was not found",
+        );
+        return report.finish();
+    }
+    report.push("release directory", true, dir.display().to_string());
+
+    let checksums_path = dir.join("checksums.txt");
+    let checksums = if checksums_path.is_file() {
+        report.checksums = Some(checksums_path.display().to_string());
+        report.push("checksums.txt", true, checksums_path.display().to_string());
+        Some(checksums_path)
+    } else {
+        report.push("checksums.txt", false, "checksums.txt was not found");
+        None
+    };
+
+    let mut artifacts = match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(is_release_artifact_name)
+            })
+            .collect::<Vec<_>>(),
+        Err(err) => {
+            report.push("release artifacts", false, err.to_string());
+            return report.finish();
+        }
+    };
+    artifacts.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    if artifacts.is_empty() {
+        report.push(
+            "release artifacts",
+            false,
+            "no PeterFan release artifacts found",
+        );
+        return report.finish();
+    }
+    report.push(
+        "release artifacts",
+        true,
+        artifacts
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+
+    for artifact in artifacts {
+        report.artifacts.push(verify_local_artifact_integrity(
+            &artifact,
+            checksums.as_deref(),
+            None,
+        ));
+    }
+
+    report.finish()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn verify_release_directory_integrity(
+    dir: &std::path::Path,
+) -> ReleaseDirectoryIntegrityReport {
+    let mut report = ReleaseDirectoryIntegrityReport::new(dir);
+    report.push(
+        "macOS release directory integrity",
+        false,
+        "release directory integrity checks are only available on macOS",
+    );
+    report.finish()
+}
+
+fn is_release_artifact_name(name: &str) -> bool {
+    (name.starts_with("PeterFan-") && name.ends_with(".dmg"))
+        || (name.starts_with("peterfan-")
+            && name.contains("apple-darwin")
+            && name.ends_with(".tar.gz"))
 }
 
 /// Locate the `.app` bundle containing the currently running executable
@@ -1337,6 +1466,17 @@ abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabc  other.dmg\n";
     }
 
     #[test]
+    fn release_artifact_name_filter_only_accepts_macos_release_assets() {
+        assert!(is_release_artifact_name("PeterFan-v1.2.3.dmg"));
+        assert!(is_release_artifact_name(
+            "peterfan-v1.2.3-universal-apple-darwin.tar.gz"
+        ));
+        assert!(!is_release_artifact_name("checksums.txt"));
+        assert!(!is_release_artifact_name("peterfan-v1.2.3-windows.zip"));
+        assert!(!is_release_artifact_name("PeterFan-v1.2.3.zip"));
+    }
+
+    #[test]
     fn codesign_detail_helpers_extract_identity_fields() {
         let details = "\
 Executable=/Applications/PeterFan.app/Contents/MacOS/PeterFan
@@ -1394,6 +1534,26 @@ TeamIdentifier=N99FMBQ662
         let mut report = ArtifactIntegrityReport::new(artifact);
         report.push("artifact", true, "ok");
         report.app = Some(good_app.finish());
+        assert!(report.finish().ok);
+    }
+
+    #[test]
+    fn release_directory_report_ok_requires_checks_and_artifacts() {
+        let dir = std::path::Path::new("/tmp/release");
+
+        let mut report = ReleaseDirectoryIntegrityReport::new(dir);
+        report.push("directory", true, "ok");
+        assert!(!report.finish().ok);
+
+        let mut artifact = ArtifactIntegrityReport::new(std::path::Path::new("/tmp/app.dmg"));
+        artifact.push("artifact", true, "ok");
+        let mut app = AppIntegrityReport::new(std::path::Path::new("/tmp/PeterFan.app"));
+        app.push("app", true, "ok");
+        artifact.app = Some(app.finish());
+
+        let mut report = ReleaseDirectoryIntegrityReport::new(dir);
+        report.push("directory", true, "ok");
+        report.artifacts.push(artifact.finish());
         assert!(report.finish().ok);
     }
 }
