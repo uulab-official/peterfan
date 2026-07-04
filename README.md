@@ -36,7 +36,7 @@ It combines:
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
 | Automation | JSON output, local HTTP API, shell completions |
 | Updates | GitHub Release checks from CLI and menu-bar app |
-| Integrity | Installed-app verification for bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |
+| Integrity | Installed-app and GitHub release artifact verification for SHA-256, bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |
 | Windows | Basic system metrics; fan/sensor control is planned |
 
 When PeterFan cannot read a real sensor, it labels data as simulated rather than
@@ -111,6 +111,7 @@ target/release/peterfan status
 target/release/peterfan temps --all
 target/release/peterfan doctor
 target/release/peterfan integrity
+target/release/peterfan integrity --latest
 target/release/peterfan fans
 target/release/peterfan update
 target/release/peterfan --json status

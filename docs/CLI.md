@@ -225,12 +225,17 @@ Team ID, code signature, stapled notarization ticket, Gatekeeper 평가를 통�
 ```bash
 peterfan integrity
 peterfan integrity --app /Applications/PeterFan.app
+peterfan integrity --latest
+peterfan integrity --tag v1.26.87
 peterfan --json integrity
+peterfan --json integrity --latest
 ```
 
 검사 항목은 bundle id(`kr.co.uulab.peterfan`), Developer ID Team ID, code
 signature, stapled notarization ticket, Gatekeeper 평가, bundled `peterfand`
-helper 존재 여부입니다.
+helper 존재 여부입니다. `--latest`와 `--tag`는 GitHub 릴리즈 산출물까지 내려받아
+GitHub asset digest, `checksums.txt`, DMG trust policy, 내부 앱 무결성을 모두
+검증합니다.
 
 ### `log` — continuous metrics stream
 

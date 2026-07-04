@@ -213,11 +213,17 @@ enum Command {
         #[arg(long)]
         open: bool,
     },
-    /// Verify the installed PeterFan.app signature, notarization, identity, and helper.
+    /// Verify installed app or GitHub release artifact integrity.
     Integrity {
         /// App bundle to verify (default: running PeterFan.app, then /Applications/PeterFan.app).
         #[arg(long)]
         app: Option<PathBuf>,
+        /// Download and verify the latest GitHub Release asset.
+        #[arg(long)]
+        latest: bool,
+        /// Download and verify a specific GitHub Release tag, e.g. v1.26.86.
+        #[arg(long)]
+        tag: Option<String>,
     },
     /// Watch metrics and send a desktop notification when a threshold is exceeded.
     /// Run with no args to use saved thresholds from config.
@@ -476,7 +482,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::UninstallDaemon { dry_run } => cmd_uninstall_daemon(dry_run),
         Command::Watch { interval } => cmd_watch(mock, interval),
         Command::Update { install, open } => cmd_update(json, install, open),
-        Command::Integrity { app } => cmd_integrity(json, app),
+        Command::Integrity { app, latest, tag } => cmd_integrity(json, app, latest, tag),
         Command::Alert {
             cpu,
             memory,
@@ -3651,7 +3657,30 @@ fn install_update(_release: &peterfan_platform::updater::ReleaseInfo) -> Result<
     anyhow::bail!("OTA app installation is macOS-only; use the release URL instead")
 }
 
-fn cmd_integrity(json: bool, app: Option<PathBuf>) -> Result<()> {
+fn cmd_integrity(
+    json: bool,
+    app: Option<PathBuf>,
+    latest: bool,
+    tag: Option<String>,
+) -> Result<()> {
+    if latest || tag.is_some() {
+        if app.is_some() {
+            anyhow::bail!("--app cannot be combined with --latest or --tag");
+        }
+        let release = if let Some(tag) = tag {
+            peterfan_platform::updater::fetch_release_by_tag(&tag).map_err(anyhow::Error::msg)?
+        } else {
+            peterfan_platform::updater::fetch_latest_release().map_err(anyhow::Error::msg)?
+        };
+        let report = peterfan_platform::updater::verify_release_integrity(&release);
+        if json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            return Ok(());
+        }
+        print_release_integrity_report(&report);
+        return Ok(());
+    }
+
     #[cfg(target_os = "macos")]
     let app = app.unwrap_or_else(peterfan_platform::updater::default_integrity_app_bundle);
     #[cfg(not(target_os = "macos"))]
@@ -3663,6 +3692,11 @@ fn cmd_integrity(json: bool, app: Option<PathBuf>) -> Result<()> {
         return Ok(());
     }
 
+    print_app_integrity_report(&report);
+    Ok(())
+}
+
+fn print_app_integrity_report(report: &peterfan_platform::updater::AppIntegrityReport) {
     println!("{}", render::heading("PeterFan integrity"));
     print_kv("App", &report.path);
     if let Some(version) = report.version.as_deref() {
@@ -3681,10 +3715,50 @@ fn cmd_integrity(json: bool, app: Option<PathBuf>) -> Result<()> {
     println!();
     if report.ok {
         println!("  {} installed app integrity verified", "✓".green().bold());
-        Ok(())
     } else {
         println!("  {} integrity needs attention", "✗".red().bold());
-        Ok(())
+    }
+}
+
+fn print_release_integrity_report(report: &peterfan_platform::updater::ReleaseIntegrityReport) {
+    println!("{}", render::heading("PeterFan release integrity"));
+    print_kv("Release", &report.tag);
+    print_kv("URL", &report.release_url);
+    if let Some(asset) = report.asset_name.as_deref() {
+        print_kv("Asset", asset);
+    }
+    if let Some(sha) = report.asset_sha256.as_deref() {
+        print_kv("SHA-256", sha);
+    }
+    println!();
+    for check in &report.checks {
+        print_check_detail(&check.name, check.ok, &check.detail);
+    }
+    if let Some(app) = report.app.as_ref() {
+        println!();
+        println!("{}", render::heading("App inside release"));
+        if let Some(version) = app.version.as_deref() {
+            print_kv("Version", &format!("v{version}"));
+        }
+        if let Some(bundle_id) = app.bundle_id.as_deref() {
+            print_kv("Bundle ID", bundle_id);
+        }
+        if let Some(team_id) = app.team_id.as_deref() {
+            print_kv("Team ID", team_id);
+        }
+        println!();
+        for check in &app.checks {
+            print_check_detail(&check.name, check.ok, &check.detail);
+        }
+    }
+    println!();
+    if report.ok {
+        println!(
+            "  {} release artifact integrity verified",
+            "✓".green().bold()
+        );
+    } else {
+        println!("  {} release integrity needs attention", "✗".red().bold());
     }
 }
 

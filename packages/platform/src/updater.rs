@@ -53,6 +53,48 @@ impl AppIntegrityReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ReleaseIntegrityReport {
+    pub tag: String,
+    pub version: String,
+    pub release_url: String,
+    pub asset_name: Option<String>,
+    pub asset_sha256: Option<String>,
+    pub ok: bool,
+    pub checks: Vec<IntegrityCheck>,
+    pub app: Option<AppIntegrityReport>,
+}
+
+impl ReleaseIntegrityReport {
+    fn new(release: &ReleaseInfo) -> Self {
+        Self {
+            tag: release.tag.clone(),
+            version: release.version.clone(),
+            release_url: release.html_url.clone(),
+            asset_name: release.asset_name.clone(),
+            asset_sha256: None,
+            ok: false,
+            checks: Vec::new(),
+            app: None,
+        }
+    }
+
+    fn push(&mut self, name: impl Into<String>, ok: bool, detail: impl Into<String>) {
+        self.checks.push(IntegrityCheck {
+            name: name.into(),
+            ok,
+            detail: detail.into(),
+        });
+    }
+
+    fn finish(mut self) -> Self {
+        self.ok = !self.checks.is_empty()
+            && self.checks.iter().all(|check| check.ok)
+            && self.app.as_ref().map(|app| app.ok).unwrap_or(false);
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReleaseInfo {
     /// Without the leading `v`, e.g. `"1.13.0"`.
@@ -82,6 +124,23 @@ pub struct ReleaseInfo {
 /// failure, missing `curl`, and unexpected response shapes alike — callers
 /// treat "couldn't check" and "nothing to report" the same way.
 pub fn fetch_latest_release() -> Result<ReleaseInfo, String> {
+    fetch_release_api(&format!(
+        "https://api.github.com/repos/{REPO}/releases/latest"
+    ))
+}
+
+pub fn fetch_release_by_tag(tag: &str) -> Result<ReleaseInfo, String> {
+    let tag = if tag.starts_with('v') {
+        tag.to_string()
+    } else {
+        format!("v{tag}")
+    };
+    fetch_release_api(&format!(
+        "https://api.github.com/repos/{REPO}/releases/tags/{tag}"
+    ))
+}
+
+fn fetch_release_api(url: &str) -> Result<ReleaseInfo, String> {
     let out = std::process::Command::new("curl")
         .args([
             "-s",
@@ -89,7 +148,7 @@ pub fn fetch_latest_release() -> Result<ReleaseInfo, String> {
             "8",
             "-H",
             "User-Agent: peterfan-updater",
-            &format!("https://api.github.com/repos/{REPO}/releases/latest"),
+            url,
         ])
         .output()
         .map_err(|e| format!("curl not available: {e}"))?;
@@ -338,6 +397,143 @@ pub fn verify_app_integrity(app: &std::path::Path) -> AppIntegrityReport {
     report.finish()
 }
 
+#[cfg(target_os = "macos")]
+pub fn verify_release_integrity(release: &ReleaseInfo) -> ReleaseIntegrityReport {
+    let mut report = ReleaseIntegrityReport::new(release);
+    let Some(asset_url) = release.asset_url.as_deref() else {
+        report.push("release asset", false, "release has no macOS asset");
+        return report.finish();
+    };
+    let Some(asset_name) = release.asset_name.as_deref() else {
+        report.push("release asset", false, "release asset has no name");
+        return report.finish();
+    };
+    let Some(checksum_url) = release.checksum_url.as_deref() else {
+        report.push("checksums.txt", false, "release has no checksums.txt");
+        return report.finish();
+    };
+
+    report.push("release asset", true, asset_name);
+    let tmp_dir =
+        std::env::temp_dir().join(format!("peterfan-release-integrity-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    if let Err(err) = std::fs::create_dir_all(&tmp_dir) {
+        report.push(
+            "workspace",
+            false,
+            format!("could not create temp dir: {err}"),
+        );
+        return report.finish();
+    }
+
+    let asset_path = tmp_dir.join(asset_name);
+    match download_file(asset_url, &asset_path) {
+        Ok(()) => report.push("download asset", true, asset_url),
+        Err(err) => {
+            report.push("download asset", false, err);
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return report.finish();
+        }
+    }
+
+    let actual_sha = sha256_file(&asset_path).ok();
+    report.asset_sha256 = actual_sha.clone();
+    if let Some(expected) = release.asset_digest.as_deref() {
+        let ok = actual_sha
+            .as_deref()
+            .is_some_and(|actual| actual.eq_ignore_ascii_case(expected));
+        report.push(
+            "GitHub asset digest",
+            ok,
+            actual_sha
+                .as_deref()
+                .map(|actual| format!("expected {expected}, got {actual}"))
+                .unwrap_or_else(|| format!("expected {expected}, but SHA-256 failed")),
+        );
+    } else {
+        report.push(
+            "GitHub asset digest",
+            true,
+            "not provided by GitHub; checksums.txt will be used",
+        );
+    }
+
+    let checksums_path = tmp_dir.join("checksums.txt");
+    match download_file(checksum_url, &checksums_path) {
+        Ok(()) => report.push("download checksums.txt", true, checksum_url),
+        Err(err) => {
+            report.push("download checksums.txt", false, err);
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return report.finish();
+        }
+    }
+    if let Some(expected) = release.checksum_digest.as_deref() {
+        match verify_expected_sha256("GitHub checksums.txt digest", expected, &checksums_path) {
+            Ok(()) => report.push("GitHub checksums.txt digest", true, expected),
+            Err(err) => report.push("GitHub checksums.txt digest", false, err),
+        }
+    } else {
+        report.push(
+            "GitHub checksums.txt digest",
+            true,
+            "not provided by GitHub; file content will still be parsed",
+        );
+    }
+
+    let checksums = std::fs::read_to_string(&checksums_path).unwrap_or_default();
+    match verify_download_checksum(&checksums, asset_name, &asset_path) {
+        Ok(()) => report.push("checksums.txt asset hash", true, asset_name),
+        Err(err) => report.push("checksums.txt asset hash", false, err),
+    }
+
+    let app_path = if asset_name.ends_with(".dmg") {
+        match validate_update_dmg(&asset_path) {
+            Ok(()) => report.push(
+                "DMG trust policy",
+                true,
+                "signature, notarization, Gatekeeper",
+            ),
+            Err(err) => report.push("DMG trust policy", false, err),
+        }
+        match extract_app_from_dmg(&asset_path, &tmp_dir) {
+            Ok(path) => Some(path),
+            Err(err) => {
+                report.push("extract PeterFan.app", false, err);
+                None
+            }
+        }
+    } else {
+        report.push("DMG trust policy", true, "not a DMG asset; skipped");
+        match extract_app_from_archive(&asset_path, &tmp_dir) {
+            Ok(path) => Some(path),
+            Err(err) => {
+                report.push("extract PeterFan.app", false, err);
+                None
+            }
+        }
+    };
+
+    if let Some(app_path) = app_path {
+        report.push("extract PeterFan.app", true, app_path.display().to_string());
+        let app_report = verify_app_integrity(&app_path);
+        report.app = Some(app_report);
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    report.finish()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn verify_release_integrity(release: &ReleaseInfo) -> ReleaseIntegrityReport {
+    let mut report = ReleaseIntegrityReport::new(release);
+    report.push(
+        "macOS release integrity",
+        false,
+        "release artifact integrity checks are only available on macOS",
+    );
+    report.finish()
+}
+
 /// Locate the `.app` bundle containing the currently running executable
 /// (`.../PeterFan.app/Contents/MacOS/PeterFan` → `.../PeterFan.app`).
 #[cfg(target_os = "macos")]
@@ -437,6 +633,7 @@ fn download_file(url: &str, destination: &std::path::Path) -> Result<(), String>
     let status = std::process::Command::new("curl")
         .args([
             "-fL",
+            "-sS",
             "--show-error",
             "--max-time",
             "120",
@@ -652,21 +849,19 @@ fn extract_app_from_dmg(
 
 #[cfg(target_os = "macos")]
 fn validate_update_dmg(dmg: &std::path::Path) -> Result<(), String> {
-    let status = std::process::Command::new("codesign")
-        .args(["--verify", "--verbose=2"])
-        .arg(dmg)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !status.success() {
+    if !silent_status(
+        std::process::Command::new("codesign")
+            .args(["--verify", "--verbose=2"])
+            .arg(dmg),
+    ) {
         return Err("downloaded update DMG has an invalid code signature".into());
     }
 
-    let status = std::process::Command::new("xcrun")
-        .args(["stapler", "validate"])
-        .arg(dmg)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !status.success() {
+    if !silent_status(
+        std::process::Command::new("xcrun")
+            .args(["stapler", "validate"])
+            .arg(dmg),
+    ) {
         return Err("downloaded update DMG is not notarized/stapled".into());
     }
 
@@ -691,22 +886,20 @@ fn validate_update_dmg(dmg: &std::path::Path) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn validate_update_app(app: &std::path::Path) -> Result<(), String> {
-    let status = std::process::Command::new("codesign")
-        .args(["--verify", "--deep", "--strict", "--verbose=2"])
-        .arg(app)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !status.success() {
+    if !silent_status(
+        std::process::Command::new("codesign")
+            .args(["--verify", "--deep", "--strict", "--verbose=2"])
+            .arg(app),
+    ) {
         return Err("downloaded PeterFan.app has an invalid code signature".into());
     }
     validate_update_app_identity(app)?;
 
-    let status = std::process::Command::new("xcrun")
-        .args(["stapler", "validate"])
-        .arg(app)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !status.success() {
+    if !silent_status(
+        std::process::Command::new("xcrun")
+            .args(["stapler", "validate"])
+            .arg(app),
+    ) {
         return Err("downloaded PeterFan.app is not notarized/stapled".into());
     }
 

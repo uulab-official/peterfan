@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.87] — 릴리즈 산출물 무결성 검증 추가
+
+### Added
+- **`peterfan integrity --latest` / `--tag` 추가** — GitHub 최신 또는 특정 릴리즈의
+  macOS asset을 다운로드해 GitHub asset digest, `checksums.txt`, DMG 서명/공증/
+  Gatekeeper, 내부 `PeterFan.app`의 bundle id/Team ID/code signature/공증/Gatekeeper를
+  한 번에 검증함. `--json`도 지원해 릴리즈 검증 자동화에 사용할 수 있음.
+
 ## [1.26.86] — 설치본 무결성 진단 추가
 
 ### Added
