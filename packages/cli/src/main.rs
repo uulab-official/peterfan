@@ -11,6 +11,7 @@
 
 mod render;
 
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -3119,21 +3120,41 @@ fn print_battery(b: &peterfan_core::metrics::BatteryInfo) {
 
 fn print_temps(temps: &[TempSensor]) {
     for t in temps {
+        let label = temp_display_label(t);
+        let kind = if temp_label_already_names_kind(t, label.as_ref()) {
+            "   ".to_string()
+        } else {
+            render::kind_label(t.kind)
+        };
         println!(
             "  {} {:<14} {:>6}  {}",
-            render::kind_label(t.kind),
-            temp_display_label(t),
+            kind,
+            label,
             render::temp_colored(t.value),
             render::temp_bar_colored(t.value),
         );
     }
 }
 
-fn temp_display_label(sensor: &TempSensor) -> &str {
+fn temp_display_label(sensor: &TempSensor) -> Cow<'_, str> {
     match sensor.id.as_str() {
-        "cpu.die" => "Core Average",
-        "cpu.die.hot" => "Hottest",
-        _ => &sensor.label,
+        "cpu.die" => Cow::Borrowed("Core Average"),
+        "cpu.die.hot" => Cow::Borrowed("Hottest"),
+        _ => Cow::Borrowed(&sensor.label),
+    }
+}
+
+fn temp_label_already_names_kind(sensor: &TempSensor, label: &str) -> bool {
+    use peterfan_core::types::SensorKind;
+
+    match sensor.kind {
+        SensorKind::Cpu => label.starts_with("CPU "),
+        SensorKind::Gpu => label.starts_with("GPU "),
+        SensorKind::Memory => label.starts_with("Memory ") || label.starts_with("RAM "),
+        SensorKind::Storage => label.starts_with("Storage ") || label == "SSD",
+        SensorKind::Battery => label.starts_with("Battery "),
+        SensorKind::Mainboard => label.starts_with("Mainboard ") || label.starts_with("Board "),
+        SensorKind::Other => false,
     }
 }
 
@@ -4078,6 +4099,46 @@ mod tests {
         assert_eq!(super::temp_display_label(&cpu), "Core Average");
         assert_eq!(super::temp_display_label(&hot), "Hottest");
         assert_eq!(super::temp_display_label(&ssd), "SSD");
+    }
+
+    #[test]
+    fn temp_label_already_names_kind_suppresses_duplicate_prefixes() {
+        let raw_cpu = temp(
+            "smc.raw.Tf46",
+            "CPU core sensor · SMC Tf46",
+            SensorKind::Cpu,
+            84.0,
+        );
+        let hotspot = temp(
+            "smc.raw.TVD0",
+            "CPU hotspot · SMC TVD0",
+            SensorKind::Cpu,
+            84.0,
+        );
+        let gpu = temp(
+            "smc.raw.Tg01",
+            "GPU sensor · SMC Tg01",
+            SensorKind::Gpu,
+            62.0,
+        );
+        let core_average = temp("cpu.die", "CPU", SensorKind::Cpu, 61.0);
+
+        assert!(super::temp_label_already_names_kind(
+            &raw_cpu,
+            "CPU core sensor · SMC Tf46"
+        ));
+        assert!(super::temp_label_already_names_kind(
+            &hotspot,
+            "CPU hotspot · SMC TVD0"
+        ));
+        assert!(super::temp_label_already_names_kind(
+            &gpu,
+            "GPU sensor · SMC Tg01"
+        ));
+        assert!(!super::temp_label_already_names_kind(
+            &core_average,
+            "Core Average"
+        ));
     }
 
     #[test]

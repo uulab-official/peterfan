@@ -31,7 +31,7 @@ It combines:
 | CLI | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `temps`, `temps --all`, `fans`, `fan`, `doctor`, `serve`, `update`, and more |
 | TUI | Terminal dashboard built with ratatui |
 | System metrics | CPU, memory, disks, network, processes, battery |
-| macOS sensors | CPU temperature defaults to the hottest CPU reading, with selectable all-core average, IOHID tdie, SMC summary/aggregate diagnostics, SSD and battery temperature, fan RPM, plus a full raw SMC/IOHID temperature inventory |
+| macOS sensors | CPU temperature defaults to the hottest CPU reading, including hot-core SMC keys, with selectable all-core average, IOHID tdie, SMC summary/aggregate diagnostics, SSD and battery temperature, fan RPM, plus a full SMC/IOHID inventory grouped with human-readable labels such as CPU hotspot, CPU core hot sensor, GPU sensor, and battery sensor |
 | Fan control | Manual fan setting, profiles, editable curves, daemon-driven persistent control |
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
 | Automation | JSON output, local HTTP API, shell completions |
@@ -114,9 +114,11 @@ target/release/peterfan update
 target/release/peterfan --json status
 ```
 
-`peterfan temps --all` prints every raw SMC `T*` and IOHID temperature sensor.
-The normal menu-bar headline temperature remains a calibrated CPU core average;
-CPU hotspot sensors stay visible as `CPU Hottest` and in the raw inventory.
+`peterfan temps --all` prints every SMC `T*` and IOHID temperature sensor with
+human-readable groups such as `CPU hotspot`, `CPU core hot sensor`, `GPU sensor`,
+and `Battery sensor`, while preserving the original raw key for comparison.
+The normal menu-bar headline temperature remains the selected CPU source;
+CPU hotspot sensors stay visible as `CPU Hottest` and in the full inventory.
 
 Run the TUI:
 

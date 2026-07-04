@@ -223,9 +223,9 @@ const M3_CPU_SUMMARY_TEMP_KEYS: &[&str] = &["TCDX"];
 const M3_CPU_CORE_AVERAGE_TEMP_KEYS: &[&str] = &["TV0s", "TV1s", "TVsa", "TVss"];
 
 // CPU die/hotspot keys observed on the local Mac15,10 M3 Max. These track
-// sustained load into the 80s, but can sit above live core readings at idle, so
+// sustained load into the 80s+, but can sit above live core readings at idle, so
 // they are reported as "CPU Hottest" only; the headline stays a core average.
-const M3_CPU_HOTSPOT_TEMP_KEYS: &[&str] = &["TVD0", "TCMb"];
+const M3_CPU_HOTSPOT_TEMP_KEYS: &[&str] = &["TVD0", "TCMb", "Tf06", "Tf16", "Tf26", "Tf36", "Tf46"];
 const CPU_HOTSPOT_ACTIVE_FLOOR_C: f32 = 70.0;
 
 fn deduped_name_average_max<'a, I>(temps: I) -> Option<f32>
@@ -349,6 +349,67 @@ fn hid_sensor_kind(name: &str) -> SensorKind {
     }
 }
 
+fn smc_temperature_label_and_kind(key: &str) -> (String, SensorKind) {
+    let label = if M3_CPU_CORE_TEMP_KEYS.iter().any(|sensor| sensor.key == key) {
+        if M3_CPU_CORE_TEMP_KEYS
+            .iter()
+            .any(|sensor| sensor.key == key && sensor.class == CpuCoreClass::Efficiency)
+        {
+            "CPU efficiency-core sensor"
+        } else {
+            "CPU performance-core sensor"
+        }
+    } else if M3_CPU_HOTSPOT_TEMP_KEYS.contains(&key) && key.starts_with("Tf") {
+        "CPU core hot sensor"
+    } else if M3_CPU_HOTSPOT_TEMP_KEYS.contains(&key) {
+        "CPU hotspot"
+    } else if M3_CPU_CORE_AVERAGE_TEMP_KEYS.contains(&key) {
+        "CPU aggregate"
+    } else if M3_CPU_SUMMARY_TEMP_KEYS.contains(&key) {
+        "CPU summary"
+    } else if key.starts_with("Te") || key.starts_with("Tf") {
+        "CPU core sensor"
+    } else if key.starts_with("TC") || key.starts_with("TV") {
+        "CPU/SoC sensor"
+    } else if key.starts_with("Tp") {
+        "SoC proximity sensor"
+    } else if key.starts_with("Tg") {
+        "GPU sensor"
+    } else if key.starts_with("TM") || key.starts_with("TRD") {
+        "Memory/DRAM sensor"
+    } else if key.starts_with("TB") {
+        "Battery sensor"
+    } else if key.starts_with("TW") {
+        "Wireless/Airport sensor"
+    } else if key.starts_with("TP") {
+        "Power supply sensor"
+    } else if key.starts_with("TH") || key.starts_with("Th") {
+        "Heatsink sensor"
+    } else if key.starts_with("Ta") {
+        "Ambient sensor"
+    } else if key.starts_with("TD") {
+        "Storage/drive bay sensor"
+    } else if key.starts_with("Ts") || key.starts_with("TS") {
+        "Palm rest/trackpad sensor"
+    } else {
+        "Board sensor"
+    };
+    let kind = if label.starts_with("CPU") {
+        SensorKind::Cpu
+    } else if label.starts_with("GPU") {
+        SensorKind::Gpu
+    } else if label.starts_with("Memory") {
+        SensorKind::Memory
+    } else if label.starts_with("Battery") {
+        SensorKind::Battery
+    } else if label.starts_with("Storage") {
+        SensorKind::Storage
+    } else {
+        SensorKind::Other
+    };
+    (format!("{label} · SMC {key}"), kind)
+}
+
 fn cpu_temperature_probe_from_readings(
     summary_raw: Vec<(String, f32)>,
     aggregate_raw: Vec<(String, f32)>,
@@ -470,10 +531,11 @@ pub fn all_temperature_sensors() -> Vec<TempSensor> {
                 if !(1.0..=130.0).contains(&value) {
                     continue;
                 }
+                let (label, kind) = smc_temperature_label_and_kind(&data.key);
                 raw_smc.push(TempSensor {
                     id: format!("smc.raw.{}", data.key),
-                    label: format!("SMC {}", data.key),
-                    kind: SensorKind::Other,
+                    label,
+                    kind,
                     value: Celsius(value),
                 });
             }
@@ -1016,6 +1078,38 @@ mod tests {
     }
 
     #[test]
+    fn smc_temperature_labels_use_human_sensor_groups() {
+        assert_eq!(
+            super::smc_temperature_label_and_kind("TVD0"),
+            (
+                "CPU hotspot · SMC TVD0".to_string(),
+                peterfan_core::types::SensorKind::Cpu
+            )
+        );
+        assert_eq!(
+            super::smc_temperature_label_and_kind("Tf46"),
+            (
+                "CPU core hot sensor · SMC Tf46".to_string(),
+                peterfan_core::types::SensorKind::Cpu
+            )
+        );
+        assert_eq!(
+            super::smc_temperature_label_and_kind("Tg01"),
+            (
+                "GPU sensor · SMC Tg01".to_string(),
+                peterfan_core::types::SensorKind::Gpu
+            )
+        );
+        assert_eq!(
+            super::smc_temperature_label_and_kind("TB0T"),
+            (
+                "Battery sensor · SMC TB0T".to_string(),
+                peterfan_core::types::SensorKind::Battery
+            )
+        );
+    }
+
+    #[test]
     fn average_and_hot_summarizes_core_temperatures() {
         assert_eq!(super::average_and_hot(&[]), None);
         assert_eq!(
@@ -1225,7 +1319,10 @@ mod tests {
 
     #[test]
     fn m3_cpu_hotspot_key_map_includes_cpu_die_keys() {
-        assert_eq!(super::M3_CPU_HOTSPOT_TEMP_KEYS, &["TVD0", "TCMb"]);
+        assert_eq!(
+            super::M3_CPU_HOTSPOT_TEMP_KEYS,
+            &["TVD0", "TCMb", "Tf06", "Tf16", "Tf26", "Tf36", "Tf46"]
+        );
     }
 
     #[test]
@@ -1233,7 +1330,11 @@ mod tests {
         let probe = super::cpu_temperature_probe_from_readings(
             vec![("TCDX".to_string(), 72.0)],
             vec![("TV0s".to_string(), 74.0), ("TVss".to_string(), 76.0)],
-            vec![("TVD0".to_string(), 84.0), ("TCMb".to_string(), 86.0)],
+            vec![
+                ("TVD0".to_string(), 84.0),
+                ("TCMb".to_string(), 86.0),
+                ("Tf46".to_string(), 96.0),
+            ],
             vec![
                 ("Te05".to_string(), 62.0),
                 ("Tf04".to_string(), 64.0),
@@ -1243,16 +1344,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(probe.selected_average_c, Some(64.0));
-        assert_eq!(probe.selected_hottest_c, Some(86.0));
+        assert_eq!(probe.selected_hottest_c, Some(96.0));
         assert_eq!(probe.summary_average_c, Some(72.0));
         assert_eq!(probe.aggregate_average_c, Some(75.0));
-        assert_eq!(probe.hotspot_average_c, Some(85.0));
-        assert_eq!(probe.hotspot_hottest_c, Some(86.0));
+        assert_eq!(probe.hotspot_average_c, Some(88.666664));
+        assert_eq!(probe.hotspot_hottest_c, Some(96.0));
         assert_eq!(probe.performance_core_average_c, Some(65.0));
         assert_eq!(probe.all_core_average_c, Some(64.0));
         assert_eq!(probe.core_hottest_c, Some(66.0));
         assert_eq!(probe.aggregate_keys.len(), 2);
-        assert_eq!(probe.hotspot_keys.len(), 2);
+        assert_eq!(probe.hotspot_keys.len(), 3);
         assert_eq!(
             probe
                 .core_keys

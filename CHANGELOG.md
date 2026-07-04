@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.84] — 전체 센서 이름 일반화
+
+### Changed
+- **원시 SMC 온도 센서 이름을 일반 센서 그룹명으로 표시** — `Tf46`,
+  `TVD0`, `Tg01` 같은 원시 키만 보여주던 전체 센서 목록을 `CPU core sensor`,
+  `CPU hotspot`, `GPU sensor`, `Battery sensor`처럼 사람이 바로 이해할 수 있는
+  이름으로 바꾸고, 비교/디버깅을 위해 원래 SMC key는 함께 보존함.
+- **`CPU Hottest` 후보에 hot-core SMC 키 포함** — 로컬 M3 Max에서 실제로
+  90°C 이상으로 움직이는 `Tf06`/`Tf16`/`Tf26`/`Tf36`/`Tf46` 계열을
+  `CPU core hot sensor`로 분류하고 최고 CPU 온도 후보에 포함함. 평균 온도는
+  기존 전체 core 평균 기준을 유지함.
+
 ## [1.26.83] — CPU 최고 온도를 기본 기준으로 변경
 
 ### Changed
