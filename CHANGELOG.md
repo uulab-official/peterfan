@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.83] — CPU 최고 온도를 기본 기준으로 변경
+
+### Changed
+- **상단 CPU 온도 기본값을 `CPU hottest`로 변경** — 메뉴바에서 온도를 볼 때
+  평균보다 가장 뜨거운 CPU 지점이 더 실용적이라는 기준에 맞춰, 새 설치와 기본
+  설정은 `hottest`를 사용함.
+- **메뉴 라벨 정리** — 메뉴바 표시 항목을 `CPU Average`/`CPU 평균`에서
+  `CPU Hottest`/`CPU 최고`로 바꿔 기본 표시값의 의미를 명확히 함.
+
 ## [1.26.82] — CPU 온도 기준을 전체 core 평균으로 정리
 
 ### Fixed

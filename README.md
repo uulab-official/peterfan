@@ -31,7 +31,7 @@ It combines:
 | CLI | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `temps`, `temps --all`, `fans`, `fan`, `doctor`, `serve`, `update`, and more |
 | TUI | Terminal dashboard built with ratatui |
 | System metrics | CPU, memory, disks, network, processes, battery |
-| macOS sensors | CPU temperature defaults to all-core average, with selectable IOHID tdie, SMC summary/aggregate, and hottest diagnostics, SSD and battery temperature, fan RPM, plus a full raw SMC/IOHID temperature inventory |
+| macOS sensors | CPU temperature defaults to the hottest CPU reading, with selectable all-core average, IOHID tdie, SMC summary/aggregate diagnostics, SSD and battery temperature, fan RPM, plus a full raw SMC/IOHID temperature inventory |
 | Fan control | Manual fan setting, profiles, editable curves, daemon-driven persistent control |
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
 | Automation | JSON output, local HTTP API, shell completions |
