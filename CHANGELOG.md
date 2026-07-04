@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.81] — 상단 CPU 온도 기준 선택
+
+### Added
+- **메뉴바 우클릭 `CPU Temperature Source` / `CPU 온도 기준` 메뉴 추가** —
+  상단 온도를 `P-core average`, `IOHID tdie`, `SMC summary`, `SMC aggregate`,
+  `CPU hottest` 중에서 직접 고정할 수 있게 함. iStat/Macs Fan Control이 서로
+  다른 센서 계열을 보여줄 때 PeterFan을 그 기준에 맞출 수 있음.
+- **CLI 설정 지원** — `peterfan config --set temp_source iohid-tdie`처럼
+  온도 기준을 설정하고 `--get temp_source`로 확인 가능.
+
+### Changed
+- **온도 라벨 명확화** — 기존 `CPU 평균` 라벨을 `P-core 평균` /
+  `CPU 평균 · P-core`로 더 구체화해, PeterFan이 무엇을 측정하는지 앱 안에서
+  바로 알 수 있게 함.
+
 ## [1.26.80] — CPU 평균 센서 가족 분리
 
 ### Fixed

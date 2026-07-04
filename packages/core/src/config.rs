@@ -236,12 +236,57 @@ pub enum ResolvedLanguage {
     Ko,
 }
 
+/// Which CPU temperature family the menu-bar headline should show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TemperatureSource {
+    /// Live Apple Silicon performance-core average (`cpu.die`).
+    #[default]
+    CoreAverage,
+    /// IOHID PMU tdie average, often close to iStat-style die readings.
+    IohidTdie,
+    /// SMC `TCDX` summary.
+    SmcSummary,
+    /// SMC `TV*` aggregate, matching some Macs Fan Control views.
+    SmcAggregate,
+    /// Hottest CPU-related reading.
+    Hottest,
+}
+
+impl TemperatureSource {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "core" | "core-average" | "cpu" | "cpu-average" | "p-core" | "pcore" => {
+                Some(Self::CoreAverage)
+            }
+            "iohid" | "iohid-tdie" | "tdie" => Some(Self::IohidTdie),
+            "summary" | "smc-summary" | "tcdx" => Some(Self::SmcSummary),
+            "aggregate" | "smc-aggregate" | "tv" | "tv-aggregate" | "tv*" => {
+                Some(Self::SmcAggregate)
+            }
+            "hot" | "hottest" | "hotspot" => Some(Self::Hottest),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CoreAverage => "core-average",
+            Self::IohidTdie => "iohid-tdie",
+            Self::SmcSummary => "smc-summary",
+            Self::SmcAggregate => "smc-aggregate",
+            Self::Hottest => "hottest",
+        }
+    }
+}
+
 /// Menu-bar item appearance, persisted so it survives a relaunch.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MenubarConfig {
     pub metric: MenubarMetric,
     pub display: MenubarDisplay,
+    pub temperature_source: TemperatureSource,
     /// User picked "Don't Ask Again" on the first-run fan-control setup
     /// prompt — stop offering it automatically (still reachable via the
     /// right-click menu).
@@ -260,6 +305,7 @@ impl MenubarConfig {
     pub fn is_default(&self) -> bool {
         self.metric == MenubarMetric::Cpu
             && self.display == MenubarDisplay::Both
+            && self.temperature_source == TemperatureSource::CoreAverage
             && !self.setup_prompt_dismissed
             && self.daemon_update_prompt_dismissed_for.is_none()
             && self.daemon_update_prompt_snoozed_until_unix.is_none()
@@ -494,15 +540,25 @@ mod tests {
 
         cfg.menubar.metric = MenubarMetric::Network;
         cfg.menubar.display = MenubarDisplay::Graph;
+        cfg.menubar.temperature_source = TemperatureSource::IohidTdie;
         let toml = cfg.to_toml();
         assert!(toml.contains("[menubar]"));
         assert!(toml.contains("display = \"cat\""));
+        assert!(toml.contains("temperature_source = \"iohid-tdie\""));
         let back = Config::from_toml(&toml).unwrap();
         assert_eq!(back.menubar.metric, MenubarMetric::Network);
         assert_eq!(back.menubar.display, MenubarDisplay::Graph);
+        assert_eq!(
+            back.menubar.temperature_source,
+            TemperatureSource::IohidTdie
+        );
 
         let legacy = Config::from_toml("[menubar]\ndisplay = \"graph\"\n").unwrap();
         assert_eq!(legacy.menubar.display, MenubarDisplay::Graph);
+        assert_eq!(
+            legacy.menubar.temperature_source,
+            TemperatureSource::CoreAverage
+        );
     }
 
     #[test]

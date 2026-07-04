@@ -37,13 +37,15 @@ use tray_icon::{
 use wry::{WebView, WebViewBuilder};
 
 use peterfan_core::config::{
-    CustomCurveConfig, Language, MenubarDisplay, MenubarMetric, ResolvedLanguage,
+    CustomCurveConfig, Language, MenubarDisplay, MenubarMetric, ResolvedLanguage, TemperatureSource,
 };
 use peterfan_core::error::CoreError;
 use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
 use peterfan_core::thermals::{hottest_temperature_c, representative_temperature_c};
-use peterfan_core::types::{Celsius, SensorKind, TempSensor};
+#[cfg(test)]
+use peterfan_core::types::SensorKind;
+use peterfan_core::types::{Celsius, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
@@ -181,6 +183,9 @@ struct TrayMenu {
     show_items: Vec<(MenubarMetric, tray_icon::menu::CheckMenuItem)>,
     /// "Display" submenu — number / cat / both.
     display_items: Vec<(MenubarDisplay, tray_icon::menu::CheckMenuItem)>,
+    /// "CPU Temperature Source" submenu — which sensor family feeds the
+    /// headline/menu-bar temperature.
+    temperature_source_items: Vec<(TemperatureSource, tray_icon::menu::CheckMenuItem)>,
     /// "Fan Speed" submenu — direct RPM presets, mapped to the same command
     /// strings `execute_control` already understands ("auto", "hold:<pct>").
     fan_speed_items: Vec<(String, tray_icon::menu::MenuId)>,
@@ -214,6 +219,7 @@ struct L10n {
     quit: &'static str,
     menu_bar_shows: &'static str,
     menu_bar_style: &'static str,
+    temperature_source: &'static str,
     fan_speed: &'static str,
     language: &'static str,
     show_cpu: &'static str,
@@ -242,6 +248,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             quit: "Quit PeterFan",
             menu_bar_shows: "Menu Bar Shows",
             menu_bar_style: "Menu Bar Style",
+            temperature_source: "CPU Temperature Source",
             fan_speed: "Fan Speed",
             language: "Language",
             show_cpu: "CPU",
@@ -267,6 +274,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             quit: "PeterFan 종료",
             menu_bar_shows: "메뉴 막대 표시 항목",
             menu_bar_style: "메뉴 막대 스타일",
+            temperature_source: "CPU 온도 기준",
             fan_speed: "팬 속도",
             language: "언어",
             show_cpu: "CPU",
@@ -290,6 +298,7 @@ struct App {
     has_battery: bool,
     metric: MenubarMetric,
     display: MenubarDisplay,
+    temperature_source: TemperatureSource,
     language: Language,
     tray: Option<TrayIcon>,
     tray_menu: Option<TrayMenu>,
@@ -329,6 +338,12 @@ fn save_menubar_config(metric: MenubarMetric, display: MenubarDisplay) {
     let _ = peterfan_platform::config::save(&cfg);
 }
 
+fn save_temperature_source(source: TemperatureSource) {
+    let mut cfg = peterfan_platform::config::load();
+    cfg.menubar.temperature_source = source;
+    let _ = peterfan_platform::config::save(&cfg);
+}
+
 /// Persist the UI language choice so it survives a relaunch.
 fn save_language(language: Language) {
     let mut cfg = peterfan_platform::config::load();
@@ -353,10 +368,21 @@ fn display_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
         .or_else(|| hottest_temperature(temps))
 }
 
-fn primary_menu_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
+fn primary_menu_temperature(
+    temps: &[TempSensor],
+    source: TemperatureSource,
+) -> Option<&TempSensor> {
+    let preferred_id = match source {
+        TemperatureSource::CoreAverage => "cpu.die",
+        TemperatureSource::IohidTdie => "cpu.iohid.tdie",
+        TemperatureSource::SmcSummary => "cpu.smc.summary",
+        TemperatureSource::SmcAggregate => "cpu.smc.aggregate",
+        TemperatureSource::Hottest => "cpu.die.hot",
+    };
     temps
         .iter()
-        .find(|t| t.id == "cpu.die")
+        .find(|t| t.id == preferred_id)
+        .or_else(|| temps.iter().find(|t| t.id == "cpu.die"))
         .or_else(|| temps.iter().find(|t| t.id == "cpu.die.hot"))
         .or_else(|| hottest_temperature(temps))
 }
@@ -367,8 +393,8 @@ fn display_temperature_source(lang: ResolvedLanguage, sensor: Option<&TempSensor
     };
     if sensor.id == "cpu.die" {
         match lang {
-            ResolvedLanguage::Ko => "CPU 평균".to_string(),
-            ResolvedLanguage::En => "CPU average".to_string(),
+            ResolvedLanguage::Ko => "P-core 평균".to_string(),
+            ResolvedLanguage::En => "P-core average".to_string(),
         }
     } else if sensor.id.contains("hot") {
         match lang {
@@ -382,31 +408,40 @@ fn display_temperature_source(lang: ResolvedLanguage, sensor: Option<&TempSensor
 
 fn display_temperature_source_for_temps(
     lang: ResolvedLanguage,
-    temps: &[TempSensor],
+    _temps: &[TempSensor],
     sensor: Option<&TempSensor>,
 ) -> String {
-    if temps
-        .iter()
-        .any(|t| t.kind == SensorKind::Cpu && !t.id.contains("hot"))
-    {
-        return match lang {
-            ResolvedLanguage::Ko => "CPU 평균".to_string(),
-            ResolvedLanguage::En => "CPU average".to_string(),
-        };
-    }
     display_temperature_source(lang, sensor)
+}
+
+fn temperature_source_label(lang: ResolvedLanguage, source: TemperatureSource) -> &'static str {
+    match (lang, source) {
+        (ResolvedLanguage::Ko, TemperatureSource::CoreAverage) => "P-core 평균",
+        (ResolvedLanguage::Ko, TemperatureSource::IohidTdie) => "IOHID tdie",
+        (ResolvedLanguage::Ko, TemperatureSource::SmcSummary) => "SMC summary",
+        (ResolvedLanguage::Ko, TemperatureSource::SmcAggregate) => "SMC aggregate",
+        (ResolvedLanguage::Ko, TemperatureSource::Hottest) => "CPU 최고",
+        (ResolvedLanguage::En, TemperatureSource::CoreAverage) => "P-core average",
+        (ResolvedLanguage::En, TemperatureSource::IohidTdie) => "IOHID tdie",
+        (ResolvedLanguage::En, TemperatureSource::SmcSummary) => "SMC summary",
+        (ResolvedLanguage::En, TemperatureSource::SmcAggregate) => "SMC aggregate",
+        (ResolvedLanguage::En, TemperatureSource::Hottest) => "CPU hottest",
+    }
 }
 
 fn temperature_row_label(lang: ResolvedLanguage, sensor: &TempSensor) -> String {
     match sensor.id.as_str() {
         "cpu.die" => match lang {
-            ResolvedLanguage::Ko => "CPU 평균".to_string(),
-            ResolvedLanguage::En => "CPU average".to_string(),
+            ResolvedLanguage::Ko => "CPU 평균 · P-core".to_string(),
+            ResolvedLanguage::En => "CPU average · P-core".to_string(),
         },
         "cpu.die.hot" => match lang {
             ResolvedLanguage::Ko => "CPU 최고".to_string(),
             ResolvedLanguage::En => "CPU hottest".to_string(),
         },
+        "cpu.iohid.tdie" => "CPU IOHID tdie".to_string(),
+        "cpu.smc.summary" => "CPU SMC summary".to_string(),
+        "cpu.smc.aggregate" => "CPU SMC aggregate".to_string(),
         _ => sensor.label.clone(),
     }
 }
@@ -721,6 +756,7 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|v| MenubarDisplay::parse(v))
         .unwrap_or(saved.display);
+    let temperature_source = saved.temperature_source;
     let language = saved.language;
 
     let (monitor, provider): (Box<dyn SystemMonitor>, std::sync::Arc<dyn HardwareProvider>) =
@@ -748,6 +784,7 @@ fn main() {
         has_battery,
         metric,
         display,
+        temperature_source,
         language,
         tray: None,
         tray_menu: None,
@@ -884,6 +921,7 @@ fn main() {
             let id = &ev.id;
             let mut matched_metric: Option<MenubarMetric> = None;
             let mut matched_display: Option<MenubarDisplay> = None;
+            let mut matched_temperature_source: Option<TemperatureSource> = None;
             let mut matched_language: Option<Language> = None;
             let mut open_detail_requested = false;
             let cmd: Option<String> = if let Some(ref tm) = app.tray_menu {
@@ -902,6 +940,13 @@ fn main() {
                     tm.display_items.iter().find(|(_, item)| item.id() == id)
                 {
                     matched_display = Some(*d);
+                    None
+                } else if let Some((source, _)) = tm
+                    .temperature_source_items
+                    .iter()
+                    .find(|(_, item)| item.id() == id)
+                {
+                    matched_temperature_source = Some(*source);
                     None
                 } else if let Some((l, _)) =
                     tm.language_items.iter().find(|(_, item)| item.id() == id)
@@ -951,6 +996,16 @@ fn main() {
                     }
                 }
                 save_menubar_config(app.metric, app.display);
+                update(&mut app);
+            }
+            if let Some(source) = matched_temperature_source {
+                app.temperature_source = source;
+                if let Some(ref tm) = app.tray_menu {
+                    for (candidate, item) in &tm.temperature_source_items {
+                        item.set_checked(*candidate == source);
+                    }
+                }
+                save_temperature_source(source);
                 update(&mut app);
             }
             if let Some(l) = matched_language {
@@ -1139,6 +1194,30 @@ fn build_tray(app: &mut App) {
     })
     .collect();
 
+    // "CPU Temperature Source" — different monitoring apps pick different
+    // Apple Silicon sensor families, so let users pin the one they compare
+    // against instead of pretending there is only one true CPU temperature.
+    let temperature_source_submenu = Submenu::new(s.temperature_source, true);
+    let temperature_source_items: Vec<(TemperatureSource, CheckMenuItem)> = [
+        TemperatureSource::CoreAverage,
+        TemperatureSource::IohidTdie,
+        TemperatureSource::SmcSummary,
+        TemperatureSource::SmcAggregate,
+        TemperatureSource::Hottest,
+    ]
+    .into_iter()
+    .map(|source| {
+        let item = CheckMenuItem::new(
+            temperature_source_label(app.language.resolve(), source),
+            true,
+            app.temperature_source == source,
+            None,
+        );
+        let _ = temperature_source_submenu.append(&item);
+        (source, item)
+    })
+    .collect();
+
     // "Language" — each name is shown in its own language regardless of the
     // current selection (standard practice — you must be able to find your
     // way back even if you picked the wrong one by mistake).
@@ -1202,6 +1281,7 @@ fn build_tray(app: &mut App) {
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&show_submenu);
     let _ = menu.append(&display_submenu);
+    let _ = menu.append(&temperature_source_submenu);
     let _ = menu.append(&language_submenu);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&open_detail_item);
@@ -1219,6 +1299,7 @@ fn build_tray(app: &mut App) {
         quit: quit_item.id().clone(),
         show_items,
         display_items,
+        temperature_source_items,
         fan_speed_items,
         #[cfg(target_os = "macos")]
         enable_fan_control: enable_fan_control_item.id().clone(),
@@ -1566,7 +1647,7 @@ fn update(app: &mut App) {
     let nets = app.monitor.networks();
     let temps = app.provider.temperatures().unwrap_or_default();
     let fans = app.provider.fans().unwrap_or_default();
-    let display_temp = primary_menu_temperature(&temps).map(|t| t.value.0);
+    let display_temp = primary_menu_temperature(&temps, app.temperature_source).map(|t| t.value.0);
     let hottest = hottest_temperature_c(&temps);
     let fastest_rpm = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
     let fastest_pct = fans
@@ -1732,7 +1813,7 @@ fn update(app: &mut App) {
 
     // Temperatures: CPU average is the headline users compare with iStat/Stats;
     // the hottest sensor is still listed below and remains the fan-control input.
-    let display_temp = primary_menu_temperature(&temps);
+    let display_temp = primary_menu_temperature(&temps, app.temperature_source);
     let display_temp_value = display_temp.map(|t| t.value.0);
     let temp_rows: Vec<_> = temps
         .iter()
@@ -5007,8 +5088,34 @@ mod tests {
         ];
 
         assert_eq!(
-            primary_menu_temperature(&temps).map(|t| (t.id.as_str(), t.value.0)),
+            primary_menu_temperature(&temps, TemperatureSource::CoreAverage)
+                .map(|t| (t.id.as_str(), t.value.0)),
             Some(("cpu.die", 87.0))
+        );
+    }
+
+    #[test]
+    fn primary_menu_temperature_honors_configured_source() {
+        let temps = vec![
+            temp("cpu.die", SensorKind::Cpu, 58.0),
+            temp("cpu.die.hot", SensorKind::Cpu, 76.0),
+            temp("cpu.iohid.tdie", SensorKind::Cpu, 55.0),
+            temp("cpu.smc.summary", SensorKind::Cpu, 63.0),
+            temp("cpu.smc.aggregate", SensorKind::Cpu, 74.0),
+        ];
+
+        assert_eq!(
+            primary_menu_temperature(&temps, TemperatureSource::IohidTdie).map(|t| t.id.as_str()),
+            Some("cpu.iohid.tdie")
+        );
+        assert_eq!(
+            primary_menu_temperature(&temps, TemperatureSource::SmcAggregate)
+                .map(|t| t.id.as_str()),
+            Some("cpu.smc.aggregate")
+        );
+        assert_eq!(
+            primary_menu_temperature(&temps, TemperatureSource::Hottest).map(|t| t.id.as_str()),
+            Some("cpu.die.hot")
         );
     }
 
@@ -5020,11 +5127,11 @@ mod tests {
 
         assert_eq!(
             display_temperature_source(ResolvedLanguage::Ko, Some(&cpu)),
-            "CPU 평균"
+            "P-core 평균"
         );
         assert_eq!(
             display_temperature_source(ResolvedLanguage::En, Some(&cpu)),
-            "CPU average"
+            "P-core average"
         );
         assert_eq!(
             display_temperature_source(ResolvedLanguage::Ko, Some(&hot)),
@@ -5048,11 +5155,11 @@ mod tests {
 
         assert_eq!(
             display_temperature_source_for_temps(ResolvedLanguage::Ko, &temps, display),
-            "CPU 평균"
+            "ssd"
         );
         assert_eq!(
             display_temperature_source_for_temps(ResolvedLanguage::En, &temps, display),
-            "CPU average"
+            "ssd"
         );
     }
 
@@ -5064,11 +5171,11 @@ mod tests {
 
         assert_eq!(
             temperature_row_label(ResolvedLanguage::Ko, &cpu),
-            "CPU 평균"
+            "CPU 평균 · P-core"
         );
         assert_eq!(
             temperature_row_label(ResolvedLanguage::En, &cpu),
-            "CPU average"
+            "CPU average · P-core"
         );
         assert_eq!(
             temperature_row_label(ResolvedLanguage::Ko, &hot),

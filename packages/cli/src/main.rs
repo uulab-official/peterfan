@@ -128,8 +128,8 @@ enum Command {
         /// Create the config file with defaults if it doesn't exist.
         #[arg(long)]
         init: bool,
-        /// Set a config value: profile, interval, or critical.
-        /// Example: --set profile gaming  |  --set interval 3  |  --set critical 95
+        /// Set a config value: profile, interval, critical, or menubar.temperature_source.
+        /// Example: --set profile gaming  |  --set temp_source iohid-tdie
         #[arg(long, value_names = ["KEY", "VALUE"], num_args = 2)]
         set: Option<Vec<String>>,
         /// Print a single config value.
@@ -1095,6 +1095,9 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
             "profile" => cfg.profile.as_str().to_string(),
             "interval" | "interval_secs" => cfg.interval_secs.to_string(),
             "critical" | "critical_temp_c" => format!("{:.0}", cfg.critical_temp_c),
+            "menubar.temperature_source" | "temperature_source" | "temp_source" => {
+                cfg.menubar.temperature_source.as_str().to_string()
+            }
             "alert.cpu" | "alert.cpu_pct" => cfg
                 .alert
                 .cpu_pct
@@ -1114,7 +1117,8 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
             "alert.interval" | "alert.interval_secs" => cfg.alert.interval_secs.to_string(),
             _ => anyhow::bail!(
                 "unknown key '{key}'; valid keys: profile, interval, critical, \
-                 alert.cpu, alert.memory, alert.temp, alert.cooldown, alert.interval"
+                 menubar.temperature_source, alert.cpu, alert.memory, alert.temp, \
+                 alert.cooldown, alert.interval"
             ),
         };
         if json {
@@ -1147,6 +1151,14 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
                     .parse::<f32>()
                     .map_err(|_| anyhow::anyhow!("critical must be a number"))?;
             }
+            "menubar.temperature_source" | "temperature_source" | "temp_source" => {
+                cfg.menubar.temperature_source =
+                    peterfan_core::config::TemperatureSource::parse(val).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "unknown temperature source '{val}' (valid: core-average, iohid-tdie, smc-summary, smc-aggregate, hottest)"
+                        )
+                    })?;
+            }
             "alert.cpu" | "alert.cpu_pct" => {
                 cfg.alert.cpu_pct = Some(
                     val.parse::<f32>()
@@ -1178,7 +1190,8 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
             }
             _ => anyhow::bail!(
                 "unknown key '{key}'; valid keys: profile, interval, critical, \
-                 alert.cpu, alert.memory, alert.temp, alert.cooldown, alert.interval"
+                 menubar.temperature_source, alert.cpu, alert.memory, alert.temp, \
+                 alert.cooldown, alert.interval"
             ),
         }
         let p = peterfan_platform::config::save(&cfg)
@@ -1205,6 +1218,9 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
                 "profile": cfg.profile.as_str(),
                 "interval_secs": cfg.interval_secs,
                 "critical_temp_c": cfg.critical_temp_c,
+                "menubar": {
+                    "temperature_source": cfg.menubar.temperature_source.as_str(),
+                },
             }))?
         );
         return Ok(());
@@ -1214,6 +1230,7 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
     print_kv("Profile", cfg.profile.as_str());
     print_kv("Interval", &format!("{}s", cfg.interval_secs));
     print_kv("Critical", &format!("{:.0}°C", cfg.critical_temp_c));
+    print_kv("Temp Source", cfg.menubar.temperature_source.as_str());
     if cfg.rules.is_empty() {
         print_kv("Rules", "(none)");
     } else {
