@@ -893,6 +893,8 @@ fn main() {
                     std::thread::spawn(install_fan_control);
                 } else if c == "checkupdates" {
                     std::thread::spawn(check_for_updates_interactive);
+                } else if c == "toggle_login_item" {
+                    std::thread::spawn(toggle_login_item);
                 } else if c == "ready" {
                     // The WebView finished loading after one or more native
                     // updates may already have been evaluated too early. The
@@ -1372,7 +1374,7 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
             } else if let Some(url) = body.strip_prefix("open:") {
                 open_external_url(url);
-            } else if body == "ready" || body == "checkupdates" {
+            } else if body == "ready" || body == "checkupdates" || body == "toggle_login_item" {
                 PENDING
                     .lock()
                     .expect("pending poisoned")
@@ -1458,7 +1460,7 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
             } else if let Some(url) = body.strip_prefix("open:") {
                 open_external_url(url);
-            } else if body == "ready" || body == "checkupdates" {
+            } else if body == "ready" || body == "checkupdates" || body == "toggle_login_item" {
                 PENDING
                     .lock()
                     .expect("pending poisoned")
@@ -1988,6 +1990,7 @@ fn update(app: &mut App) {
         "active_profile": active_profile,
         "active_control_mode": active_control_mode,
         "fan_setup_needed": (!daemon_running || daemon_update_needed) && can_control,
+        "login_item_installed": peterfan_platform::login_item::is_installed(),
         "fan_count": fans.len(),
         "controllable_fan_count": fans.iter().filter(|f| f.controllable).count(),
         "app_version": env!("CARGO_PKG_VERSION"),
@@ -2541,6 +2544,26 @@ fn check_for_updates_interactive() {
 #[cfg(not(target_os = "macos"))]
 fn check_for_updates_interactive() {}
 
+#[cfg(target_os = "macos")]
+fn toggle_login_item() {
+    let status = if peterfan_platform::login_item::is_installed() {
+        match peterfan_platform::login_item::remove() {
+            Ok(true) => "launch at login disabled".to_string(),
+            Ok(false) => "launch at login was already disabled".to_string(),
+            Err(err) => format!("launch at login failed: {err}"),
+        }
+    } else {
+        match peterfan_platform::login_item::install(None, "cpu") {
+            Ok((bin, _)) => format!("launch at login enabled: {}", bin.display()),
+            Err(err) => format!("launch at login failed: {err}"),
+        }
+    };
+    *STATUS.lock().expect("status poisoned") = status;
+}
+
+#[cfg(not(target_os = "macos"))]
+fn toggle_login_item() {}
+
 /// Ask whether to install `release` now. "Update Now" downloads, extracts,
 /// and queues a detached script that replaces the running `.app` bundle and
 /// relaunches once this process quits — see
@@ -2975,6 +2998,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Settings<", ">설정<")
             .replace(">General Settings<", ">일반 설정<")
             .replace(">App Preferences<", ">앱 설정<")
+            .replace(">Launch at Login<", ">시작 시 자동 실행<")
             .replace(">Fan Control Health<", ">팬 제어 상태<")
             .replace(">Hardware Availability<", ">하드웨어 감지 상태<")
             .replace(">Daemon<", ">데몬<")
@@ -3019,6 +3043,10 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(
                 "Open the full dashboard when you need more room.",
                 "더 넓은 화면이 필요할 때 전체 대시보드를 엽니다.",
+            )
+            .replace(
+                "Start PeterFan automatically when you sign in to this Mac.",
+                "이 Mac에 로그인하면 PeterFan을 자동으로 시작합니다.",
             )
             .replace(">Selected point<", ">선택한 점<")
             .replace(">Reset<", ">초기화<")
@@ -3249,6 +3277,10 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="health-row"><span class="health-label">Network</span><span class="health-value" id="hardware-network">—</span></div>
 </div>
 </div>
+<div class="settings-item" id="login-item-setting">
+<div><div class="settings-item-title">Launch at Login</div><div class="settings-item-copy">Start PeterFan automatically when you sign in to this Mac.</div></div>
+<button id="login-toggle" class="panel-action secondary" onclick="toggleLoginItem(this)">Enable</button>
+</div>
 <div class="settings-item">
 <div><div class="settings-item-title">Detail Window</div><div class="settings-item-copy">Open the full dashboard when you need more room.</div></div>
 <button class="panel-action secondary" onclick="window.ipc.postMessage('open_detail')">Open Detail Window…</button>
@@ -3349,6 +3381,7 @@ var LANG='__LANG__';
 var SHOW_CURVE_EDITOR='__SHOWCURVE__';
 var FAN_CONTROL_FIX_PENDING=false;
 var APP_UPDATE_CHECK_PENDING=false;
+var LOGIN_ITEM_TOGGLE_PENDING=false;
 var APP_UPDATE_STATUS=null;
 if(!('__pf_pending' in window))window.__pf_pending=null;
 function applyPendingUpdate(){
@@ -3873,6 +3906,19 @@ function checkAppUpdates(btn){
     }
   },2500);
 }
+function toggleLoginItem(btn){
+  if(LOGIN_ITEM_TOGGLE_PENDING)return;
+  LOGIN_ITEM_TOGGLE_PENDING=true;
+  if(btn){
+    btn.disabled=true;
+    btn.textContent=LANG==='ko'?'변경 중…':'Changing…';
+  }
+  window.ipc.postMessage('toggle_login_item');
+  setTimeout(function(){
+    LOGIN_ITEM_TOGGLE_PENDING=false;
+    if(window.__pf_pending)updateLoginItemControl(window.__pf_pending);
+  },2500);
+}
 function setSetupMenuOpen(open){
   var menu=document.getElementById('setup-menu');
   var more=document.getElementById('setup-more');
@@ -4156,7 +4202,22 @@ function updateRail(d){
     settings.title=LANG==='ko'?'설정 열기':'Open settings';
   }
   updateHealthPanel(d);
+  updateLoginItemControl(d);
   setPanelPill('rail-more-pill',LANG==='ko'?'도구':'Tools','info');
+}
+function updateLoginItemControl(d){
+  var btn=document.getElementById('login-toggle');
+  if(!btn)return;
+  var enabled=!!d.login_item_installed;
+  btn.classList.toggle('primary',enabled);
+  btn.classList.toggle('secondary',!enabled);
+  btn.disabled=LOGIN_ITEM_TOGGLE_PENDING;
+  if(!LOGIN_ITEM_TOGGLE_PENDING){
+    btn.textContent=enabled?(LANG==='ko'?'끄기':'Disable'):(LANG==='ko'?'켜기':'Enable');
+  }
+  btn.title=enabled
+    ?(LANG==='ko'?'로그인 시 자동 실행 끄기':'Disable launch at login')
+    :(LANG==='ko'?'로그인 시 자동 실행 켜기':'Enable launch at login');
 }
 function setHealthValue(id,text,tone){
   var el=document.getElementById(id);
@@ -4606,7 +4667,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_has_no_license_or_login_entry_points() {
+    fn dashboard_has_no_license_entry_points() {
         let en = dashboard_html(ResolvedLanguage::En, false);
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
 
@@ -4622,10 +4683,6 @@ mod tests {
             assert!(!html.contains("라이선스"));
             assert!(!html.contains("license:"));
             assert!(!html.contains("submitLicense"));
-            assert!(!html.contains("togglelogin"));
-            assert!(!html.contains("Launch at Login"));
-            assert!(!html.contains("로그인"));
-            assert!(!html.contains("자동 실행"));
         }
     }
 
@@ -4933,18 +4990,23 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_removes_launch_at_login_controls_from_popover() {
+    fn settings_panel_contains_launch_at_login_toggle() {
         let en = dashboard_html(ResolvedLanguage::En, false);
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
 
-        for html in [&en, &ko] {
-            assert!(!html.contains("togglelogin"));
-            assert!(!html.contains("setup-login"));
-            assert!(!html.contains("rail-login"));
-            assert!(!html.contains("Launch at Login"));
-            assert!(!html.contains("로그인"));
-            assert!(!html.contains("자동 실행"));
-        }
+        assert!(en.contains(r#"id="login-item-setting""#));
+        assert!(en.contains(r#"id="login-toggle""#));
+        assert!(en.contains(">Launch at Login<"));
+        assert!(en.contains("function toggleLoginItem(btn)"));
+        assert!(en.contains("window.ipc.postMessage('toggle_login_item')"));
+        assert!(en.contains("function updateLoginItemControl(d)"));
+        assert!(en.contains("d.login_item_installed"));
+        assert!(!en.contains("togglelogin"));
+        assert!(!en.contains("setup-login"));
+        assert!(!en.contains("rail-login"));
+
+        assert!(ko.contains(">시작 시 자동 실행<"));
+        assert!(ko.contains("이 Mac에 로그인하면 PeterFan을 자동으로 시작합니다."));
     }
 
     #[test]

@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.91] — 시작 시 자동 실행 토글 복구
+
+### Added
+- **Settings에 시작 시 자동 실행 토글 추가** — 메뉴바 앱의 Settings 화면에서
+  `Launch at Login` / `시작 시 자동 실행`을 바로 켜고 끌 수 있게 함. 토글은
+  per-user LaunchAgent를 사용하므로 관리자 암호 없이 동작하며, 현재 로그인 항목
+  설치 상태를 실시간으로 반영함.
+
 ## [1.26.90] — 릴리즈 폴더 버전 일관성 검증 강화
 
 ### Added
