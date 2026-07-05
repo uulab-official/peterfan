@@ -135,9 +135,13 @@ pub fn install(override_binary: Option<&str>, metric: &str) -> Result<(PathBuf, 
     }
     let _ = std::process::Command::new("launchctl")
         .args(["enable", &service])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
     let _ = std::process::Command::new("launchctl")
         .args(["kickstart", "-k", &service])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
     Ok((bin, path))
 }

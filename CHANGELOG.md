@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.94] — 로그인 항목 즉시 실행 출력 정리
+
+### Fixed
+- **시작 시 자동 실행 등록 후 `kickstart` 출력 숨김** — 이미 실행 중인 앱을
+  재시작하지 못하는 상황에서 터미널에 보이던 `Load failed: 5` 잡음을 숨겨,
+  로그인 항목 등록이 조용히 완료되게 함.
+
 ## [1.26.93] — 로그인 항목 등록 출력 정리
 
 ### Fixed
