@@ -113,6 +113,8 @@ pub fn install(override_binary: Option<&str>, metric: &str) -> Result<(PathBuf, 
     let path_str = path.to_str().unwrap_or("");
     let _ = std::process::Command::new("launchctl")
         .args(["bootout", &domain, path_str])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
     let bootstrap = std::process::Command::new("launchctl")
         .args(["bootstrap", &domain, path_str])
@@ -152,6 +154,8 @@ pub fn remove() -> Result<bool, String> {
     let path_str = path.to_str().unwrap_or("");
     let _ = std::process::Command::new("launchctl")
         .args(["bootout", &domain, path_str])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
     let _ = std::process::Command::new("launchctl")
         .args(["unload", "-w", path_str])

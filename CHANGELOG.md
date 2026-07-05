@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.93] — 로그인 항목 등록 출력 정리
+
+### Fixed
+- **시작 시 자동 실행 등록 시 불필요한 `launchctl bootout` 오류 출력 숨김** —
+  이미 로드되어 있지 않은 LaunchAgent를 정리하는 과정에서 터미널에 보이던
+  `Load failed: 5` 잡음을 숨겨, CLI와 앱 토글 모두 더 조용하게 동작하도록 정리함.
+
 ## [1.26.92] — 로그인 항목 등록 안정화
 
 ### Fixed
