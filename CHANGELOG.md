@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.92] — 로그인 항목 등록 안정화
+
+### Fixed
+- **시작 시 자동 실행 등록을 최신 LaunchAgent 방식으로 안정화** —
+  `launchctl load` 대신 `bootout`/`bootstrap`/`enable`/`kickstart` 경로를 우선
+  사용하도록 바꿔, Settings의 시작 시 자동 실행 토글과 CLI `login-item install`이
+  최신 macOS에서 더 안정적으로 등록되게 함.
+
 ## [1.26.91] — 시작 시 자동 실행 토글 복구
 
 ### Added

@@ -21,6 +21,14 @@ pub fn is_installed() -> bool {
     plist_path().is_some_and(|p| p.exists())
 }
 
+fn launchctl_domain() -> String {
+    format!("gui/{}", unsafe { libc::getuid() })
+}
+
+fn launchctl_service() -> String {
+    format!("{}/{}", launchctl_domain(), LABEL)
+}
+
 /// Find the `peterfan-menubar` binary next to the current executable (or an
 /// explicit override path).
 pub fn find_menubar_binary(override_path: Option<&str>) -> Result<PathBuf, String> {
@@ -100,8 +108,34 @@ pub fn install(override_binary: Option<&str>, metric: &str) -> Result<(PathBuf, 
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     std::fs::write(&path, plist_contents(&bin, metric)).map_err(|e| e.to_string())?;
+    let domain = launchctl_domain();
+    let service = launchctl_service();
+    let path_str = path.to_str().unwrap_or("");
     let _ = std::process::Command::new("launchctl")
-        .args(["load", "-w", path.to_str().unwrap_or("")])
+        .args(["bootout", &domain, path_str])
+        .status();
+    let bootstrap = std::process::Command::new("launchctl")
+        .args(["bootstrap", &domain, path_str])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !bootstrap.status.success() {
+        let legacy = std::process::Command::new("launchctl")
+            .args(["load", "-w", path_str])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !legacy.status.success() {
+            return Err(format!(
+                "launchctl bootstrap failed: {}; legacy load failed: {}",
+                String::from_utf8_lossy(&bootstrap.stderr).trim(),
+                String::from_utf8_lossy(&legacy.stderr).trim()
+            ));
+        }
+    }
+    let _ = std::process::Command::new("launchctl")
+        .args(["enable", &service])
+        .status();
+    let _ = std::process::Command::new("launchctl")
+        .args(["kickstart", "-k", &service])
         .status();
     Ok((bin, path))
 }
@@ -114,8 +148,13 @@ pub fn remove() -> Result<bool, String> {
     if !path.exists() {
         return Ok(false);
     }
+    let domain = launchctl_domain();
+    let path_str = path.to_str().unwrap_or("");
     let _ = std::process::Command::new("launchctl")
-        .args(["unload", "-w", path.to_str().unwrap_or("")])
+        .args(["bootout", &domain, path_str])
+        .status();
+    let _ = std::process::Command::new("launchctl")
+        .args(["unload", "-w", path_str])
         .status();
     std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     Ok(true)
