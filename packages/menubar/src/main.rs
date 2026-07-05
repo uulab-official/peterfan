@@ -826,7 +826,9 @@ fn main() {
                 // there's no real hardware to control, so the whole flow
                 // (including the real privileged install) would be bogus.
                 if !use_mock {
-                    std::thread::spawn(maybe_prompt_first_run_setup);
+                    if should_auto_prompt_first_run_setup_on_launch() {
+                        std::thread::spawn(maybe_prompt_first_run_setup);
+                    }
                     // App updates are informational; fan-control daemon
                     // updates are privileged and stay user-initiated through
                     // the Setup row's Update button.
@@ -2413,6 +2415,10 @@ fn maybe_prompt_first_run_setup() {
 #[cfg(not(target_os = "macos"))]
 fn maybe_prompt_first_run_setup() {}
 
+fn should_auto_prompt_first_run_setup_on_launch() -> bool {
+    false
+}
+
 #[cfg(target_os = "macos")]
 fn stale_daemon_version() -> Option<String> {
     if !peterfan_platform::daemon_reachable() {
@@ -2517,17 +2523,18 @@ fn maybe_prompt_stale_daemon_update() {
 #[cfg(not(target_os = "macos"))]
 fn maybe_prompt_stale_daemon_update() {}
 
-/// Silent background check, run once shortly after launch. Only speaks up
-/// (via [`prompt_update_available`]) if a newer release actually exists —
-/// "already up to date" isn't worth interrupting anyone for.
+/// Silent background check, run once after launch. It deliberately does not
+/// open a dialog; menu-bar apps launched at login should not steal focus.
+/// The manual "Check for Updates…" action still presents the installer flow.
 #[cfg(target_os = "macos")]
 fn check_for_updates_on_launch() {
-    // Staggered well past the fan-control setup prompt's own 600ms delay so
-    // setup/daemon-update/update dialogs never compete for attention.
-    std::thread::sleep(Duration::from_secs(6));
+    std::thread::sleep(Duration::from_secs(20));
     if let Ok(release) = peterfan_platform::updater::fetch_latest_release() {
         if peterfan_platform::updater::is_newer(env!("CARGO_PKG_VERSION"), &release.version) {
-            prompt_update_available(&release);
+            *STATUS.lock().expect("status poisoned") = format!(
+                "update available: {} (use Check for Updates)",
+                release.version
+            );
         }
     }
     // Network hiccup or GitHub rate limit: fail silently, try again next launch.
@@ -5412,6 +5419,11 @@ mod tests {
     #[test]
     fn launch_policy_keeps_daemon_update_prompt_user_initiated() {
         assert!(!should_auto_prompt_stale_daemon_update_on_launch());
+    }
+
+    #[test]
+    fn launch_policy_keeps_first_run_setup_user_initiated() {
+        assert!(!should_auto_prompt_first_run_setup_on_launch());
     }
 
     #[test]

@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.97] — 자동 실행 시작 방해 제거
+
+### Fixed
+- **앱 시작 시 팬 제어 설치 다이얼로그 자동 표시 중단** — 팬 제어 설치와
+  재설치는 Settings/Fan Control 화면에서 사용자가 눌렀을 때만 진행되게 함.
+- **자동 업데이트 확인이 포커스를 뺏지 않도록 변경** — 시작 후 백그라운드
+  업데이트 확인은 상태만 갱신하고, 설치/다운로드 다이얼로그는 사용자가
+  `Check for Updates`를 눌렀을 때만 표시되게 함.
+
 ## [1.26.96] — 시작 성능 경량화
 
 ### Fixed
