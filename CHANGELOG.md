@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.95] — 로그인 항목 로드 출력 완전 정리
+
+### Fixed
+- **`launchctl bootstrap/load` 출력까지 숨김 처리** — 최신 macOS에서 로그인
+  항목을 재등록할 때 `launchctl`이 직접 터미널로 흘리던 오류 문구를 막아,
+  Settings 토글과 CLI 등록이 모두 조용히 완료되게 함.
+
 ## [1.26.94] — 로그인 항목 즉시 실행 출력 정리
 
 ### Fixed

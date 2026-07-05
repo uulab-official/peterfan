@@ -118,19 +118,19 @@ pub fn install(override_binary: Option<&str>, metric: &str) -> Result<(PathBuf, 
         .status();
     let bootstrap = std::process::Command::new("launchctl")
         .args(["bootstrap", &domain, path_str])
-        .output()
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
         .map_err(|e| e.to_string())?;
-    if !bootstrap.status.success() {
+    if !bootstrap.success() {
         let legacy = std::process::Command::new("launchctl")
             .args(["load", "-w", path_str])
-            .output()
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
             .map_err(|e| e.to_string())?;
-        if !legacy.status.success() {
-            return Err(format!(
-                "launchctl bootstrap failed: {}; legacy load failed: {}",
-                String::from_utf8_lossy(&bootstrap.stderr).trim(),
-                String::from_utf8_lossy(&legacy.stderr).trim()
-            ));
+        if !legacy.success() {
+            return Err("launchctl could not load the login item".into());
         }
     }
     let _ = std::process::Command::new("launchctl")
