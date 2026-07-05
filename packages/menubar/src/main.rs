@@ -819,7 +819,6 @@ fn main() {
         match event {
             Event::NewEvents(StartCause::Init) => {
                 build_tray(&mut app);
-                build_popover(&mut app, target);
                 // Offer one-time setup right away instead of leaving it
                 // buried in the right-click menu — other fan-control apps
                 // ask for this during their installer; we don't have one,
@@ -1020,14 +1019,16 @@ fn main() {
                 // visible immediately instead of needing a relaunch.
                 build_tray(&mut app);
                 let was_visible = app.popover_visible;
-                app.window = None;
-                app.webview = None;
-                build_popover(&mut app, target);
-                if was_visible {
-                    if let Some(w) = &app.window {
-                        w.set_visible(true);
+                if app.window.is_some() {
+                    app.window = None;
+                    app.webview = None;
+                    build_popover(&mut app, target);
+                    if was_visible {
+                        if let Some(w) = &app.window {
+                            w.set_visible(true);
+                        }
+                        app.popover_visible = true;
                     }
-                    app.popover_visible = true;
                 }
                 if app.detail_window.is_some() {
                     let was_detail_visible =
@@ -1067,7 +1068,7 @@ fn main() {
                 ..
             } = ev
             {
-                toggle_popover(&mut app, rect);
+                toggle_popover(&mut app, target, rect);
             }
         }
     });
@@ -1605,10 +1606,13 @@ fn popover_position_for_rect(
     PhysicalPosition::new(x, anchor_y)
 }
 
-fn toggle_popover(app: &mut App, rect: Rect) {
+fn toggle_popover(app: &mut App, target: &EventLoopWindowTarget<()>, rect: Rect) {
     if app.popover_visible {
         hide_popover(app);
         return;
+    }
+    if app.window.is_none() {
+        build_popover(app, target);
     }
     let Some(w) = &app.window else { return };
     let scale = w.scale_factor();
@@ -1642,13 +1646,25 @@ fn hide_popover(app: &mut App) {
 fn update(app: &mut App) {
     app.monitor.refresh();
     let cpu = app.monitor.cpu();
+    let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
+    let dashboard_visible = app.popover_visible || detail_visible;
     // Gathered unconditionally (cheap — the underlying sysinfo/provider state
     // was already refreshed/held open) so the rolling history stays populated
     // even while the popover is closed and the runner icon keeps moving.
     let mem = app.monitor.memory();
     let nets = app.monitor.networks();
-    let temps = app.provider.temperatures().unwrap_or_default();
-    let fans = app.provider.fans().unwrap_or_default();
+    let read_temps = dashboard_visible || matches!(app.metric, MenubarMetric::Temp);
+    let read_fans = dashboard_visible || matches!(app.metric, MenubarMetric::Fan);
+    let temps = if read_temps {
+        app.provider.temperatures().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let fans = if read_fans {
+        app.provider.fans().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let display_temp = primary_menu_temperature(&temps, app.temperature_source).map(|t| t.value.0);
     let hottest = hottest_temperature_c(&temps);
     let fastest_rpm = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
@@ -1759,7 +1775,6 @@ fn update(app: &mut App) {
         let _ = tray.set_tooltip(Some(tip_parts.join("   ·   ")));
     }
 
-    let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
     if !app.popover_visible && !detail_visible {
         return;
     }
