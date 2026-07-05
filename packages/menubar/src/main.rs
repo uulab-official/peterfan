@@ -51,6 +51,10 @@ use peterfan_core::{HardwareProvider, SystemMonitor};
 const REFRESH: Duration = Duration::from_secs(1);
 const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(70);
 const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(340);
+const POPOVER_PREWARM_DELAY: Duration = Duration::from_millis(1200);
+const DASHBOARD_OPEN_GRACE: Duration = Duration::from_millis(900);
+const ALL_TEMP_REFRESH: Duration = Duration::from_secs(10);
+const DAEMON_REFRESH: Duration = Duration::from_secs(2);
 const SINGLE_INSTANCE_LOCK_BASENAME: &str = "kr.co.uulab.peterfan.menubar";
 /// Samples kept for the menu-bar runner icon (always shows the short-term
 /// trend, independent of the popover's chart range selector) — 120 samples
@@ -328,6 +332,10 @@ struct App {
     /// advances on each refresh, with bigger CPU load taking larger strides.
     runner_frame: u8,
     runner_cpu_pct: f32,
+    all_temp_rows_cache: Vec<serde_json::Value>,
+    next_all_temp_refresh: Instant,
+    daemon_json_cache: Option<serde_json::Value>,
+    next_daemon_refresh: Instant,
 }
 
 /// Persist the menu-bar's metric + display choice so it survives a relaunch.
@@ -801,10 +809,15 @@ fn main() {
         disk_io_h: RangedHistory::new(),
         runner_frame: 0,
         runner_cpu_pct: 0.0,
+        all_temp_rows_cache: Vec::new(),
+        next_all_temp_refresh: Instant::now() + ALL_TEMP_REFRESH,
+        daemon_json_cache: None,
+        next_daemon_refresh: Instant::now() + DAEMON_REFRESH,
     };
 
     let mut next_metric_at = Instant::now();
     let mut next_runner_at = Instant::now();
+    let mut prewarm_popover_at = Some(Instant::now() + POPOVER_PREWARM_DELAY);
     event_loop.run(move |event, target, control_flow| {
         if QUIT.load(Ordering::Relaxed) {
             *control_flow = ControlFlow::Exit;
@@ -863,6 +876,14 @@ fn main() {
         }
 
         let now = Instant::now();
+        if let Some(at) = prewarm_popover_at {
+            if now >= at {
+                if app.window.is_none() {
+                    build_popover(&mut app, target);
+                }
+                prewarm_popover_at = None;
+            }
+        }
         if now >= next_metric_at {
             update(&mut app);
             next_metric_at = now + REFRESH;
@@ -871,12 +892,21 @@ fn main() {
             animate_runner(&mut app);
             next_runner_at = now + runner_frame_interval(app.runner_cpu_pct);
         }
-        let next_tick = next_metric_at.min(next_runner_at);
+        let next_tick = [
+            Some(next_metric_at),
+            Some(next_runner_at),
+            prewarm_popover_at,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(next_metric_at);
         *control_flow = ControlFlow::WaitUntil(next_tick);
 
         // Run any control commands (or a license key) queued by the popover.
         let cmds: Vec<String> = std::mem::take(&mut *PENDING.lock().expect("pending poisoned"));
         if !cmds.is_empty() {
+            let mut refresh_after_pending = false;
             for c in &cmds {
                 if let Some(json) = c.strip_prefix("savecurve:") {
                     *STATUS.lock().expect("status poisoned") = "saving curve…".into();
@@ -886,21 +916,24 @@ fn main() {
                         let status = save_custom_curve(provider.as_ref(), &json);
                         *STATUS.lock().expect("status poisoned") = status;
                     });
+                    refresh_after_pending = true;
                 } else if c == "enablefancontrol" {
                     // Same admin-prompt install the right-click menu item
                     // triggers — exposed here too so the "update the daemon"
                     // fix is one click from the exact error message that
                     // told the user they needed it, not a hunt through menus.
                     std::thread::spawn(install_fan_control);
+                    refresh_after_pending = true;
                 } else if c == "checkupdates" {
                     std::thread::spawn(check_for_updates_interactive);
+                    refresh_after_pending = true;
                 } else if c == "toggle_login_item" {
                     std::thread::spawn(toggle_login_item);
+                    refresh_after_pending = true;
                 } else if c == "ready" {
-                    // The WebView finished loading after one or more native
-                    // updates may already have been evaluated too early. The
-                    // unconditional update() below immediately re-sends the
-                    // latest metrics into the now-ready dashboard.
+                    // The WebView may be built hidden during idle prewarm.
+                    // Let the normal tick deliver data so `ready` never
+                    // triggers a full sensor scan on the event-loop thread.
                 } else {
                     // Hardware I/O (SMC calls) can take hundreds of ms,
                     // especially while failing (no daemon, no root) — run it
@@ -914,9 +947,12 @@ fn main() {
                         let status = execute_control(provider.as_ref(), &cmd);
                         *STATUS.lock().expect("status poisoned") = status;
                     });
+                    refresh_after_pending = true;
                 }
             }
-            update(&mut app); // reflect "applying…" (or the license result) immediately
+            if refresh_after_pending {
+                update(&mut app);
+            }
         }
 
         // Handle context-menu item selections.
@@ -1431,7 +1467,7 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
     if let Some(w) = &app.detail_window {
         w.set_visible(true);
         w.set_focus();
-        update(app);
+        defer_dashboard_io_after_open(app);
         return;
     }
 
@@ -1501,7 +1537,7 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
             window.set_focus();
             app.detail_window = Some(window);
             app.detail_webview = Some(webview);
-            update(app);
+            defer_dashboard_io_after_open(app);
         }
         Err(e) => eprintln!("failed to create detail webview: {e}"),
     }
@@ -1631,7 +1667,7 @@ fn toggle_popover(app: &mut App, target: &EventLoopWindowTarget<()>, rect: Rect)
     w.set_visible(true);
     w.set_focus();
     app.popover_visible = true;
-    update(app);
+    defer_dashboard_io_after_open(app);
 }
 
 fn hide_popover(app: &mut App) {
@@ -1641,11 +1677,18 @@ fn hide_popover(app: &mut App) {
     app.popover_visible = false;
 }
 
+fn defer_dashboard_io_after_open(app: &mut App) {
+    let now = Instant::now();
+    app.next_daemon_refresh = now + DASHBOARD_OPEN_GRACE;
+    app.next_all_temp_refresh = now + DASHBOARD_OPEN_GRACE + Duration::from_millis(500);
+}
+
 // ---------------------------------------------------------------------------
 // Update: sample once, refresh the menu-bar title and (if open) the popover.
 // ---------------------------------------------------------------------------
 
 fn update(app: &mut App) {
+    let now = Instant::now();
     app.monitor.refresh();
     let cpu = app.monitor.cpu();
     let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
@@ -1844,20 +1887,28 @@ fn update(app: &mut App) {
             })
         })
         .collect();
-    let all_temp_rows: Vec<_> = peterfan_platform::all_temperature_sensors()
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "l": raw_temperature_row_label(t),
-                "c": format!("{:.0}°C", t.value.0),
-                "cls": temp_cls(t.value),
+    if now >= app.next_all_temp_refresh {
+        app.all_temp_rows_cache = peterfan_platform::all_temperature_sensors()
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "l": raw_temperature_row_label(t),
+                    "c": format!("{:.0}°C", t.value.0),
+                    "cls": temp_cls(t.value),
+                })
             })
-        })
-        .collect();
+            .collect();
+        app.next_all_temp_refresh = now + ALL_TEMP_REFRESH;
+    }
 
     // Fans: every fan listed with its own RPM and a speed bar (rpm / max).
-    // Daemon status: poll every tick so the popover always shows current mode.
-    let daemon_json = daemon_temps_json();
+    // Daemon status is useful, but a stale/missing socket can block for its
+    // read timeout. Cache it briefly so opening the popover never waits on IPC.
+    if now >= app.next_daemon_refresh {
+        app.daemon_json_cache = daemon_temps_json();
+        app.next_daemon_refresh = now + DAEMON_REFRESH;
+    }
+    let daemon_json = app.daemon_json_cache.clone();
     let daemon_st = daemon_json
         .as_ref()
         .map(|v| {
@@ -1977,7 +2028,7 @@ fn update(app: &mut App) {
         "temp_cls": display_temp_value.map(|t| temp_cls(Celsius(t))).unwrap_or("g"),
         "temp_source": display_temperature_source_for_temps(app.language.resolve(), &temps, display_temp),
         "temps": temp_rows,
-        "all_temps": all_temp_rows,
+        "all_temps": &app.all_temp_rows_cache,
         "fans": fan_rows,
         "batt_present": battery.is_some(),
         "batt_pct": battery.as_ref().map(|b| b.charge_percent).unwrap_or(0.0),
@@ -5049,6 +5100,16 @@ mod tests {
         assert!(en.contains("function applyPendingUpdate()"));
         assert!(en.contains("window.ipc.postMessage('ready')"));
         assert!(en.contains("applyPendingUpdate();"));
+    }
+
+    #[test]
+    fn popover_click_path_defers_heavy_dashboard_refresh() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("POPOVER_PREWARM_DELAY"));
+        assert!(source.contains("defer_dashboard_io_after_open(app);"));
+        assert!(source.contains("Let the normal tick deliver data"));
+        assert!(!source.contains("app.popover_visible = true;\n    update(app);"));
     }
 
     #[test]
