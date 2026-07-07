@@ -217,9 +217,10 @@ const M3_CPU_CORE_TEMP_KEYS: &[CpuCoreTempKey] = &[
 // load changes, so it is useful as a live floor when the aggregate lags.
 const M3_CPU_SUMMARY_TEMP_KEYS: &[&str] = &["TCDX"];
 
-// Apple Silicon aggregate CPU keys observed on M3 Pro/Max. These can sit well
-// above the live per-core sensors at idle, so they are diagnostic/fallback
-// values rather than the user-facing "CPU average" headline.
+// Apple Silicon aggregate CPU keys observed on M3 Pro/Max. These are the
+// closest match for the "CPU Core Average" headline exposed by tools such as
+// Macs Fan Control, while the live per-core keys can read much lower when some
+// cores are cool or inactive.
 const M3_CPU_CORE_AVERAGE_TEMP_KEYS: &[&str] = &["TV0s", "TV1s", "TVsa", "TVss"];
 
 // CPU die/hotspot keys observed on the local Mac15,10 M3 Max. These track
@@ -611,10 +612,10 @@ fn apple_silicon_cpu_average_and_hot_from_values(
         None => (None, None),
     };
     let avg = [
+        aggregate_avg,
+        summary_avg,
         all_core_avg,
         performance_avg,
-        summary_avg,
-        aggregate_avg,
         hotspot_avg,
     ]
     .into_iter()
@@ -1119,7 +1120,7 @@ mod tests {
     }
 
     #[test]
-    fn apple_silicon_cpu_temperature_uses_live_core_when_hotspot_is_inactive() {
+    fn apple_silicon_cpu_temperature_prefers_aggregate_when_available() {
         let cores = vec![
             super::CpuCoreTemp {
                 class: super::CpuCoreClass::Efficiency,
@@ -1146,12 +1147,12 @@ mod tests {
                 &[74.0, 76.0],
                 &[64.0, 66.0]
             ),
-            Some((68.5, 78.0))
+            Some((75.0, 78.0))
         );
     }
 
     #[test]
-    fn apple_silicon_cpu_average_prefers_live_core_average_over_aggregate() {
+    fn apple_silicon_cpu_average_prefers_aggregate_over_live_core_average() {
         let cores = vec![
             super::CpuCoreTemp {
                 class: super::CpuCoreClass::Efficiency,
@@ -1170,7 +1171,7 @@ mod tests {
                 &[74.0, 76.0],
                 &[]
             ),
-            Some((69.0, 82.0))
+            Some((75.0, 82.0))
         );
     }
 
@@ -1194,7 +1195,7 @@ mod tests {
                 &[74.0, 76.0],
                 &[84.0, 86.0]
             ),
-            Some((69.0, 86.0))
+            Some((75.0, 86.0))
         );
     }
 
@@ -1221,7 +1222,7 @@ mod tests {
 
         assert_eq!(
             super::apple_silicon_cpu_average_and_hot_from_values(&cores, &[], &[74.0, 76.0], &[]),
-            Some((68.5, 78.0))
+            Some((75.0, 78.0))
         );
     }
 
@@ -1343,7 +1344,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(probe.selected_average_c, Some(64.0));
+        assert_eq!(probe.selected_average_c, Some(75.0));
         assert_eq!(probe.selected_hottest_c, Some(96.0));
         assert_eq!(probe.summary_average_c, Some(72.0));
         assert_eq!(probe.aggregate_average_c, Some(75.0));

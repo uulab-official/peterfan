@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.26.99] — CPU 평균 온도 기준 보정
+
+### Fixed
+- **상단 CPU 평균 온도를 Macs Fan Control 계열과 더 가까운 SMC aggregate
+  기준으로 보정** — M3 Pro/Max에서 live per-core 평균이 실제 비교 기준보다
+  10~20°C 낮게 나오는 문제를 줄이기 위해 `CPU Core Average` 선택 순서를
+  `SMC aggregate → SMC summary → live all-core → performance-core`로 변경함.
+- **CPU 온도 진단 테스트 갱신** — aggregate가 있을 때 기본 CPU 평균으로
+  선택되는지 검증해 같은 문제가 되돌아오지 않게 함.
+
 ## [1.26.98] — 메뉴바 클릭 응답성 개선
 
 ### Fixed
