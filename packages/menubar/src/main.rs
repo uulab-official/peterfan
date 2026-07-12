@@ -167,6 +167,10 @@ static OPEN_DETAIL: AtomicBool = AtomicBool::new(false);
 static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Last control result, shown in the popover.
 static STATUS: Mutex<String> = Mutex::new(String::new());
+/// A completed fan command invalidates the cached daemon snapshot. The event
+/// loop consumes this on its next wake so confirmed UI state does not wait for
+/// the normal two-second daemon refresh interval.
+static CONTROL_REFRESH_REQUESTED: AtomicBool = AtomicBool::new(false);
 const FAN_ACTION_LOG_MAX: usize = 12;
 static FAN_ACTION_LOG: Mutex<VecDeque<serde_json::Value>> = Mutex::new(VecDeque::new());
 /// Guards `install_fan_control()` process-wide. The popover and Detail
@@ -1198,6 +1202,10 @@ fn main() {
                 }
                 prewarm_popover_at = None;
             }
+        }
+        if CONTROL_REFRESH_REQUESTED.swap(false, Ordering::Relaxed) {
+            app.next_daemon_refresh = now;
+            next_metric_at = now;
         }
         if now >= next_metric_at {
             update(&mut app);
@@ -2505,6 +2513,7 @@ fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
 
 fn execute_control_logged(provider: &dyn HardwareProvider, cmd: &str) -> String {
     let result = execute_control(provider, cmd);
+    CONTROL_REFRESH_REQUESTED.store(true, Ordering::Relaxed);
     record_fan_action(
         &control_action_label(cmd),
         &result,
@@ -3704,6 +3713,9 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .profile-strip button:hover{background:var(--chip-hover);color:var(--text);}
 .profile-strip button.active{background:rgba(91,157,255,.2);border-color:rgba(91,157,255,.48);color:var(--accent);}
 .profile-strip.disabled button{opacity:.42;pointer-events:none;}
+.profile-strip.pending button{cursor:progress;}
+.profile-strip.pending button:not(.active){opacity:.48;}
+.profile-strip.pending button.active{box-shadow:inset 0 -2px 0 var(--accent);}
 .fan-cards{display:flex;flex-direction:column;}
 .fan-card{padding:5px 0;}
 .fan-card+.fan-card{border-top:1px solid var(--line);}
@@ -3717,6 +3729,8 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .fan-seg{display:flex;gap:4px;flex:0 0 auto;}
 .fan-seg button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:600;padding:3px 8px;border-radius:5px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s;}
 .fan-seg button.active{background:var(--panel-bg);color:var(--text);border-color:rgba(91,157,255,.4);}
+.fan-card.pending .fan-seg button{cursor:progress;}
+.fan-card.pending .fan-seg button:not(.active){opacity:.48;}
 .fan-rpm-row{display:grid;grid-template-columns:auto 1fr auto auto;gap:6px;align-items:center;margin-top:5px;transition:opacity .15s;}
 .fan-rpm-row.inactive{opacity:.35;pointer-events:none;}
 .fan-rpm-row span{font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
@@ -3976,6 +3990,7 @@ var FAN_DIAGNOSTIC_STARTED_AT=0;
 var LOGIN_ITEM_TOGGLE_PENDING=false;
 var APP_UPDATE_CHECK_PENDING=false;
 var APP_UPDATE_STATUS=null;
+var FAN_CONTROL_PENDING=null;
 if(!('__pf_pending' in window))window.__pf_pending=null;
 function applyPendingUpdate(){
   if(window.__pf&&window.__pf.update&&window.__pf_pending)window.__pf.update(window.__pf_pending);
@@ -4341,8 +4356,12 @@ function renderFanCards(fans){
       var btnManual=card.querySelector('.fa-manual');
       btnAuto.textContent=LANG==='ko'?'자동':'Auto';
       btnManual.textContent=LANG==='ko'?'사용자 지정…':'Custom…';
-      btnAuto.onclick=function(){window.ipc.postMessage('cmd:fanauto:'+f.id);};
+      btnAuto.onclick=function(){
+        if(!markFanPending(card,'auto'))return;
+        window.ipc.postMessage('cmd:fanauto:'+f.id);
+      };
       btnManual.onclick=function(){
+        if(!markFanPending(card,'manual'))return;
         // Pin right where the fan already is instead of jumping to a
         // default — read the live % off the card, not this closure's
         // (potentially stale, first-render-time) copy of `f`.
@@ -4365,6 +4384,7 @@ function renderFanCards(fans){
         card.querySelector('.fv').textContent=useRpm?(v+' RPM'):(v+'%');
         var span=max-min;
         var pct=useRpm?(span>0?Math.round((v-min)/span*100):0):v;
+        markFanPending(card,'manual',true);
         window.ipc.postMessage('cmd:fanhold:'+f.id+':'+Math.max(0,Math.min(100,pct)));
       }
       slider.addEventListener('input',function(){
@@ -4393,6 +4413,17 @@ function renderFanCards(fans){
       container.appendChild(card);
     }
     var manual=!!f.manual;
+    var pendingMode=card.dataset.pendingMode||'';
+    if(pendingMode){
+      var pendingConfirmed=(pendingMode==='manual'&&manual)||(pendingMode==='auto'&&!manual);
+      var pendingExpired=Date.now()-parseInt(card.dataset.pendingAt||'0',10)>5000;
+      if(pendingConfirmed||pendingExpired){
+        delete card.dataset.pendingMode;
+        delete card.dataset.pendingAt;
+        pendingMode='';
+      }
+    }
+    var displayManual=pendingMode?pendingMode==='manual':manual;
     var useRpm=f.max_rpm>0;
     var targetPct=f.override_pct!=null?f.override_pct:f.pct;
     card.dataset.curPct=targetPct;
@@ -4401,8 +4432,11 @@ function renderFanCards(fans){
     card.querySelector('.fan-rpm-text').textContent=useRpm
       ?(f.min_rpm+' — '+f.cur_rpm+' — '+f.max_rpm)
       :(Math.round(f.pct)+'%');
-    card.querySelector('.fa-auto').classList.toggle('active',!manual);
-    card.querySelector('.fa-manual').classList.toggle('active',manual);
+    card.classList.toggle('pending',!!pendingMode);
+    card.querySelector('.fa-auto').disabled=!!pendingMode;
+    card.querySelector('.fa-manual').disabled=!!pendingMode;
+    card.querySelector('.fa-auto').classList.toggle('active',!displayManual);
+    card.querySelector('.fa-manual').classList.toggle('active',displayManual);
     card.querySelector('.fa-min').textContent=useRpm?f.min_rpm:'0%';
     card.querySelector('.fa-max').textContent=useRpm?f.max_rpm:'100%';
     // Always occupies the same layout space (opacity/pointer-events toggle
@@ -4410,7 +4444,7 @@ function renderFanCards(fans){
     // popover's total content height, which used to trigger a full window
     // resize and made every chart below visibly redraw at a new width,
     // which read as "the graphs randomly changed."
-    card.querySelector('.fan-rpm-row').classList.toggle('inactive', !manual);
+    card.querySelector('.fan-rpm-row').classList.toggle('inactive', !displayManual);
     var slider=card.querySelector('input[type=range]');
     var numInput=card.querySelector('.fa-num');
     slider.dataset.useRpm=useRpm?'1':'0';
@@ -4423,12 +4457,24 @@ function renderFanCards(fans){
       var targetRpm=useRpm?Math.round(f.min_rpm+(f.max_rpm-f.min_rpm)*targetPct/100):Math.round(targetPct);
       slider.value=targetRpm;
       numInput.value=targetRpm;
-      card.querySelector('.fv').textContent=manual?(useRpm?(targetRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%');
+      card.querySelector('.fv').textContent=displayManual?(useRpm?(targetRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%');
     }
   });
   Array.prototype.slice.call(container.children).forEach(function(c){
     if(!seen[c.getAttribute('data-fan-id')])c.remove();
   });
+}
+function markFanPending(card,mode,refresh){
+  if(card.dataset.pendingMode&&!refresh)return false;
+  card.dataset.pendingMode=mode;
+  card.dataset.pendingAt=Date.now();
+  card.classList.add('pending');
+  card.querySelector('.fa-auto').disabled=true;
+  card.querySelector('.fa-manual').disabled=true;
+  card.querySelector('.fa-auto').classList.toggle('active',mode==='auto');
+  card.querySelector('.fa-manual').classList.toggle('active',mode==='manual');
+  card.querySelector('.fan-rpm-row').classList.toggle('inactive',mode!=='manual');
+  return true;
 }
 function fanControlSetupButton(label){
   var fixBtn=document.createElement('button');
@@ -4761,10 +4807,24 @@ function setChartRange(r){
   window.ipc.postMessage('range:'+r);
 }
 function setProfile(profile){
+  if(!beginFanControl('profile',profile))return;
   window.ipc.postMessage('cmd:profile:'+profile);
 }
 function setAuto(){
+  if(!beginFanControl('auto',''))return;
   window.ipc.postMessage('cmd:auto');
+}
+function beginFanControl(mode,profile){
+  if(FAN_CONTROL_PENDING)return false;
+  var current=window.__pf_pending||{};
+  var wantedProfile=profile||'';
+  if(current.active_control_mode===mode&&(mode!=='profile'||current.active_profile===wantedProfile))return false;
+  FAN_CONTROL_PENDING={mode:mode,profile:wantedProfile,startedAt:Date.now(),statusBefore:current.last_cmd_status||''};
+  updateProfileStrip(window.__pf_pending||{can_control:true,active_control_mode:'',active_profile:'',last_cmd_status:''});
+  return true;
+}
+function fanControlStatusFailed(status){
+  return /error|failed|invalid|cancel|unavailable|not ready/i.test(status||'');
 }
 function updateProfileStrip(d){
   var strip=document.getElementById('profile-strip');
@@ -4772,9 +4832,23 @@ function updateProfileStrip(d){
   var enabled=!!d.can_control;
   var activeMode=d.active_control_mode||'';
   var activeProfile=d.active_profile||'';
+  if(FAN_CONTROL_PENDING){
+    var matches=FAN_CONTROL_PENDING.mode===activeMode&&(activeMode!=='profile'||FAN_CONTROL_PENDING.profile===activeProfile);
+    var status=d.last_cmd_status||'';
+    var failed=status!==FAN_CONTROL_PENDING.statusBefore&&status!=='applying…'&&fanControlStatusFailed(status);
+    var expired=Date.now()-FAN_CONTROL_PENDING.startedAt>5000;
+    if(matches||failed||expired)FAN_CONTROL_PENDING=null;
+  }
+  if(FAN_CONTROL_PENDING){
+    activeMode=FAN_CONTROL_PENDING.mode;
+    activeProfile=FAN_CONTROL_PENDING.profile;
+  }
+  var pending=!!FAN_CONTROL_PENDING;
   strip.classList.toggle('disabled',!enabled);
+  strip.classList.toggle('pending',pending);
+  strip.setAttribute('aria-busy',pending?'true':'false');
   Array.prototype.slice.call(strip.querySelectorAll('button')).forEach(function(b){
-    b.disabled=!enabled;
+    b.disabled=!enabled||pending;
     var isAuto=b.dataset.mode==='auto'&&activeMode==='auto';
     var isProfile=b.dataset.mode==='profile'&&activeMode==='profile'&&b.dataset.profile===activeProfile;
     b.classList.toggle('active',enabled&&(isAuto||isProfile));
@@ -5829,7 +5903,26 @@ mod tests {
         assert!(en.contains("var targetPct=f.override_pct!=null?f.override_pct:f.pct;"));
         assert!(en.contains("card.dataset.curPct=targetPct;"));
         assert!(en.contains("var targetRpm=useRpm?Math.round(f.min_rpm+(f.max_rpm-f.min_rpm)*targetPct/100):Math.round(targetPct);"));
-        assert!(en.contains("card.querySelector('.fv').textContent=manual?(useRpm?(targetRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%');"));
+        assert!(en.contains("var displayManual=pendingMode?pendingMode==='manual':manual;"));
+        assert!(en.contains("card.querySelector('.fv').textContent=displayManual?(useRpm?(targetRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%');"));
+        assert!(en.contains("if(!markFanPending(card,'auto'))return;"));
+        assert!(en.contains("if(!markFanPending(card,'manual'))return;"));
+    }
+
+    #[test]
+    fn fan_control_commands_show_optimistic_pending_state() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let source = include_str!("main.rs");
+
+        assert!(en.contains("var FAN_CONTROL_PENDING=null;"));
+        assert!(en.contains("if(FAN_CONTROL_PENDING)return false;"));
+        assert!(en.contains("if(!beginFanControl('profile',profile))return;"));
+        assert!(en.contains("if(!beginFanControl('auto',''))return;"));
+        assert!(en.contains("strip.setAttribute('aria-busy',pending?'true':'false');"));
+        assert!(en.contains("b.disabled=!enabled||pending;"));
+        assert!(source.contains("static CONTROL_REFRESH_REQUESTED: AtomicBool"));
+        assert!(source.contains("CONTROL_REFRESH_REQUESTED.store(true, Ordering::Relaxed);"));
+        assert!(source.contains("CONTROL_REFRESH_REQUESTED.swap(false, Ordering::Relaxed)"));
     }
 
     #[test]

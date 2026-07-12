@@ -64,6 +64,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] Add fan-control dry-run diagnostics in the menu-bar detail window
 - [x] Keep a short local log of fan-control actions and failures
 - [x] Document why macOS requires approval for first LaunchDaemon install
+- [x] Optimistic fan-control feedback with duplicate-command prevention
 
 ### v1.28 — Sensor Accuracy
 
