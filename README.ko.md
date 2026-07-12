@@ -52,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.27.7.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.27.8.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -175,7 +175,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.27.7
+PeterFan v1.27.8
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
@@ -214,8 +214,10 @@ Stream Deck, Hammerspoon, Home Assistant 등과 연동할 때 유용합니다).
 원시 온도 센서를 모두 확인하려면 `peterfan temps --all`을 실행하세요. 기본
 `temps`와 메뉴바 상단 온도는 팬 제어와 일상 표시를 위한 보정 대표값만 사용하고,
 `--all`은 SMC `T*` 키와 IOHID 센서를 `CPU hotspot`, `CPU core hot sensor`,
-`GPU sensor`, `Battery sensor` 같은 일반 이름으로 묶어 보여주며 원래 키도
-비교/진단용으로 함께 남깁니다.
+`GPU sensor`, `Battery sensor` 같은 일반 이름으로 묶어 보여주며 원래 키와
+`source`(`smc`, `iohid`, `battery`)도 비교/진단용으로 함께 남깁니다. 메뉴바의
+`전체 센서` 목록도 CPU, GPU, 메모리, 저장장치, 메인보드, 배터리 그룹과 출처
+배지로 같은 정보를 보여줍니다.
 
 전체 명령어 레퍼런스는 [`docs/CLI.md`](./docs/CLI.md)를 참고하세요.
 

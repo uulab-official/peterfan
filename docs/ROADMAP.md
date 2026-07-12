@@ -71,9 +71,11 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [ ] Split CPU average, CPU hottest, GPU die, SSD, battery, and board sensors
       into named groups
 - [ ] Distinguish Apple Silicon GPU die sensors from CPU die sensors
-- [ ] Add sensor-source metadata to JSON output (`iohid`, `smc`, `battery`)
+- [x] Add sensor-source metadata to JSON output (`iohid`, `smc`, `battery`)
 - [x] Add "sensor debugger" output for comparing PeterFan with iStat/Stats
-- [ ] Make benchmark/log commands record both average and hottest temperature
+- [x] Make benchmark/log commands record both average and hottest temperature
+- [x] Group the menu-bar raw sensor inventory by component kind and show its
+      collection source
 - [ ] Add tests for representative temperature selection across mixed sensors
 
 ### v1.29 — Distribution & Updates

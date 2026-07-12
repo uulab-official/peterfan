@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use peterfan_core::error::{CoreError, Result};
 use peterfan_core::provider::Capabilities;
-use peterfan_core::types::{Celsius, Fan, HardwareInfo, SensorKind, TempSensor};
+use peterfan_core::types::{Celsius, Fan, HardwareInfo, SensorKind, SensorSource, TempSensor};
 use peterfan_core::HardwareProvider;
 
 struct FanState {
@@ -107,30 +107,35 @@ impl HardwareProvider for MockProvider {
                 id: "cpu.package".into(),
                 label: "CPU Package".into(),
                 kind: SensorKind::Cpu,
+                source: SensorSource::Simulated,
                 value: Celsius(cpu),
             },
             TempSensor {
                 id: "gpu.core".into(),
                 label: "GPU Core".into(),
                 kind: SensorKind::Gpu,
+                source: SensorSource::Simulated,
                 value: Celsius(gpu),
             },
             TempSensor {
                 id: "mem.dimm".into(),
                 label: "Memory".into(),
                 kind: SensorKind::Memory,
+                source: SensorSource::Simulated,
                 value: Celsius(ram),
             },
             TempSensor {
                 id: "ssd.0".into(),
                 label: "NVMe SSD".into(),
                 kind: SensorKind::Storage,
+                source: SensorSource::Simulated,
                 value: Celsius(ssd),
             },
             TempSensor {
                 id: "battery".into(),
                 label: "Battery".into(),
                 kind: SensorKind::Battery,
+                source: SensorSource::Simulated,
                 value: Celsius(batt),
             },
         ])

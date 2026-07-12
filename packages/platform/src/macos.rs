@@ -24,7 +24,7 @@ use crate::smc_write::Conn;
 
 use peterfan_core::error::{CoreError, Result};
 use peterfan_core::provider::Capabilities;
-use peterfan_core::types::{Celsius, Fan, HardwareInfo, SensorKind, TempSensor};
+use peterfan_core::types::{Celsius, Fan, HardwareInfo, SensorKind, SensorSource, TempSensor};
 use peterfan_core::HardwareProvider;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -455,6 +455,7 @@ fn apple_silicon_cpu_core_temperature_sensors(cores: &[CpuCoreTemp]) -> Vec<Temp
                 sensor.key
             ),
             kind: SensorKind::Cpu,
+            source: SensorSource::Smc,
             value: Celsius(sensor.temp),
         })
         .collect::<Vec<_>>()
@@ -743,6 +744,7 @@ pub fn all_temperature_sensors() -> Vec<TempSensor> {
                     id: format!("smc.raw.{}", data.key),
                     label,
                     kind,
+                    source: SensorSource::Smc,
                     value: Celsius(value),
                 });
             }
@@ -775,6 +777,7 @@ pub fn all_temperature_sensors() -> Vec<TempSensor> {
                 id: format!("hid.raw.{fragment}.{idx}"),
                 label,
                 kind: hid_sensor_kind(&name),
+                source: SensorSource::Iohid,
                 value: Celsius(value),
             }
         })
@@ -926,12 +929,14 @@ impl HardwareProvider for MacosProvider {
                 id: "cpu.die".into(),
                 label: "CPU Core Average".into(),
                 kind: SensorKind::Cpu,
+                source: SensorSource::Smc,
                 value: Celsius(avg),
             });
             temps.push(TempSensor {
                 id: "cpu.die.hot".into(),
                 label: "CPU Core Hottest".into(),
                 kind: SensorKind::Cpu,
+                source: SensorSource::Smc,
                 value: Celsius(hot),
             });
         }
@@ -941,6 +946,7 @@ impl HardwareProvider for MacosProvider {
                 id: "cpu.smc.aggregate".into(),
                 label: "CPU SMC aggregate".into(),
                 kind: SensorKind::Cpu,
+                source: SensorSource::Smc,
                 value: Celsius(avg),
             });
         }
@@ -949,6 +955,7 @@ impl HardwareProvider for MacosProvider {
                 id: "cpu.smc.summary".into(),
                 label: "CPU SMC summary".into(),
                 kind: SensorKind::Cpu,
+                source: SensorSource::Smc,
                 value: Celsius(avg),
             });
         }
@@ -957,12 +964,14 @@ impl HardwareProvider for MacosProvider {
                 id: "cpu.smc.hotspot".into(),
                 label: "CPU SMC hotspot average".into(),
                 kind: SensorKind::Cpu,
+                source: SensorSource::Smc,
                 value: Celsius(avg),
             });
             temps.push(TempSensor {
                 id: "cpu.smc.hotspot.hot".into(),
                 label: "CPU SMC hotspot hottest".into(),
                 kind: SensorKind::Cpu,
+                source: SensorSource::Smc,
                 value: Celsius(hot),
             });
         }
@@ -992,6 +1001,7 @@ impl HardwareProvider for MacosProvider {
                     id: "cpu.iohid.tdie".into(),
                     label: "CPU IOHID tdie".into(),
                     kind: SensorKind::Cpu,
+                    source: SensorSource::Iohid,
                     value: Celsius(avg),
                 });
             }
@@ -1002,6 +1012,7 @@ impl HardwareProvider for MacosProvider {
                     id: "cpu.iohid.tdie.hot".into(),
                     label: "CPU IOHID tdie hottest".into(),
                     kind: SensorKind::Cpu,
+                    source: SensorSource::Iohid,
                     value: Celsius(hot),
                 });
             }
@@ -1017,6 +1028,7 @@ impl HardwareProvider for MacosProvider {
                     id: "cpu.iohid.cpu".into(),
                     label: "CPU IOHID cpu".into(),
                     kind: SensorKind::Cpu,
+                    source: SensorSource::Iohid,
                     value: Celsius(avg),
                 });
             }
@@ -1030,6 +1042,7 @@ impl HardwareProvider for MacosProvider {
                     id: "cpu.iohid.cpu.hot".into(),
                     label: "CPU IOHID hottest".into(),
                     kind: SensorKind::Cpu,
+                    source: SensorSource::Iohid,
                     value: Celsius(hot),
                 });
             }
@@ -1046,6 +1059,7 @@ impl HardwareProvider for MacosProvider {
                 id: "ssd".into(),
                 label: "SSD".into(),
                 kind: SensorKind::Storage,
+                source: SensorSource::Iohid,
                 value: Celsius(ssd),
             });
         }
@@ -1066,6 +1080,7 @@ impl HardwareProvider for MacosProvider {
                 id: "battery".into(),
                 label: "Battery".into(),
                 kind: SensorKind::Battery,
+                source: SensorSource::Battery,
                 value: Celsius(avg),
             });
         }
@@ -1142,6 +1157,7 @@ impl HardwareProvider for MacosProvider {
                 id: id.into(),
                 label: label.into(),
                 kind,
+                source: SensorSource::Smc,
                 value: Celsius(c),
             },
         ));

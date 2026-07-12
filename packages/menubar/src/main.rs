@@ -44,6 +44,8 @@ use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
 use peterfan_core::thermals::{hottest_temperature_c, representative_temperature_c};
 use peterfan_core::types::SensorKind;
+#[cfg(test)]
+use peterfan_core::types::SensorSource;
 use peterfan_core::types::{Celsius, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
@@ -683,6 +685,23 @@ fn temperature_row_label(lang: ResolvedLanguage, sensor: &TempSensor) -> String 
 
 fn raw_temperature_row_label(sensor: &TempSensor) -> String {
     format!("{} · {}", sensor.label, sensor.id)
+}
+
+fn sensor_group_label(lang: ResolvedLanguage, kind: SensorKind) -> &'static str {
+    match (lang, kind) {
+        (_, SensorKind::Cpu) => "CPU",
+        (_, SensorKind::Gpu) => "GPU",
+        (ResolvedLanguage::Ko, SensorKind::Memory) => "메모리",
+        (ResolvedLanguage::Ko, SensorKind::Storage) => "저장장치",
+        (ResolvedLanguage::Ko, SensorKind::Mainboard) => "메인보드",
+        (ResolvedLanguage::Ko, SensorKind::Battery) => "배터리",
+        (ResolvedLanguage::Ko, SensorKind::Other) => "기타",
+        (ResolvedLanguage::En, SensorKind::Memory) => "Memory",
+        (ResolvedLanguage::En, SensorKind::Storage) => "Storage",
+        (ResolvedLanguage::En, SensorKind::Mainboard) => "Mainboard",
+        (ResolvedLanguage::En, SensorKind::Battery) => "Battery",
+        (ResolvedLanguage::En, SensorKind::Other) => "Other",
+    }
 }
 
 fn setup_tone(daemon_running: bool, daemon_update_needed: bool) -> &'static str {
@@ -2270,6 +2289,8 @@ fn update(app: &mut App) {
                     "l": raw_temperature_row_label(t),
                     "c": format!("{:.0}°C", t.value.0),
                     "cls": temp_cls(t.value),
+                    "group": sensor_group_label(app.language.resolve(), t.kind),
+                    "source": t.source.short(),
                 })
             })
             .collect();
@@ -3696,6 +3717,9 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .all-temp-head:hover{color:var(--accent);}
 .all-temp-list .trow{font-size:9.5px;margin-top:4px;gap:10px;}
 .all-temp-list .trow .l{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.all-temp-list .trow .src{flex:0 0 auto;color:var(--dim);font-size:8px;font-weight:700;letter-spacing:.04em;}
+.sensor-group-head{margin-top:8px;padding-top:6px;border-top:1px solid var(--line);color:var(--text);font-size:8.5px;font-weight:750;text-transform:uppercase;letter-spacing:.08em;}
+.sensor-group-head:first-child{margin-top:3px;padding-top:0;border-top:0;}
 .prow{display:grid;grid-template-columns:1fr auto auto auto;gap:9px;align-items:baseline;font-size:10.5px;margin-top:5px;}
 .pkill{opacity:0;background:none;border:0;color:var(--r);font:inherit;font-size:13px;font-weight:700;line-height:1;padding:0 1px;cursor:pointer;transition:opacity .15s;}
 .prow:hover .pkill{opacity:1;}
@@ -4227,7 +4251,14 @@ function renderRawTempList(d){
   if(al){
     al.style.display=RAW_TEMP_OPEN?'':'none';
     al.innerHTML='';
-    if(RAW_TEMP_OPEN){all.forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[0].title=t.l;r.children[1].textContent=t.c;r.children[1].className='v '+t.cls;al.appendChild(r);});}
+    if(RAW_TEMP_OPEN){
+      var groups=[];
+      all.forEach(function(t){var name=t.group||'Other',g=groups.find(function(x){return x.name===name;});if(!g){g={name:name,items:[]};groups.push(g);}g.items.push(t);});
+      groups.forEach(function(g){
+        var h=document.createElement('div');h.className='sensor-group-head';h.textContent=g.name;al.appendChild(h);
+        g.items.forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="src"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[0].title=t.l;r.children[1].textContent=t.source||'';r.children[2].textContent=t.c;r.children[2].className='v '+t.cls;al.appendChild(r);});
+      });
+    }
   }
 }
 window.__pf={
@@ -5684,6 +5715,25 @@ mod tests {
         assert!(en.contains("function renderRawTempList(d)"));
         assert!(en.contains("d.all_temps||[]"));
         assert!(en.contains("All sensors"));
+        assert!(en.contains("className='sensor-group-head'"));
+        assert!(en.contains("t.source||''"));
+        assert!(en.contains("<span class=\"src\"></span>"));
+    }
+
+    #[test]
+    fn sensor_group_labels_cover_every_sensor_kind() {
+        for (kind, en, ko) in [
+            (SensorKind::Cpu, "CPU", "CPU"),
+            (SensorKind::Gpu, "GPU", "GPU"),
+            (SensorKind::Memory, "Memory", "메모리"),
+            (SensorKind::Storage, "Storage", "저장장치"),
+            (SensorKind::Mainboard, "Mainboard", "메인보드"),
+            (SensorKind::Battery, "Battery", "배터리"),
+            (SensorKind::Other, "Other", "기타"),
+        ] {
+            assert_eq!(sensor_group_label(ResolvedLanguage::En, kind), en);
+            assert_eq!(sensor_group_label(ResolvedLanguage::Ko, kind), ko);
+        }
     }
 
     #[test]
@@ -6067,6 +6117,7 @@ mod tests {
             id: id.to_string(),
             label: id.to_string(),
             kind,
+            source: SensorSource::Unknown,
             value: Celsius(value),
         }
     }

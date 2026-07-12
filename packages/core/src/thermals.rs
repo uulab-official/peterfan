@@ -107,13 +107,14 @@ pub fn representative_temperature_c(temps: &[TempSensor]) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{Celsius, SensorKind, TempSensor};
+    use crate::types::{Celsius, SensorKind, SensorSource, TempSensor};
 
     fn temp(id: &str, kind: SensorKind, value: f32) -> TempSensor {
         TempSensor {
             id: id.to_string(),
             label: id.to_string(),
             kind,
+            source: SensorSource::Unknown,
             value: Celsius(value),
         }
     }

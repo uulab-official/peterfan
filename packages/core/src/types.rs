@@ -47,6 +47,33 @@ impl SensorKind {
     }
 }
 
+/// Hardware or subsystem that produced a temperature reading.
+///
+/// `Unknown` is the serde default so a new app can still read snapshots from
+/// an older daemon that predates sensor provenance metadata.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SensorSource {
+    Smc,
+    Iohid,
+    Battery,
+    Simulated,
+    #[default]
+    Unknown,
+}
+
+impl SensorSource {
+    pub fn short(&self) -> &'static str {
+        match self {
+            SensorSource::Smc => "SMC",
+            SensorSource::Iohid => "IOHID",
+            SensorSource::Battery => "Battery",
+            SensorSource::Simulated => "Simulated",
+            SensorSource::Unknown => "Unknown",
+        }
+    }
+}
+
 /// A single temperature reading.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TempSensor {
@@ -55,6 +82,8 @@ pub struct TempSensor {
     /// Human-readable label, e.g. `"CPU Package"`.
     pub label: String,
     pub kind: SensorKind,
+    #[serde(default)]
+    pub source: SensorSource,
     pub value: Celsius,
 }
 
@@ -92,4 +121,36 @@ pub struct HardwareInfo {
 pub struct Snapshot {
     pub temps: Vec<TempSensor>,
     pub fans: Vec<Fan>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temperature_source_defaults_for_legacy_json() {
+        let sensor: TempSensor = serde_json::from_value(serde_json::json!({
+            "id": "cpu.die",
+            "label": "CPU Core Average",
+            "kind": "cpu",
+            "value": 52.5
+        }))
+        .expect("legacy sensor JSON should remain readable");
+
+        assert_eq!(sensor.source, SensorSource::Unknown);
+    }
+
+    #[test]
+    fn temperature_source_serializes_as_stable_lowercase_value() {
+        let sensor = TempSensor {
+            id: "cpu.die".into(),
+            label: "CPU Core Average".into(),
+            kind: SensorKind::Cpu,
+            source: SensorSource::Smc,
+            value: Celsius(52.5),
+        };
+        let value = serde_json::to_value(sensor).expect("sensor should serialize");
+
+        assert_eq!(value["source"], "smc");
+    }
 }

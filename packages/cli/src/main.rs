@@ -656,7 +656,7 @@ fn cmd_log(mock: bool, interval: u64, format: LogFormat) -> Result<()> {
     let provider = provider(mock);
 
     if matches!(format, LogFormat::Csv) {
-        println!("time,cpu_pct,mem_pct,disk_pct,temp_c,fan_rpm,power_w");
+        println!("time,cpu_pct,mem_pct,disk_pct,temp_c,temp_hottest_c,fan_rpm,power_w");
     }
     monitor.refresh();
     loop {
@@ -675,6 +675,7 @@ fn cmd_log(mock: bool, interval: u64, format: LogFormat) -> Result<()> {
             .unwrap_or(0.0);
         let temps = provider.temperatures().unwrap_or_default();
         let temp = representative_temperature_c(&temps).unwrap_or(0.0);
+        let temp_hottest = hottest_temperature_c(&temps).unwrap_or(temp);
         let rpm = provider
             .fans()
             .unwrap_or_default()
@@ -686,13 +687,16 @@ fn cmd_log(mock: bool, interval: u64, format: LogFormat) -> Result<()> {
 
         match format {
             LogFormat::Csv => {
-                println!("{ts},{cpu:.1},{mem:.1},{disk:.1},{temp:.0},{rpm},{power:.1}")
+                println!(
+                    "{ts},{cpu:.1},{mem:.1},{disk:.1},{temp:.0},{temp_hottest:.0},{rpm},{power:.1}"
+                )
             }
             LogFormat::Jsonl => println!(
                 "{}",
                 serde_json::json!({
                     "time": ts, "cpu_pct": cpu, "mem_pct": mem, "disk_pct": disk,
-                    "temp_c": temp, "fan_rpm": rpm, "power_w": power,
+                    "temp_c": temp, "temp_hottest_c": temp_hottest,
+                    "fan_rpm": rpm, "power_w": power,
                 })
             ),
         }
@@ -773,8 +777,17 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64, bench_profile: Option<String
         }));
     }
 
+    #[derive(Clone, Copy)]
+    struct BenchmarkSample {
+        cpu: f32,
+        temp_avg: f32,
+        temp_hottest: f32,
+        rpm: u32,
+        power: f32,
+    }
+
     // Sample once a second while the stress runs.
-    let mut samples: Vec<(f32, f32, u32, f32)> = Vec::with_capacity(secs as usize);
+    let mut samples: Vec<BenchmarkSample> = Vec::with_capacity(secs as usize);
     monitor.refresh();
     for sec in 1..=secs {
         std::thread::sleep(Duration::from_secs(1));
@@ -782,6 +795,7 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64, bench_profile: Option<String
         let cpu = monitor.cpu().usage_percent;
         let temps = provider.temperatures().unwrap_or_default();
         let temp = representative_temperature_c(&temps).unwrap_or(0.0);
+        let temp_hottest = hottest_temperature_c(&temps).unwrap_or(temp);
         let rpm = provider
             .fans()
             .unwrap_or_default()
@@ -790,11 +804,16 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64, bench_profile: Option<String
             .max()
             .unwrap_or(0);
         let power = provider.power_watts().unwrap_or(0.0);
-        samples.push((cpu, temp, rpm, power));
+        samples.push(BenchmarkSample {
+            cpu,
+            temp_avg: temp,
+            temp_hottest,
+            rpm,
+            power,
+        });
         if !json {
             println!(
-                "  {sec:>3}s   cpu {:>5.1}%   temp {:>4.0}°C   fan {:>5} RPM   {:>5.1} W",
-                cpu, temp, rpm, power
+                "  {sec:>3}s   cpu {cpu:>5.1}%   avg {temp:>3.0}°C   hot {temp_hottest:>3.0}°C   fan {rpm:>5} RPM   {power:>5.1} W"
             );
         }
     }
@@ -804,12 +823,16 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64, bench_profile: Option<String
         let _ = h.join();
     }
 
-    let peak = |f: fn(&(f32, f32, u32, f32)) -> f32| samples.iter().map(f).fold(0.0_f32, f32::max);
-    let avg_cpu = samples.iter().map(|s| s.0).sum::<f32>() / samples.len().max(1) as f32;
-    let peak_cpu = peak(|s| s.0);
-    let peak_temp = peak(|s| s.1);
-    let peak_rpm = samples.iter().map(|s| s.2).max().unwrap_or(0);
-    let peak_power = peak(|s| s.3);
+    let avg_cpu = samples.iter().map(|s| s.cpu).sum::<f32>() / samples.len().max(1) as f32;
+    let peak_cpu = samples.iter().map(|s| s.cpu).fold(0.0_f32, f32::max);
+    let avg_temp = samples.iter().map(|s| s.temp_avg).sum::<f32>() / samples.len().max(1) as f32;
+    let peak_temp = samples.iter().map(|s| s.temp_avg).fold(0.0_f32, f32::max);
+    let peak_temp_hottest = samples
+        .iter()
+        .map(|s| s.temp_hottest)
+        .fold(0.0_f32, f32::max);
+    let peak_rpm = samples.iter().map(|s| s.rpm).max().unwrap_or(0);
+    let peak_power = samples.iter().map(|s| s.power).fold(0.0_f32, f32::max);
 
     // Restore the previous daemon mode after the benchmark.
     if applied_profile.is_some() {
@@ -844,7 +867,9 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64, bench_profile: Option<String
                 "profile": applied_profile,
                 "avg_cpu_percent": avg_cpu,
                 "peak_cpu_percent": peak_cpu,
+                "avg_temp_c": avg_temp,
                 "peak_temp_c": peak_temp,
+                "peak_temp_hottest_c": peak_temp_hottest,
                 "peak_fan_rpm": peak_rpm,
                 "peak_power_w": peak_power,
             }))?
@@ -856,7 +881,11 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64, bench_profile: Option<String
             print_kv("Profile used", p.as_str());
         }
         print_kv("CPU avg / peak", &format!("{avg_cpu:.1}% / {peak_cpu:.1}%"));
-        print_kv("Peak temp", &format!("{peak_temp:.0}°C"));
+        print_kv(
+            "CPU temp avg / peak",
+            &format!("{avg_temp:.0}°C / {peak_temp:.0}°C"),
+        );
+        print_kv("Hottest sensor peak", &format!("{peak_temp_hottest:.0}°C"));
         print_kv("Peak fan", &format!("{peak_rpm} RPM"));
         print_kv("Peak power", &format!("{peak_power:.1} W"));
     }
@@ -4446,13 +4475,14 @@ fn cmd_alert_agent(action: AlertAction) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use peterfan_core::types::{Celsius, SensorKind, TempSensor};
+    use peterfan_core::types::{Celsius, SensorKind, SensorSource, TempSensor};
 
     fn temp(id: &str, label: &str, kind: SensorKind, value: f32) -> TempSensor {
         TempSensor {
             id: id.to_string(),
             label: label.to_string(),
             kind,
+            source: SensorSource::Unknown,
             value: Celsius(value),
         }
     }

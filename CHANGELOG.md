@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.8] — 센서 출처와 온도 기록 개선
+
+### Added
+- **온도 센서 출처 메타데이터** — 모든 온도 JSON에 `source`를 추가해 SMC,
+  IOHID, 배터리, 시뮬레이션 값을 구분함. 구형 데몬 응답은 `unknown`으로 안전하게
+  읽어 앱과 데몬을 순차 업데이트할 수 있음.
+- **전체 센서 종류별 그룹과 출처 배지** — 메뉴바의 전체 센서 목록을 CPU, GPU,
+  메모리, 저장장치, 메인보드, 배터리, 기타로 묶고 각 행에 실제 수집 경로를 표시함.
+
+### Changed
+- **평균과 최고 온도를 함께 기록** — `log`의 CSV/JSONL에
+  `temp_hottest_c`를 추가하고, `benchmark`는 CPU 평균 온도의 평균·피크와 전체
+  센서 최고 피크를 별도 값으로 출력함. 기존 `temp_c`와 `peak_temp_c` 의미는
+  호환성을 위해 유지함.
+
 ## [1.27.7] — 메뉴바 러너 CPU 사용량 절감
 
 ### Changed
