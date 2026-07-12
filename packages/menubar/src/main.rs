@@ -49,7 +49,10 @@ use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
 const TEMPERATURE_REFRESH: Duration = Duration::from_secs(2);
-const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(100);
+// Replacing a macOS status-item image is substantially more expensive than
+// advancing an in-memory animation frame. Five frames per second still reads
+// as a fast run while avoiding a measurable 2-3% app CPU tax at full load.
+const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(200);
 const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(800);
 const POPOVER_PREWARM_DELAY: Duration = Duration::from_millis(1200);
 const POPOVER_SHOW_DELAY: Duration = Duration::from_millis(35);

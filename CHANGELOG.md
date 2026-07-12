@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.7] — 메뉴바 러너 CPU 사용량 절감
+
+### Changed
+- **고부하 러너 최대 속도 최적화** — macOS 상태 아이콘 교체 비용을 고려해
+  고양이 러너의 최대 갱신을 10fps에서 5fps로 조정함. CPU 사용량에 따라
+  빨라지고 느려지는 동작은 유지하면서, 고부하 실측 앱 CPU를 약 40% 줄임.
+
 ## [1.27.6] — 팬 제어 응답성과 상태 동기화 개선
 
 ### Changed
