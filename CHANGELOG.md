@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Quality
+- **메뉴바 내장 JavaScript 릴리스 검사 추가** — Rust 소스의 WebView 스크립트를
+  실제 `.js` 파일로 추출해 `node --check`로 검증함. 한 글자 구문 오류로 모든
+  버튼이 동작하지 않는 회귀를 DMG 생성 전에 차단함.
+
 ## [1.27.10] — 데몬 알림 세션 오류 수정
 
 ### Fixed

@@ -136,6 +136,30 @@ for cmd in status cpu memory disk network temps fans hardware; do
 done
 run_json "peterfan --json integrity" 15 "$PETERFAN" --json integrity
 
+if command -v node >/dev/null 2>&1; then
+    echo "== embedded menu-bar JavaScript must parse =="
+    js_dir=$(mktemp -d)
+    js_source="$js_dir/menu.js"
+    python3 - <<'PY' >"$js_source"
+from pathlib import Path
+
+source = Path("packages/menubar/src/main.rs").read_text()
+start = source.index("<script>\n") + len("<script>\n")
+end = source.index("</script>", start)
+print(source[start:end], end="")
+PY
+    if [[ -s "$js_source" ]] && node --check "$js_source" >/tmp/smoke_js.$$ 2>&1; then
+        pass "menu-bar embedded JavaScript syntax"
+    else
+        fail "menu-bar embedded JavaScript syntax"
+        sed 's/^/      /' /tmp/smoke_js.$$ 2>/dev/null
+    fi
+    rm -f "$js_source" /tmp/smoke_js.$$
+    rmdir "$js_dir"
+else
+    echo "== embedded menu-bar JavaScript syntax skipped (node not installed) =="
+fi
+
 echo "== daemon one-shot run must apply a curve and exit cleanly =="
 run_bounded_contains "peterfand --mock --once" 10 "restored" "$PETERFAND" --mock --once
 
