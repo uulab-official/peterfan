@@ -46,6 +46,17 @@ pub trait SystemMonitor {
     /// usage percentages and network rates (they are interval deltas).
     fn refresh(&mut self);
 
+    /// Re-sample only latency-sensitive counters such as CPU and memory.
+    /// Backends without split refresh support may refresh everything.
+    fn refresh_quick(&mut self) {
+        self.refresh();
+    }
+
+    /// Re-sample expensive dashboard families such as processes, disks, and
+    /// networks. The default is empty because `refresh_quick` already called
+    /// `refresh` for backends that do not implement split refreshes.
+    fn refresh_slow(&mut self) {}
+
     fn system_info(&self) -> SystemInfo;
     fn cpu(&self) -> CpuMetrics;
     fn memory(&self) -> MemoryMetrics;

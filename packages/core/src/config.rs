@@ -117,9 +117,9 @@ impl LicenseConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MenubarMetric {
-    #[default]
     Cpu,
     Memory,
+    #[default]
     Temp,
     Fan,
     Network,
@@ -240,7 +240,7 @@ pub enum ResolvedLanguage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TemperatureSource {
-    /// Live Apple Silicon CPU core average (`cpu.die`).
+    /// Live Apple Silicon CPU Core Average (`cpu.die`).
     #[default]
     CoreAverage,
     /// IOHID PMU tdie average, often close to iStat-style die readings.
@@ -302,7 +302,7 @@ pub struct MenubarConfig {
 
 impl MenubarConfig {
     pub fn is_default(&self) -> bool {
-        self.metric == MenubarMetric::Cpu
+        self.metric == MenubarMetric::Temp
             && self.display == MenubarDisplay::Both
             && self.temperature_source == TemperatureSource::CoreAverage
             && !self.setup_prompt_dismissed

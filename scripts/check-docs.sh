@@ -51,6 +51,20 @@ else
   ok "README files do not contain the old v1.26.2 reference"
 fi
 
+if grep -Eq 'cargo build[^`\n]*-p peterfan([[:space:]]|$)' "$ROOT/README.md"; then
+  fail "README.md uses binary name peterfan as a Cargo package (use peterfan-cli)"
+else
+  ok "README.md uses valid Cargo package names"
+fi
+
+if grep -q 'target/release/PeterFan.app' "$ROOT/README.md"; then
+  fail "README.md points to an app bundle that cargo build does not create"
+elif grep -q './script/build_and_run.sh --verify' "$ROOT/README.md"; then
+  ok "README.md source install builds and verifies the app bundle"
+else
+  fail "README.md source install is missing the verified app-bundle command"
+fi
+
 while IFS= read -r image_ref; do
   if [[ "$image_ref" =~ ^https?:// ]]; then
     ok "README external image skipped: $image_ref"

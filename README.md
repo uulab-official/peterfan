@@ -16,6 +16,7 @@ It combines:
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
 ![Status: beta](https://img.shields.io/badge/status-beta-yellow.svg)
+[![Open Source](https://img.shields.io/badge/open-source-MIT-blue.svg)](./LICENSE)
 
 ![PeterFan menu-bar dashboard and CLI diagnostics](./docs/images/peterfan-readme-overview.png)
 
@@ -31,13 +32,24 @@ It combines:
 | CLI | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `temps`, `temps --all`, `fans`, `fan`, `doctor`, `integrity`, `serve`, `update`, and more |
 | TUI | Terminal dashboard built with ratatui |
 | System metrics | CPU, memory, disks, network, processes, battery |
-| macOS sensors | The menu-bar headline temperature defaults to CPU core average, while CPU Hottest, SMC summary/aggregate diagnostics, IOHID tdie, SSD and battery temperature, fan RPM, and the full SMC/IOHID inventory remain visible in the detailed lists |
+| macOS sensors | The menu-bar headline temperature defaults to CPU Core Average, while CPU Hottest, SMC summary/aggregate diagnostics, IOHID tdie, SSD and battery temperature, fan RPM, and the full SMC/IOHID inventory remain visible in the detailed lists |
 | Fan control | Manual fan setting, profiles, editable curves, daemon-driven persistent control |
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
 | Automation | JSON output, local HTTP API, shell completions |
 | Updates | GitHub Release checks from CLI and menu-bar app |
 | Integrity | Installed-app, GitHub release, offline local DMG, and complete release-directory verification for SHA-256, bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |
 | Windows | Basic system metrics; fan/sensor control is planned |
+
+## Repository Map
+
+- `packages/cli`: CLI (`peterfan`)
+- `packages/menubar`: macOS menu-bar app (`peterfan-menubar`)
+- `packages/tui`: terminal UI (`peterfan-tui`)
+- `packages/daemon`: root helper (`peterfand`)
+- `packages/core`: shared models and metric calculations
+- `packages/platform`: platform backends (`macos`, `mock`, updater utilities)
+- `scripts/`: build, release, smoke-test, and signing helpers
+- `docs/`: architecture notes, roadmap, release notes, and QA references
 
 When PeterFan cannot read a real sensor, it labels data as simulated rather than
 pretending the reading is real. See [docs/ROADMAP.md](./docs/ROADMAP.md) and
@@ -96,6 +108,23 @@ If a release asset is rejected by Gatekeeper, prefer building from source or use
 a newer signed release. Maintainers can verify release artifacts with
 [scripts/check-macos-release.sh](./scripts/check-macos-release.sh).
 
+### One-line install (from source)
+
+```bash
+./script/build_and_run.sh --verify
+```
+
+That command builds `peterfan-menubar` and `peterfand`, assembles
+`dist/PeterFan.app`, launches it without taking keyboard focus, and verifies
+that exactly one app process is running. To install the result, move
+`dist/PeterFan.app` to `/Applications`.
+
+If you just want CLI tools:
+
+```bash
+cargo build --release -p peterfan-cli -p peterfan-tui
+```
+
 ## Quick Start
 
 Build from source:
@@ -121,7 +150,7 @@ target/release/peterfan --json status
 human-readable groups such as `CPU hotspot`, `CPU core hot sensor`, `GPU sensor`,
 and `Battery sensor`, while preserving the original raw key for comparison.
 The normal menu-bar headline temperature defaults to `CPU Core Average`;
-CPU hotspot and hot-core sensors stay visible as `CPU Hottest` and in the full inventory.
+`CPU Hottest` and every raw SMC/IOHID sensor remain visible in the full inventory.
 
 Run the TUI:
 
@@ -207,12 +236,36 @@ Stream Deck, dashboards, or scripts.
 - Xcode Command Line Tools for signing, notarization, and DMG validation
 - `jq`, `gh`, and Apple Developer credentials only for official release builds
 
+### Verify locally before publish
+
+Run the workspace smoke test in CI-equivalent mode:
+
+```bash
+cargo build --workspace
+./scripts/smoke-test.sh target/debug
+```
+
+This validates:
+
+- CLI commands under timeout / JSON schema checks
+- menu-bar startup/shutdown behavior (`--mock`)
+- bundled `PeterFan.app` + `peterfand` presence
+- DMG packaging path + mount checks (on macOS)
+
 Useful development commands:
 
 ```bash
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 scripts/smoke-test.sh target/release
+```
+
+Run the local menu-bar app from this checkout:
+
+```bash
+./script/build_and_run.sh          # build, bundle, and launch without stealing focus
+./script/build_and_run.sh --verify # also verify exactly one PeterFan process is running
+./script/build_and_run.sh --logs   # launch, then stream PeterFan logs
 ```
 
 Check for updates:
@@ -306,17 +359,9 @@ cases PeterFan reports the failed verification instead of claiming success.
 The repository is MIT-licensed. The CLI, TUI, core crates, and daemon
 fan-control logic are free to use, fork, and modify under MIT.
 
-The menu-bar app includes a 14-day trial. After the trial, continuing to run the
-always-on menu-bar product and persistent background fan control requires a
-license key:
-
-```bash
-peterfan license status
-peterfan license activate PFAN1-...
-```
-
-License keys are Ed25519-signed and verified offline. Read-only CLI/TUI usage
-does not phone home and does not require an account.
+There is no required account or login for core monitoring. Fan-control
+installation still requires local macOS privileges and is controlled via the
+one-time setup flow shown inside the app.
 
 ## Contributing
 

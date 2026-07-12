@@ -12,15 +12,12 @@ members = [
 # keygen, never shipped — it holds the offline signing logic).
 exclude = ["tools/icongen", "tools/license-keygen"]
 
-# Crates that are part of the long-term layout but not yet scaffolded
-# (see docs/ROADMAP.md): packages/daemon, apps/desktop.
-
 [workspace.package]
-version = "1.26.99"
+version = "1.27.5"
 edition = "2021"
 license = "MIT"
 authors = ["PeterFan contributors"]
-repository = "https://github.com/peterfan/peterfan"
+repository = "https://github.com/uulab-official/peterfan"
 rust-version = "1.80"
 
 [workspace.dependencies]

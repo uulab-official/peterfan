@@ -24,11 +24,13 @@ working product map we use to decide what to polish next.
 
 - [x] Universal notarized macOS DMG with `PeterFan.app`
 - [x] CLI, TUI, menu-bar app, and privileged `peterfand`
-- [x] Apple Silicon CPU average/hottest temperature via SMC aggregate/core keys,
-      with IOHID die readings as fallback
+- [x] Apple Silicon M1-M5 CPU Core Average from generation-specific SMC thermal
+      zones, with aggregate/IOHID readings as explicit fallbacks
+- [x] Menu-bar temperature is the arithmetic mean of mapped CPU core zones;
+      hottest, aggregate, summary, and raw sensors remain separate diagnostics
 - [x] SMC fan RPM, fan control, per-fan manual pins, and auto restore
 - [x] RunCat-style compact popover with a right-side action rail
-- [x] Menu-bar metric selection, graph/number/both styles, and hover tooltip
+- [x] Menu-bar metric selection, animated cat/number/both styles, and hover tooltip
 - [x] 2m / 1h / 1d charts with range averages and peaks
 - [x] Multi-monitor popover placement pinned to the clicked display
 - [x] GitHub Releases OTA update path and local release scripts
@@ -53,13 +55,15 @@ These are the highest-leverage improvements before adding large new surfaces.
 
 ### v1.27 — Fan Control Confidence
 
-- [ ] Detail-window "Fan Control Health" panel: daemon version, install state,
+- [x] Detail-window "Fan Control Health" panel: daemon version, install state,
       helper path, Team ID, LaunchDaemon state, last command result
-- [ ] Make "first approval vs no prompt" state impossible to miss
-- [ ] Show active fan-control input temperature: CPU average, hottest, critical
-- [ ] Add fan-control dry-run diagnostics in the menu-bar detail window
-- [ ] Keep a short local log of fan-control actions and failures
-- [ ] Document why macOS requires approval for first LaunchDaemon install
+- [x] Make "first approval vs no prompt" state impossible to miss
+      (explicit status in Fan/Settings and a single install action path)
+- [x] Show active fan-control input temperature: CPU average, core hottest,
+      safety hottest, and critical limit
+- [x] Add fan-control dry-run diagnostics in the menu-bar detail window
+- [x] Keep a short local log of fan-control actions and failures
+- [x] Document why macOS requires approval for first LaunchDaemon install
 
 ### v1.28 — Sensor Accuracy
 

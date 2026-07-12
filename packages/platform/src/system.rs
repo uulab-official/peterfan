@@ -36,7 +36,7 @@ pub struct SysinfoMonitor {
     net_rates: HashMap<String, (f64, f64)>,
     /// Per-disk (read_rate, write_rate) in bytes/sec from the last interval.
     disk_rates: HashMap<String, (f64, f64)>,
-    last_refresh: Option<Instant>,
+    last_slow_refresh: Option<Instant>,
     battery_mgr: Option<battery::Manager>,
     has_battery: bool,
     /// When true, `refresh()` skips processes, disks, and network I/O — used by
@@ -93,7 +93,7 @@ impl SysinfoMonitor {
             networks,
             net_rates: HashMap::new(),
             disk_rates: HashMap::new(),
-            last_refresh: None,
+            last_slow_refresh: None,
             battery_mgr,
             has_battery,
             quick,
@@ -124,49 +124,57 @@ impl SystemMonitor for SysinfoMonitor {
     }
 
     fn refresh(&mut self) {
-        let now = Instant::now();
-        let elapsed = self
-            .last_refresh
-            .map(|t| now.duration_since(t).as_secs_f64())
-            .unwrap_or(0.0);
+        self.refresh_quick();
+        self.refresh_slow();
+    }
 
+    fn refresh_quick(&mut self) {
         self.sys.refresh_cpu_all();
         self.sys
             .refresh_memory_specifics(MemoryRefreshKind::everything());
+    }
 
-        if !self.quick {
-            self.sys.refresh_processes(ProcessesToUpdate::All, true);
-            self.disks.refresh(true);
-            self.networks.refresh(true);
-
-            if elapsed > 0.0 {
-                let mut net = HashMap::new();
-                for (name, data) in self.networks.iter() {
-                    net.insert(
-                        name.clone(),
-                        (
-                            data.received() as f64 / elapsed,
-                            data.transmitted() as f64 / elapsed,
-                        ),
-                    );
-                }
-                self.net_rates = net;
-
-                let mut disk = HashMap::new();
-                for d in self.disks.iter() {
-                    let u = d.usage();
-                    disk.insert(
-                        d.name().to_string_lossy().into_owned(),
-                        (
-                            u.read_bytes as f64 / elapsed,
-                            u.written_bytes as f64 / elapsed,
-                        ),
-                    );
-                }
-                self.disk_rates = disk;
-            }
+    fn refresh_slow(&mut self) {
+        if self.quick {
+            return;
         }
-        self.last_refresh = Some(now);
+
+        let now = Instant::now();
+        let elapsed = self
+            .last_slow_refresh
+            .map(|t| now.duration_since(t).as_secs_f64())
+            .unwrap_or(0.0);
+        self.sys.refresh_processes(ProcessesToUpdate::All, true);
+        self.disks.refresh(true);
+        self.networks.refresh(true);
+
+        if elapsed > 0.0 {
+            let mut net = HashMap::new();
+            for (name, data) in self.networks.iter() {
+                net.insert(
+                    name.clone(),
+                    (
+                        data.received() as f64 / elapsed,
+                        data.transmitted() as f64 / elapsed,
+                    ),
+                );
+            }
+            self.net_rates = net;
+
+            let mut disk = HashMap::new();
+            for d in self.disks.iter() {
+                let u = d.usage();
+                disk.insert(
+                    d.name().to_string_lossy().into_owned(),
+                    (
+                        u.read_bytes as f64 / elapsed,
+                        u.written_bytes as f64 / elapsed,
+                    ),
+                );
+            }
+            self.disk_rates = disk;
+        }
+        self.last_slow_refresh = Some(now);
     }
 
     fn system_info(&self) -> SystemInfo {
@@ -432,5 +440,17 @@ mod tests {
         let top = top_processes(procs, 10, ProcSort::Cpu);
         let pids: Vec<u32> = top.iter().map(|p| p.pid).collect();
         assert_eq!(pids, vec![2, 1]);
+    }
+
+    #[test]
+    fn split_refresh_keeps_expensive_families_out_of_quick_ticks() {
+        let mut monitor = SysinfoMonitor::new();
+        monitor.last_slow_refresh = None;
+
+        monitor.refresh_quick();
+        assert!(monitor.last_slow_refresh.is_none());
+
+        monitor.refresh_slow();
+        assert!(monitor.last_slow_refresh.is_some());
     }
 }

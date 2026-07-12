@@ -19,6 +19,7 @@ private/
 # Editors / OS
 .DS_Store
 .idea/
+.playwright-cli/
 .vscode/
 *.swp
 

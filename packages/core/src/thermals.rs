@@ -19,20 +19,90 @@ pub fn hottest_temperature_c(temps: &[TempSensor]) -> Option<f32> {
 /// output so Apple Silicon machines use the same representative temperature
 /// everywhere.
 pub fn representative_temperature_c(temps: &[TempSensor]) -> Option<f32> {
-    temps
+    fn is_valid_cpu_average_reading(sensor: &TempSensor) -> bool {
+        if sensor.kind != SensorKind::Cpu || sensor.id.contains("hot") || sensor.value.0.is_nan() {
+            return false;
+        }
+
+        if sensor.id.contains("proximity")
+            || sensor.id.contains("airflow")
+            || sensor.id.contains("ambient")
+            || sensor.id.contains("board")
+            || sensor.id.contains("memory")
+        {
+            return false;
+        }
+        true
+    }
+
+    if let Some(value) = temps
         .iter()
-        .find(|t| t.id == "cpu.die")
+        .find(|t| t.id == "cpu.die" && is_valid_cpu_average_reading(t))
         .map(|t| t.value.0)
-        .or_else(|| {
-            let cpu_values: Vec<f32> = temps
-                .iter()
-                .filter(|t| t.kind == SensorKind::Cpu && !t.id.contains("hot"))
-                .map(|t| t.value.0)
-                .collect();
-            (!cpu_values.is_empty())
-                .then(|| cpu_values.iter().sum::<f32>() / cpu_values.len() as f32)
+    {
+        return Some(value);
+    }
+
+    let stable_average_values: Vec<f32> = temps
+        .iter()
+        .filter(|t| is_valid_cpu_average_reading(t))
+        .filter(|t| {
+            matches!(
+                t.id.as_str(),
+                "cpu.smc.die" | "cpu.smc.aggregate" | "cpu.smc.summary"
+            )
         })
-        .or_else(|| hottest_temperature_c(temps))
+        .map(|t| t.value.0)
+        .collect();
+
+    if let Some(value) = stable_average_values
+        .iter()
+        .copied()
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+    {
+        return Some(value);
+    }
+
+    if let Some(value) = temps
+        .iter()
+        .find(|t| {
+            matches!(t.id.as_str(), "cpu.iohid.tdie" | "cpu.iohid.cpu")
+                && is_valid_cpu_average_reading(t)
+        })
+        .map(|t| t.value.0)
+    {
+        return Some(value);
+    }
+
+    let cpu_average_values: Vec<f32> = temps
+        .iter()
+        .filter(|t| is_valid_cpu_average_reading(t))
+        .map(|t| t.value.0)
+        .collect();
+
+    if !cpu_average_values.is_empty() {
+        return Some(cpu_average_values.iter().sum::<f32>() / cpu_average_values.len() as f32);
+    }
+
+    let cpu_values: Vec<f32> = temps
+        .iter()
+        .filter(|t| t.kind == SensorKind::Cpu && !t.id.contains("hot"))
+        .map(|t| t.value.0)
+        .collect();
+
+    if !cpu_values.is_empty() {
+        return Some(cpu_values.iter().sum::<f32>() / cpu_values.len() as f32);
+    }
+
+    if let Some(best) = temps
+        .iter()
+        .map(|t| t.value.0)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+    {
+        return Some(best);
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -69,6 +139,32 @@ mod tests {
         ];
 
         assert_eq!(super::representative_temperature_c(&temps), Some(50.0));
+    }
+
+    #[test]
+    fn representative_temperature_prefers_synthetic_cpu_die_before_other_candidates() {
+        let temps = vec![
+            temp("cpu.die", SensorKind::Cpu, 52.0),
+            temp("cpu.smc.die", SensorKind::Cpu, 72.0),
+            temp("cpu.iohid.tdie", SensorKind::Cpu, 74.0),
+            temp("cpu.smc.summary", SensorKind::Cpu, 58.0),
+            temp("cpu.die.hot", SensorKind::Cpu, 80.0),
+            temp("ssd", SensorKind::Storage, 81.0),
+        ];
+
+        assert_eq!(super::representative_temperature_c(&temps), Some(52.0));
+    }
+
+    #[test]
+    fn representative_temperature_uses_hottest_stable_cpu_average_without_synthetic_die() {
+        let temps = vec![
+            temp("cpu.smc.aggregate", SensorKind::Cpu, 72.0),
+            temp("cpu.smc.summary", SensorKind::Cpu, 83.0),
+            temp("cpu.iohid.tdie", SensorKind::Cpu, 50.0),
+            temp("cpu.die.hot", SensorKind::Cpu, 101.0),
+        ];
+
+        assert_eq!(super::representative_temperature_c(&temps), Some(83.0));
     }
 
     #[test]

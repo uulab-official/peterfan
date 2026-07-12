@@ -130,8 +130,8 @@ enum Command {
         /// Create the config file with defaults if it doesn't exist.
         #[arg(long)]
         init: bool,
-        /// Set a config value: profile, interval, critical, or menubar.temperature_source.
-        /// Example: --set profile gaming  |  --set temp_source iohid-tdie
+        /// Set a config value such as profile, interval, menubar.display, or temperature source.
+        /// Example: --set menubar.display both  |  --set temp_source iohid-tdie
         #[arg(long, value_names = ["KEY", "VALUE"], num_args = 2)]
         set: Option<Vec<String>>,
         /// Print a single config value.
@@ -502,7 +502,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
             expected_sha256,
             latest,
             tag,
-        } => cmd_integrity(
+        } => cmd_integrity(IntegrityOptions {
             json,
             app,
             dmg,
@@ -511,7 +511,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
             expected_sha256,
             latest,
             tag,
-        ),
+        }),
         Command::Alert {
             cpu,
             memory,
@@ -1139,6 +1139,7 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
             "profile" => cfg.profile.as_str().to_string(),
             "interval" | "interval_secs" => cfg.interval_secs.to_string(),
             "critical" | "critical_temp_c" => format!("{:.0}", cfg.critical_temp_c),
+            "menubar.display" | "display" => cfg.menubar.display.as_str().to_string(),
             "menubar.temperature_source" | "temperature_source" | "temp_source" => {
                 cfg.menubar.temperature_source.as_str().to_string()
             }
@@ -1161,7 +1162,7 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
             "alert.interval" | "alert.interval_secs" => cfg.alert.interval_secs.to_string(),
             _ => anyhow::bail!(
                 "unknown key '{key}'; valid keys: profile, interval, critical, \
-                 menubar.temperature_source, alert.cpu, alert.memory, alert.temp, \
+                 menubar.display, menubar.temperature_source, alert.cpu, alert.memory, alert.temp, \
                  alert.cooldown, alert.interval"
             ),
         };
@@ -1194,6 +1195,14 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
                 cfg.critical_temp_c = val
                     .parse::<f32>()
                     .map_err(|_| anyhow::anyhow!("critical must be a number"))?;
+            }
+            "menubar.display" | "display" => {
+                cfg.menubar.display = peterfan_core::config::MenubarDisplay::parse(val)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "unknown menu-bar display '{val}' (valid: number, cat, both)"
+                        )
+                    })?;
             }
             "menubar.temperature_source" | "temperature_source" | "temp_source" => {
                 cfg.menubar.temperature_source =
@@ -1234,7 +1243,7 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
             }
             _ => anyhow::bail!(
                 "unknown key '{key}'; valid keys: profile, interval, critical, \
-                 menubar.temperature_source, alert.cpu, alert.memory, alert.temp, \
+                 menubar.display, menubar.temperature_source, alert.cpu, alert.memory, alert.temp, \
                  alert.cooldown, alert.interval"
             ),
         }
@@ -1263,6 +1272,7 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
                 "interval_secs": cfg.interval_secs,
                 "critical_temp_c": cfg.critical_temp_c,
                 "menubar": {
+                    "display": cfg.menubar.display.as_str(),
                     "temperature_source": cfg.menubar.temperature_source.as_str(),
                 },
             }))?
@@ -1274,6 +1284,7 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
     print_kv("Profile", cfg.profile.as_str());
     print_kv("Interval", &format!("{}s", cfg.interval_secs));
     print_kv("Critical", &format!("{:.0}°C", cfg.critical_temp_c));
+    print_kv("Menu-bar Display", cfg.menubar.display.as_str());
     print_kv("Temp Source", cfg.menubar.temperature_source.as_str());
     if cfg.rules.is_empty() {
         print_kv("Rules", "(none)");
@@ -2655,6 +2666,34 @@ fn cmd_curve(name: Option<String>, json: bool) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FanControlReadiness {
+    Unsupported,
+    DaemonUpdateRequired,
+    DaemonReady,
+    Elevated,
+    NeedsSetup,
+}
+
+fn fan_control_readiness(
+    control_fans: bool,
+    daemon_reachable: bool,
+    daemon_update_required: bool,
+    elevated: bool,
+) -> FanControlReadiness {
+    if !control_fans {
+        FanControlReadiness::Unsupported
+    } else if daemon_update_required {
+        FanControlReadiness::DaemonUpdateRequired
+    } else if daemon_reachable {
+        FanControlReadiness::DaemonReady
+    } else if elevated {
+        FanControlReadiness::Elevated
+    } else {
+        FanControlReadiness::NeedsSetup
+    }
+}
+
 fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     let provider = provider(mock);
     let monitor = instant_monitor(mock);
@@ -2744,11 +2783,11 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
         println!();
         println!("{}", render::heading("CPU temperature calibration"));
         print_kv(
-            "  selected temp",
+            "  selected average",
             &format_temp_opt(probe.selected_average_c, "—"),
         );
         print_kv(
-            "  selected hottest",
+            "  selected core hottest",
             &format_temp_opt(probe.selected_hottest_c, "—"),
         );
         print_kv(
@@ -2829,7 +2868,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             );
         }
         println!(
-            "    {} selected temp follows the live all-core CPU average; SMC TV* aggregate is diagnostic/fallback",
+            "    {} selected average is the arithmetic mean of mapped CPU core sensors; SMC aggregate and hotspot readings stay diagnostic",
             "→".dimmed()
         );
     }
@@ -2850,29 +2889,45 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             print_kv("  FS! force key", if p.fs { "present" } else { "absent" });
         }
         // Verdict.
-        let verdict = if !caps.control_fans {
-            "this backend can't write fans".yellow().to_string()
-        } else if daemon_reachable {
-            let mode = ipc_send("status")
-                .as_deref()
-                .and_then(|r| r.strip_prefix("ok "))
-                .map(|s| format!(" ({s})"))
-                .unwrap_or_default();
-            format!(
-                "✓ fully ready — daemon is running{mode}; \
-                 `peterfan fan set N` and menu-bar buttons work without sudo"
+        let verdict = match fan_control_readiness(
+            caps.control_fans,
+            daemon_reachable,
+            daemon_update_required,
+            elevated,
+        ) {
+            FanControlReadiness::Unsupported => {
+                "this backend can't write fans".yellow().to_string()
+            }
+            FanControlReadiness::DaemonUpdateRequired => format!(
+                "daemon is reachable but outdated (need >= v{}); use the app's Fan Control setup once to update it",
+                peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
             )
-            .green()
-            .to_string()
-        } else if elevated {
-            "ready — try `peterfan fan set 80` (verifies by RPM read-back)"
+            .yellow()
+            .to_string(),
+            FanControlReadiness::DaemonReady => {
+                let mode = ipc_send("status")
+                    .as_deref()
+                    .and_then(|r| r.strip_prefix("ok "))
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default();
+                format!(
+                    "✓ fully ready — daemon is running{mode}; \
+                     `peterfan fan set N` and menu-bar buttons work without sudo"
+                )
                 .green()
                 .to_string()
-        } else {
-            "not ready — install the daemon once (`peterfan install-daemon`) or \
-             run `sudo peterfan fan set 80`"
-                .yellow()
-                .to_string()
+            }
+            FanControlReadiness::Elevated => {
+                "ready — try `peterfan fan set 80` (verifies by RPM read-back)"
+                    .green()
+                    .to_string()
+            }
+            FanControlReadiness::NeedsSetup => {
+                "not ready — install the daemon once (`peterfan install-daemon`) or \
+                 run `sudo peterfan fan set 80`"
+                    .yellow()
+                    .to_string()
+            }
         };
         println!("  → {verdict}");
 
@@ -3182,7 +3237,7 @@ fn print_temps(temps: &[TempSensor]) {
 fn temp_display_label(sensor: &TempSensor) -> Cow<'_, str> {
     match sensor.id.as_str() {
         "cpu.die" => Cow::Borrowed("Core Average"),
-        "cpu.die.hot" => Cow::Borrowed("Hottest"),
+        "cpu.die.hot" => Cow::Borrowed("Core Hottest"),
         _ => Cow::Borrowed(&sensor.label),
     }
 }
@@ -3249,7 +3304,7 @@ fn cpu_temperature_probe_json(probe: &peterfan_platform::CpuTemperatureProbe) ->
         "core_keys": probe.core_keys.iter().map(|r| {
             serde_json::json!({ "key": r.key, "class": r.class, "value_c": r.value_c })
         }).collect::<Vec<_>>(),
-        "selection_policy": "all_core_average_then_performance_core_average_then_summary_then_smc_tv_aggregate_fallback_then_hotspot_fallback",
+        "selection_policy": "mapped_core_arithmetic_average_and_hottest;smc_aggregate_fallback;hotspot_reported_separately",
     })
 }
 
@@ -3686,7 +3741,7 @@ fn install_update(_release: &peterfan_platform::updater::ReleaseInfo) -> Result<
     anyhow::bail!("OTA app installation is macOS-only; use the release URL instead")
 }
 
-fn cmd_integrity(
+struct IntegrityOptions {
     json: bool,
     app: Option<PathBuf>,
     dmg: Option<PathBuf>,
@@ -3695,7 +3750,19 @@ fn cmd_integrity(
     expected_sha256: Option<String>,
     latest: bool,
     tag: Option<String>,
-) -> Result<()> {
+}
+
+fn cmd_integrity(options: IntegrityOptions) -> Result<()> {
+    let IntegrityOptions {
+        json,
+        app,
+        dmg,
+        release_dir,
+        checksums,
+        expected_sha256,
+        latest,
+        tag,
+    } = options;
     if let Some(release_dir) = release_dir {
         if app.is_some()
             || dmg.is_some()
@@ -4397,7 +4464,7 @@ mod tests {
         let ssd = temp("ssd", "SSD", SensorKind::Storage, 33.0);
 
         assert_eq!(super::temp_display_label(&cpu), "Core Average");
-        assert_eq!(super::temp_display_label(&hot), "Hottest");
+        assert_eq!(super::temp_display_label(&hot), "Core Hottest");
         assert_eq!(super::temp_display_label(&ssd), "SSD");
     }
 
@@ -4483,7 +4550,7 @@ mod tests {
         assert_eq!(json["selected_average_c"], 65.0);
         assert_eq!(
             json["selection_policy"],
-            "all_core_average_then_performance_core_average_then_summary_then_smc_tv_aggregate_fallback_then_hotspot_fallback"
+            "mapped_core_arithmetic_average_and_hottest;smc_aggregate_fallback;hotspot_reported_separately"
         );
         assert_eq!(json["summary_keys"][0]["key"], "TCDX");
         assert_eq!(json["aggregate_keys"][0]["key"], "TV0s");
@@ -4498,5 +4565,19 @@ mod tests {
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         )));
         assert!(super::daemon_cache_is_compatible(None));
+    }
+
+    #[test]
+    fn stale_reachable_daemon_is_not_reported_ready() {
+        use super::FanControlReadiness;
+
+        assert_eq!(
+            super::fan_control_readiness(true, true, true, false),
+            FanControlReadiness::DaemonUpdateRequired
+        );
+        assert_eq!(
+            super::fan_control_readiness(true, true, false, false),
+            FanControlReadiness::DaemonReady
+        );
     }
 }

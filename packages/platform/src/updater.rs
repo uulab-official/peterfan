@@ -189,8 +189,7 @@ pub struct ReleaseInfo {
     /// is absent, it falls back to the universal `apple-darwin.tar.gz`.
     pub asset_url: Option<String>,
     pub asset_name: Option<String>,
-    /// GitHub release asset digest for the selected update asset, currently
-    /// shaped like `sha256:<hex>` when present.
+    /// Normalized lowercase SHA-256 digest for the selected update asset.
     pub asset_digest: Option<String>,
     pub archive_url: Option<String>,
     pub dmg_url: Option<String>,
@@ -301,8 +300,11 @@ where
 }
 
 fn parse_github_sha256_digest(digest: Option<&str>) -> Option<String> {
-    let digest = digest?;
-    let hash = digest.strip_prefix("sha256:")?;
+    normalize_sha256_digest(digest?)
+}
+
+fn normalize_sha256_digest(digest: &str) -> Option<String> {
+    let hash = digest.strip_prefix("sha256:").unwrap_or(digest);
     (hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
         .then(|| hash.to_ascii_lowercase())
 }
@@ -1025,6 +1027,7 @@ pub fn download_and_install_release(release: &ReleaseInfo) -> Result<(), String>
         asset_name,
         release.asset_digest.as_deref(),
         checksum_url,
+        release.checksum_digest.as_deref(),
     )
 }
 
@@ -1047,6 +1050,7 @@ fn download_and_install_verified(
     asset_name: &str,
     asset_digest: Option<&str>,
     checksum_url: &str,
+    checksum_digest: Option<&str>,
 ) -> Result<(), String> {
     let app_path = current_app_bundle()?;
     let tmp_dir = std::env::temp_dir().join(format!("peterfan-update-{}", std::process::id()));
@@ -1060,6 +1064,9 @@ fn download_and_install_verified(
 
     let checksums_path = tmp_dir.join("checksums.txt");
     download_file(checksum_url, &checksums_path)?;
+    if let Some(expected) = checksum_digest {
+        verify_expected_sha256("GitHub checksums.txt digest", expected, &checksums_path)?;
+    }
     let checksums = std::fs::read_to_string(&checksums_path).map_err(|e| e.to_string())?;
     verify_download_checksum(&checksums, asset_name, &download)?;
 
@@ -1181,8 +1188,10 @@ fn verify_expected_sha256(
     expected: &str,
     path: &std::path::Path,
 ) -> Result<(), String> {
+    let expected = normalize_sha256_digest(expected)
+        .ok_or_else(|| format!("invalid SHA-256 digest from {source}: {expected}"))?;
     let actual = sha256_file(path)?;
-    if actual.eq_ignore_ascii_case(expected) {
+    if actual.eq_ignore_ascii_case(&expected) {
         Ok(())
     } else {
         Err(format!(
@@ -1590,6 +1599,13 @@ mod tests {
             Some("abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd")
         );
         assert_eq!(parse_github_sha256_digest(Some("sha512:abc")), None);
+        assert_eq!(
+            normalize_sha256_digest(
+                "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+            )
+            .as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
         assert_eq!(parse_github_sha256_digest(Some("sha256:not-hex")), None);
         assert_eq!(parse_github_sha256_digest(None), None);
     }

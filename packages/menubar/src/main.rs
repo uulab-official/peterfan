@@ -34,28 +34,32 @@ use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuIt
 use tray_icon::{
     Icon, MouseButton, MouseButtonState, Rect, TrayIcon, TrayIconAttributes, TrayIconEvent,
 };
-use wry::{WebView, WebViewBuilder};
+use wry::{WebView, WebViewBuilder, RGBA};
 
 use peterfan_core::config::{
-    CustomCurveConfig, Language, MenubarDisplay, MenubarMetric, ResolvedLanguage, TemperatureSource,
+    CustomCurveConfig, Language, MenubarDisplay, ResolvedLanguage, TemperatureSource,
 };
 use peterfan_core::error::CoreError;
 use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
 use peterfan_core::thermals::{hottest_temperature_c, representative_temperature_c};
-#[cfg(test)]
 use peterfan_core::types::SensorKind;
 use peterfan_core::types::{Celsius, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
-const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(70);
-const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(340);
+const TEMPERATURE_REFRESH: Duration = Duration::from_secs(2);
+const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(100);
+const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(800);
 const POPOVER_PREWARM_DELAY: Duration = Duration::from_millis(1200);
+const POPOVER_SHOW_DELAY: Duration = Duration::from_millis(35);
 const DASHBOARD_OPEN_GRACE: Duration = Duration::from_millis(900);
+const DASHBOARD_SLOW_REFRESH: Duration = Duration::from_secs(3);
+const DASHBOARD_SLOW_OPEN_GRACE: Duration = Duration::from_millis(450);
 const ALL_TEMP_REFRESH: Duration = Duration::from_secs(10);
 const DAEMON_REFRESH: Duration = Duration::from_secs(2);
 const SINGLE_INSTANCE_LOCK_BASENAME: &str = "kr.co.uulab.peterfan.menubar";
+const DASHBOARD_BACKGROUND: RGBA = (27, 27, 29, 255);
 /// Samples kept for the menu-bar runner icon (always shows the short-term
 /// trend, independent of the popover's chart range selector) — 120 samples
 /// at a 1s tick is a 2-minute rolling window.
@@ -163,12 +167,16 @@ static OPEN_DETAIL: AtomicBool = AtomicBool::new(false);
 static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Last control result, shown in the popover.
 static STATUS: Mutex<String> = Mutex::new(String::new());
+const FAN_ACTION_LOG_MAX: usize = 12;
+static FAN_ACTION_LOG: Mutex<VecDeque<serde_json::Value>> = Mutex::new(VecDeque::new());
 /// Guards `install_fan_control()` process-wide. The popover and Detail
 /// Window each track their own "installing…" button state in per-webview JS
 /// (`FAN_CONTROL_FIX_PENDING`), which doesn't stop both windows from firing
 /// the install thread within the same tick and stacking two macOS
 /// admin-password dialogs.
 static INSTALL_FAN_CONTROL_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static LOGIN_ITEM_TOGGLE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// Shadow of `apply_local`'s per-fan pins, consulted only when no daemon is
 /// reachable (`daemon_temps_json()` returns `None` in that case, since it's
 /// a daemon IPC query). Without this, pinning a fan via a direct SMC write
@@ -182,9 +190,6 @@ struct TrayMenu {
     rules: tray_icon::menu::MenuId,
     profiles: Vec<(String, tray_icon::menu::MenuId)>,
     quit: tray_icon::menu::MenuId,
-    /// "Show" submenu — which metric the menu-bar item tracks. Each entry's
-    /// checked state is kept in sync with `App.metric` whenever it changes.
-    show_items: Vec<(MenubarMetric, tray_icon::menu::CheckMenuItem)>,
     /// "Display" submenu — number / cat / both.
     display_items: Vec<(MenubarDisplay, tray_icon::menu::CheckMenuItem)>,
     /// "CPU Temperature Source" submenu — which sensor family feeds the
@@ -221,16 +226,10 @@ struct L10n {
     open_detail: &'static str,
     check_updates: &'static str,
     quit: &'static str,
-    menu_bar_shows: &'static str,
     menu_bar_style: &'static str,
     temperature_source: &'static str,
     fan_speed: &'static str,
     language: &'static str,
-    show_cpu: &'static str,
-    show_memory: &'static str,
-    show_temperature: &'static str,
-    show_fan: &'static str,
-    show_network: &'static str,
     style_number: &'static str,
     style_graph: &'static str,
     style_both: &'static str,
@@ -250,16 +249,10 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             open_detail: "Open Detailed Window…",
             check_updates: "Check for Updates…",
             quit: "Quit PeterFan",
-            menu_bar_shows: "Menu Bar Shows",
             menu_bar_style: "Menu Bar Style",
-            temperature_source: "CPU Temperature Source",
+            temperature_source: "Dashboard Temperature",
             fan_speed: "Fan Speed",
             language: "Language",
-            show_cpu: "CPU",
-            show_memory: "Memory",
-            show_temperature: "CPU Average",
-            show_fan: "Fan",
-            show_network: "Network",
             style_number: "Number",
             style_graph: "Cat",
             style_both: "Number + Cat",
@@ -276,16 +269,10 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             open_detail: "상세 창 열기…",
             check_updates: "업데이트 확인…",
             quit: "PeterFan 종료",
-            menu_bar_shows: "메뉴 막대 표시 항목",
             menu_bar_style: "메뉴 막대 스타일",
-            temperature_source: "CPU 온도 기준",
+            temperature_source: "대시보드 온도",
             fan_speed: "팬 속도",
             language: "언어",
-            show_cpu: "CPU",
-            show_memory: "메모리",
-            show_temperature: "CPU 평균",
-            show_fan: "팬",
-            show_network: "네트워크",
             style_number: "숫자",
             style_graph: "고양이",
             style_both: "숫자 + 고양이",
@@ -300,15 +287,16 @@ struct App {
     /// ms, especially when they're failing (no daemon, no root).
     provider: std::sync::Arc<dyn HardwareProvider>,
     has_battery: bool,
-    metric: MenubarMetric,
     display: MenubarDisplay,
     temperature_source: TemperatureSource,
+    critical_temp_c: f32,
     language: Language,
     tray: Option<TrayIcon>,
     tray_menu: Option<TrayMenu>,
     window: Option<Window>,
     webview: Option<WebView>,
     popover_visible: bool,
+    popover_show_at: Option<Instant>,
     /// A persistent, resizable, normal-chrome window with the same
     /// dashboard content — for "leave it open while I work" use, unlike the
     /// dropdown popover which hides the moment focus moves elsewhere.
@@ -328,20 +316,64 @@ struct App {
     net_h: RangedHistory,
     /// Combined disk read+write throughput (bytes/sec), same reasoning.
     disk_io_h: RangedHistory,
+    dashboard_slow_cache: DashboardSlowCache,
+    next_dashboard_slow_refresh: Instant,
     /// Small animation frame for the RunCat-style menu-bar character. It
     /// advances on each refresh, with bigger CPU load taking larger strides.
     runner_frame: u8,
     runner_cpu_pct: f32,
+    runner_icons: Vec<Icon>,
+    last_runner_icon: Option<usize>,
+    temperature_cache: Vec<TempSensor>,
+    next_temperature_refresh: Instant,
     all_temp_rows_cache: Vec<serde_json::Value>,
     next_all_temp_refresh: Instant,
     daemon_json_cache: Option<serde_json::Value>,
     next_daemon_refresh: Instant,
 }
 
-/// Persist the menu-bar's metric + display choice so it survives a relaunch.
-fn save_menubar_config(metric: MenubarMetric, display: MenubarDisplay) {
+struct DashboardSlowCache {
+    proc_sort: ProcSort,
+    procs: Vec<serde_json::Value>,
+    disk_pct: f32,
+    disk_text: String,
+    disk_sub: String,
+    disk_io_present: bool,
+    disk_io_sub: String,
+    disk_io_rate: f32,
+    power_w: Option<f32>,
+    batt_present: bool,
+    batt_pct: f32,
+    batt_text: String,
+    batt_sub: String,
+    curve_points: Vec<[f32; 2]>,
+}
+
+impl Default for DashboardSlowCache {
+    fn default() -> Self {
+        Self {
+            proc_sort: ProcSort::Cpu,
+            procs: Vec::new(),
+            disk_pct: 0.0,
+            disk_text: String::new(),
+            disk_sub: String::new(),
+            disk_io_present: false,
+            disk_io_sub: String::new(),
+            disk_io_rate: 0.0,
+            power_w: None,
+            batt_present: false,
+            batt_pct: 0.0,
+            batt_text: String::new(),
+            batt_sub: String::new(),
+            curve_points: default_curve_points(),
+        }
+    }
+}
+
+/// Persist the menu-bar appearance. The metric itself is intentionally fixed
+/// to CPU Core Average so every surface reports the same number.
+fn save_menubar_display(display: MenubarDisplay) {
     let mut cfg = peterfan_platform::config::load();
-    cfg.menubar.metric = metric;
     cfg.menubar.display = display;
     let _ = peterfan_platform::config::save(&cfg);
 }
@@ -368,6 +400,112 @@ fn hottest_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
     })
 }
 
+struct SelectedTemperature {
+    id: String,
+    value: f32,
+    label_hint: Option<&'static str>,
+}
+
+fn average_cpu_non_hot(temps: &[TempSensor]) -> Option<f32> {
+    let mut values = Vec::new();
+    for temp in temps {
+        if temp.kind != SensorKind::Cpu || temp.id.contains("hot") {
+            continue;
+        }
+
+        if temp.id.contains("proximity")
+            || temp.id.contains("airflow")
+            || temp.id.contains("ambient")
+            || temp.id.contains("board")
+            || temp.id.contains("memory")
+        {
+            continue;
+        }
+
+        if temp.value.0.is_nan() {
+            continue;
+        }
+
+        values.push(temp.value.0);
+    }
+    if values.is_empty() {
+        return None;
+    }
+    Some(values.iter().sum::<f32>() / values.len() as f32)
+}
+
+fn best_cpu_average(temps: &[TempSensor]) -> Option<SelectedTemperature> {
+    if let Some(cpu_die) = temps
+        .iter()
+        .find(|t| t.id == "cpu.die" && t.kind == SensorKind::Cpu && !t.id.contains("hot"))
+    {
+        return Some(SelectedTemperature {
+            id: cpu_die.id.clone(),
+            value: cpu_die.value.0,
+            label_hint: Some("CPU average"),
+        });
+    }
+
+    let stable_candidate = temps
+        .iter()
+        .filter(|t| t.kind == SensorKind::Cpu && !t.id.contains("hot"))
+        .filter(|t| {
+            matches!(
+                t.id.as_str(),
+                "cpu.smc.die" | "cpu.smc.aggregate" | "cpu.smc.summary"
+            )
+        })
+        .max_by(|a, b| {
+            a.value
+                .0
+                .partial_cmp(&b.value.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    if let Some(candidate) = stable_candidate {
+        return Some(SelectedTemperature {
+            id: candidate.id.clone(),
+            value: candidate.value.0,
+            label_hint: Some("CPU average"),
+        });
+    }
+
+    if let Some(iohid) = temps
+        .iter()
+        .find(|t| matches!(t.id.as_str(), "cpu.iohid.tdie" | "cpu.iohid.cpu"))
+    {
+        return Some(SelectedTemperature {
+            id: iohid.id.clone(),
+            value: iohid.value.0,
+            label_hint: Some("CPU average"),
+        });
+    }
+
+    average_cpu_non_hot(temps)
+        .map(|avg| SelectedTemperature {
+            id: "cpu.die".to_string(),
+            value: avg,
+            label_hint: Some("CPU average"),
+        })
+        .or_else(|| hottest_cpu_temperature(temps))
+}
+
+fn hottest_cpu_temperature(temps: &[TempSensor]) -> Option<SelectedTemperature> {
+    temps
+        .iter()
+        .filter(|t| t.kind == SensorKind::Cpu)
+        .max_by(|a, b| {
+            a.value
+                .0
+                .partial_cmp(&b.value.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|t| SelectedTemperature {
+            id: t.id.clone(),
+            value: t.value.0,
+            label_hint: Some("hottest"),
+        })
+}
+
 #[cfg(test)]
 fn display_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
     temps
@@ -379,77 +517,159 @@ fn display_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
 fn primary_menu_temperature(
     temps: &[TempSensor],
     source: TemperatureSource,
-) -> Option<&TempSensor> {
-    let preferred_id = match source {
-        TemperatureSource::CoreAverage => "cpu.die",
-        TemperatureSource::IohidTdie => "cpu.iohid.tdie",
-        TemperatureSource::SmcSummary => "cpu.smc.summary",
-        TemperatureSource::SmcAggregate => "cpu.smc.aggregate",
-        TemperatureSource::Hottest => "cpu.die.hot",
+) -> Option<SelectedTemperature> {
+    let by_id = |id: &'static str| {
+        temps
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| SelectedTemperature {
+                id: t.id.clone(),
+                value: t.value.0,
+                label_hint: None,
+            })
     };
-    temps
-        .iter()
-        .find(|t| t.id == preferred_id)
-        .or_else(|| temps.iter().find(|t| t.id == "cpu.die"))
-        .or_else(|| temps.iter().find(|t| t.id == "cpu.die.hot"))
-        .or_else(|| hottest_temperature(temps))
+
+    match source {
+        TemperatureSource::CoreAverage => return best_cpu_average(temps),
+        TemperatureSource::IohidTdie => {
+            if let Some(v) = by_id("cpu.iohid.tdie").or_else(|| by_id("cpu.iohid.cpu")) {
+                return Some(v);
+            }
+        }
+        TemperatureSource::SmcSummary => {
+            if let Some(v) = by_id("cpu.smc.summary") {
+                return Some(v);
+            }
+        }
+        TemperatureSource::SmcAggregate => {
+            if let Some(v) = by_id("cpu.smc.aggregate") {
+                return Some(v);
+            }
+        }
+        TemperatureSource::Hottest => {
+            if let Some(v) = by_id("cpu.die.hot") {
+                return Some(v);
+            }
+            if let Some(v) = temps
+                .iter()
+                .find(|t| t.kind == SensorKind::Cpu && t.id.contains("hot"))
+                .map(|t| SelectedTemperature {
+                    id: "cpu.die.hot".to_string(),
+                    value: t.value.0,
+                    label_hint: None,
+                })
+            {
+                return Some(v);
+            }
+        }
+    }
+
+    if source == TemperatureSource::Hottest {
+        hottest_cpu_temperature(temps)
+    } else {
+        best_cpu_average(temps)
+    }
+    .or_else(|| {
+        hottest_temperature(temps).map(|t| SelectedTemperature {
+            id: "hottest".to_string(),
+            value: t.value.0,
+            label_hint: Some("hottest"),
+        })
+    })
 }
 
-fn display_temperature_source(lang: ResolvedLanguage, sensor: Option<&TempSensor>) -> String {
+fn display_temperature_source(
+    lang: ResolvedLanguage,
+    sensor: Option<&SelectedTemperature>,
+) -> String {
     let Some(sensor) = sensor else {
         return String::new();
     };
-    if sensor.id == "cpu.die" {
+    if sensor.id == "cpu.smc.die" {
         match lang {
-            ResolvedLanguage::Ko => "CPU core 평균".to_string(),
-            ResolvedLanguage::En => "CPU core average".to_string(),
+            ResolvedLanguage::Ko => "CPU 다이".to_string(),
+            ResolvedLanguage::En => "CPU die".to_string(),
         }
-    } else if sensor.id.contains("hot") {
+    } else if sensor.id == "cpu.iohid.cpu" || sensor.id == "cpu.iohid.cpu.hot" {
+        match lang {
+            ResolvedLanguage::Ko => "CPU 다이".to_string(),
+            ResolvedLanguage::En => "CPU IOHID CPU".to_string(),
+        }
+    } else if sensor.id == "cpu.iohid.tdie" {
+        match lang {
+            ResolvedLanguage::Ko => "CPU 다이".to_string(),
+            ResolvedLanguage::En => "CPU Tdie".to_string(),
+        }
+    } else if sensor.id == "cpu.smc.aggregate" {
+        match lang {
+            ResolvedLanguage::Ko => "SMC 집계".to_string(),
+            ResolvedLanguage::En => "SMC aggregate".to_string(),
+        }
+    } else if sensor.id == "cpu.smc.summary" {
+        match lang {
+            ResolvedLanguage::Ko => "SMC 요약".to_string(),
+            ResolvedLanguage::En => "SMC summary".to_string(),
+        }
+    } else if sensor.id == "cpu.die" && sensor.label_hint != Some("hottest") {
+        match lang {
+            ResolvedLanguage::Ko => "CPU Core Average".to_string(),
+            ResolvedLanguage::En => "CPU Core Average".to_string(),
+        }
+    } else if sensor.label_hint == Some("hottest") || sensor.id.contains("hot") {
         match lang {
             ResolvedLanguage::Ko => "최고".to_string(),
             ResolvedLanguage::En => "hottest".to_string(),
         }
     } else {
-        sensor.label.clone()
+        sensor.id.clone()
     }
 }
 
 fn display_temperature_source_for_temps(
     lang: ResolvedLanguage,
     _temps: &[TempSensor],
-    sensor: Option<&TempSensor>,
+    sensor: Option<&SelectedTemperature>,
 ) -> String {
     display_temperature_source(lang, sensor)
 }
 
 fn temperature_source_label(lang: ResolvedLanguage, source: TemperatureSource) -> &'static str {
     match (lang, source) {
-        (ResolvedLanguage::Ko, TemperatureSource::CoreAverage) => "CPU core 평균",
+        (ResolvedLanguage::Ko, TemperatureSource::CoreAverage) => "CPU Core Average",
         (ResolvedLanguage::Ko, TemperatureSource::IohidTdie) => "IOHID tdie",
         (ResolvedLanguage::Ko, TemperatureSource::SmcSummary) => "SMC summary",
         (ResolvedLanguage::Ko, TemperatureSource::SmcAggregate) => "SMC aggregate",
-        (ResolvedLanguage::Ko, TemperatureSource::Hottest) => "CPU 최고",
-        (ResolvedLanguage::En, TemperatureSource::CoreAverage) => "CPU core average",
+        (ResolvedLanguage::Ko, TemperatureSource::Hottest) => "CPU Hottest",
+        (ResolvedLanguage::En, TemperatureSource::CoreAverage) => "CPU Core Average",
         (ResolvedLanguage::En, TemperatureSource::IohidTdie) => "IOHID tdie",
         (ResolvedLanguage::En, TemperatureSource::SmcSummary) => "SMC summary",
         (ResolvedLanguage::En, TemperatureSource::SmcAggregate) => "SMC aggregate",
-        (ResolvedLanguage::En, TemperatureSource::Hottest) => "CPU hottest",
+        (ResolvedLanguage::En, TemperatureSource::Hottest) => "CPU Hottest",
     }
 }
 
 fn temperature_row_label(lang: ResolvedLanguage, sensor: &TempSensor) -> String {
     match sensor.id.as_str() {
+        "cpu.smc.die" => match lang {
+            ResolvedLanguage::Ko => "CPU 다이".to_string(),
+            ResolvedLanguage::En => "CPU die".to_string(),
+        },
+        "cpu.iohid.cpu" => "CPU IOHID CPU".to_string(),
+        "cpu.iohid.cpu.hot" => "CPU IOHID hottest".to_string(),
         "cpu.die" => match lang {
-            ResolvedLanguage::Ko => "CPU 평균 · 전체 core".to_string(),
-            ResolvedLanguage::En => "CPU average · all cores".to_string(),
+            ResolvedLanguage::Ko => "CPU Core Average".to_string(),
+            ResolvedLanguage::En => "CPU Core Average".to_string(),
         },
         "cpu.die.hot" => match lang {
-            ResolvedLanguage::Ko => "CPU 최고".to_string(),
-            ResolvedLanguage::En => "CPU hottest".to_string(),
+            ResolvedLanguage::Ko => "CPU Core Hottest".to_string(),
+            ResolvedLanguage::En => "CPU Core Hottest".to_string(),
         },
         "cpu.iohid.tdie" => "CPU IOHID tdie".to_string(),
+        "cpu.iohid.tdie.hot" => "CPU IOHID tdie hottest".to_string(),
         "cpu.smc.summary" => "CPU SMC summary".to_string(),
         "cpu.smc.aggregate" => "CPU SMC aggregate".to_string(),
+        "cpu.smc.hotspot" => "CPU SMC hotspot average".to_string(),
+        "cpu.smc.hotspot.hot" => "CPU SMC hotspot hottest".to_string(),
         _ => sensor.label.clone(),
     }
 }
@@ -491,36 +711,32 @@ fn setup_detail(
 ) -> String {
     match (lang, daemon_update_needed, daemon_running) {
         (ResolvedLanguage::Ko, true, _) => format!(
-            "앱 v{} · 데몬 v{} · 팬 제어 재설치 · {}",
-            env!("CARGO_PKG_VERSION"),
+            "데몬 v{} → v{} · {}",
             daemon_version.unwrap_or("unknown"),
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION,
             daemon_reinstall_hint(lang, daemon_version)
         ),
         (ResolvedLanguage::Ko, false, true) => {
             format!(
-                "앱 v{} · 데몬 v{} 정상 · 암호 불필요",
-                env!("CARGO_PKG_VERSION"),
+                "데몬 v{} · 추가 승인 없음",
                 daemon_version.unwrap_or("unknown")
             )
         }
-        (ResolvedLanguage::Ko, false, false) => {
-            format!("v{} · 데몬 미실행", env!("CARGO_PKG_VERSION"))
-        }
+        (ResolvedLanguage::Ko, false, false) => "팬 제어 미설정 · 최초 승인 1회".to_string(),
         (ResolvedLanguage::En, true, _) => format!(
-            "app v{} · daemon v{} · reinstall fan control · {}",
-            env!("CARGO_PKG_VERSION"),
+            "daemon v{} → v{} · {}",
             daemon_version.unwrap_or("unknown"),
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION,
             daemon_reinstall_hint(lang, daemon_version)
         ),
         (ResolvedLanguage::En, false, true) => {
             format!(
-                "app v{} · daemon v{} OK · no admin prompt",
-                env!("CARGO_PKG_VERSION"),
+                "daemon v{} · no additional approval",
                 daemon_version.unwrap_or("unknown")
             )
         }
         (ResolvedLanguage::En, false, false) => {
-            format!("v{} · daemon not running", env!("CARGO_PKG_VERSION"))
+            "fan control not set up · one initial approval".to_string()
         }
     }
 }
@@ -595,6 +811,17 @@ fn active_control_mode_from_mode(mode: &str) -> &'static str {
     }
 }
 
+fn resolved_active_control_mode(mode: Option<&str>, has_manual_overrides: bool) -> &'static str {
+    let reported = mode.map(active_control_mode_from_mode).unwrap_or_default();
+    if !reported.is_empty() {
+        reported
+    } else if has_manual_overrides {
+        "hold"
+    } else {
+        "auto"
+    }
+}
+
 /// Save a hand-drawn fan curve from the Detail Window's curve editor and
 /// switch to it. `points_json` is a JSON array of `[temp_c, duty_percent]`
 /// pairs, e.g. `[[30,20],[60,50],[90,100]]`.
@@ -659,7 +886,75 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-fn single_instance_lock_path() -> PathBuf {
+fn fan_action_log_path() -> Option<PathBuf> {
+    peterfan_platform::config::path()?
+        .parent()
+        .map(|dir| dir.join("fan-actions.json"))
+}
+
+fn load_fan_action_log() {
+    let Some(path) = fan_action_log_path() else {
+        return;
+    };
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) else {
+        return;
+    };
+    *FAN_ACTION_LOG.lock().expect("fan action log poisoned") = entries
+        .into_iter()
+        .filter(|entry| entry.is_object())
+        .take(FAN_ACTION_LOG_MAX)
+        .collect();
+}
+
+fn fan_action_log_snapshot() -> Vec<serde_json::Value> {
+    FAN_ACTION_LOG
+        .lock()
+        .expect("fan action log poisoned")
+        .iter()
+        .cloned()
+        .collect()
+}
+
+fn record_fan_action(action: &str, result: &str, ok: bool) {
+    let result = result.chars().take(180).collect::<String>();
+    let mut log = FAN_ACTION_LOG.lock().expect("fan action log poisoned");
+    log.push_front(serde_json::json!({
+        "at": now_unix(),
+        "action": action,
+        "result": result,
+        "ok": ok,
+    }));
+    log.truncate(FAN_ACTION_LOG_MAX);
+    let snapshot = log.iter().cloned().collect::<Vec<_>>();
+    drop(log);
+
+    let Some(path) = fan_action_log_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(&snapshot) {
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
+fn control_action_label(cmd: &str) -> String {
+    if let Some(profile) = cmd.strip_prefix("profile:") {
+        format!("profile {profile}")
+    } else if let Some(rest) = cmd.strip_prefix("fanhold:") {
+        format!("fan {rest}")
+    } else if let Some(fan) = cmd.strip_prefix("fanauto:") {
+        format!("fan {fan} auto")
+    } else {
+        cmd.to_string()
+    }
+}
+
+fn single_instance_lock_path(mock: bool) -> PathBuf {
     #[cfg(unix)]
     let suffix = unsafe {
         // SAFETY: geteuid has no preconditions and only reads process state.
@@ -668,11 +963,14 @@ fn single_instance_lock_path() -> PathBuf {
     #[cfg(not(unix))]
     let suffix = 0u32;
 
-    std::env::temp_dir().join(format!("{SINGLE_INSTANCE_LOCK_BASENAME}.{suffix}.lock"))
+    let mode = if mock { "mock" } else { "app" };
+    std::env::temp_dir().join(format!(
+        "{SINGLE_INSTANCE_LOCK_BASENAME}.{mode}.{suffix}.lock"
+    ))
 }
 
-fn acquire_single_instance_lock() -> Result<File, String> {
-    acquire_single_instance_lock_at(&single_instance_lock_path())
+fn acquire_single_instance_lock(mock: bool) -> Result<File, String> {
+    acquire_single_instance_lock_at(&single_instance_lock_path(mock))
 }
 
 #[cfg(unix)]
@@ -743,21 +1041,18 @@ fn main() {
         std::process::exit(2);
     }
     let use_mock = args.iter().any(|a| a == "--mock");
-    let _single_instance = match acquire_single_instance_lock() {
+    let _single_instance = match acquire_single_instance_lock(use_mock) {
         Ok(lock) => lock,
         Err(e) => {
             eprintln!("PeterFan is already running ({e}).");
             return;
         }
     };
+    load_fan_action_log();
 
-    let saved = peterfan_platform::config::load().menubar;
-    let metric = args
-        .iter()
-        .position(|a| a == "--metric")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|v| MenubarMetric::parse(v))
-        .unwrap_or(saved.metric);
+    let saved_config = peterfan_platform::config::load();
+    let critical_temp_c = saved_config.critical_temp_c;
+    let saved = saved_config.menubar;
     let display = args
         .iter()
         .position(|a| a == "--display")
@@ -790,15 +1085,16 @@ fn main() {
         monitor,
         provider,
         has_battery,
-        metric,
         display,
         temperature_source,
+        critical_temp_c,
         language,
         tray: None,
         tray_menu: None,
         window: None,
         webview: None,
         popover_visible: false,
+        popover_show_at: None,
         detail_window: None,
         detail_webview: None,
         fan_hist: VecDeque::with_capacity(HIST_CAP),
@@ -807,8 +1103,14 @@ fn main() {
         temp_h: RangedHistory::new(),
         net_h: RangedHistory::new(),
         disk_io_h: RangedHistory::new(),
+        dashboard_slow_cache: DashboardSlowCache::default(),
+        next_dashboard_slow_refresh: Instant::now() + DASHBOARD_SLOW_REFRESH,
         runner_frame: 0,
         runner_cpu_pct: 0.0,
+        runner_icons: make_runner_icons(),
+        last_runner_icon: None,
+        temperature_cache: Vec::new(),
+        next_temperature_refresh: Instant::now(),
         all_temp_rows_cache: Vec::new(),
         next_all_temp_refresh: Instant::now() + ALL_TEMP_REFRESH,
         daemon_json_cache: None,
@@ -854,8 +1156,13 @@ fn main() {
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {}
             Event::WindowEvent {
                 event: WindowEvent::Focused(false),
+                window_id,
                 ..
-            } => hide_popover(&mut app),
+            } => {
+                if app.window.as_ref().is_some_and(|w| w.id() == window_id) {
+                    hide_popover(&mut app);
+                }
+            }
             // The detail window is a normal decorated window, so its red
             // close button generates this instead of destroying anything —
             // tao/winit never closes a window on its own. Hide it (not
@@ -876,6 +1183,14 @@ fn main() {
         }
 
         let now = Instant::now();
+        if app.popover_show_at.is_some_and(|at| now >= at) {
+            if let Some(w) = &app.window {
+                w.set_visible(true);
+                app.popover_visible = true;
+                defer_dashboard_io_after_open(&mut app);
+            }
+            app.popover_show_at = None;
+        }
         if let Some(at) = prewarm_popover_at {
             if now >= at {
                 if app.window.is_none() {
@@ -888,14 +1203,15 @@ fn main() {
             update(&mut app);
             next_metric_at = now + REFRESH;
         }
-        if now >= next_runner_at {
+        if runner_enabled(app.display) && now >= next_runner_at {
             animate_runner(&mut app);
             next_runner_at = now + runner_frame_interval(app.runner_cpu_pct);
         }
         let next_tick = [
             Some(next_metric_at),
-            Some(next_runner_at),
+            runner_enabled(app.display).then_some(next_runner_at),
             prewarm_popover_at,
+            app.popover_show_at,
         ]
         .into_iter()
         .flatten()
@@ -914,6 +1230,7 @@ fn main() {
                     let json = json.to_string();
                     std::thread::spawn(move || {
                         let status = save_custom_curve(provider.as_ref(), &json);
+                        record_fan_action("save custom curve", &status, status.contains("saved"));
                         *STATUS.lock().expect("status poisoned") = status;
                     });
                     refresh_after_pending = true;
@@ -927,8 +1244,20 @@ fn main() {
                 } else if c == "checkupdates" {
                     std::thread::spawn(check_for_updates_interactive);
                     refresh_after_pending = true;
-                } else if c == "toggle_login_item" {
-                    std::thread::spawn(toggle_login_item);
+                } else if c == "toggle-login-item" || c == "togglelogin" {
+                    std::thread::spawn(move || {
+                        let status = toggle_login_item();
+                        *STATUS.lock().expect("status poisoned") = status;
+                    });
+                    refresh_after_pending = true;
+                } else if c == "diagnosefan" {
+                    *STATUS.lock().expect("status poisoned") = "running fan diagnostics…".into();
+                    let provider = std::sync::Arc::clone(&app.provider);
+                    std::thread::spawn(move || {
+                        let (ok, status) = run_fan_diagnostic(provider.as_ref());
+                        record_fan_action("diagnostic", &status, ok);
+                        *STATUS.lock().expect("status poisoned") = status;
+                    });
                     refresh_after_pending = true;
                 } else if c == "ready" {
                     // The WebView may be built hidden during idle prewarm.
@@ -944,7 +1273,7 @@ fn main() {
                     let provider = std::sync::Arc::clone(&app.provider);
                     let cmd = c.clone();
                     std::thread::spawn(move || {
-                        let status = execute_control(provider.as_ref(), &cmd);
+                        let status = execute_control_logged(provider.as_ref(), &cmd);
                         *STATUS.lock().expect("status poisoned") = status;
                     });
                     refresh_after_pending = true;
@@ -958,7 +1287,6 @@ fn main() {
         // Handle context-menu item selections.
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
             let id = &ev.id;
-            let mut matched_metric: Option<MenubarMetric> = None;
             let mut matched_display: Option<MenubarDisplay> = None;
             let mut matched_temperature_source: Option<TemperatureSource> = None;
             let mut matched_language: Option<Language> = None;
@@ -970,10 +1298,6 @@ fn main() {
                     Some("rules".into())
                 } else if id == &tm.quit {
                     QUIT.store(true, Ordering::Relaxed);
-                    None
-                } else if let Some((m, _)) = tm.show_items.iter().find(|(_, item)| item.id() == id)
-                {
-                    matched_metric = Some(*m);
                     None
                 } else if let Some((d, _)) =
                     tm.display_items.iter().find(|(_, item)| item.id() == id)
@@ -1015,26 +1339,18 @@ fn main() {
             };
 
             if open_detail_requested {
+                hide_popover(&mut app);
                 open_detail_window(&mut app, target);
-            }
-            if let Some(m) = matched_metric {
-                app.metric = m;
-                if let Some(ref tm) = app.tray_menu {
-                    for (mm, item) in &tm.show_items {
-                        item.set_checked(*mm == m);
-                    }
-                }
-                save_menubar_config(app.metric, app.display);
-                update(&mut app);
             }
             if let Some(d) = matched_display {
                 app.display = d;
+                next_runner_at = Instant::now();
                 if let Some(ref tm) = app.tray_menu {
                     for (dd, item) in &tm.display_items {
                         item.set_checked(*dd == d);
                     }
                 }
-                save_menubar_config(app.metric, app.display);
+                save_menubar_display(app.display);
                 update(&mut app);
             }
             if let Some(source) = matched_temperature_source {
@@ -1086,7 +1402,7 @@ fn main() {
                 let provider = std::sync::Arc::clone(&app.provider);
                 let cmd = c.clone();
                 std::thread::spawn(move || {
-                    let status = execute_control(provider.as_ref(), &cmd);
+                    let status = execute_control_logged(provider.as_ref(), &cmd);
                     // The right-click menu has no visible status line (unlike
                     // the popover), so surface the result as a notification —
                     // otherwise a failed command (no daemon, needs root)
@@ -1107,6 +1423,14 @@ fn main() {
             } = ev
             {
                 toggle_popover(&mut app, target, rect);
+                if let Some(show_at) = app.popover_show_at {
+                    // Tray events are drained after the normal wake deadline is
+                    // calculated. Pull both the window show and first payload
+                    // forward to the 25 ms placement tick instead of waiting
+                    // for up to one full metrics interval.
+                    next_metric_at = show_at;
+                    *control_flow = ControlFlow::WaitUntil(show_at);
+                }
             }
         }
     });
@@ -1119,9 +1443,8 @@ fn help_text() -> String {
          USAGE:\n    peterfan-menubar [OPTIONS]\n\n\
          OPTIONS:\n    \
          --mock                Use simulated hardware instead of real sensors\n    \
-         --metric <cpu|memory|temp|fan|network>  What the menu-bar item tracks\n    \
          --display <number|cat|both>             How it's rendered (cat also accepts legacy graph)\n    \
-         (Both flags override the saved preference; changing them from the\n    \
+         (The flag overrides the saved preference; changing it from the\n    \
          right-click menu persists for next launch.)\n    \
          --version, -V         Print version and exit\n    \
          --help, -h            Print this help and exit",
@@ -1160,17 +1483,6 @@ fn unsupported_menubar_arg(args: &[String]) -> Option<&str> {
 
 fn build_tray(app: &mut App) {
     let s = strings(app.language.resolve());
-    // For labeling the Fan Speed % presets with their RPM equivalent — a
-    // quick read, not a control action, so it's fine to call synchronously
-    // here (same call `update()` already makes every tick).
-    let max_fan_rpm = app
-        .provider
-        .fans()
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|f| f.max_rpm)
-        .max()
-        .unwrap_or(0);
 
     // One-time setup: installs the root daemon so fan control works without
     // a terminal or repeated sudo prompts — one macOS admin-password dialog,
@@ -1203,23 +1515,6 @@ fn build_tray(app: &mut App) {
     let check_updates_item = MenuItem::new(s.check_updates, true, None);
     let quit_item = MenuItem::new(s.quit, true, None);
 
-    // "Show" — which metric the menu-bar item tracks.
-    let show_submenu = Submenu::new(s.menu_bar_shows, true);
-    let show_items: Vec<(MenubarMetric, CheckMenuItem)> = [
-        (MenubarMetric::Cpu, s.show_cpu),
-        (MenubarMetric::Memory, s.show_memory),
-        (MenubarMetric::Temp, s.show_temperature),
-        (MenubarMetric::Fan, s.show_fan),
-        (MenubarMetric::Network, s.show_network),
-    ]
-    .into_iter()
-    .map(|(m, label)| {
-        let item = CheckMenuItem::new(label, true, app.metric == m, None);
-        let _ = show_submenu.append(&item);
-        (m, item)
-    })
-    .collect();
-
     // "Display" — number only / cat only / both.
     let display_submenu = Submenu::new(s.menu_bar_style, true);
     let display_items: Vec<(MenubarDisplay, CheckMenuItem)> = [
@@ -1240,11 +1535,11 @@ fn build_tray(app: &mut App) {
     // against instead of pretending there is only one true CPU temperature.
     let temperature_source_submenu = Submenu::new(s.temperature_source, true);
     let temperature_source_items: Vec<(TemperatureSource, CheckMenuItem)> = [
+        TemperatureSource::Hottest,
         TemperatureSource::CoreAverage,
         TemperatureSource::IohidTdie,
         TemperatureSource::SmcSummary,
         TemperatureSource::SmcAggregate,
-        TemperatureSource::Hottest,
     ]
     .into_iter()
     .map(|source| {
@@ -1285,13 +1580,10 @@ fn build_tray(app: &mut App) {
     let fan_speed_presets: Vec<(String, MenuItem)> = [25u8, 50, 75, 100]
         .into_iter()
         .map(|pct| {
-            let label = if max_fan_rpm > 0 {
-                let rpm = (max_fan_rpm as f32 * pct as f32 / 100.0).round() as u32;
-                format!("{pct}%  (~{rpm} RPM)")
-            } else {
-                format!("{pct}%")
-            };
-            (format!("hold:{pct}"), MenuItem::new(label, true, None))
+            (
+                format!("hold:{pct}"),
+                MenuItem::new(format!("{pct}%"), true, None),
+            )
         })
         .collect();
     for (_, item) in &fan_speed_presets {
@@ -1320,7 +1612,6 @@ fn build_tray(app: &mut App) {
         let _ = menu.append(item);
     }
     let _ = menu.append(&PredefinedMenuItem::separator());
-    let _ = menu.append(&show_submenu);
     let _ = menu.append(&display_submenu);
     let _ = menu.append(&temperature_source_submenu);
     let _ = menu.append(&language_submenu);
@@ -1338,7 +1629,6 @@ fn build_tray(app: &mut App) {
             .map(|(name, item)| (name.clone(), item.id().clone()))
             .collect(),
         quit: quit_item.id().clone(),
-        show_items,
         display_items,
         temperature_source_items,
         fan_speed_items,
@@ -1349,10 +1639,14 @@ fn build_tray(app: &mut App) {
         language_items,
     };
 
-    match TrayIcon::new(tray_attributes(make_ring_icon(), Box::new(menu))) {
+    let initial_runner_icon = runner_enabled(app.display)
+        .then(|| runner_icon_index(app.runner_cpu_pct, app.runner_frame));
+    let initial_icon = initial_runner_icon.and_then(|index| app.runner_icons.get(index).cloned());
+    match TrayIcon::new(tray_attributes(initial_icon, Box::new(menu))) {
         Ok(tray) => {
             app.tray = Some(tray);
             app.tray_menu = Some(tray_menu);
+            app.last_runner_icon = initial_runner_icon;
         }
         Err(e) => eprintln!("failed to create menu-bar item: {e}"),
     }
@@ -1369,10 +1663,13 @@ fn click_routing() -> (bool, bool) {
     (false, true)
 }
 
-fn tray_attributes(icon: Icon, menu: Box<dyn tray_icon::menu::ContextMenu>) -> TrayIconAttributes {
+fn tray_attributes(
+    icon: Option<Icon>,
+    menu: Box<dyn tray_icon::menu::ContextMenu>,
+) -> TrayIconAttributes {
     let (menu_on_left_click, menu_on_right_click) = click_routing();
     TrayIconAttributes {
-        icon: Some(icon),
+        icon,
         menu: Some(menu),
         icon_is_template: cfg!(target_os = "macos"),
         menu_on_left_click,
@@ -1390,8 +1687,8 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
         .with_decorations(false)
         .with_resizable(false)
         .with_visible(false)
+        .with_focused(false)
         .with_always_on_top(true)
-        .with_transparent(true)
         .with_inner_size(LogicalSize::new(POPOVER_W, POPOVER_H))
         .build(target)
     {
@@ -1404,7 +1701,8 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
 
     match WebViewBuilder::new()
         .with_html(dashboard_html(app.language.resolve(), false))
-        .with_transparent(true)
+        .with_background_color(DASHBOARD_BACKGROUND)
+        .with_accept_first_mouse(true)
         .with_ipc_handler(|req| {
             let body = req.body();
             if body == "quit" {
@@ -1413,7 +1711,11 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
             } else if let Some(url) = body.strip_prefix("open:") {
                 open_external_url(url);
-            } else if body == "ready" || body == "checkupdates" || body == "toggle_login_item" {
+            } else if body == "ready"
+                || body == "checkupdates"
+                || body == "toggle-login-item"
+                || body == "togglelogin"
+            {
                 PENDING
                     .lock()
                     .expect("pending poisoned")
@@ -1460,13 +1762,12 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
     }
 }
 
-/// Opens (or, if already created, shows and focuses) the persistent detail
+/// Opens (or, if already created, shows) the persistent detail
 /// window — same dashboard content as the popover, in an ordinary decorated,
 /// resizable, user-positioned window that stays open regardless of focus.
 fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
     if let Some(w) = &app.detail_window {
         w.set_visible(true);
-        w.set_focus();
         defer_dashboard_io_after_open(app);
         return;
     }
@@ -1488,6 +1789,7 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
 
     match WebViewBuilder::new()
         .with_html(dashboard_html(app.language.resolve(), true))
+        .with_background_color(DASHBOARD_BACKGROUND)
         .with_ipc_handler(|req| {
             let body = req.body();
             // Same command surface as the popover, minus "h:" — a resizable
@@ -1499,7 +1801,11 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
             } else if let Some(url) = body.strip_prefix("open:") {
                 open_external_url(url);
-            } else if body == "ready" || body == "checkupdates" || body == "toggle_login_item" {
+            } else if body == "ready"
+                || body == "checkupdates"
+                || body == "toggle-login-item"
+                || body == "togglelogin"
+            {
                 PENDING
                     .lock()
                     .expect("pending poisoned")
@@ -1534,7 +1840,6 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
     {
         Ok(webview) => {
             window.set_visible(true);
-            window.set_focus();
             app.detail_window = Some(window);
             app.detail_webview = Some(webview);
             defer_dashboard_io_after_open(app);
@@ -1549,33 +1854,29 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
 /// genuinely exceed a short display's height. Content beyond this scrolls
 /// inside the left `.main-pane` instead of dragging the action rail along or
 /// being cut off.
-fn max_popover_height(w: &Window) -> f64 {
-    let scale = w.scale_factor();
-    let Some(monitor) = w.current_monitor() else {
-        return 900.0; // generous fallback if the display can't be queried
-    };
-    let display = monitor_bounds(&monitor);
-    let top_y = w
-        .outer_position()
-        .map(|p| p.y as f64 / scale)
-        .unwrap_or(0.0);
-    max_popover_height_for_bounds(
-        DisplayBounds {
-            x: display.x / scale,
-            y: display.y / scale,
-            width: display.width / scale,
-            height: display.height / scale,
-        },
-        top_y,
-    )
-}
-
+#[cfg(test)]
 fn max_popover_height_for_bounds(display: DisplayBounds, popover_top_y: f64) -> f64 {
     (display.bottom() - popover_top_y - 12.0).max(200.0)
 }
 
-fn popover_height_for_window(w: &Window) -> f64 {
-    POPOVER_H.min(max_popover_height(w))
+fn popover_height_for_rect(rect: Rect, scale: f64, displays: &[DisplayBounds]) -> f64 {
+    let anchor_x = rect.position.x + rect.size.width as f64;
+    let anchor_y = rect.position.y + rect.size.height as f64;
+    let display = displays
+        .iter()
+        .copied()
+        .find(|d| d.contains_point(rect.position.x, rect.position.y))
+        .or_else(|| {
+            displays
+                .iter()
+                .copied()
+                .find(|d| d.contains_point(anchor_x, anchor_y))
+        });
+    let Some(display) = display else {
+        return POPOVER_H;
+    };
+    let available = ((display.bottom() - anchor_y) / scale - 12.0).max(200.0);
+    POPOVER_H.min(available)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1645,9 +1946,12 @@ fn popover_position_for_rect(
 }
 
 fn toggle_popover(app: &mut App, target: &EventLoopWindowTarget<()>, rect: Rect) {
-    if app.popover_visible {
+    if app.popover_visible || app.popover_show_at.is_some() {
         hide_popover(app);
         return;
+    }
+    if let Some(detail) = &app.detail_window {
+        detail.set_visible(false);
     }
     if app.window.is_none() {
         build_popover(app, target);
@@ -1659,18 +1963,21 @@ fn toggle_popover(app: &mut App, target: &EventLoopWindowTarget<()>, rect: Rect)
     // how native menu extras (Control Center, Wi-Fi, …) sit right under the
     // icon instead of floating below it.
     let displays: Vec<_> = w.available_monitors().map(|m| monitor_bounds(&m)).collect();
-    w.set_outer_position(popover_position_for_rect(rect, win_w, &displays));
     // Snap to the product-defined fixed height before showing. On very short
     // displays we cap to the available area; the left pane owns scrolling.
-    w.set_inner_size(LogicalSize::new(POPOVER_W, popover_height_for_window(w)));
-    // No open animation — it should appear in one frame, not fade/scale in.
-    w.set_visible(true);
-    w.set_focus();
-    app.popover_visible = true;
-    defer_dashboard_io_after_open(app);
+    let height = popover_height_for_rect(rect, scale, &displays);
+    let position = popover_position_for_rect(rect, win_w, &displays);
+    w.set_inner_size(LogicalSize::new(POPOVER_W, height));
+    w.set_outer_position(position);
+    // macOS can apply size/position asynchronously. Showing on the next short
+    // event-loop tick prevents the user from seeing the prewarmed hidden
+    // window flash at its old/default location and then slide into place.
+    w.set_outer_position(position);
+    app.popover_show_at = Some(Instant::now() + POPOVER_SHOW_DELAY);
 }
 
 fn hide_popover(app: &mut App) {
+    app.popover_show_at = None;
     if let Some(w) = &app.window {
         w.set_visible(false);
     }
@@ -1679,8 +1986,107 @@ fn hide_popover(app: &mut App) {
 
 fn defer_dashboard_io_after_open(app: &mut App) {
     let now = Instant::now();
+    app.next_dashboard_slow_refresh = now + DASHBOARD_SLOW_OPEN_GRACE;
     app.next_daemon_refresh = now + DASHBOARD_OPEN_GRACE;
     app.next_all_temp_refresh = now + DASHBOARD_OPEN_GRACE + Duration::from_millis(500);
+}
+
+fn default_curve_points() -> Vec<[f32; 2]> {
+    Profile::Balanced
+        .default_curve()
+        .points()
+        .iter()
+        .map(|p| [p.temp_c, p.duty_percent as f32])
+        .collect()
+}
+
+fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
+    let disks = app.monitor.disks();
+    let disk = disks.first();
+    let disk_io_present = disk.is_some_and(|d| d.read_bytes_per_sec + d.write_bytes_per_sec > 0.0);
+    let disk_io_sub = disk
+        .map(|d| {
+            format!(
+                "↓ {}/s   ↑ {}/s",
+                bytes(d.read_bytes_per_sec as u64),
+                bytes(d.write_bytes_per_sec as u64)
+            )
+        })
+        .unwrap_or_default();
+    let disk_io_rate = disk
+        .map(|d| (d.read_bytes_per_sec + d.write_bytes_per_sec) as f32)
+        .unwrap_or(0.0);
+
+    let procs: Vec<_> = app
+        .monitor
+        .processes(5, proc_sort)
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "name": p.name,
+                "cpu": format!("{:.1}%", p.cpu_percent),
+                "mem": bytes(p.memory),
+                "pid": p.pid,
+            })
+        })
+        .collect();
+
+    let battery = if app.has_battery {
+        app.monitor.battery()
+    } else {
+        None
+    };
+    let (batt_present, batt_pct, batt_text, batt_sub) = battery
+        .as_ref()
+        .map(|b| {
+            let mut sub = b.state.clone();
+            if let Some(c) = b.cycle_count {
+                sub.push_str(&format!("   {c} cycles"));
+            }
+            if let Some(h) = b.health_percent {
+                sub.push_str(&format!("   health {h:.0}%"));
+            }
+            (
+                true,
+                b.charge_percent,
+                format!("{:.0}%", b.charge_percent),
+                sub,
+            )
+        })
+        .unwrap_or_else(|| (false, 0.0, String::new(), String::new()));
+
+    let curve_points = peterfan_platform::config::load()
+        .custom_curve
+        .and_then(|c| c.to_fan_curve())
+        .map(|curve| {
+            curve
+                .points()
+                .iter()
+                .map(|p| [p.temp_c, p.duty_percent as f32])
+                .collect()
+        })
+        .unwrap_or_else(default_curve_points);
+
+    app.dashboard_slow_cache = DashboardSlowCache {
+        proc_sort,
+        procs,
+        disk_pct: disk.map(|d| d.used_percent).unwrap_or(0.0),
+        disk_text: disk
+            .map(|d| format!("{:.1}%", d.used_percent))
+            .unwrap_or_default(),
+        disk_sub: disk
+            .map(|d| format!("{} / {}   {}", bytes(d.used), bytes(d.total), d.mount))
+            .unwrap_or_default(),
+        disk_io_present,
+        disk_io_sub,
+        disk_io_rate,
+        power_w: app.provider.power_watts(),
+        batt_present,
+        batt_pct,
+        batt_text,
+        batt_sub,
+        curve_points,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -1689,29 +2095,48 @@ fn defer_dashboard_io_after_open(app: &mut App) {
 
 fn update(app: &mut App) {
     let now = Instant::now();
-    app.monitor.refresh();
-    let cpu = app.monitor.cpu();
+    app.monitor.refresh_quick();
     let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
     let dashboard_visible = app.popover_visible || detail_visible;
+    let proc_sort = if PROC_SORT.load(Ordering::Relaxed) == 1 {
+        ProcSort::Memory
+    } else {
+        ProcSort::Cpu
+    };
+    let refresh_slow_metrics = dashboard_visible
+        && (now >= app.next_dashboard_slow_refresh
+            || app.dashboard_slow_cache.proc_sort != proc_sort);
+    if refresh_slow_metrics {
+        app.monitor.refresh_slow();
+    }
+    let cpu = app.monitor.cpu();
     // Gathered unconditionally (cheap — the underlying sysinfo/provider state
     // was already refreshed/held open) so the rolling history stays populated
     // even while the popover is closed and the runner icon keeps moving.
     let mem = app.monitor.memory();
     let nets = app.monitor.networks();
-    let read_temps = dashboard_visible || matches!(app.metric, MenubarMetric::Temp);
-    let read_fans = dashboard_visible || matches!(app.metric, MenubarMetric::Fan);
-    let temps = if read_temps {
-        app.provider.temperatures().unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let read_fans = dashboard_visible;
+    // CPU temperatures are much more expensive than sysinfo counters because
+    // they cross SMC and IOHID. A two-second cache keeps the headline current
+    // without making an idle menu-bar utility poll hardware every second.
+    if app.temperature_cache.is_empty() || now >= app.next_temperature_refresh {
+        app.temperature_cache = app.provider.temperatures().unwrap_or_default();
+        app.next_temperature_refresh = now + TEMPERATURE_REFRESH;
+    }
+    let temps = app.temperature_cache.clone();
     let fans = if read_fans {
         app.provider.fans().unwrap_or_default()
     } else {
         Vec::new()
     };
-    let display_temp = primary_menu_temperature(&temps, app.temperature_source).map(|t| t.value.0);
+    let display_temp = primary_menu_temperature(&temps, TemperatureSource::CoreAverage)
+        .map(|t| t.value)
+        .or_else(|| representative_temperature_c(&temps));
     let hottest = hottest_temperature_c(&temps);
+    let core_hottest = temps
+        .iter()
+        .find(|temp| temp.id == "cpu.die.hot")
+        .map(|temp| temp.value.0);
     let fastest_rpm = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
     let fastest_pct = fans
         .iter()
@@ -1742,52 +2167,23 @@ fn update(app: &mut App) {
     app.net_h.push((rx + tx) as f32);
     app.runner_cpu_pct = cpu.usage_percent;
 
-    // Menu-bar item: number, cat, or both, tracking whichever metric the
-    // user picked from the right-click menu (persisted across relaunches).
+    // Menu-bar item: keep it calm and literal. The top bar shows only the CPU
+    // Core Average temperature; richer metrics live inside the popover.
+    apply_runner_icon(app);
     if let Some(tray) = &app.tray {
         // Fixed-width formatting throughout: a menu-bar item that changes
         // width every tick (e.g. "9.5%" → "100.0%") shoves every icon to its
         // left back and forth, which reads as the whole menu bar jittering.
         // Padding to a constant character count keeps the item's width
         // (and everything to its left) stable regardless of the value.
-        let title = match app.metric {
-            MenubarMetric::Cpu => format!("{:>5.1}%", cpu.usage_percent),
-            MenubarMetric::Memory => format!("{:>5.1}%", mem.used_percent),
-            MenubarMetric::Temp => {
-                if let Some(temp) = display_temp.filter(|t| *t > 0.0) {
-                    format!("{temp:>3.0}°C")
-                } else {
-                    format!("{:>5.1}%", cpu.usage_percent)
-                }
-            }
-            MenubarMetric::Fan => {
-                if fastest_rpm > 0 {
-                    format!("{fastest_rpm:>5} RPM")
-                } else {
-                    format!("{:>5.1}%", cpu.usage_percent)
-                }
-            }
-            MenubarMetric::Network => {
-                format!("↓{:>8}/s", bytes(rx as u64))
-            }
+        let title = if let Some(temp) = display_temp.filter(|t| *t > 0.0) {
+            format!("{temp:>3.0}°C")
+        } else {
+            " --°C".to_string()
         };
 
-        let runner_icon = menubar_runner_icon(cpu.usage_percent, app.runner_frame);
-        match app.display {
-            MenubarDisplay::Number => {
-                let _ = tray.set_icon_with_as_template(Some(runner_icon), false);
-                set_menubar_text(tray, &title);
-            }
-            MenubarDisplay::Graph => {
-                let _ = tray.set_icon_with_as_template(Some(runner_icon), false);
-                set_menubar_text(tray, "");
-            }
-            MenubarDisplay::Both => {
-                let _ = tray.set_icon_with_as_template(Some(runner_icon), false);
-                set_menubar_text(tray, &title);
-            }
-        }
-
+        let show_number = matches!(app.display, MenubarDisplay::Number | MenubarDisplay::Both);
+        set_menubar_text(tray, if show_number { &title } else { "" });
         // A quick-glance native OS tooltip on hover — the same "see
         // everything without clicking" convenience iStat Menus' menu-bar
         // items offer, independent of whichever single metric the title/icon
@@ -1824,59 +2220,27 @@ fn update(app: &mut App) {
         return;
     }
 
-    let disks = app.monitor.disks();
-    let battery = if app.has_battery {
-        app.monitor.battery()
-    } else {
-        None
-    };
-    let power = app.provider.power_watts();
+    if refresh_slow_metrics {
+        refresh_dashboard_slow_cache(app, proc_sort);
+        app.next_dashboard_slow_refresh = now + DASHBOARD_SLOW_REFRESH;
+    }
     let ghz = cpu.frequency_mhz as f64 / 1000.0;
     let load_str = cpu
         .load_avg
         .map(|l| format!("load {:.2} {:.2} {:.2}", l.one, l.five, l.fifteen))
         .unwrap_or_default();
-    let disk = disks.first();
-    let disk_io_present = disk.is_some_and(|d| d.read_bytes_per_sec + d.write_bytes_per_sec > 0.0);
-    let disk_io_sub = disk
-        .map(|d| {
-            format!(
-                "↓ {}/s   ↑ {}/s",
-                bytes(d.read_bytes_per_sec as u64),
-                bytes(d.write_bytes_per_sec as u64)
-            )
-        })
-        .unwrap_or_default();
-    let disk_io_rate = disk
-        .map(|d| (d.read_bytes_per_sec + d.write_bytes_per_sec) as f32)
-        .unwrap_or(0.0);
-    app.disk_io_h.push(disk_io_rate);
-
-    // Top 5 processes — "what's eating my Mac," sortable by CPU or memory
-    // (toggle in the popover; defaults to CPU).
-    let proc_sort = if PROC_SORT.load(Ordering::Relaxed) == 1 {
-        ProcSort::Memory
-    } else {
-        ProcSort::Cpu
-    };
-    let proc_rows: Vec<_> = app
-        .monitor
-        .processes(5, proc_sort)
-        .iter()
-        .map(|p| {
-            serde_json::json!({
-                "name": p.name,
-                "cpu": format!("{:.1}%", p.cpu_percent),
-                "mem": bytes(p.memory),
-                "pid": p.pid,
-            })
-        })
-        .collect();
+    app.disk_io_h.push(app.dashboard_slow_cache.disk_io_rate);
 
     // Temperatures: CPU average is the headline users compare with iStat/Stats;
     // the hottest sensor is still listed below and remains the fan-control input.
-    let display_temp = primary_menu_temperature(&temps, app.temperature_source);
-    let display_temp_value = display_temp.map(|t| t.value.0);
+    let selected_temp = primary_menu_temperature(&temps, app.temperature_source).or_else(|| {
+        representative_temperature_c(&temps).map(|value| SelectedTemperature {
+            id: "cpu.die".to_string(),
+            value,
+            label_hint: None,
+        })
+    });
+    let display_temp_value = selected_temp.as_ref().map(|t| t.value);
     let temp_rows: Vec<_> = temps
         .iter()
         .map(|t| {
@@ -1924,24 +2288,6 @@ fn update(app: &mut App) {
             .as_deref()
             .is_some_and(peterfan_platform::daemon_update_required);
     let daemon_usable = daemon_running && daemon_control_usable(daemon_version.as_deref());
-    let active_profile = if daemon_usable {
-        daemon_json
-            .as_ref()
-            .and_then(|v| v.get("mode").and_then(|m| m.as_str()))
-            .and_then(active_profile_from_mode)
-            .unwrap_or_default()
-    } else {
-        ""
-    };
-    let active_control_mode = if daemon_usable {
-        daemon_json
-            .as_ref()
-            .and_then(|v| v.get("mode").and_then(|m| m.as_str()))
-            .map(active_control_mode_from_mode)
-            .unwrap_or_default()
-    } else {
-        ""
-    };
     // Without a daemon to ask, fall back to the local shadow state that
     // `apply_local` maintains for its one-shot direct writes.
     let fan_overrides = if daemon_usable {
@@ -1953,6 +2299,17 @@ fn update(app: &mut App) {
     } else {
         local_fan_overrides()
     };
+    // Compatibility controls whether we can trust the daemon for writes and
+    // detailed cached state. Its mode string is still safe read-only state,
+    // so an older daemon reporting `auto` must keep Auto selected in the UI.
+    let reported_mode = daemon_json
+        .as_ref()
+        .and_then(|v| v.get("mode").and_then(|m| m.as_str()));
+    let active_profile = reported_mode
+        .and_then(active_profile_from_mode)
+        .unwrap_or_default();
+    let active_control_mode =
+        resolved_active_control_mode(reported_mode, !fan_overrides.is_empty());
     let fan_rows: Vec<_> = fans
         .iter()
         .map(|f| {
@@ -1987,17 +2344,7 @@ fn update(app: &mut App) {
         STATUS.lock().expect("status poisoned").clone()
     };
     let chart_range = ChartRange::from_u8(CHART_RANGE.load(Ordering::Relaxed));
-    // Seeds the Detail Window's curve editor: the user's saved custom curve
-    // if there is one, otherwise Balanced's points as a reasonable starting
-    // shape to tweak rather than an empty canvas.
-    let curve_points: Vec<[f32; 2]> = peterfan_platform::config::load()
-        .custom_curve
-        .and_then(|c| c.to_fan_curve())
-        .unwrap_or_else(|| Profile::Balanced.default_curve())
-        .points()
-        .iter()
-        .map(|p| [p.temp_c, p.duty_percent as f32])
-        .collect();
+    let (daemon_binary_installed, daemon_path, launch_daemon_installed) = daemon_install_metadata();
 
     let payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
@@ -2006,7 +2353,10 @@ fn update(app: &mut App) {
             "{:.1} GHz   {}{}",
             ghz,
             load_str,
-            power.map(|w| format!("   {w:.1} W")).unwrap_or_default()
+            app.dashboard_slow_cache
+                .power_w
+                .map(|w| format!("   {w:.1} W"))
+                .unwrap_or_default()
         ),
         "cores": &cpu.per_core,
         "mem_pct": mem.used_percent,
@@ -2015,30 +2365,29 @@ fn update(app: &mut App) {
             "{} / {}   swap {} / {}",
             bytes(mem.used), bytes(mem.total), bytes(mem.swap_used), bytes(mem.swap_total)
         ),
-        "disk_pct": disk.map(|d| d.used_percent).unwrap_or(0.0),
-        "disk_text": disk.map(|d| format!("{:.1}%", d.used_percent)).unwrap_or_default(),
-        "disk_sub": disk.map(|d| format!("{} / {}   {}", bytes(d.used), bytes(d.total), d.mount)).unwrap_or_default(),
-        "disk_io_present": disk_io_present,
-        "disk_io_sub": disk_io_sub,
-        "procs": proc_rows,
+        "disk_pct": app.dashboard_slow_cache.disk_pct,
+        "disk_text": &app.dashboard_slow_cache.disk_text,
+        "disk_sub": &app.dashboard_slow_cache.disk_sub,
+        "disk_io_present": app.dashboard_slow_cache.disk_io_present,
+        "disk_io_sub": &app.dashboard_slow_cache.disk_io_sub,
+        "procs": &app.dashboard_slow_cache.procs,
         "proc_sort": if matches!(proc_sort, ProcSort::Memory) { "mem" } else { "cpu" },
         "temp_present": display_temp_value.is_some(),
         "temp_pct": display_temp_value.unwrap_or(0.0),
         "temp_text": display_temp_value.map(|t| format!("{t:.0}°C")).unwrap_or_default(),
         "temp_cls": display_temp_value.map(|t| temp_cls(Celsius(t))).unwrap_or("g"),
-        "temp_source": display_temperature_source_for_temps(app.language.resolve(), &temps, display_temp),
+        "temp_source": display_temperature_source_for_temps(
+            app.language.resolve(),
+            &temps,
+            selected_temp.as_ref()
+        ),
         "temps": temp_rows,
         "all_temps": &app.all_temp_rows_cache,
         "fans": fan_rows,
-        "batt_present": battery.is_some(),
-        "batt_pct": battery.as_ref().map(|b| b.charge_percent).unwrap_or(0.0),
-        "batt_text": battery.as_ref().map(|b| format!("{:.0}%", b.charge_percent)).unwrap_or_default(),
-        "batt_sub": battery.as_ref().map(|b| {
-            let mut s = b.state.clone();
-            if let Some(c) = b.cycle_count { s.push_str(&format!("   {c} cycles")); }
-            if let Some(h) = b.health_percent { s.push_str(&format!("   health {h:.0}%")); }
-            s
-        }).unwrap_or_default(),
+        "batt_present": app.dashboard_slow_cache.batt_present,
+        "batt_pct": app.dashboard_slow_cache.batt_pct,
+        "batt_text": &app.dashboard_slow_cache.batt_text,
+        "batt_sub": &app.dashboard_slow_cache.batt_sub,
         "network_count": nets.len(),
         "network_active": nets.iter().any(|n| n.ip.is_some() || n.rx_rate > 0.0 || n.tx_rate > 0.0),
         "net_sub": format!("↓ {}/s     ↑ {}/s", bytes(rx as u64), bytes(tx as u64)),
@@ -2055,17 +2404,27 @@ fn update(app: &mut App) {
         "daemon_version": daemon_version.clone(),
         "daemon_required_version": peterfan_platform::MIN_REQUIRED_DAEMON_VERSION,
         "daemon_update_needed": daemon_update_needed,
+        "daemon_binary_installed": daemon_binary_installed,
+        "daemon_path": daemon_path,
+        "launch_daemon_installed": launch_daemon_installed,
+        "team_id": peterfan_platform::updater::EXPECTED_TEAM_ID,
+        "login_item_installed": login_item_installed(),
+        "login_item_supported": login_item_supported(),
         "active_profile": active_profile,
         "active_control_mode": active_control_mode,
         "fan_setup_needed": (!daemon_running || daemon_update_needed) && can_control,
-        "login_item_installed": peterfan_platform::login_item::is_installed(),
         "fan_count": fans.len(),
         "controllable_fan_count": fans.iter().filter(|f| f.controllable).count(),
+        "fan_curve_input_temp_c": display_temp,
+        "fan_core_hottest_temp_c": core_hottest,
+        "fan_safety_temp_c": hottest,
+        "fan_critical_temp_c": app.critical_temp_c,
+        "fan_action_log": fan_action_log_snapshot(),
         "app_version": env!("CARGO_PKG_VERSION"),
         "setup_tone": setup_tone(!daemon_st.is_empty(), daemon_update_needed),
         "setup_title": setup_title(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed),
         "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, daemon_version.as_deref()),
-        "curve_points": curve_points,
+        "curve_points": &app.dashboard_slow_cache.curve_points,
         "last_cmd_status": STATUS.lock().expect("status poisoned").clone(),
     });
     let script = format!(
@@ -2084,17 +2443,11 @@ fn update(app: &mut App) {
 }
 
 fn animate_runner(app: &mut App) {
-    app.runner_frame = app
-        .runner_frame
-        .wrapping_add(runner_frame_step(app.runner_cpu_pct));
-    if let Some(tray) = &app.tray {
-        let icon = menubar_runner_icon(app.runner_cpu_pct, app.runner_frame);
-        match app.display {
-            MenubarDisplay::Number | MenubarDisplay::Graph | MenubarDisplay::Both => {
-                let _ = tray.set_icon_with_as_template(Some(icon), false);
-            }
-        }
+    if !runner_enabled(app.display) {
+        return;
     }
+    app.runner_frame = app.runner_frame.wrapping_add(1);
+    apply_runner_icon(app);
 }
 
 /// Single daemon IPC round-trip for everything the popover needs per tick —
@@ -2136,20 +2489,80 @@ fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
     };
 
     #[cfg(unix)]
-    if daemon_control_usable(cached_installed_daemon_version().as_deref()) {
-        if let Some(mut stream) = peterfan_platform::ipc::connect() {
-            use std::io::{Read, Write};
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-            if stream.write_all(line.as_bytes()).is_ok() {
-                let mut buf = [0u8; 96];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let reply = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-                return format!("daemon: {}", if reply.is_empty() { "ok" } else { &reply });
-            }
+    if let Some(mut stream) = peterfan_platform::ipc::connect() {
+        use std::io::{Read, Write};
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+        if stream.write_all(line.as_bytes()).is_ok() {
+            let mut buf = [0u8; 96];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let reply = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+            return format!("daemon: {}", if reply.is_empty() { "ok" } else { &reply });
         }
     }
 
     apply_local(provider, cmd)
+}
+
+fn execute_control_logged(provider: &dyn HardwareProvider, cmd: &str) -> String {
+    let result = execute_control(provider, cmd);
+    record_fan_action(
+        &control_action_label(cmd),
+        &result,
+        control_result_is_ok(&result),
+    );
+    result
+}
+
+fn format_fan_diagnostic(
+    fan_count: usize,
+    controllable_count: usize,
+    average_c: Option<f32>,
+    safety_c: Option<f32>,
+    critical_c: f32,
+    daemon_version: Option<&str>,
+    daemon_reachable: bool,
+) -> (bool, String) {
+    let daemon_update = daemon_version.is_some_and(peterfan_platform::daemon_update_required);
+    let daemon = match (daemon_reachable, daemon_version) {
+        (true, Some(version)) if daemon_update => format!("daemon v{version} needs update"),
+        (true, Some(version)) => format!("daemon v{version} ready"),
+        (true, None) => "daemon version unknown".to_string(),
+        (false, _) => "daemon not running".to_string(),
+    };
+    let temp = |value: Option<f32>| {
+        value
+            .map(|value| format!("{value:.0}°C"))
+            .unwrap_or_else(|| "—".to_string())
+    };
+    let ok = fan_count > 0
+        && controllable_count > 0
+        && average_c.is_some()
+        && daemon_reachable
+        && !daemon_update;
+    (
+        ok,
+        format!(
+            "diagnostic: fans {controllable_count}/{fan_count}, CPU avg {}, safety {}, limit {critical_c:.0}°C, {daemon}",
+            temp(average_c),
+            temp(safety_c),
+        ),
+    )
+}
+
+fn run_fan_diagnostic(provider: &dyn HardwareProvider) -> (bool, String) {
+    let temps = provider.temperatures().unwrap_or_default();
+    let fans = provider.fans().unwrap_or_default();
+    let controllable_count = fans.iter().filter(|fan| fan.controllable).count();
+    let config = peterfan_platform::config::load();
+    format_fan_diagnostic(
+        fans.len(),
+        controllable_count,
+        representative_temperature_c(&temps),
+        hottest_temperature_c(&temps),
+        config.critical_temp_c,
+        peterfan_platform::installed_daemon_version().as_deref(),
+        peterfan_platform::daemon_reachable(),
+    )
 }
 
 /// Apply a control action directly via the hardware provider (needs privileges).
@@ -2302,6 +2715,75 @@ fn control_result_is_ok(result: &str) -> bool {
     result.contains("applied")
 }
 
+#[cfg(target_os = "macos")]
+fn login_item_installed() -> bool {
+    peterfan_platform::login_item::is_installed()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn login_item_installed() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn login_item_supported() -> bool {
+    true
+}
+
+#[cfg(not(target_os = "macos"))]
+fn login_item_supported() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn daemon_install_metadata() -> (bool, &'static str, bool) {
+    let binary = peterfan_platform::daemon_install::DAEMON_BIN;
+    let plist = peterfan_platform::daemon_install::DAEMON_PLIST;
+    (
+        Path::new(binary).is_file(),
+        binary,
+        Path::new(plist).is_file(),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn daemon_install_metadata() -> (bool, &'static str, bool) {
+    (false, "", false)
+}
+
+fn toggle_login_item() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        if LOGIN_ITEM_TOGGLE_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return "login item already updating".into();
+        }
+
+        let result = if peterfan_platform::login_item::is_installed() {
+            match peterfan_platform::login_item::remove() {
+                Ok(true) => "startup disabled".to_string(),
+                Ok(false) => "startup already disabled".to_string(),
+                Err(e) => format!("login item disable failed: {e}"),
+            }
+        } else {
+            match peterfan_platform::login_item::install(None, "temp") {
+                Ok((_bin, _plist)) => "startup enabled".to_string(),
+                Err(e) => format!("login item enable failed: {e}"),
+            }
+        };
+
+        LOGIN_ITEM_TOGGLE_IN_FLIGHT.store(false, Ordering::SeqCst);
+        result
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        "startup toggle is not available on this platform".to_string()
+    }
+}
+
 /// Send SIGTERM to a process by PID, from the "×" button on a Top Processes
 /// row (confirmed client-side first). No elevated privileges are used or
 /// needed — the OS enforces the same rule it always does for `kill(2)`: this
@@ -2406,6 +2888,16 @@ fn install_fan_control() {
         Err(e) => (false, e),
     };
     INSTALL_FAN_CONTROL_IN_FLIGHT.store(false, Ordering::SeqCst);
+    record_fan_action(
+        if updating_existing {
+            "reinstall fan control"
+        } else {
+            "enable fan control"
+        },
+        &message,
+        ok,
+    );
+    *STATUS.lock().expect("status poisoned") = message.clone();
     notify_control_result(
         if updating_existing {
             "Reinstall Fan Control"
@@ -2617,26 +3109,6 @@ fn check_for_updates_interactive() {
 #[cfg(not(target_os = "macos"))]
 fn check_for_updates_interactive() {}
 
-#[cfg(target_os = "macos")]
-fn toggle_login_item() {
-    let status = if peterfan_platform::login_item::is_installed() {
-        match peterfan_platform::login_item::remove() {
-            Ok(true) => "launch at login disabled".to_string(),
-            Ok(false) => "launch at login was already disabled".to_string(),
-            Err(err) => format!("launch at login failed: {err}"),
-        }
-    } else {
-        match peterfan_platform::login_item::install(None, "cpu") {
-            Ok((bin, _)) => format!("launch at login enabled: {}", bin.display()),
-            Err(err) => format!("launch at login failed: {err}"),
-        }
-    };
-    *STATUS.lock().expect("status poisoned") = status;
-}
-
-#[cfg(not(target_os = "macos"))]
-fn toggle_login_item() {}
-
 /// Ask whether to install `release` now. "Update Now" downloads, extracts,
 /// and queues a detached script that replaces the running `.app` bundle and
 /// relaunches once this process quits — see
@@ -2727,15 +3199,6 @@ fn to_vec(hist: &VecDeque<f32>) -> Vec<f32> {
     hist.iter().copied().collect()
 }
 
-fn runner_frame_step(cpu_pct: f32) -> u8 {
-    match cpu_pct.clamp(0.0, 100.0) {
-        x if x < 20.0 => 1,
-        x if x < 50.0 => 2,
-        x if x < 80.0 => 3,
-        _ => 4,
-    }
-}
-
 fn runner_frame_interval(cpu_pct: f32) -> Duration {
     let pct = cpu_pct.clamp(0.0, 100.0);
     let min_ms = RUNNER_MIN_INTERVAL.as_millis() as f32;
@@ -2744,6 +3207,46 @@ fn runner_frame_interval(cpu_pct: f32) -> Duration {
     Duration::from_millis(ms.round() as u64)
 }
 
+fn runner_enabled(display: MenubarDisplay) -> bool {
+    matches!(display, MenubarDisplay::Graph | MenubarDisplay::Both)
+}
+
+fn runner_load_band(cpu_pct: f32) -> usize {
+    match cpu_pct.clamp(0.0, 100.0) {
+        x if x < 20.0 => 0,
+        x if x < 55.0 => 1,
+        x if x < 80.0 => 2,
+        _ => 3,
+    }
+}
+
+fn runner_icon_index(cpu_pct: f32, frame: u8) -> usize {
+    runner_load_band(cpu_pct) * 4 + usize::from(frame % 4)
+}
+
+fn make_runner_icons() -> Vec<Icon> {
+    [0.0, 30.0, 65.0, 90.0]
+        .into_iter()
+        .flat_map(|cpu| (0..4).map(move |frame| make_runner_icon(cpu, frame)))
+        .collect()
+}
+
+fn apply_runner_icon(app: &mut App) {
+    let desired = runner_enabled(app.display)
+        .then(|| runner_icon_index(app.runner_cpu_pct, app.runner_frame));
+    if desired == app.last_runner_icon {
+        return;
+    }
+
+    let icon = desired.and_then(|index| app.runner_icons.get(index).cloned());
+    if let Some(tray) = &app.tray {
+        if tray.set_icon_with_as_template(icon, false).is_ok() {
+            app.last_runner_icon = desired;
+        }
+    }
+}
+
+#[cfg(test)]
 fn menubar_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
     make_runner_icon(cpu_pct, frame)
 }
@@ -2753,19 +3256,19 @@ fn make_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
     Icon::from_rgba(rgba, 32, 32).expect("valid icon")
 }
 
-fn make_cat_runner_rgba(_cpu_pct: f32, _frame: u8) -> Vec<u8> {
+fn make_cat_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
     const W: u32 = 32;
     const H: u32 = 32;
     let mut rgba = vec![0u8; (W * H * 4) as usize];
 
-    let (r, g, b) = match _cpu_pct.clamp(0.0, 100.0) {
+    let (r, g, b) = match cpu_pct.clamp(0.0, 100.0) {
         x if x < 20.0 => (91u8, 157u8, 255u8), // calm blue
         x if x < 55.0 => (48u8, 209u8, 88u8),  // green
         x if x < 80.0 => (255u8, 214u8, 10u8), // yellow
         _ => (255u8, 69u8, 58u8),              // red
     };
 
-    let phase = _frame % 4;
+    let phase = frame % 4;
     let stride = match phase {
         0 => -2.4,
         1 => 1.8,
@@ -3008,33 +3511,6 @@ fn blend_pixel(rgba: &mut [u8], w: u32, x: u32, y: u32, color: (u8, u8, u8, u8),
     }
 }
 
-fn make_ring_icon() -> Icon {
-    const W: u32 = 32;
-    const H: u32 = 32;
-    let (cx, cy) = (15.5_f32, 15.5_f32);
-    let (r_out, r_in) = (14.0_f32, 6.5_f32);
-    let mut rgba = vec![0u8; (W * H * 4) as usize];
-    for y in 0..H {
-        for x in 0..W {
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            let d = (dx * dx + dy * dy).sqrt();
-            let alpha = if d > r_out + 0.5 || d < r_in - 0.5 {
-                0.0
-            } else if d > r_out - 0.5 {
-                (r_out + 0.5 - d).clamp(0.0, 1.0)
-            } else if d < r_in + 0.5 {
-                (d - (r_in - 0.5)).clamp(0.0, 1.0)
-            } else {
-                1.0
-            };
-            let idx = ((y * W + x) * 4) as usize;
-            rgba[idx + 3] = (alpha * 255.0) as u8;
-        }
-    }
-    Icon::from_rgba(rgba, W, H).expect("valid icon")
-}
-
 // ---------------------------------------------------------------------------
 // Popover dashboard (self-contained HTML/CSS/JS).
 // ---------------------------------------------------------------------------
@@ -3071,8 +3547,8 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Settings<", ">설정<")
             .replace(">General Settings<", ">일반 설정<")
             .replace(">App Preferences<", ">앱 설정<")
-            .replace(">Launch at Login<", ">시작 시 자동 실행<")
             .replace(">Fan Control Health<", ">팬 제어 상태<")
+            .replace(">Technical details<", ">기술 정보<")
             .replace(">Hardware Availability<", ">하드웨어 감지 상태<")
             .replace(">Daemon<", ">데몬<")
             .replace(">Control Path<", ">제어 경로<")
@@ -3093,6 +3569,14 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace("Open Detailed Window…", "상세 창 열기…")
             .replace(">Quit PeterFan<", ">PeterFan 종료<")
             .replace(">Fan Curve<", ">팬 커브<")
+            .replace(">Curve Input<", ">커브 입력<")
+            .replace(">Core Hottest<", ">코어 최고<")
+            .replace(">Safety Hottest<", ">안전 최고<")
+            .replace(">Critical Limit<", ">임계값<")
+            .replace(">Helper<", ">도우미<")
+            .replace(">Recent Fan Actions<", ">최근 팬 제어 이력<")
+            .replace(">Run Diagnostics<", ">진단 실행<")
+            .replace(">No fan actions yet<", ">팬 제어 이력 없음<")
             .replace(">Detail<", ">상세<")
             .replace(">Updates<", ">업데이트<")
             .replace(">More<", ">더보기<")
@@ -3117,10 +3601,9 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
                 "Open the full dashboard when you need more room.",
                 "더 넓은 화면이 필요할 때 전체 대시보드를 엽니다.",
             )
-            .replace(
-                "Start PeterFan automatically when you sign in to this Mac.",
-                "이 Mac에 로그인하면 PeterFan을 자동으로 시작합니다.",
-            )
+            .replace(">Startup<", ">시작 설정<")
+            .replace("Start on login", "Run on startup")
+            .replace("Run PeterFan automatically on startup.", "부팅 시 PeterFan을 자동으로 실행합니다.")
             .replace(">Selected point<", ">선택한 점<")
             .replace(">Reset<", ">초기화<")
             .replace(">Remove Point<", ">점 삭제<")
@@ -3138,36 +3621,33 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
 
 const DASHBOARD_HTML_EN: &str = r##"<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">
 <style>
-:root{--g:#30d158;--y:#ffd60a;--r:#ff453a;--accent:#5b9dff;--text:#f4f6fa;--dim:#7f8896;--line:rgba(255,255,255,.07);--panel-bg:#1b1b1d;--panel-border:rgba(255,255,255,.09);--chip-bg:rgba(255,255,255,.06);--chip-hover:rgba(91,157,255,.28);--track:rgba(255,255,255,.08);--track-hover:rgba(255,255,255,.06);--shadow:0 20px 50px rgba(0,0,0,.45),0 2px 10px rgba(0,0,0,.3);}
+:root{--g:#30d158;--y:#ffd60a;--r:#ff453a;--accent:#5b9dff;--text:#f4f6fa;--dim:#7f8896;--line:rgba(255,255,255,.07);--panel-bg:#1b1b1d;--panel-border:rgba(255,255,255,.09);--chip-bg:rgba(255,255,255,.06);--chip-hover:rgba(91,157,255,.28);--track:rgba(255,255,255,.08);--track-hover:rgba(255,255,255,.06);--shadow:0 20px 50px rgba(0,0,0,.45),0 2px 10px rgba(0,0,0,.3);--content-x:15px;--section-y:11px;--panel-pad:14px;}
 @media (prefers-color-scheme: light){
 :root{--text:#1c1e21;--dim:#6b7280;--line:rgba(0,0,0,.08);--panel-bg:#f7f8fa;--panel-border:rgba(0,0,0,.09);--chip-bg:rgba(0,0,0,.05);--chip-hover:rgba(59,130,246,.16);--track:rgba(0,0,0,.08);--track-hover:rgba(0,0,0,.05);--shadow:0 20px 46px rgba(0,0,0,.16),0 2px 8px rgba(0,0,0,.08);}
 }
 *{box-sizing:border-box;margin:0;padding:0;}
-html,body{background:transparent;font-family:-apple-system,system-ui,sans-serif;color:var(--text);-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased;overflow:hidden;}
+html,body{background:var(--panel-bg);font-family:-apple-system,system-ui,sans-serif;color:var(--text);-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased;overflow:hidden;}
 .panel{background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:13px;overflow:hidden;box-shadow:var(--shadow);max-height:100vh;}
 .dashboard-shell{display:grid;grid-template-columns:minmax(0,1fr) 78px;gap:8px;padding:7px;height:100vh;max-height:100vh;}
-.main-pane{min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:9px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:none;background:rgba(255,255,255,.015);}
+.main-pane{min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:9px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:none;background:rgba(255,255,255,.015);contain:layout paint;}
 .main-pane::-webkit-scrollbar{display:none;}
 body.compact .compact-extra{display:none!important;}
 body.compact[data-rail-view="more"] .compact-extra{display:grid!important;}
 body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;}
-.action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;}
-.rail-btn{height:56px;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;background:var(--chip-bg);border:1px solid var(--panel-border);border-radius:8px;color:var(--text);font:inherit;font-size:9.5px;font-weight:700;cursor:pointer;transition:background .15s,border-color .15s,transform .15s;color-scheme:inherit;}
+.action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;contain:layout paint;}
+.rail-btn{height:56px;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;background:var(--chip-bg);border:1px solid var(--panel-border);border-radius:8px;color:var(--text);font:inherit;font-size:10px;font-weight:700;cursor:pointer;color-scheme:inherit;}
 .rail-btn:hover{background:var(--chip-hover);border-color:rgba(91,157,255,.35);}
-.rail-btn:active{transform:scale(.98);}
+.rail-btn:active{background:rgba(91,157,255,.24);}
 .rail-btn svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;color:var(--text);}
-.rail-btn.primary{background:rgba(91,157,255,.18);border-color:rgba(91,157,255,.35);color:var(--accent);}
-.rail-btn.primary svg{color:var(--accent);}
 .rail-btn.active{background:rgba(91,157,255,.16);border-color:rgba(91,157,255,.38);color:var(--accent);}
-.rail-btn.pulse{border-color:rgba(91,157,255,.7);background:rgba(91,157,255,.24);}
-.setup{position:relative;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 15px 7px;border-bottom:1px solid var(--line);}
+.setup{position:relative;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px var(--content-x);border-bottom:1px solid var(--line);}
 .setup-main{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;}
 .setup-dot{width:7px;height:7px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 3px transparent;flex:0 0 auto;}
 .setup-dot.ok{background:var(--g);box-shadow:0 0 0 3px rgba(48,209,88,.12);}
 .setup-dot.info{background:var(--accent);box-shadow:0 0 0 3px rgba(91,157,255,.12);}
 .setup-dot.warn{background:var(--y);box-shadow:0 0 0 3px rgba(255,214,10,.14);}
 .setup-copy{min-width:0;}
-.setup-sub{font-size:9.5px;color:var(--dim);margin-top:1px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:205px;}
+.setup-sub{font-size:10px;color:var(--dim);margin-top:1px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:215px;}
 .setup-actions{display:flex;gap:4px;flex:0 0 auto;}
 .setup-actions button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:700;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s,border-color .15s;}
 .setup-actions button:hover{background:var(--chip-hover);color:var(--text);}
@@ -3181,8 +3661,8 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .setup-actions .setup-menu-item:hover{background:var(--track-hover);}
 .setup-actions .setup-menu-item:focus-visible,.setup-actions .setup-more:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
 .setup-actions .setup-menu-item.active{color:var(--g);border-color:transparent;}
-.row{display:grid;grid-template-columns:24px 1fr;gap:12px;padding:8px 15px;align-items:center;}
-.row + .row{border-top:1px solid var(--line);}
+.row{display:grid;grid-template-columns:24px 1fr;gap:12px;padding:var(--section-y) var(--content-x);align-items:center;}
+#sec-mem,#sec-temp,#sec-batt,#sec-network,#sec-procs{border-top:1px solid var(--line);}
 .ic{width:21px;height:21px;color:var(--dim);}
 .ic svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
 .content{min-width:0;}
@@ -3210,11 +3690,15 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .prow .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .prow .c{color:var(--accent);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .prow .m{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
-.ctl{padding:7px 15px 8px;border-top:1px solid var(--line);}
+.ctl{padding:10px var(--content-x);border-top:1px solid var(--line);}
 .ctl.focus-pulse{background:rgba(91,157,255,.09);box-shadow:inset 0 0 0 1px rgba(91,157,255,.45);}
 .ctl-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;}
 .ctl-head .name{font-size:9.5px;font-weight:600;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;}
 .ctl-status{font-size:10px;color:var(--dim);font-variant-numeric:tabular-nums;}
+.fan-inputs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin:0 0 7px;}
+.fan-input{min-width:0;padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.018);}
+.fan-input span{display:block;font-size:8px;font-weight:700;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fan-input b{display:block;margin-top:2px;font-size:10px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .profile-strip{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin:3px 0 7px;}
 .profile-strip button{min-width:0;background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:700;padding:4px 2px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s,border-color .15s,opacity .15s;}
 .profile-strip button:hover{background:var(--chip-hover);color:var(--text);}
@@ -3229,7 +3713,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .fan-bar{height:3px;background:var(--track);border-radius:99px;overflow:hidden;margin-bottom:4px;}
 .fan-bar i{display:block;height:100%;background:var(--accent);border-radius:99px;width:0;transition:width .35s;}
 .fan-bottom{display:flex;justify-content:space-between;align-items:center;gap:8px;}
-.fan-rpm-text{font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.fan-rpm-text{font-size:9.5px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .fan-seg{display:flex;gap:4px;flex:0 0 auto;}
 .fan-seg button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:600;padding:3px 8px;border-radius:5px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s;}
 .fan-seg button.active{background:var(--panel-bg);color:var(--text);border-color:rgba(91,157,255,.4);}
@@ -3258,7 +3742,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .chart{width:100%;height:28px;display:block;margin-top:8px;border-radius:4px;cursor:crosshair;}
 .chart-tip{position:fixed;pointer-events:none;background:rgba(20,20,22,.92);color:#fff;font-size:9.5px;font-weight:600;padding:3px 7px;border-radius:5px;display:none;z-index:999;white-space:nowrap;font-variant-numeric:tabular-nums;}
 .chart-stats{font-size:9px;color:var(--dim);text-align:right;margin-top:3px;font-variant-numeric:tabular-nums;}
-.rail-panel{display:none;padding:18px 18px;border-bottom:1px solid var(--line);min-height:220px;}
+.rail-panel{display:none;padding:var(--panel-pad) var(--content-x);border-bottom:1px solid var(--line);}
 .panel-title-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;}
 .rail-panel .panel-title{font-size:14px;font-weight:700;min-width:0;}
 .panel-pill{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:99px;background:var(--chip-bg);color:var(--dim);font-size:9px;font-weight:800;white-space:nowrap;font-variant-numeric:tabular-nums;}
@@ -3266,14 +3750,14 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .panel-pill.warn{background:rgba(255,214,10,.16);color:var(--y);}
 .panel-pill.info{background:rgba(91,157,255,.16);color:var(--accent);}
 .rail-panel .panel-copy{font-size:10.5px;color:var(--dim);line-height:1.5;margin-bottom:12px;}
-.rail-panel .panel-action{background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:10px;font-weight:700;padding:7px 10px;border-radius:7px;cursor:pointer;}
+.rail-panel .panel-action{min-height:28px;background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:10px;font-weight:700;padding:6px 10px;border-radius:7px;cursor:pointer;}
 .rail-panel .panel-action.secondary{background:var(--chip-bg);border-color:transparent;color:var(--text);}
 .rail-panel .panel-action.danger{background:rgba(255,69,58,.16);border-color:rgba(255,69,58,.36);color:var(--r);}
 .rail-panel .panel-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .release-notes-card{margin-top:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
 .release-notes-title{font-size:10px;font-weight:800;color:var(--text);margin-bottom:5px;}
 .release-notes-body{font-size:9.5px;line-height:1.45;color:var(--dim);white-space:pre-wrap;max-height:118px;overflow:hidden;}
-.settings-list{display:flex;flex-direction:column;gap:8px;}
+.settings-list{display:flex;flex-direction:column;gap:10px;}
 .settings-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
 .settings-item-title{font-size:11px;font-weight:700;color:var(--text);}
 .settings-item-copy{font-size:9.5px;color:var(--dim);line-height:1.35;margin-top:2px;}
@@ -3281,15 +3765,29 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .health-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
 .health-title{font-size:11px;font-weight:800;color:var(--text);}
 .health-grid{display:grid;grid-template-columns:1fr;gap:6px;}
-.health-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:10px;border-top:1px solid var(--line);padding-top:6px;}
+.health-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:10.5px;border-top:1px solid var(--line);padding-top:6px;}
 .health-row:first-child{border-top:0;padding-top:0;}
 .health-label{color:var(--dim);font-weight:650;}
 .health-value{font-weight:650;text-align:right;font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere;}
 .health-value.ok{color:var(--g);}.health-value.warn{color:var(--y);}.health-value.info{color:var(--accent);}
+.health-action{background:var(--chip-bg);border:1px solid transparent;color:var(--accent);font:inherit;font-size:9px;font-weight:750;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;}
+.health-action:disabled{opacity:.5;cursor:default;}
+.health-details{margin-top:8px;padding-top:7px;border-top:1px solid var(--line);}
+.health-details summary{color:var(--accent);font-size:10px;font-weight:700;cursor:pointer;list-style-position:inside;}
+.health-details[open] summary{margin-bottom:7px;}
+.action-log{display:flex;flex-direction:column;gap:6px;}
+.action-log-empty{font-size:9.5px;color:var(--dim);}
+.action-log-row{display:grid;grid-template-columns:48px minmax(0,1fr);gap:7px;padding-top:6px;border-top:1px solid var(--line);font-size:9.5px;}
+.action-log-row:first-child{border-top:0;padding-top:0;}
+.action-log-time{color:var(--dim);font-variant-numeric:tabular-nums;}
+.action-log-main{min-width:0;}
+.action-log-action{font-weight:750;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.action-log-result{margin-top:2px;color:var(--dim);line-height:1.35;overflow-wrap:anywhere;}
+.action-log-row.ok .action-log-action{color:var(--g);}.action-log-row.warn .action-log-action{color:var(--y);}
 .foot{border-top:1px solid var(--line);padding:3px;}
 .quit{display:block;width:100%;background:transparent;border:0;color:var(--dim);font:inherit;font-size:10.5px;letter-spacing:.02em;padding:8px;border-radius:8px;cursor:pointer;transition:background .15s,color .15s;}
 .quit:hover{background:var(--track-hover);color:var(--text);}
-.range-tabs{display:flex;gap:4px;padding:8px 15px 0;justify-content:flex-end;}
+.range-tabs{display:flex;gap:4px;padding:10px var(--content-x);justify-content:flex-end;}
 .sort-tabs{display:flex;gap:4px;}
 .range-tab{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:600;padding:3px 9px;border-radius:99px;cursor:pointer;transition:background .15s,color .15s;}
 .range-tab:hover{background:var(--chip-hover);}
@@ -3309,6 +3807,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="setup-menu-wrap">
 <button id="setup-more" class="setup-more" onclick="toggleSetupMenu(event)" onkeydown="handleSetupMoreKey(event)" aria-label="Setup actions" aria-haspopup="menu" aria-expanded="false" title="Setup actions">…</button>
 <div class="setup-menu" id="setup-menu" role="menu" onkeydown="handleSetupMenuKey(event)">
+<button class="setup-menu-item" role="menuitem" id="setup-startup" onclick="closeSetupMenu();toggleStartupItem(this)">Start on login</button>
 <button class="setup-menu-item" role="menuitem" id="setup-update" onclick="closeSetupMenu();checkAppUpdates(this)">Update</button>
 </div>
 </div>
@@ -3341,6 +3840,19 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="health-row"><span class="health-label">Admin Approval</span><span class="health-value" id="health-approval">—</span></div>
 <div class="health-row"><span class="health-label">App</span><span class="health-value" id="health-app">—</span></div>
 </div>
+<details class="health-details"><summary>Technical details</summary><div class="health-grid">
+<div class="health-row"><span class="health-label">Helper</span><span class="health-value" id="health-helper">—</span></div>
+<div class="health-row"><span class="health-label">LaunchDaemon</span><span class="health-value" id="health-launch-daemon">—</span></div>
+<div class="health-row"><span class="health-label">Team ID</span><span class="health-value" id="health-team-id">—</span></div>
+<div class="health-row"><span class="health-label">Curve Input</span><span class="health-value" id="health-curve-input">—</span></div>
+<div class="health-row"><span class="health-label">Core Hottest</span><span class="health-value" id="health-core-hottest">—</span></div>
+<div class="health-row"><span class="health-label">Safety Hottest</span><span class="health-value" id="health-safety-hottest">—</span></div>
+<div class="health-row"><span class="health-label">Critical Limit</span><span class="health-value" id="health-critical-limit">—</span></div>
+</div></details>
+</div>
+<div class="health-card" id="fan-action-log-card">
+<div class="health-head"><div class="health-title">Recent Fan Actions</div><button class="health-action" id="fan-diagnostic-button" onclick="runFanDiagnostics(this)">Run Diagnostics</button></div>
+<div class="action-log" id="fan-action-log"><div class="action-log-empty">No fan actions yet</div></div>
 </div>
 <div class="health-card" id="hardware-availability-card">
 <div class="health-head"><div class="health-title">Hardware Availability</div><span class="panel-pill info" id="hardware-pill">Ready</span></div>
@@ -3350,13 +3862,14 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="health-row"><span class="health-label">Network</span><span class="health-value" id="hardware-network">—</span></div>
 </div>
 </div>
-<div class="settings-item" id="login-item-setting">
-<div><div class="settings-item-title">Launch at Login</div><div class="settings-item-copy">Start PeterFan automatically when you sign in to this Mac.</div></div>
-<button id="login-toggle" class="panel-action secondary" onclick="toggleLoginItem(this)">Enable</button>
-</div>
-<div class="settings-item">
-<div><div class="settings-item-title">Detail Window</div><div class="settings-item-copy">Open the full dashboard when you need more room.</div></div>
-<button class="panel-action secondary" onclick="window.ipc.postMessage('open_detail')">Open Detail Window…</button>
+ <div class="settings-item">
+  <div><div class="settings-item-title">Detail Window</div><div class="settings-item-copy">Open the full dashboard when you need more room.</div></div>
+  <button class="panel-action secondary" onclick="window.ipc.postMessage('open_detail')">Open Detail Window…</button>
+  </div>
+
+<div class="settings-item" id="startup-setting">
+<div><div class="settings-item-title">Start on login</div><div class="settings-item-copy">Run PeterFan automatically on startup.</div></div>
+<button id="startup-toggle" class="panel-action secondary" onclick="toggleStartupItem(this)">Enable</button>
 </div>
 </div>
 </div>
@@ -3372,8 +3885,13 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 
 <div class="ctl" id="fan-control-section" style="border-top:0;border-bottom:1px solid var(--line)">
 <div class="ctl-head"><span class="name">Fan control</span><span class="ctl-status" id="ctl-status"></span></div>
+<div class="fan-inputs" id="fan-inputs">
+<div class="fan-input"><span>Curve Input</span><b id="fan-curve-input">—</b></div>
+<div class="fan-input"><span>Safety Hottest</span><b id="fan-safety-hottest">—</b></div>
+<div class="fan-input"><span>Critical Limit</span><b id="fan-critical-limit">—</b></div>
+</div>
 <div class="profile-strip" id="profile-strip">
-<button data-mode="auto" title="Auto" onclick="setAuto()">Auto</button>
+<button class="active" data-mode="auto" title="Auto" onclick="setAuto()">Auto</button>
 <button data-mode="profile" data-profile="silent" title="Silent" onclick="setProfile('silent')">Silent</button>
 <button data-mode="profile" data-profile="balanced" title="Balanced" onclick="setProfile('balanced')">Balanced</button>
 <button data-mode="profile" data-profile="gaming" title="Gaming" onclick="setProfile('gaming')">Gaming</button>
@@ -3442,7 +3960,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="foot compact-extra" data-compact-extra="quit"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
 </main>
 <aside class="action-rail" aria-label="Quick actions">
-<button class="rail-btn primary" id="railDetail" data-rail-action="detail" aria-pressed="true" onclick="runRailAction('detail',this)" title="Status overview"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Status</span></button>
+<button class="rail-btn active" id="railDetail" data-rail-action="detail" aria-pressed="true" onclick="runRailAction('detail',this)" title="Status overview"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Status</span></button>
 <button class="rail-btn" id="railFan" data-rail-action="fan" aria-pressed="false" onclick="runRailAction('fan',this)" title="Fan control"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fan</span></button>
 <button class="rail-btn" id="railUpdate" data-rail-action="update" aria-pressed="false" onclick="runRailAction('update',this)" title="Check for Updates…"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
 <button class="rail-btn" id="railSettings" data-rail-action="settings" aria-pressed="false" onclick="runRailAction('settings',this)" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.2-.1a1.7 1.7 0 0 0-1.9-.1 8 8 0 0 1-1.4.8 1.7 1.7 0 0 0-1.1 1.5V23h-4v-.5A1.7 1.7 0 0 0 8.1 21a8 8 0 0 1-1.4-.8 1.7 1.7 0 0 0-1.9.1l-.2.1-2-3.4.1-.1A1.7 1.7 0 0 0 3 15a8.6 8.6 0 0 1 0-1.7 1.7 1.7 0 0 0-.3-1.9l-.1-.1 2-3.4.2.1a1.7 1.7 0 0 0 1.9.1A8 8 0 0 1 8.1 7a1.7 1.7 0 0 0 1.1-1.5V5h4v.5A1.7 1.7 0 0 0 14.3 7a8 8 0 0 1 1.4.8 1.7 1.7 0 0 0 1.9-.1l.2-.1 2 3.4-.1.1a1.7 1.7 0 0 0-.3 1.9 8.6 8.6 0 0 1 0 2z"/></svg><span>Settings</span></button>
@@ -3453,8 +3971,10 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 var LANG='__LANG__';
 var SHOW_CURVE_EDITOR='__SHOWCURVE__';
 var FAN_CONTROL_FIX_PENDING=false;
-var APP_UPDATE_CHECK_PENDING=false;
+var FAN_DIAGNOSTIC_PENDING=false;
+var FAN_DIAGNOSTIC_STARTED_AT=0;
 var LOGIN_ITEM_TOGGLE_PENDING=false;
+var APP_UPDATE_CHECK_PENDING=false;
 var APP_UPDATE_STATUS=null;
 if(!('__pf_pending' in window))window.__pf_pending=null;
 function applyPendingUpdate(){
@@ -3485,12 +4005,17 @@ function setRailView(view){
   storageSet('pf.rail.view',view);
   document.body.setAttribute('data-rail-view',view);
   applyRailView(true);
+  if(window.__pf&&window.__pf.update&&window.__pf_pending)window.__pf.update(window.__pf_pending);
 }
 function setVisible(id,on){
   var el=document.getElementById(id);
   if(!el)return;
   if(on&&el.classList.contains('rail-panel'))el.style.display='block';
-  else el.style.display=on?'':'none';
+  else if(on){
+    el.style.display='';
+  } else {
+    el.style.display='none';
+  }
 }
 function setRailButtonActive(id,on){
   var el=document.getElementById(id);
@@ -3542,13 +4067,6 @@ function applyPopoverMode(){
 }
 applyPopoverMode();
 setRailView(railView());
-function flashRailButton(btn){
-  if(!btn)return;
-  btn.classList.remove('pulse');
-  void btn.offsetWidth;
-  btn.classList.add('pulse');
-  setTimeout(function(){btn.classList.remove('pulse');},650);
-}
 function setButtonLabel(btn,label){
   if(!btn)return;
   var span=btn.querySelector('span');
@@ -3669,11 +4187,10 @@ function openLatestRelease(){
   if(url)window.ipc.postMessage('open:'+url);
 }
 function runRailAction(action,btn){
-  flashRailButton(btn);
   switch(action){
     case 'detail':setRailView('overview');break;
     case 'fan':setRailView('fan');break;
-    case 'update':setRailView('update');checkAppUpdates(btn);break;
+    case 'update':setRailView('update');break;
     case 'settings':setRailView('settings');break;
     case 'more':setRailView('more');break;
   }
@@ -3701,40 +4218,45 @@ window.__pf={
  function bar(id,p,c){var b=document.getElementById(id);if(b){b.style.width=Math.max(0,Math.min(100,p))+'%';b.className='bar-fill '+(c||cls(p));}}
  function set(id,t){var e=document.getElementById(id);if(e)e.textContent=t;}
  function show(id,on){var e=document.getElementById(id);if(e)e.style.display=on?'':'none';}
-  updateSetup(d);
-  updateRail(d);
-  updateHardwareAvailability(d);
- set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
- var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span');s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title='Core '+(i+1)+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
- set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
- set('disk-val',d.disk_text);set('disk-sub',d.disk_sub);bar('disk-bar',d.disk_pct);
- show('disk-io-sub',d.disk_io_present);if(d.disk_io_present)set('disk-io-sub',d.disk_io_sub);
- show('disk-io-chart',d.disk_io_present);
- show('disk-io-chart-stats',d.disk_io_present);
- if(d.disk_io_present)drawChart('disk-io-chart', d.disk_io_hist, '#ff9f0a', null, fmtBytesPerSec);
- show('sec-temp',d.temp_present);if(d.temp_present){set('temp-name',(LANG==='ko'?'온도':'Temperature')+(d.temp_source?' · '+d.temp_source:''));set('temp-val',d.temp_text);bar('temp-bar',d.temp_pct,d.temp_cls);
-   var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c;r.children[1].className='v '+t.cls;tl.appendChild(r);});}
-   renderRawTempList(d);}
- show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
- var battSec=document.getElementById('sec-batt');if(battSec)battSec.dataset.present=d.batt_present?'1':'0';
- set('net-sub',d.net_sub);
- show('net-ip',!!d.net_ip);if(d.net_ip)set('net-ip',d.net_ip);
- var psCpu=document.getElementById('ps-cpu'),psMem=document.getElementById('ps-mem');
- if(psCpu)psCpu.classList.toggle('active',d.proc_sort!=='mem');
- if(psMem)psMem.classList.toggle('active',d.proc_sort==='mem');
- var pl=document.getElementById('procs-list');
- if(pl){pl.innerHTML='';(d.procs||[]).forEach(function(p){var r=document.createElement('div');r.className='prow';r.innerHTML='<span class="n"></span><span class="c"></span><span class="m"></span><button class="pkill" title="Quit process">×</button>';r.children[0].textContent=p.name;r.children[1].textContent=p.cpu;r.children[2].textContent=p.mem;r.children[3].onclick=function(){quitProcess(p.pid,p.name);};pl.appendChild(r);});}
+ window.__pf_pending=d;
+ var view=railView();
  CHART_RANGE_LABEL=d.chart_range;
- drawChart('cpu-chart', d.cpu_hist, '#5b9dff', 100, function(v){return v.toFixed(1)+'%';});
- drawChart('mem-chart', d.mem_hist, '#5b9dff', 100, function(v){return v.toFixed(1)+'%';});
- if(d.temp_present) drawChart('temp-chart', d.temp_hist, '#ff9f0a', null, function(v){return v.toFixed(0)+'°C';});
- drawChart('net-chart', d.net_hist, '#30d158', null, fmtBytesPerSec);
- document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){b.classList.toggle('active',b.dataset.range===d.chart_range);});
- var note=document.getElementById('ctl-note');
- if(d.can_control){
-   set('ctl-status', d.ctl_status||'');
-   updateProfileStrip(d);
-   if(note){
+  updateRail(d);
+ if(view==='overview'){
+   set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
+   var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span');s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title='Core '+(i+1)+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
+   set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
+   show('sec-temp',d.temp_present);if(d.temp_present){set('temp-name',(LANG==='ko'?'온도':'Temperature')+(d.temp_source?' · '+d.temp_source:''));set('temp-val',d.temp_text);bar('temp-bar',d.temp_pct,d.temp_cls);
+     var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c;r.children[1].className='v '+t.cls;tl.appendChild(r);});}
+     renderRawTempList(d);}
+   drawChart('cpu-chart', d.cpu_hist, '#5b9dff', 100, function(v){return v.toFixed(1)+'%';});
+   drawChart('mem-chart', d.mem_hist, '#5b9dff', 100, function(v){return v.toFixed(1)+'%';});
+   if(d.temp_present)drawChart('temp-chart', d.temp_hist, '#ff9f0a', null, function(v){return v.toFixed(0)+'°C';});
+   document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){b.classList.toggle('active',b.dataset.range===d.chart_range);});
+ } else if(view==='more'){
+   set('disk-val',d.disk_text);set('disk-sub',d.disk_sub);bar('disk-bar',d.disk_pct);
+   show('disk-io-sub',d.disk_io_present);if(d.disk_io_present)set('disk-io-sub',d.disk_io_sub);
+   show('disk-io-chart',d.disk_io_present);show('disk-io-chart-stats',d.disk_io_present);
+   if(d.disk_io_present)drawChart('disk-io-chart', d.disk_io_hist, '#ff9f0a', null, fmtBytesPerSec);
+   show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
+   var battSec=document.getElementById('sec-batt');if(battSec)battSec.dataset.present=d.batt_present?'1':'0';
+   set('net-sub',d.net_sub);show('net-ip',!!d.net_ip);if(d.net_ip)set('net-ip',d.net_ip);
+   var psCpu=document.getElementById('ps-cpu'),psMem=document.getElementById('ps-mem');
+   if(psCpu)psCpu.classList.toggle('active',d.proc_sort!=='mem');
+   if(psMem)psMem.classList.toggle('active',d.proc_sort==='mem');
+   var pl=document.getElementById('procs-list');
+   if(pl){pl.innerHTML='';(d.procs||[]).forEach(function(p){var r=document.createElement('div');r.className='prow';r.innerHTML='<span class="n"></span><span class="c"></span><span class="m"></span><button class="pkill" title="Quit process">×</button>';r.children[0].textContent=p.name;r.children[1].textContent=p.cpu;r.children[2].textContent=p.mem;r.children[3].onclick=function(){quitProcess(p.pid,p.name);};pl.appendChild(r);});}
+   drawChart('net-chart', d.net_hist, '#30d158', null, fmtBytesPerSec);
+ } else if(view==='settings'){
+   updateSetup(d);
+   updateHardwareAvailability(d);
+ } else if(view==='fan'){
+   updateSetup(d);
+   var note=document.getElementById('ctl-note');
+   if(d.can_control){
+     set('ctl-status', d.ctl_status||'');
+     updateProfileStrip(d);
+     if(note){
      // A command failure (e.g. a running daemon too old to understand a
      // command we just sent it) used to be silently swallowed — ctl-status
      // only ever shows the daemon's own global mode string, never a
@@ -3758,56 +4280,39 @@ window.__pf={
        }
      } else if(d.daemon_update_needed){
        note.style.display='';
-       note.innerHTML='';
-       var updateMsg=document.createElement('span');
-       updateMsg.textContent=LANG==='ko'
-         ?'설치된 팬 제어 데몬이 오래되었습니다.'
-         :'The installed fan-control daemon is out of date.';
-       note.appendChild(updateMsg);
-       note.appendChild(document.createElement('br'));
-       note.appendChild(fanControlSetupButton(LANG==='ko'?'팬 제어 재설치':'Reinstall Fan Control'));
+       note.textContent=LANG==='ko'
+         ?'설치된 팬 제어 데몬이 오래되었습니다. 위의 재설치 버튼을 사용하세요.'
+         :'The fan-control daemon is out of date. Use the reinstall button above.';
      } else if(!d.daemon_running){
        note.style.display='';
-       note.innerHTML='';
-       var setupMsg=document.createElement('span');
-       setupMsg.textContent=LANG==='ko'
-         ?'팬 제어를 유지하려면 최초 1회 설정이 필요합니다.'
-         :'One-time setup is required for persistent fan control.';
-       note.appendChild(setupMsg);
-       note.appendChild(document.createElement('br'));
-       note.appendChild(fanControlSetupButton(LANG==='ko'?'팬 제어 설정':'Set Up Fan Control'));
+       note.textContent=LANG==='ko'
+         ?'팬 제어를 유지하려면 위의 설정 버튼에서 최초 1회 승인이 필요합니다.'
+         :'Persistent fan control needs one initial approval from the setup button above.';
      } else {
        note.style.display='none';
      }
+     }
+     renderFanCards(d.fans);
+     updateFanEmptyState(d);
+   } else {
+     set('ctl-status',LANG==='ko'?'사용 불가':'unavailable');
+     updateProfileStrip(d);
+     if(note){note.style.display='';note.textContent=LANG==='ko'?'이 Mac에서는 팬 제어를 사용할 수 없습니다. 실시간 RPM만 표시합니다.':'Fan control unavailable on this Mac — showing live RPM only.';}
+     var fc=document.getElementById('fan-cards');if(fc)fc.innerHTML='';
+     updateFanEmptyState(d);
    }
-   renderFanCards(d.fans);
-   updateFanEmptyState(d);
- } else {
-   set('ctl-status',LANG==='ko'?'사용 불가':'unavailable');
-   updateProfileStrip(d);
-   if(note){note.style.display='';note.textContent=LANG==='ko'?'이 Mac에서는 팬 제어를 사용할 수 없습니다. 실시간 RPM만 표시합니다.':'Fan control unavailable on this Mac — showing live RPM only.';}
-   var fc=document.getElementById('fan-cards');if(fc)fc.innerHTML='';
-   updateFanEmptyState(d);
- }
- if(SHOW_CURVE_EDITOR==='1'&&d.can_control){
-   var ces=document.getElementById('curve-editor-section');
-   if(ces)ces.style.display='';
-   if(d.curve_points){
-     CURVE_POINTS_SAVED=d.curve_points.map(function(p){return p.slice();});
-     if(CURVE_POINTS===null)CURVE_POINTS=CURVE_POINTS_SAVED.map(function(p){return p.slice();});
+   if(SHOW_CURVE_EDITOR==='1'&&d.can_control){
+     var ces=document.getElementById('curve-editor-section');
+     if(ces)ces.style.display='';
+     if(d.curve_points){
+       CURVE_POINTS_SAVED=d.curve_points.map(function(p){return p.slice();});
+       if(CURVE_POINTS===null)CURVE_POINTS=CURVE_POINTS_SAVED.map(function(p){return p.slice();});
+     }
+     initCurveEditor();drawCurveEditor();syncCurvePointInputs();
+   } else {
+     var ces2=document.getElementById('curve-editor-section');if(ces2)ces2.style.display='none';
    }
-   initCurveEditor();
-   drawCurveEditor();
-   syncCurvePointInputs();
- } else {
-   // Persistent custom curves are the same paid feature as fan cards —
-   // hide the editor once the trial expires so it can't be used as a
-   // side door around the ctl-note paywall message above.
-   var ces2=document.getElementById('curve-editor-section');
-   if(ces2)ces2.style.display='none';
  }
- applyRailView();
- reportHeight();
 }};
 applyPendingUpdate();
 if(window.ipc)window.ipc.postMessage('ready');
@@ -3958,6 +4463,70 @@ function startFanControlSetup(btn){
   // dismissed/failed prompt doesn't lock the button forever.
   setTimeout(function(){FAN_CONTROL_FIX_PENDING=false;},15000);
 }
+function runFanDiagnostics(btn){
+  if(FAN_DIAGNOSTIC_PENDING)return;
+  FAN_DIAGNOSTIC_PENDING=true;
+  FAN_DIAGNOSTIC_STARTED_AT=Math.floor(Date.now()/1000);
+  if(btn){
+    btn.disabled=true;
+    btn.textContent=LANG==='ko'?'진단 중…':'Diagnosing…';
+  }
+  window.ipc.postMessage('cmd:diagnosefan');
+  setTimeout(function(){
+    FAN_DIAGNOSTIC_PENDING=false;
+    var current=document.getElementById('fan-diagnostic-button');
+    if(current){
+      current.disabled=false;
+      current.textContent=LANG==='ko'?'진단 실행':'Run Diagnostics';
+    }
+  },10000);
+}
+function renderFanActionLog(d){
+  var list=document.getElementById('fan-action-log');
+  var button=document.getElementById('fan-diagnostic-button');
+  var entries=Array.isArray(d.fan_action_log)?d.fan_action_log:[];
+  var diagnosticFinished=entries.some(function(entry){
+    return entry&&entry.action==='diagnostic'&&Number(entry.at)>=FAN_DIAGNOSTIC_STARTED_AT-1;
+  });
+  if(FAN_DIAGNOSTIC_PENDING&&diagnosticFinished)FAN_DIAGNOSTIC_PENDING=false;
+  if(button){
+    button.disabled=FAN_DIAGNOSTIC_PENDING;
+    button.textContent=FAN_DIAGNOSTIC_PENDING
+      ?(LANG==='ko'?'진단 중…':'Diagnosing…')
+      :(LANG==='ko'?'진단 실행':'Run Diagnostics');
+  }
+  if(!list)return;
+  list.textContent='';
+  if(!entries.length){
+    var empty=document.createElement('div');
+    empty.className='action-log-empty';
+    empty.textContent=LANG==='ko'?'팬 제어 이력이 없습니다':'No fan actions yet';
+    list.appendChild(empty);
+    return;
+  }
+  entries.forEach(function(entry){
+    if(!entry||typeof entry!=='object')return;
+    var row=document.createElement('div');
+    row.className='action-log-row '+(entry.ok?'ok':'warn');
+    var time=document.createElement('div');
+    time.className='action-log-time';
+    var date=new Date(Number(entry.at||0)*1000);
+    time.textContent=isNaN(date.getTime())?'—':date.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    var main=document.createElement('div');
+    main.className='action-log-main';
+    var action=document.createElement('div');
+    action.className='action-log-action';
+    action.textContent=String(entry.action||'—');
+    var result=document.createElement('div');
+    result.className='action-log-result';
+    result.textContent=String(entry.result||'—');
+    main.appendChild(action);
+    main.appendChild(result);
+    row.appendChild(time);
+    row.appendChild(main);
+    list.appendChild(row);
+  });
+}
 function checkAppUpdates(btn){
   if(APP_UPDATE_CHECK_PENDING)return;
   APP_UPDATE_CHECK_PENDING=true;
@@ -3979,17 +4548,25 @@ function checkAppUpdates(btn){
     }
   },2500);
 }
-function toggleLoginItem(btn){
-  if(LOGIN_ITEM_TOGGLE_PENDING)return;
+function toggleStartupItem(btn){
+  if(LOGIN_ITEM_TOGGLE_PENDING||!window.__pf_pending||!window.__pf_pending.login_item_supported)return;
   LOGIN_ITEM_TOGGLE_PENDING=true;
   if(btn){
+    if(!btn.dataset.defaultLabel){
+      btn.dataset.defaultLabel=btn.textContent;
+    }
     btn.disabled=true;
-    btn.textContent=LANG==='ko'?'변경 중…':'Changing…';
+    btn.textContent=LANG==='ko'?'처리 중…':'Updating…';
+    btn.classList.add('active');
   }
-  window.ipc.postMessage('toggle_login_item');
+  window.ipc.postMessage('toggle-login-item');
   setTimeout(function(){
     LOGIN_ITEM_TOGGLE_PENDING=false;
-    if(window.__pf_pending)updateLoginItemControl(window.__pf_pending);
+    if(btn){
+      btn.classList.remove('active');
+      btn.disabled=false;
+      if(window.__pf&&window.__pf_pending)updateSetup(window.__pf_pending);
+    }
   },2500);
 }
 function setSetupMenuOpen(open){
@@ -4243,60 +4820,62 @@ function updateSetup(d){
     update.textContent=APP_UPDATE_CHECK_PENDING?(LANG==='ko'?'확인 중…':'Checking…'):(LANG==='ko'?'업데이트 확인':'Check Updates');
     update.title=LANG==='ko'?'앱 업데이트 확인':'Check for app updates';
   }
+  var startupMenu=document.getElementById('setup-startup');
+  if(startupMenu){
+    startupMenu.style.display=d.login_item_supported?'':'none';
+    startupMenu.disabled=LOGIN_ITEM_TOGGLE_PENDING||APP_UPDATE_CHECK_PENDING;
+    startupMenu.textContent=(d.login_item_installed
+      ?(LANG==='ko'?'부팅 시 자동 실행 끄기':'Disable startup')
+      :(LANG==='ko'?'부팅 시 자동 실행 켜기':'Enable startup'));
+  }
+  var startup=document.getElementById('startup-toggle');
+  if(startup){
+    startup.classList.toggle('primary',!d.login_item_installed);
+    startup.style.display=d.login_item_supported?'':'none';
+    startup.disabled=LOGIN_ITEM_TOGGLE_PENDING||APP_UPDATE_CHECK_PENDING;
+    startup.textContent=LOGIN_ITEM_TOGGLE_PENDING
+      ?(LANG==='ko'?'처리 중…':'Updating…')
+      :(d.login_item_installed
+        ?(LANG==='ko'?'끄기':'Disable')
+        :(LANG==='ko'?'켜기':'Enable'));
+    startup.title=d.login_item_installed
+      ?(LANG==='ko'?'부팅 시 자동 실행 끄기':'Disable startup on login')
+      :(LANG==='ko'?'부팅 시 자동 실행 켜기':'Enable startup on login');
+  }
 }
+var RAIL_NAV_READY=false;
 function updateRail(d){
-  var detail=document.getElementById('railDetail');
-  if(detail){
-    setButtonLabel(detail,LANG==='ko'?'상태':'Status');
-    detail.title=LANG==='ko'?'상태 요약':'Status overview';
+  if(!RAIL_NAV_READY){
+    var detail=document.getElementById('railDetail');
+    if(detail){setButtonLabel(detail,LANG==='ko'?'상태':'Status');detail.title=LANG==='ko'?'상태 요약':'Status overview';}
+    var fan=document.getElementById('railFan');
+    if(fan){setButtonLabel(fan,LANG==='ko'?'팬 제어':'Fans');fan.title=LANG==='ko'?'팬 제어로 이동':'Jump to fan control';}
+    var upd=document.getElementById('railUpdate');
+    if(upd){setButtonLabel(upd,LANG==='ko'?'업데이트':'Update');upd.title=LANG==='ko'?'업데이트 확인':'Check for updates';}
+    var settings=document.getElementById('railSettings');
+    if(settings){setButtonLabel(settings,LANG==='ko'?'설정':'Settings');settings.title=LANG==='ko'?'설정 열기':'Open settings';}
+    RAIL_NAV_READY=true;
   }
-  var fan=document.getElementById('railFan');
-  if(fan){
-    setButtonLabel(fan,LANG==='ko'?'팬 제어':'Fans');
-    fan.title=LANG==='ko'?'팬 제어로 이동':'Jump to fan control';
+  var view=railView();
+  if(view==='update'){
+    if(APP_UPDATE_STATUS){APP_UPDATE_STATUS.current=d.app_version||APP_UPDATE_STATUS.current;renderUpdateStatus();}
+    else renderUpdateStatus({current:d.app_version||''});
+    var updCheck=document.getElementById('rail-update-check');
+    if(updCheck&&!APP_UPDATE_CHECK_PENDING)updCheck.textContent=LANG==='ko'?'업데이트 확인':'Check Updates';
+  } else if(view==='settings'){
+    updateHealthPanel(d);
+  } else if(view==='more'){
+    setPanelPill('rail-more-pill',LANG==='ko'?'도구':'Tools','info');
   }
-  var upd=document.getElementById('railUpdate');
-  if(upd&&!APP_UPDATE_CHECK_PENDING){
-    setButtonLabel(upd,LANG==='ko'?'업데이트':'Update');
-    upd.title=LANG==='ko'?'업데이트 확인':'Check for updates';
-    upd.disabled=false;
-  }
-  if(APP_UPDATE_STATUS){
-    APP_UPDATE_STATUS.current=d.app_version||APP_UPDATE_STATUS.current;
-    renderUpdateStatus();
-  } else {
-    renderUpdateStatus({current:d.app_version||''});
-  }
-  var updCheck=document.getElementById('rail-update-check');
-  if(updCheck&&!APP_UPDATE_CHECK_PENDING)updCheck.textContent=LANG==='ko'?'업데이트 확인':'Check Updates';
- var settings=document.getElementById('railSettings');
-  if(settings){
-    setButtonLabel(settings,LANG==='ko'?'설정':'Settings');
-    settings.title=LANG==='ko'?'설정 열기':'Open settings';
-  }
-  updateHealthPanel(d);
-  updateLoginItemControl(d);
-  setPanelPill('rail-more-pill',LANG==='ko'?'도구':'Tools','info');
-}
-function updateLoginItemControl(d){
-  var btn=document.getElementById('login-toggle');
-  if(!btn)return;
-  var enabled=!!d.login_item_installed;
-  btn.classList.toggle('primary',enabled);
-  btn.classList.toggle('secondary',!enabled);
-  btn.disabled=LOGIN_ITEM_TOGGLE_PENDING;
-  if(!LOGIN_ITEM_TOGGLE_PENDING){
-    btn.textContent=enabled?(LANG==='ko'?'끄기':'Disable'):(LANG==='ko'?'켜기':'Enable');
-  }
-  btn.title=enabled
-    ?(LANG==='ko'?'로그인 시 자동 실행 끄기':'Disable launch at login')
-    :(LANG==='ko'?'로그인 시 자동 실행 켜기':'Enable launch at login');
 }
 function setHealthValue(id,text,tone){
   var el=document.getElementById(id);
   if(!el)return;
   el.textContent=text||'—';
   el.className='health-value '+(tone||'');
+}
+function tempValue(value){
+  return typeof value==='number'&&isFinite(value)?Math.round(value)+'°C':'—';
 }
 function updateHealthPanel(d){
   var tone=d.daemon_update_needed?'warn':(d.daemon_running?'ok':(d.can_control?'warn':'info'));
@@ -4309,6 +4888,9 @@ function updateHealthPanel(d){
     ?('v'+(d.daemon_version||'unknown')+(d.daemon_update_needed?' → v'+(d.daemon_required_version||''):''))
     :(LANG==='ko'?'실행 안 됨':'not running');
   setHealthValue('health-daemon',daemonText,d.daemon_update_needed?'warn':(d.daemon_running?'ok':'warn'));
+  setHealthValue('health-helper',d.daemon_binary_installed?(d.daemon_path||'installed'):(LANG==='ko'?'설치 안 됨':'not installed'),d.daemon_binary_installed?'ok':'warn');
+  setHealthValue('health-launch-daemon',d.launch_daemon_installed?(LANG==='ko'?'설치됨':'installed'):(LANG==='ko'?'설치 안 됨':'not installed'),d.launch_daemon_installed?'ok':'warn');
+  setHealthValue('health-team-id',d.team_id||'—',d.team_id?'ok':'warn');
   var path=d.daemon_running
     ?(LANG==='ko'?'root 데몬':'root daemon')
     :(d.can_control?(LANG==='ko'?'앱 직접 제어':'app direct'):(LANG==='ko'?'읽기 전용':'read-only'));
@@ -4317,11 +4899,19 @@ function updateHealthPanel(d){
   var lastTone=/error|invalid|unknown|failed|needs root|needs at least/i.test(last)?'warn':'info';
   setHealthValue('health-last-command',last||'—',lastTone);
   setHealthValue('health-fans',(d.controllable_fan_count||0)+' / '+(d.fan_count||0),d.controllable_fan_count?'ok':'info');
+  setHealthValue('health-curve-input',tempValue(d.fan_curve_input_temp_c),'info');
+  setHealthValue('health-core-hottest',tempValue(d.fan_core_hottest_temp_c),'info');
+  setHealthValue('health-safety-hottest',tempValue(d.fan_safety_temp_c),d.fan_safety_temp_c>=d.fan_critical_temp_c?'warn':'info');
+  setHealthValue('health-critical-limit',tempValue(d.fan_critical_temp_c),'info');
+  setText('fan-curve-input',tempValue(d.fan_curve_input_temp_c));
+  setText('fan-safety-hottest',tempValue(d.fan_safety_temp_c));
+  setText('fan-critical-limit',tempValue(d.fan_critical_temp_c));
   var approval=d.daemon_running&&!d.daemon_update_needed
     ?(LANG==='ko'?'추가 승인 없음':'no extra prompt')
     :(d.daemon_update_needed?(LANG==='ko'?'재설치 때 1회':'one prompt to reinstall'):(d.can_control?(LANG==='ko'?'최초 설정 때 1회':'one prompt for setup'):(LANG==='ko'?'필요 없음':'not needed')));
   setHealthValue('health-approval',approval,d.daemon_running&&!d.daemon_update_needed?'ok':(d.can_control?'warn':'info'));
   setHealthValue('health-app','v'+(d.app_version||''),'info');
+  renderFanActionLog(d);
 }
 function updateHardwareAvailability(d){
   var fanCount=d.fan_count||0, controllable=d.controllable_fan_count||0;
@@ -4540,28 +5130,24 @@ mod tests {
     #[test]
     fn popover_height_is_fixed_unless_display_is_short() {
         assert_eq!(POPOVER_H, 520.0);
+        let displays = [DisplayBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 1440.0,
+            height: 900.0,
+        }];
         assert_eq!(
-            POPOVER_H.min(max_popover_height_for_bounds(
-                DisplayBounds {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 1440.0,
-                    height: 900.0,
-                },
-                24.0,
-            )),
+            popover_height_for_rect(tray_rect(700.0, 0.0, 24, 24), 1.0, &displays),
             520.0
         );
+        let short_display = [DisplayBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 1440.0,
+            height: 480.0,
+        }];
         assert_eq!(
-            POPOVER_H.min(max_popover_height_for_bounds(
-                DisplayBounds {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 1440.0,
-                    height: 480.0,
-                },
-                24.0,
-            )),
+            popover_height_for_rect(tray_rect(700.0, 0.0, 24, 24), 1.0, &short_display),
             444.0
         );
     }
@@ -4664,6 +5250,12 @@ mod tests {
             assert!(html.contains("rail-more-panel"));
             assert!(!html.contains("railLicense"));
             assert!(!html.contains("rail-license-panel"));
+            assert!(html.contains(r#"class="rail-btn active" id="railDetail""#));
+            assert!(!html.contains(r#"class="rail-btn primary""#));
+            assert!(!html.contains("flashRailButton"));
+            assert!(!html.contains("rail-btn.pulse"));
+            assert!(html.contains("html,body{background:var(--panel-bg)"));
+            assert_eq!(html.matches("data-range=\"2m\"").count(), 1);
         }
 
         assert!(en.contains(">Status<"));
@@ -4703,13 +5295,10 @@ mod tests {
 
     #[test]
     fn menu_bar_uses_cpu_driven_runner_icon() {
-        assert_eq!(runner_frame_step(0.0), 1);
-        assert_eq!(runner_frame_step(35.0), 2);
-        assert_eq!(runner_frame_step(70.0), 3);
-        assert_eq!(runner_frame_step(95.0), 4);
-
         let _idle = menubar_runner_icon(8.0, 0);
         let _busy = make_runner_icon(92.0, 3);
+        assert_ne!(make_cat_runner_rgba(8.0, 0), make_cat_runner_rgba(92.0, 0));
+        assert_ne!(make_cat_runner_rgba(50.0, 0), make_cat_runner_rgba(50.0, 1));
     }
 
     #[test]
@@ -4733,10 +5322,12 @@ mod tests {
         assert!(idle <= RUNNER_MAX_INTERVAL);
         assert!(busy >= RUNNER_MIN_INTERVAL);
 
-        let source = include_str!("main.rs");
-        assert!(source.contains("next_runner_at"));
-        assert!(source.contains("animate_runner(&mut app);"));
-        assert!(source.contains("next_tick = next_metric_at.min(next_runner_at);"));
+        assert!(!runner_enabled(MenubarDisplay::Number));
+        assert!(runner_enabled(MenubarDisplay::Graph));
+        assert!(runner_enabled(MenubarDisplay::Both));
+        assert_eq!(make_runner_icons().len(), 16);
+        assert_eq!(runner_load_band(10.0), 0);
+        assert_eq!(runner_load_band(90.0), 3);
     }
 
     #[test]
@@ -4806,10 +5397,10 @@ mod tests {
         }
 
         assert!(en.contains("function runRailAction(action,btn)"));
-        assert!(en.contains("flashRailButton(btn)"));
+        assert!(!en.contains("flashRailButton(btn)"));
         assert!(en.contains("case 'detail':setRailView('overview');break;"));
         assert!(en.contains("case 'fan':setRailView('fan');break;"));
-        assert!(en.contains("case 'update':setRailView('update');checkAppUpdates(btn);break;"));
+        assert!(en.contains("case 'update':setRailView('update');break;"));
         assert!(en.contains("case 'settings':setRailView('settings');break;"));
         assert!(!en.contains(
             "case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;"
@@ -4859,19 +5450,94 @@ mod tests {
         assert!(en.contains(r#"id="fan-health-card""#));
         assert!(en.contains(">Fan Control Health<"));
         assert!(en.contains(r#"id="health-daemon""#));
+        assert!(en.contains(r#"id="health-helper""#));
+        assert!(en.contains(r#"id="health-launch-daemon""#));
+        assert!(en.contains(r#"id="health-team-id""#));
         assert!(en.contains(r#"id="health-control-path""#));
         assert!(en.contains(r#"id="health-last-command""#));
+        assert!(en.contains(r#"id="health-curve-input""#));
+        assert!(en.contains(r#"id="health-core-hottest""#));
+        assert!(en.contains(r#"id="health-safety-hottest""#));
+        assert!(en.contains(r#"id="health-critical-limit""#));
+        assert!(en.contains(r#"id="fan-curve-input""#));
+        assert!(en.contains(r#"id="fan-safety-hottest""#));
+        assert!(en.contains(r#"id="fan-critical-limit""#));
         assert!(en.contains(r#"id="health-approval""#));
+        assert!(en.contains(r#"id="fan-action-log-card""#));
+        assert!(en.contains(r#"id="fan-diagnostic-button""#));
+        assert!(en.contains(r#"id="fan-action-log""#));
         assert!(en.contains("function updateHealthPanel(d)"));
+        assert!(en.contains("function runFanDiagnostics(btn)"));
+        assert!(en.contains("function renderFanActionLog(d)"));
+        assert!(en.contains("cmd:diagnosefan"));
+        assert!(en.contains("d.fan_action_log"));
         assert!(en.contains("updateHealthPanel(d);"));
         assert!(en.contains("d.daemon_required_version"));
+        assert!(en.contains("d.daemon_binary_installed"));
+        assert!(en.contains("d.launch_daemon_installed"));
+        assert!(en.contains("d.team_id"));
         assert!(en.contains("d.controllable_fan_count"));
+        assert!(en.contains("d.fan_curve_input_temp_c"));
+        assert!(en.contains("d.fan_core_hottest_temp_c"));
+        assert!(en.contains("d.fan_safety_temp_c"));
+        assert!(en.contains("d.fan_critical_temp_c"));
 
         assert!(ko.contains(">팬 제어 상태<"));
         assert!(ko.contains(">데몬<"));
+        assert!(ko.contains(">도우미<"));
         assert!(ko.contains(">제어 경로<"));
         assert!(ko.contains(">마지막 명령<"));
+        assert!(ko.contains(">커브 입력<"));
+        assert!(ko.contains(">코어 최고<"));
+        assert!(ko.contains(">안전 최고<"));
+        assert!(ko.contains(">임계값<"));
         assert!(ko.contains(">관리자 승인<"));
+        assert!(ko.contains(">최근 팬 제어 이력<"));
+        assert!(ko.contains(">진단 실행<"));
+    }
+
+    #[test]
+    fn fan_diagnostic_reports_ready_hardware_without_writing() {
+        let (ok, status) = format_fan_diagnostic(
+            2,
+            2,
+            Some(67.4),
+            Some(74.1),
+            95.0,
+            Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION),
+            true,
+        );
+
+        assert!(ok);
+        assert!(status.contains("fans 2/2"));
+        assert!(status.contains("CPU avg 67°C"));
+        assert!(status.contains("safety 74°C"));
+        assert!(status.contains("daemon v"));
+        assert!(status.contains("ready"));
+    }
+
+    #[test]
+    fn fan_diagnostic_rejects_stale_or_unreachable_daemon() {
+        let (stale_ok, stale) =
+            format_fan_diagnostic(2, 2, Some(70.0), Some(75.0), 95.0, Some("0.1.0"), true);
+        let (offline_ok, offline) =
+            format_fan_diagnostic(2, 2, Some(70.0), Some(75.0), 95.0, None, false);
+
+        assert!(!stale_ok);
+        assert!(stale.contains("needs update"));
+        assert!(!offline_ok);
+        assert!(offline.contains("not running"));
+    }
+
+    #[test]
+    fn fan_control_actions_have_readable_log_labels() {
+        assert_eq!(
+            control_action_label("profile:performance"),
+            "profile performance"
+        );
+        assert_eq!(control_action_label("fanhold:fan.cpu:72"), "fan fan.cpu:72");
+        assert_eq!(control_action_label("fanauto:fan.cpu"), "fan fan.cpu auto");
+        assert_eq!(control_action_label("auto"), "auto");
     }
 
     #[test]
@@ -4895,6 +5561,19 @@ mod tests {
         assert!(ko.contains(">배터리<"));
         assert!(ko.contains(">네트워크<"));
         assert!(ko.contains("제어 가능한 팬을 찾지 못했습니다"));
+    }
+
+    #[test]
+    fn settings_panel_contains_startup_toggle() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+
+        for html in [en, ko] {
+            assert!(html.contains(r#"id="startup-setting"#));
+            assert!(html.contains(">Run on startup<") || html.contains("부팅 시 자동 실행"));
+            assert!(html.contains(r#"id="startup-toggle"#));
+            assert!(html.contains("toggleStartupItem(this)"));
+        }
     }
 
     #[test]
@@ -4944,6 +5623,22 @@ mod tests {
         assert!(en.contains("if(resetScroll)resetRailPaneScroll();"));
         assert!(en.contains("el.setAttribute('aria-pressed',on?'true':'false');"));
         assert!(!en.contains("function applyRailView(){"));
+        assert_eq!(
+            en.matches("note.appendChild(fanControlSetupButton").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn settings_keep_technical_health_details_collapsed() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+
+        assert!(
+            en.contains(r#"<details class="health-details"><summary>Technical details</summary>"#)
+        );
+        assert!(ko.contains(r#"<details class="health-details"><summary>기술 정보</summary>"#));
+        assert!(!en.contains(r#"<details class="health-details" open>"#));
     }
 
     #[test]
@@ -4967,7 +5662,7 @@ mod tests {
         assert!(en.contains(r#"id="sec-storage""#));
         assert!(en.contains(r#"id="sec-network""#));
         assert!(en.contains("case 'fan':setRailView('fan');break;"));
-        assert!(en.contains("case 'update':setRailView('update');checkAppUpdates(btn);break;"));
+        assert!(en.contains("case 'update':setRailView('update');break;"));
         assert!(en.contains("case 'settings':setRailView('settings');break;"));
         assert!(!en.contains(
             "case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;"
@@ -5029,12 +5724,33 @@ mod tests {
         assert!(en.contains("window.ipc.postMessage('h:520');"));
         assert!(en.contains("overflow belongs inside `.main-pane`"));
         assert!(source.contains("const POPOVER_H: f64 = 520.0;"));
-        assert!(source.contains("fn popover_height_for_window(w: &Window) -> f64"));
+        assert!(source.contains("const DASHBOARD_BACKGROUND: RGBA = (27, 27, 29, 255);"));
+        assert!(
+            source
+                .matches(".with_background_color(DASHBOARD_BACKGROUND)")
+                .count()
+                >= 2
+        );
+        assert!(source.contains("fn popover_height_for_rect("));
+        assert!(source.contains("const POPOVER_SHOW_DELAY: Duration = Duration::from_millis(35);"));
+        assert!(source.contains("app.popover_show_at = Some(Instant::now() + POPOVER_SHOW_DELAY);"));
         assert!(source.contains("body.starts_with(\"h:\")"));
         assert!(!en.contains("document.body.scrollHeight"));
         assert!(!en.contains("document.documentElement.scrollHeight"));
         assert!(!en.contains("main?main.scrollHeight:0"));
         assert!(!en.contains("contentH+shellPad"));
+    }
+
+    #[test]
+    fn dashboard_slow_sections_are_not_recomputed_every_tick() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("const DASHBOARD_SLOW_REFRESH: Duration = Duration::from_secs(3);"));
+        assert!(source.contains("struct DashboardSlowCache"));
+        assert!(source.contains("fn refresh_dashboard_slow_cache("));
+        assert!(source.contains("now >= app.next_dashboard_slow_refresh"));
+        assert!(source.contains("app.dashboard_slow_cache.proc_sort != proc_sort"));
+        assert!(source.contains("app.next_dashboard_slow_refresh = now + DASHBOARD_SLOW_REFRESH;"));
     }
 
     #[test]
@@ -5044,6 +5760,50 @@ mod tests {
         assert!(en.contains(".rail-panel{display:none"));
         assert!(en.contains("if(on&&el.classList.contains('rail-panel'))el.style.display='block';"));
         assert!(!en.contains("if(el)el.style.display=on?'':'none';"));
+    }
+
+    #[test]
+    fn dashboard_sections_share_spacing_without_forced_empty_height() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains("--content-x:15px;--section-y:11px;--panel-pad:14px;"));
+        assert!(en.contains("padding:var(--section-y) var(--content-x)"));
+        assert!(en.contains("padding:var(--panel-pad) var(--content-x)"));
+        assert!(en.contains(".range-tabs{display:flex;gap:4px;padding:10px var(--content-x);"));
+        assert!(en.contains(
+            "#sec-mem,#sec-temp,#sec-batt,#sec-network,#sec-procs{border-top:1px solid var(--line);}"
+        ));
+        assert!(!en.contains(".row + .row"));
+        assert!(en.contains(".main-pane{") && en.contains("contain:layout paint;"));
+        assert!(en.contains(".action-rail{") && en.matches("contain:layout paint;").count() >= 2);
+        assert!(!en.contains("min-height:220px"));
+    }
+
+    #[test]
+    fn dashboard_tick_renders_only_the_active_view() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let update = en
+            .split("window.__pf={")
+            .nth(1)
+            .expect("dashboard update object")
+            .split("applyPendingUpdate();")
+            .next()
+            .expect("dashboard update body");
+
+        for guard in [
+            "if(view==='overview')",
+            "else if(view==='more')",
+            "else if(view==='settings')",
+            "else if(view==='fan')",
+        ] {
+            assert!(update.contains(guard));
+        }
+        assert!(!update.contains("applyRailView("));
+        assert!(!update.contains("reportHeight("));
+        assert!(en.contains(
+            "if(window.__pf&&window.__pf.update&&window.__pf_pending)window.__pf.update(window.__pf_pending);"
+        ));
+        assert_eq!(en.matches("applyRailView(").count(), 2);
     }
 
     #[test]
@@ -5060,26 +5820,6 @@ mod tests {
         assert!(en.contains("railSettings"));
         assert!(en.contains("setTimeout(function(){"));
         assert!(en.contains("},2500);"));
-    }
-
-    #[test]
-    fn settings_panel_contains_launch_at_login_toggle() {
-        let en = dashboard_html(ResolvedLanguage::En, false);
-        let ko = dashboard_html(ResolvedLanguage::Ko, false);
-
-        assert!(en.contains(r#"id="login-item-setting""#));
-        assert!(en.contains(r#"id="login-toggle""#));
-        assert!(en.contains(">Launch at Login<"));
-        assert!(en.contains("function toggleLoginItem(btn)"));
-        assert!(en.contains("window.ipc.postMessage('toggle_login_item')"));
-        assert!(en.contains("function updateLoginItemControl(d)"));
-        assert!(en.contains("d.login_item_installed"));
-        assert!(!en.contains("togglelogin"));
-        assert!(!en.contains("setup-login"));
-        assert!(!en.contains("rail-login"));
-
-        assert!(ko.contains(">시작 시 자동 실행<"));
-        assert!(ko.contains("이 Mac에 로그인하면 PeterFan을 자동으로 시작합니다."));
     }
 
     #[test]
@@ -5107,9 +5847,25 @@ mod tests {
         let source = include_str!("main.rs");
 
         assert!(source.contains("POPOVER_PREWARM_DELAY"));
+        assert!(source.contains(".with_focused(false)"));
+        assert!(source.contains(".with_accept_first_mouse(true)"));
         assert!(source.contains("defer_dashboard_io_after_open(app);"));
         assert!(source.contains("Let the normal tick deliver data"));
+        assert!(source.contains("next_metric_at = show_at;"));
+        assert!(source.contains("*control_flow = ControlFlow::WaitUntil(show_at);"));
         assert!(!source.contains("app.popover_visible = true;\n    update(app);"));
+    }
+
+    #[test]
+    fn health_panel_uses_globally_visible_text_helper() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains("setText('fan-curve-input',tempValue(d.fan_curve_input_temp_c));"));
+        assert!(en.contains("setText('fan-safety-hottest',tempValue(d.fan_safety_temp_c));"));
+        assert!(en.contains("setText('fan-critical-limit',tempValue(d.fan_critical_temp_c));"));
+        assert!(!en.contains("set('fan-curve-input'"));
+        assert!(!en.contains("set('fan-safety-hottest'"));
+        assert!(!en.contains("set('fan-critical-limit'"));
     }
 
     #[test]
@@ -5137,6 +5893,18 @@ mod tests {
         );
         assert_eq!(active_control_mode_from_mode("hold:45%"), "hold");
         assert_eq!(active_control_mode_from_mode(""), "");
+    }
+
+    #[test]
+    fn default_fan_control_selection_is_auto() {
+        assert_eq!(resolved_active_control_mode(Some("auto"), false), "auto");
+        assert_eq!(resolved_active_control_mode(None, false), "auto");
+        assert_eq!(resolved_active_control_mode(Some(""), false), "auto");
+        assert_eq!(resolved_active_control_mode(None, true), "hold");
+        assert_eq!(
+            resolved_active_control_mode(Some("manual:balanced"), false),
+            "profile"
+        );
     }
 
     #[test]
@@ -5184,12 +5952,39 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    #[test]
+    fn mock_mode_uses_a_separate_single_instance_lock() {
+        assert_ne!(
+            single_instance_lock_path(false),
+            single_instance_lock_path(true)
+        );
+        assert!(single_instance_lock_path(false)
+            .to_string_lossy()
+            .contains(".app."));
+        assert!(single_instance_lock_path(true)
+            .to_string_lossy()
+            .contains(".mock."));
+    }
+
     fn temp(id: &str, kind: SensorKind, value: f32) -> TempSensor {
         TempSensor {
             id: id.to_string(),
             label: id.to_string(),
             kind,
             value: Celsius(value),
+        }
+    }
+
+    #[cfg(test)]
+    fn selected_temp(
+        id: &str,
+        value: f32,
+        label_hint: Option<&'static str>,
+    ) -> SelectedTemperature {
+        SelectedTemperature {
+            id: id.to_string(),
+            value,
+            label_hint,
         }
     }
 
@@ -5234,8 +6029,42 @@ mod tests {
 
         assert_eq!(
             primary_menu_temperature(&temps, TemperatureSource::CoreAverage)
-                .map(|t| (t.id.as_str(), t.value.0)),
-            Some(("cpu.die", 87.0))
+                .map(|t| (t.id, t.value)),
+            Some(("cpu.die".to_string(), 87.0))
+        );
+    }
+
+    #[test]
+    fn primary_menu_temperature_prefers_cpu_headline_for_average_mode() {
+        let temps = vec![
+            temp("cpu.die", SensorKind::Cpu, 85.0),
+            temp("cpu.smc.die", SensorKind::Cpu, 83.0),
+            temp("cpu.smc.aggregate", SensorKind::Cpu, 74.0),
+            temp("cpu.smc.summary", SensorKind::Cpu, 63.0),
+            temp("cpu.iohid.tdie", SensorKind::Cpu, 50.0),
+            temp("cpu.die.hot", SensorKind::Cpu, 86.0),
+        ];
+
+        assert_eq!(
+            primary_menu_temperature(&temps, TemperatureSource::CoreAverage)
+                .map(|t| (t.id, (t.value * 10.0).round() / 10.0)),
+            Some(("cpu.die".to_string(), 85.0))
+        );
+    }
+
+    #[test]
+    fn primary_menu_temperature_uses_hottest_stable_average_without_cpu_die() {
+        let temps = vec![
+            temp("cpu.smc.aggregate", SensorKind::Cpu, 72.0),
+            temp("cpu.smc.summary", SensorKind::Cpu, 85.0),
+            temp("cpu.iohid.tdie", SensorKind::Cpu, 50.0),
+            temp("cpu.die.hot", SensorKind::Cpu, 101.0),
+        ];
+
+        assert_eq!(
+            primary_menu_temperature(&temps, TemperatureSource::CoreAverage)
+                .map(|t| (t.id, t.value)),
+            Some(("cpu.smc.summary".to_string(), 85.0))
         );
     }
 
@@ -5244,39 +6073,90 @@ mod tests {
         let temps = vec![
             temp("cpu.die", SensorKind::Cpu, 58.0),
             temp("cpu.die.hot", SensorKind::Cpu, 76.0),
+            temp("cpu.iohid.cpu", SensorKind::Cpu, 79.0),
             temp("cpu.iohid.tdie", SensorKind::Cpu, 55.0),
             temp("cpu.smc.summary", SensorKind::Cpu, 63.0),
             temp("cpu.smc.aggregate", SensorKind::Cpu, 74.0),
         ];
 
         assert_eq!(
-            primary_menu_temperature(&temps, TemperatureSource::IohidTdie).map(|t| t.id.as_str()),
-            Some("cpu.iohid.tdie")
+            primary_menu_temperature(&temps, TemperatureSource::IohidTdie).map(|t| t.id),
+            Some("cpu.iohid.tdie".to_string())
         );
         assert_eq!(
-            primary_menu_temperature(&temps, TemperatureSource::SmcAggregate)
-                .map(|t| t.id.as_str()),
-            Some("cpu.smc.aggregate")
+            primary_menu_temperature(
+                &[
+                    temp("cpu.die", SensorKind::Cpu, 58.0),
+                    temp("cpu.die.hot", SensorKind::Cpu, 76.0),
+                    temp("cpu.iohid.cpu", SensorKind::Cpu, 79.0),
+                    temp("cpu.smc.summary", SensorKind::Cpu, 63.0),
+                    temp("cpu.smc.aggregate", SensorKind::Cpu, 74.0),
+                ],
+                TemperatureSource::IohidTdie,
+            )
+            .map(|t| t.id),
+            Some("cpu.iohid.cpu".to_string())
+        );
+        let source_fallback = vec![
+            temp("cpu.die", SensorKind::Cpu, 58.0),
+            temp("cpu.iohid.cpu", SensorKind::Cpu, 79.0),
+            temp("cpu.smc.summary", SensorKind::Cpu, 63.0),
+            temp("cpu.smc.aggregate", SensorKind::Cpu, 74.0),
+        ];
+        assert_eq!(
+            primary_menu_temperature(&source_fallback, TemperatureSource::IohidTdie).map(|t| t.id),
+            Some("cpu.iohid.cpu".to_string())
         );
         assert_eq!(
-            primary_menu_temperature(&temps, TemperatureSource::Hottest).map(|t| t.id.as_str()),
-            Some("cpu.die.hot")
+            primary_menu_temperature(&temps, TemperatureSource::SmcAggregate).map(|t| t.id),
+            Some("cpu.smc.aggregate".to_string())
+        );
+        assert_eq!(
+            primary_menu_temperature(&temps, TemperatureSource::Hottest).map(|t| t.id),
+            Some("cpu.die.hot".to_string())
         );
     }
 
     #[test]
     fn display_temperature_source_labels_cpu_average() {
-        let cpu = temp("cpu.die", SensorKind::Cpu, 52.0);
-        let hot = temp("cpu.die.hot", SensorKind::Cpu, 67.0);
-        let airport = temp("airport", SensorKind::Other, 45.0);
+        let cpu = selected_temp("cpu.smc.die", 72.0, None);
+        let iohide = selected_temp("cpu.iohid.tdie", 70.0, None);
+        let iohide_cpu = selected_temp("cpu.iohid.cpu", 78.0, None);
+        let aggregate = selected_temp("cpu.smc.aggregate", 74.0, None);
+        let hot = selected_temp("cpu.die.hot", 67.0, None);
+        let airport = selected_temp("airport", 45.0, None);
 
         assert_eq!(
             display_temperature_source(ResolvedLanguage::Ko, Some(&cpu)),
-            "CPU core 평균"
+            "CPU 다이"
         );
         assert_eq!(
             display_temperature_source(ResolvedLanguage::En, Some(&cpu)),
-            "CPU core average"
+            "CPU die"
+        );
+        assert_eq!(
+            display_temperature_source(ResolvedLanguage::Ko, Some(&iohide)),
+            "CPU 다이"
+        );
+        assert_eq!(
+            display_temperature_source(ResolvedLanguage::En, Some(&iohide)),
+            "CPU Tdie"
+        );
+        assert_eq!(
+            display_temperature_source(ResolvedLanguage::Ko, Some(&iohide_cpu)),
+            "CPU 다이"
+        );
+        assert_eq!(
+            display_temperature_source(ResolvedLanguage::En, Some(&iohide_cpu)),
+            "CPU IOHID CPU"
+        );
+        assert_eq!(
+            display_temperature_source(ResolvedLanguage::Ko, Some(&aggregate)),
+            "SMC 집계"
+        );
+        assert_eq!(
+            display_temperature_source(ResolvedLanguage::En, Some(&aggregate)),
+            "SMC aggregate"
         );
         assert_eq!(
             display_temperature_source(ResolvedLanguage::Ko, Some(&hot)),
@@ -5296,39 +6176,45 @@ mod tests {
             temp("cpu.core.2", SensorKind::Cpu, 60.0),
             temp("ssd", SensorKind::Storage, 80.0),
         ];
-        let display = display_temperature(&temps);
+        let display = selected_temp("ssd", 80.0, None);
 
         assert_eq!(
-            display_temperature_source_for_temps(ResolvedLanguage::Ko, &temps, display),
+            display_temperature_source_for_temps(ResolvedLanguage::Ko, &temps, Some(&display)),
             "ssd"
         );
         assert_eq!(
-            display_temperature_source_for_temps(ResolvedLanguage::En, &temps, display),
+            display_temperature_source_for_temps(ResolvedLanguage::En, &temps, Some(&display)),
             "ssd"
         );
     }
 
     #[test]
     fn temperature_row_labels_call_out_average_and_hottest() {
-        let cpu = temp("cpu.die", SensorKind::Cpu, 52.0);
+        let cpu = temp("cpu.smc.die", SensorKind::Cpu, 70.0);
+        let cpu_average = temp("cpu.die", SensorKind::Cpu, 52.0);
         let hot = temp("cpu.die.hot", SensorKind::Cpu, 67.0);
         let airport = temp("airport", SensorKind::Other, 45.0);
 
         assert_eq!(
             temperature_row_label(ResolvedLanguage::Ko, &cpu),
-            "CPU 평균 · 전체 core"
+            "CPU 다이"
+        );
+        assert_eq!(temperature_row_label(ResolvedLanguage::En, &cpu), "CPU die");
+        assert_eq!(
+            temperature_row_label(ResolvedLanguage::Ko, &cpu_average),
+            "CPU Core Average"
         );
         assert_eq!(
-            temperature_row_label(ResolvedLanguage::En, &cpu),
-            "CPU average · all cores"
+            temperature_row_label(ResolvedLanguage::En, &cpu_average),
+            "CPU Core Average"
         );
         assert_eq!(
             temperature_row_label(ResolvedLanguage::Ko, &hot),
-            "CPU 최고"
+            "CPU Core Hottest"
         );
         assert_eq!(
             temperature_row_label(ResolvedLanguage::En, &hot),
-            "CPU hottest"
+            "CPU Core Hottest"
         );
         assert_eq!(
             temperature_row_label(ResolvedLanguage::Ko, &airport),
@@ -5348,15 +6234,6 @@ mod tests {
     }
 
     #[test]
-    fn menu_bar_temperature_metric_names_cpu_average() {
-        assert_eq!(strings(ResolvedLanguage::Ko).show_temperature, "CPU 평균");
-        assert_eq!(
-            strings(ResolvedLanguage::En).show_temperature,
-            "CPU Average"
-        );
-    }
-
-    #[test]
     fn menu_bar_display_style_labels_match_cat_runner() {
         assert_eq!(strings(ResolvedLanguage::En).style_graph, "Cat");
         assert_eq!(strings(ResolvedLanguage::En).style_both, "Number + Cat");
@@ -5366,6 +6243,7 @@ mod tests {
         let help = help_text();
         assert!(help.contains("--display <number|cat|both>"));
         assert!(help.contains("cat also accepts legacy graph"));
+        assert!(!help.contains("--metric"));
     }
 
     #[test]
@@ -5380,11 +6258,19 @@ mod tests {
         );
         assert!(
             setup_detail(ResolvedLanguage::En, true, true, Some("1.26.8"))
-                .contains("daemon v1.26.8 · reinstall fan control · one approval this time")
+                .contains("daemon v1.26.8 → v")
         );
         assert!(
             setup_detail(ResolvedLanguage::Ko, true, true, Some("1.26.8"))
-                .contains("팬 제어 재설치 · 이번 한 번 승인 필요")
+                .contains("데몬 v1.26.8 → v")
+        );
+        assert!(
+            setup_detail(ResolvedLanguage::En, true, true, Some("1.26.8"))
+                .ends_with("one approval this time")
+        );
+        assert!(
+            setup_detail(ResolvedLanguage::Ko, true, true, Some("1.26.8"))
+                .ends_with("이번 한 번 승인 필요")
         );
     }
 
@@ -5409,7 +6295,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_daemon_is_not_usable_for_control_or_cached_state() {
+    fn stale_daemon_is_not_usable_for_cached_state() {
         assert!(!daemon_control_usable(Some("1.26.24")));
         assert!(daemon_control_usable(Some(
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
@@ -5420,15 +6306,11 @@ mod tests {
     #[test]
     fn setup_detail_shows_daemon_version_when_ready() {
         let en = setup_detail(ResolvedLanguage::En, true, false, Some("1.26.18"));
-        assert!(en.contains("app v"));
-        assert!(en.contains("daemon v1.26.18 OK"));
-        assert!(en.contains("no admin prompt"));
+        assert_eq!(en, "daemon v1.26.18 · no additional approval");
         assert!(!en.contains("login"));
 
         let ko = setup_detail(ResolvedLanguage::Ko, true, false, Some("1.26.18"));
-        assert!(ko.contains("앱 v"));
-        assert!(ko.contains("데몬 v1.26.18 정상"));
-        assert!(ko.contains("암호 불필요"));
+        assert_eq!(ko, "데몬 v1.26.18 · 추가 승인 없음");
         assert!(!ko.contains("자동 실행"));
     }
 
@@ -5445,10 +6327,10 @@ mod tests {
             Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION),
         );
         assert!(en.contains(&format!(
-            "daemon v{} OK",
+            "daemon v{}",
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         )));
-        assert!(en.contains("no admin prompt"));
+        assert!(en.contains("no additional approval"));
 
         let ko = setup_detail(
             ResolvedLanguage::Ko,
@@ -5457,10 +6339,10 @@ mod tests {
             Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION),
         );
         assert!(ko.contains(&format!(
-            "데몬 v{} 정상",
+            "데몬 v{}",
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         )));
-        assert!(ko.contains("암호 불필요"));
+        assert!(ko.contains("추가 승인 없음"));
     }
 
     #[test]

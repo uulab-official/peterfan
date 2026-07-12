@@ -22,7 +22,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/load-env.sh"
 
 BIN="${1:-target/release/peterfan-menubar}"
 OUTDIR="${2:-dist}"
-VERSION="${VERSION:-0.0.0}"
+BUNDLE_VERSION=""
+if [[ -z "${VERSION:-}" ]]; then
+  BUNDLE_VERSION="$(awk -F'"' '/^\[workspace.package\]/{f=1;next}/^\[/{f=0}f && /version[[:space:]]*=/{print $2; exit}' Cargo.toml)"
+fi
+VERSION="${VERSION:-${BUNDLE_VERSION:-0.0.0}}"
 BUNDLE_ID="${PETERFAN_BUNDLE_ID:-kr.co.uulab.peterfan}"
 APP="$OUTDIR/PeterFan.app"
 

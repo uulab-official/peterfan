@@ -52,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.26.99.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.27.5.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -165,6 +165,9 @@ cargo run -p peterfan-tui -- --mock
 
 # macOS 메뉴바(Windows는 시스템 트레이)에서 실시간 지표 보기
 cargo run -p peterfan-menubar
+
+# 릴리스 앱 번들을 만들고 포커스를 빼앗지 않게 실행한 뒤 단일 실행 확인
+./script/build_and_run.sh --verify
 ```
 
 설치하고 나면 바이너리 이름은 그냥 `peterfan`입니다.
@@ -172,7 +175,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.26.99
+PeterFan v1.27.5
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
