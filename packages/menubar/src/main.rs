@@ -42,7 +42,7 @@ use peterfan_core::config::{
 use peterfan_core::error::CoreError;
 use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
-use peterfan_core::thermals::{hottest_temperature_c, representative_temperature_c};
+use peterfan_core::thermals::{representative_temperature_c, safety_temperature_c};
 use peterfan_core::types::SensorKind;
 #[cfg(test)]
 use peterfan_core::types::SensorSource;
@@ -2162,7 +2162,7 @@ fn update(app: &mut App) {
     let display_temp = primary_menu_temperature(&temps, TemperatureSource::CoreAverage)
         .map(|t| t.value)
         .or_else(|| representative_temperature_c(&temps));
-    let hottest = hottest_temperature_c(&temps);
+    let safety_temp = safety_temperature_c(&temps);
     let core_hottest = temps
         .iter()
         .find(|temp| temp.id == "cpu.die.hot")
@@ -2230,7 +2230,7 @@ fn update(app: &mut App) {
         if let Some(temp) = display_temp.filter(|t| *t > 0.0) {
             tip_parts.push(format!("CPU {temp:.0}°C"));
         }
-        if let (Some(display), Some(hot)) = (display_temp, hottest) {
+        if let (Some(display), Some(hot)) = (display_temp, safety_temp) {
             if hot > display + 1.0 {
                 let label = if app.language.resolve() == ResolvedLanguage::Ko {
                     "최고"
@@ -2262,7 +2262,8 @@ fn update(app: &mut App) {
     app.disk_io_h.push(app.dashboard_slow_cache.disk_io_rate);
 
     // Temperatures: CPU average is the headline users compare with iStat/Stats;
-    // the hottest sensor is still listed below and remains the fan-control input.
+    // raw diagnostic sensors remain listed below, while fan safety uses the
+    // mapped core hottest value exposed by the platform backend.
     let selected_temp = primary_menu_temperature(&temps, app.temperature_source).or_else(|| {
         representative_temperature_c(&temps).map(|value| SelectedTemperature {
             id: "cpu.die".to_string(),
@@ -2449,7 +2450,7 @@ fn update(app: &mut App) {
         "controllable_fan_count": fans.iter().filter(|f| f.controllable).count(),
         "fan_curve_input_temp_c": display_temp,
         "fan_core_hottest_temp_c": core_hottest,
-        "fan_safety_temp_c": hottest,
+        "fan_safety_temp_c": safety_temp,
         "fan_critical_temp_c": app.critical_temp_c,
         "fan_action_log": fan_action_log_snapshot(),
         "app_version": env!("CARGO_PKG_VERSION"),
@@ -2591,7 +2592,7 @@ fn run_fan_diagnostic(provider: &dyn HardwareProvider) -> (bool, String) {
         fans.len(),
         controllable_count,
         representative_temperature_c(&temps),
-        hottest_temperature_c(&temps),
+        safety_temperature_c(&temps),
         config.critical_temp_c,
         peterfan_platform::installed_daemon_version().as_deref(),
         peterfan_platform::daemon_reachable(),

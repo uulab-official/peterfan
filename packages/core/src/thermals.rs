@@ -12,6 +12,41 @@ pub fn hottest_temperature_c(temps: &[TempSensor]) -> Option<f32> {
         .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
 }
 
+/// Hottest trustworthy reading for critical fan-control decisions.
+///
+/// `cpu.die.hot` is the platform backend's mapped CPU-core maximum. When it
+/// exists, diagnostic CPU hotspot/aggregate feeds must not override it: some
+/// Apple Silicon SMC hotspot keys remain near 100 °C while the actual cores
+/// are cool. Non-CPU components are still considered so a genuinely hot GPU,
+/// SSD, or board sensor can trigger protection.
+pub fn safety_temperature_c(temps: &[TempSensor]) -> Option<f32> {
+    fn max_value<'a>(sensors: impl Iterator<Item = &'a TempSensor>) -> Option<f32> {
+        sensors
+            .map(|sensor| sensor.value.0)
+            .filter(|value| value.is_finite())
+            .max_by(f32::total_cmp)
+    }
+
+    let cpu = temps
+        .iter()
+        .find(|sensor| sensor.id == "cpu.die.hot" && sensor.value.0.is_finite())
+        .map(|sensor| sensor.value.0)
+        .or_else(|| {
+            max_value(
+                temps
+                    .iter()
+                    .filter(|sensor| sensor.kind == SensorKind::Cpu)
+                    .filter(|sensor| !sensor.id.contains("hotspot")),
+            )
+        });
+    let non_cpu = max_value(temps.iter().filter(|sensor| sensor.kind != SensorKind::Cpu));
+
+    cpu.into_iter()
+        .chain(non_cpu)
+        .max_by(f32::total_cmp)
+        .or_else(|| hottest_temperature_c(temps))
+}
+
 /// Human-facing representative temperature.
 ///
 /// PeterFan publishes `cpu.die` as the calibrated CPU headline temperature
@@ -187,5 +222,39 @@ mod tests {
         ];
 
         assert_eq!(super::hottest_temperature_c(&temps), Some(71.0));
+    }
+
+    #[test]
+    fn safety_temperature_prefers_mapped_core_hottest_over_diagnostic_hotspot() {
+        let temps = vec![
+            temp("cpu.die", SensorKind::Cpu, 65.0),
+            temp("cpu.die.hot", SensorKind::Cpu, 69.0),
+            temp("cpu.smc.aggregate", SensorKind::Cpu, 73.0),
+            temp("cpu.smc.hotspot.hot", SensorKind::Cpu, 101.0),
+            temp("ssd", SensorKind::Storage, 34.0),
+        ];
+
+        assert_eq!(super::safety_temperature_c(&temps), Some(69.0));
+    }
+
+    #[test]
+    fn safety_temperature_still_protects_hot_non_cpu_components() {
+        let temps = vec![
+            temp("cpu.die.hot", SensorKind::Cpu, 69.0),
+            temp("gpu.die", SensorKind::Gpu, 94.0),
+        ];
+
+        assert_eq!(super::safety_temperature_c(&temps), Some(94.0));
+    }
+
+    #[test]
+    fn safety_temperature_falls_back_to_raw_cpu_without_mapped_core_hottest() {
+        let temps = vec![
+            temp("cpu.performance-core.1", SensorKind::Cpu, 72.0),
+            temp("cpu.performance-core.2", SensorKind::Cpu, 76.0),
+            temp("cpu.smc.hotspot.hot", SensorKind::Cpu, 101.0),
+        ];
+
+        assert_eq!(super::safety_temperature_c(&temps), Some(76.0));
     }
 }

@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use peterfan_core::config::RuleContext;
 use peterfan_core::profile::Profile;
-use peterfan_core::thermals::{hottest_temperature_c, representative_temperature_c};
+use peterfan_core::thermals::{representative_temperature_c, safety_temperature_c};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 /// Set by the signal handler; the control loop checks it and exits cleanly.
@@ -349,15 +349,15 @@ fn control_loop(
             s.last_fans = fans_now.clone();
             s.last_power_w = power_now;
         }
-        let hottest = hottest_temperature_c(&temps).unwrap_or(0.0);
-        let representative_temp = representative_temperature_c(&temps).unwrap_or(hottest);
+        let safety_temp = safety_temperature_c(&temps).unwrap_or(0.0);
+        let representative_temp = representative_temperature_c(&temps).unwrap_or(safety_temp);
 
         if auto {
             // Per-fan overrides still apply on top of the global "auto" mode
             // (e.g. pin one fan manually while the rest follow the OS). An
             // override never survives a critical temperature — `effective_duty`
             // forces the fan to 100% exactly like the non-auto branch below.
-            let critical_now = hottest >= critical;
+            let critical_now = safety_temp >= critical;
             for id in fan_ids {
                 let has_override = state.fan_overrides.contains_key(id);
                 let result = if has_override {
@@ -398,7 +398,7 @@ fn control_loop(
             // Reflect the effective profile so `status` is accurate.
             shared.lock().expect("state poisoned").profile = profile;
 
-            let (duty, why): (u8, String) = if hottest >= critical {
+            let (duty, why): (u8, String) = if safety_temp >= critical {
                 (100, "CRITICAL".into())
             } else if let Some(d) = state.held_duty {
                 (d, format!("hold:{d}%"))
@@ -409,7 +409,7 @@ fn control_loop(
                     profile.as_str().into(),
                 )
             };
-            let critical_now = hottest >= critical;
+            let critical_now = safety_temp >= critical;
             for id in fan_ids {
                 let effective = effective_duty(&state.fan_overrides, id, duty, critical_now);
                 if let Err(e) = provider.set_fan_duty(id, effective) {
@@ -426,23 +426,23 @@ fn control_loop(
             // Only log when duty or mode actually changes (avoids flooding the log).
             if last_duty != Some(duty) || last_src != src {
                 println!(
-                    "peterfand: avg {representative_temp:.0}°C / hot {hottest:.0}°C -> {duty}% ({why}) [{src} ac={on_ac}]"
+                    "peterfand: avg {representative_temp:.0}°C / safety {safety_temp:.0}°C -> {duty}% ({why}) [{src} ac={on_ac}]"
                 );
                 last_duty = Some(duty);
                 last_src = src.to_string();
             }
 
             // Edge-triggered critical-temperature alert (with hysteresis).
-            if hottest >= critical && !was_critical {
+            if safety_temp >= critical && !was_critical {
                 notify(
                     "PeterFan — critical temperature",
-                    &format!("{hottest:.0}°C ≥ {critical:.0}°C · fans forced to 100%"),
+                    &format!("{safety_temp:.0}°C ≥ {critical:.0}°C · fans forced to 100%"),
                 );
                 was_critical = true;
-            } else if hottest < critical - 5.0 && was_critical {
+            } else if safety_temp < critical - 5.0 && was_critical {
                 notify(
                     "PeterFan",
-                    &format!("Temperature back to normal ({hottest:.0}°C)"),
+                    &format!("Temperature back to normal ({safety_temp:.0}°C)"),
                 );
                 was_critical = false;
             }

@@ -76,6 +76,8 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] Make benchmark/log commands record both average and hottest temperature
 - [x] Group the menu-bar raw sensor inventory by component kind and show its
       collection source
+- [x] Keep diagnostic CPU hotspot feeds out of the critical fan-control input
+      when a mapped core-hottest reading is available
 - [ ] Add tests for representative temperature selection across mixed sensors
 
 ### v1.29 — Distribution & Updates

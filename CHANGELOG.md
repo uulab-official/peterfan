@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.9] — 균형 모드 최대 팬 속도 오작동 수정
+
+### Fixed
+- **진단용 CPU hotspot의 잘못된 임계 온도 판정 수정** — 일부 Apple Silicon
+  SMC hotspot 키가 실제 core 온도와 무관하게 101°C 근처를 보고해 균형 모드도
+  팬을 100%로 강제하던 문제를 수정함. 임계 제어는 mapped `CPU Core Hottest`를
+  우선하고, hotspot·aggregate는 진단 목록에만 유지함.
+- **비CPU 과열 보호 유지** — CPU 안전 입력을 안정화하면서도 GPU, SSD,
+  메인보드 등 비CPU 센서가 실제로 임계 온도를 넘으면 기존처럼 100% 안전
+  오버라이드가 적용됨.
+
 ## [1.27.8] — 센서 출처와 온도 기록 개선
 
 ### Added
