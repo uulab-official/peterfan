@@ -696,15 +696,46 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
 /// Post a desktop notification (best-effort).
 #[cfg(target_os = "macos")]
 fn notify(title: &str, message: &str) {
+    use std::os::unix::fs::MetadataExt;
+
+    let Ok(console) = std::fs::metadata("/dev/console") else {
+        return;
+    };
+    let Some(mut command) = notification_command_for_uid(console.uid(), title, message) else {
+        return;
+    };
+    if let Ok(output) = command.output() {
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            eprintln!("peterfand: notification failed: {}", detail.trim());
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn notification_command_for_uid(
+    uid: u32,
+    title: &str,
+    message: &str,
+) -> Option<std::process::Command> {
+    // At the login window /dev/console belongs to root and there is no GUI
+    // bootstrap namespace to receive notifications.
+    if uid == 0 {
+        return None;
+    }
     let script = format!(
         "display notification {} with title {}",
         applescript_quote(message),
         applescript_quote(title)
     );
-    let _ = std::process::Command::new("osascript")
+    let mut command = std::process::Command::new("/bin/launchctl");
+    command
+        .arg("asuser")
+        .arg(uid.to_string())
+        .arg("/usr/bin/osascript")
         .arg("-e")
-        .arg(script)
-        .status();
+        .arg(script);
+    Some(command)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -783,6 +814,36 @@ mod tests {
         let mut overrides = std::collections::HashMap::new();
         overrides.insert("fan.left".to_string(), 10u8);
         assert_eq!(effective_duty(&overrides, "fan.left", 100, true), 100);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn notification_targets_the_logged_in_users_bootstrap_session() {
+        use std::ffi::OsStr;
+
+        let command = notification_command_for_uid(501, "PeterFan", "Temperature normal")
+            .expect("a logged-in user should receive notifications");
+        assert_eq!(command.get_program(), OsStr::new("/bin/launchctl"));
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                "asuser",
+                "501",
+                "/usr/bin/osascript",
+                "-e",
+                "display notification \"Temperature normal\" with title \"PeterFan\"",
+            ]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn notification_is_skipped_when_no_user_is_logged_in() {
+        assert!(notification_command_for_uid(0, "PeterFan", "test").is_none());
     }
 
     #[test]

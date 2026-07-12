@@ -78,6 +78,8 @@ These are the highest-leverage improvements before adding large new surfaces.
       collection source
 - [x] Keep diagnostic CPU hotspot feeds out of the critical fan-control input
       when a mapped core-hottest reading is available
+- [x] Route LaunchDaemon notifications through the logged-in user's bootstrap
+      session without focus or authorization prompts
 - [ ] Add tests for representative temperature selection across mixed sensors
 
 ### v1.29 — Distribution & Updates

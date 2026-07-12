@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.10] — 데몬 알림 세션 오류 수정
+
+### Fixed
+- **root 데몬의 NotificationCenter 연결 오류 수정** — LaunchDaemon이
+  `osascript`를 시스템 세션에서 직접 실행해 알림 전송 때마다
+  `NSNotificationCenter connection invalid`를 기록하던 문제를 수정함. 현재
+  로그인한 콘솔 사용자의 bootstrap 세션으로 알림을 전달하며, 로그인 사용자가
+  없으면 오류 없이 건너뜀.
+
+### Quality
+- **전체 안정성 점검 통과** — Cargo check, Clippy 무경고, 전체 테스트,
+  배포 스크립트 구문, macOS crash/fault 로그, 앱 서명·공증 무결성과 단일 실행을
+  다시 검증함.
+
 ## [1.27.9] — 균형 모드 최대 팬 속도 오작동 수정
 
 ### Fixed
