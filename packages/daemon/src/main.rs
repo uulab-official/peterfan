@@ -148,6 +148,10 @@ struct State {
     /// mode change from one that has actually reached the hardware loop.
     control_revision: u64,
     applied_control_revision: u64,
+    /// Fan-specific duty targets from the most recent successful hardware
+    /// write. OS-managed fans are omitted because their target belongs to macOS.
+    fan_targets: std::collections::HashMap<String, u8>,
+    last_control_apply_unix_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -260,6 +264,8 @@ fn run(cli: Cli) -> Result<()> {
             control_health: ControlHealth::default(),
             control_revision: 1,
             applied_control_revision: 0,
+            fan_targets: std::collections::HashMap::new(),
+            last_control_apply_unix_ms: None,
         };
         // Restore the last user-chosen mode so a reboot doesn't reset fan settings.
         if let Some(saved) = load_saved_state() {
@@ -362,6 +368,13 @@ fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
 }
 
@@ -523,6 +536,7 @@ fn control_loop(
         }
 
         let mut write_errors = Vec::new();
+        let mut requested_targets = std::collections::HashMap::new();
 
         if auto {
             // Per-fan overrides still apply on top of the global "auto" mode
@@ -533,10 +547,9 @@ fn control_loop(
             for id in fan_ids {
                 let has_override = state.fan_overrides.contains_key(id);
                 let result = if has_override {
-                    provider.set_fan_duty(
-                        id,
-                        effective_duty(&state.fan_overrides, id, 100, critical_now),
-                    )
+                    let effective = effective_duty(&state.fan_overrides, id, 100, critical_now);
+                    requested_targets.insert(id.clone(), effective);
+                    provider.set_fan_duty(id, effective)
                 } else {
                     provider.set_fan_auto(id)
                 };
@@ -589,6 +602,7 @@ fn control_loop(
             let critical_now = safety_temp >= critical;
             for id in fan_ids {
                 let effective = effective_duty(&state.fan_overrides, id, duty, critical_now);
+                requested_targets.insert(id.clone(), effective);
                 if let Err(e) = provider.set_fan_duty(id, effective) {
                     write_errors.push(format!("{id}: {e}"));
                 }
@@ -633,6 +647,8 @@ fn control_loop(
             s.control_health.retry_after_unix = None;
             s.control_health.last_error = None;
             s.applied_control_revision = state.control_revision;
+            s.fan_targets = requested_targets;
+            s.last_control_apply_unix_ms = Some(unix_now_ms());
             drop(s);
             if recovered {
                 println!("peterfand: control recovered; resumed requested mode");
@@ -667,6 +683,7 @@ fn control_loop(
                 s.control_health.consecutive_fan_write_failures = consecutive;
                 s.control_health.retry_after_unix = Some(retry_after);
                 s.control_health.last_error = Some(detail.clone());
+                s.fan_targets.clear();
             }
             if first_failure {
                 eprintln!("peterfand: {detail}");
@@ -724,14 +741,14 @@ fn apply_cached_control_request(
     }
 
     let mut write_errors = Vec::new();
+    let mut requested_targets = std::collections::HashMap::new();
     for id in fan_ids {
         let result = if state.auto && !state.fan_overrides.contains_key(id) {
             provider.set_fan_auto(id)
         } else {
-            provider.set_fan_duty(
-                id,
-                effective_duty(&state.fan_overrides, id, duty, critical_now),
-            )
+            let effective = effective_duty(&state.fan_overrides, id, duty, critical_now);
+            requested_targets.insert(id.clone(), effective);
+            provider.set_fan_duty(id, effective)
         };
         if let Err(error) = result {
             write_errors.push(format!("{id}: {error}"));
@@ -748,6 +765,8 @@ fn apply_cached_control_request(
         current.control_health.retry_after_unix = None;
         current.control_health.last_error = None;
         current.applied_control_revision = state.control_revision;
+        current.fan_targets = requested_targets;
+        current.last_control_apply_unix_ms = Some(unix_now_ms());
     } else {
         drop(current);
         let restore_errors = restore_fans_to_auto(provider, fan_ids);
@@ -778,6 +797,7 @@ fn apply_cached_control_request(
                 + fan_write_retry_delay_secs(current.control_health.consecutive_fan_write_failures),
         );
         current.control_health.last_error = Some(detail);
+        current.fan_targets.clear();
     }
 }
 
@@ -811,10 +831,20 @@ fn spawn_ipc_server(
             }
             let revision_before = shared.lock().expect("state poisoned").control_revision;
             let reply = handle_command(line.trim(), &shared);
-            if shared.lock().expect("state poisoned").control_revision != revision_before {
-                apply_cached_control_request(provider.as_ref(), &fan_ids, &shared);
-            }
+            let changed =
+                shared.lock().expect("state poisoned").control_revision != revision_before;
+            // A first Apple Silicon manual-mode unlock can take several seconds.
+            // Acknowledge the accepted command first, then perform the SMC write
+            // in a worker while clients confirm it through the apply revision.
             let _ = writeln!(stream, "{reply}");
+            if changed {
+                let shared = Arc::clone(&shared);
+                let provider = Arc::clone(&provider);
+                let fan_ids = fan_ids.clone();
+                std::thread::spawn(move || {
+                    apply_cached_control_request(provider.as_ref(), &fan_ids, &shared);
+                });
+            }
         }
     });
 }
@@ -990,6 +1020,8 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 "control_health": s.control_health,
                 "control_revision": s.control_revision,
                 "applied_control_revision": s.applied_control_revision,
+                "fan_targets": s.fan_targets,
+                "last_control_apply_unix_ms": s.last_control_apply_unix_ms,
             })) {
                 Ok(json) => format!("ok {json}"),
                 Err(_) => "error: serialization failed".into(),
@@ -1210,6 +1242,8 @@ mod tests {
             control_health: ControlHealth::default(),
             control_revision: 1,
             applied_control_revision: 0,
+            fan_targets: std::collections::HashMap::new(),
+            last_control_apply_unix_ms: None,
         }))
     }
 
@@ -1454,6 +1488,8 @@ mod tests {
         assert_eq!(json["control_health"]["last_error"], "sensor unavailable");
         assert_eq!(json["control_revision"], 1);
         assert_eq!(json["applied_control_revision"], 0);
+        assert_eq!(json["fan_targets"], serde_json::json!({}));
+        assert!(json["last_control_apply_unix_ms"].is_null());
     }
 
     #[test]
@@ -1501,6 +1537,11 @@ mod tests {
         assert_eq!(state.applied_control_revision, 2);
         assert_eq!(state.profile, Profile::Performance);
         assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            state.fan_targets.get("fan.test"),
+            Some(&Profile::Performance.default_curve().duty_at(70.0))
+        );
+        assert!(state.last_control_apply_unix_ms.is_some());
     }
 
     #[test]

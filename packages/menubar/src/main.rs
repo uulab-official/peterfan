@@ -46,7 +46,7 @@ use peterfan_core::thermals::{representative_temperature_c, safety_temperature_c
 use peterfan_core::types::SensorKind;
 #[cfg(test)]
 use peterfan_core::types::SensorSource;
-use peterfan_core::types::{Celsius, TempSensor};
+use peterfan_core::types::{Celsius, Fan, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
@@ -1040,6 +1040,15 @@ fn acquire_single_instance_lock_at(path: &Path) -> Result<File, String> {
 /// Push a sample, dropping the oldest once past [`HIST_CAP`].
 fn push_hist<T>(buf: &mut VecDeque<T>, v: T) {
     push_capped(buf, v, HIST_CAP);
+}
+
+fn normalized_fan_speed_percent(fan: &Fan) -> Option<f32> {
+    match (fan.min_rpm, fan.max_rpm) {
+        (Some(min), Some(max)) if max > min => Some(
+            (fan.rpm.saturating_sub(min) as f32 / (max - min) as f32 * 100.0).clamp(0.0, 100.0),
+        ),
+        _ => None,
+    }
 }
 
 fn push_capped<T>(buf: &mut VecDeque<T>, v: T, cap: usize) {
@@ -2215,11 +2224,7 @@ fn update(app: &mut App) {
     let fastest_rpm = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
     let fastest_pct = fans
         .iter()
-        .filter_map(|f| {
-            f.max_rpm
-                .filter(|&m| m > 0)
-                .map(|m| f.rpm as f32 / m as f32 * 100.0)
-        })
+        .filter_map(normalized_fan_speed_percent)
         .fold(0.0_f32, f32::max);
     let rx: f64 = nets.iter().map(|n| n.rx_rate).sum();
     let tx: f64 = nets.iter().map(|n| n.tx_rate).sum();
@@ -2377,6 +2382,11 @@ fn update(app: &mut App) {
     } else {
         local_fan_overrides()
     };
+    let fan_targets: std::collections::HashMap<String, u8> = daemon_json
+        .as_ref()
+        .and_then(|value| value.get("fan_targets").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
     let control_health = daemon_json
         .as_ref()
         .and_then(|value| value.get("control_health").cloned())
@@ -2416,11 +2426,18 @@ fn update(app: &mut App) {
     let fan_rows: Vec<_> = fans
         .iter()
         .map(|f| {
-            let pct = match f.max_rpm {
-                Some(m) if m > 0 => (f.rpm as f32 / m as f32 * 100.0).clamp(0.0, 100.0),
-                _ => 0.0,
-            };
+            // Fan commands map 0-100% onto the physical [minimum, maximum]
+            // range. Use that same basis here so the live bar, manual slider,
+            // and daemon target all describe the same speed.
+            let pct = normalized_fan_speed_percent(f).unwrap_or(0.0);
             let override_pct = fan_overrides.get(&f.id).copied();
+            let target_pct = fan_targets.get(&f.id).copied();
+            let target_rpm = target_pct.and_then(|target| match (f.min_rpm, f.max_rpm) {
+                (Some(min), Some(max)) if max > min => {
+                    Some((min as f32 + (target as f32 / 100.0) * (max - min) as f32).round() as u32)
+                }
+                _ => None,
+            });
             serde_json::json!({
                 "id": f.id,
                 "l": f.label,
@@ -2431,6 +2448,8 @@ fn update(app: &mut App) {
                 "controllable": f.controllable,
                 "manual": override_pct.is_some(),
                 "override_pct": override_pct,
+                "target_pct": target_pct,
+                "target_rpm": target_rpm,
             })
         })
         .collect();
@@ -3827,8 +3846,10 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .fan-card-head{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;margin-bottom:3px;}
 .fan-card-head .fn{font-weight:600;}
 .fan-card-head .fv{font-variant-numeric:tabular-nums;color:var(--dim);}
-.fan-bar{height:3px;background:var(--track);border-radius:99px;overflow:hidden;margin-bottom:4px;}
+.fan-bar{height:3px;background:var(--track);border-radius:99px;position:relative;margin-bottom:4px;}
 .fan-bar i{display:block;height:100%;background:var(--accent);border-radius:99px;width:0;transition:width .35s;}
+.fan-target-marker{display:none;position:absolute;top:-2px;width:2px;height:7px;margin-left:-1px;border-radius:1px;background:var(--text);box-shadow:0 0 0 1px var(--bg);transition:left .2s;}
+.fan-card.ramping .fan-card-head .fv{color:var(--accent);}
 .fan-bottom{display:flex;justify-content:space-between;align-items:center;gap:8px;}
 .fan-rpm-text{font-size:9.5px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .fan-seg{display:flex;gap:4px;flex:0 0 auto;}
@@ -4458,7 +4479,7 @@ function renderFanCards(fans){
       card.className='fan-card';
       card.setAttribute('data-fan-id',f.id);
       card.innerHTML='<div class="fan-card-head"><span class="fn"></span><span class="fv"></span></div>'+
-        '<div class="fan-bar"><i></i></div>'+
+        '<div class="fan-bar"><i></i><span class="fan-target-marker"></span></div>'+
         '<div class="fan-bottom"><span class="fan-rpm-text"></span><span class="fan-seg"><button class="fa-auto"></button><button class="fa-manual"></button></span></div>'+
         '<div class="fan-rpm-row inactive"><span class="fa-min"></span><input type="range"><input type="number" class="fa-num" inputmode="numeric"><span class="fa-max"></span></div>';
       var btnAuto=card.querySelector('.fa-auto');
@@ -4538,8 +4559,18 @@ function renderFanCards(fans){
     card.dataset.curPct=targetPct;
     card.querySelector('.fn').textContent=f.l;
     card.querySelector('.fan-bar i').style.width=Math.max(0,Math.min(100,f.pct))+'%';
+    var appliedTarget=f.target_pct==null?null:Number(f.target_pct);
+    var targetRpm=f.target_rpm==null?null:Number(f.target_rpm);
+    var tolerance=useRpm?Math.max(100,Math.round(f.max_rpm*0.025)):3;
+    var ramping=targetRpm!=null&&Math.abs(f.cur_rpm-targetRpm)>tolerance;
+    var marker=card.querySelector('.fan-target-marker');
+    if(marker){
+      marker.style.display=appliedTarget==null?'none':'block';
+      if(appliedTarget!=null)marker.style.left=Math.max(0,Math.min(100,appliedTarget))+'%';
+    }
+    card.classList.toggle('ramping',ramping);
     card.querySelector('.fan-rpm-text').textContent=useRpm
-      ?(f.min_rpm+' — '+f.cur_rpm+' — '+f.max_rpm)
+      ?(targetRpm!=null?(f.cur_rpm+' RPM → '+targetRpm+' RPM'):(f.min_rpm+' — '+f.cur_rpm+' — '+f.max_rpm))
       :(Math.round(f.pct)+'%');
     card.classList.toggle('pending',!!pendingMode);
     card.querySelector('.fa-auto').disabled=!!pendingMode;
@@ -4563,10 +4594,13 @@ function renderFanCards(fans){
     // control — without this, typing into the number box would get
     // clobbered by the next 1s poll before the "change" event even fires.
     if(slider!==document.activeElement&&numInput!==document.activeElement){
-      var targetRpm=useRpm?Math.round(f.min_rpm+(f.max_rpm-f.min_rpm)*targetPct/100):Math.round(targetPct);
-      slider.value=targetRpm;
-      numInput.value=targetRpm;
-      card.querySelector('.fv').textContent=displayManual?(useRpm?(targetRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%');
+      var editRpm=useRpm?Math.round(f.min_rpm+(f.max_rpm-f.min_rpm)*targetPct/100):Math.round(targetPct);
+      slider.value=editRpm;
+      numInput.value=editRpm;
+      var shownTarget=appliedTarget==null?targetPct:appliedTarget;
+      card.querySelector('.fv').textContent=appliedTarget!=null
+        ?(Math.round(shownTarget)+'% · '+(ramping?(LANG==='ko'?'조정 중':'adjusting'):(LANG==='ko'?'적용됨':'applied')))
+        :(displayManual?(useRpm?(editRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%'));
     }
   });
   Array.prototype.slice.call(container.children).forEach(function(c){
@@ -6058,9 +6092,13 @@ mod tests {
 
         assert!(en.contains("var targetPct=f.override_pct!=null?f.override_pct:f.pct;"));
         assert!(en.contains("card.dataset.curPct=targetPct;"));
-        assert!(en.contains("var targetRpm=useRpm?Math.round(f.min_rpm+(f.max_rpm-f.min_rpm)*targetPct/100):Math.round(targetPct);"));
+        assert!(en.contains("var editRpm=useRpm?Math.round(f.min_rpm+(f.max_rpm-f.min_rpm)*targetPct/100):Math.round(targetPct);"));
+        assert!(en.contains("var appliedTarget=f.target_pct==null?null:Number(f.target_pct);"));
+        assert!(en.contains("f.cur_rpm+' RPM → '+targetRpm+' RPM'"));
         assert!(en.contains("var displayManual=pendingMode?pendingMode==='manual':manual;"));
-        assert!(en.contains("card.querySelector('.fv').textContent=displayManual?(useRpm?(targetRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%');"));
+        assert!(en.contains("card.querySelector('.fv').textContent=appliedTarget!=null"));
+        assert!(en.contains("(LANG==='ko'?'조정 중':'adjusting')"));
+        assert!(en.contains("(LANG==='ko'?'적용됨':'applied')"));
         assert!(en.contains("if(!markFanPending(card,'auto'))return;"));
         assert!(en.contains("if(!markFanPending(card,'manual'))return;"));
     }
@@ -6635,6 +6673,23 @@ mod tests {
             .menubar
             .daemon_update_prompt_snoozed_until_unix
             .is_none());
+    }
+
+    #[test]
+    fn fan_speed_percent_uses_the_controllable_rpm_range() {
+        let fan_at = |rpm| Fan {
+            id: "fan.test".into(),
+            label: "Test Fan".into(),
+            rpm,
+            min_rpm: Some(2_000),
+            max_rpm: Some(6_000),
+            duty_percent: None,
+            controllable: true,
+        };
+
+        assert_eq!(normalized_fan_speed_percent(&fan_at(2_000)), Some(0.0));
+        assert_eq!(normalized_fan_speed_percent(&fan_at(4_000)), Some(50.0));
+        assert_eq!(normalized_fan_speed_percent(&fan_at(6_000)), Some(100.0));
     }
 
     #[test]
