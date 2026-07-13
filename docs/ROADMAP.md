@@ -36,6 +36,8 @@ working product map we use to decide what to polish next.
 - [x] GitHub Releases OTA update path and local release scripts
 - [x] LaunchDaemon install, self-reinstall path, and admin-prompt explanation
 - [x] README screenshot generation and release readiness checks
+- [x] Production release gate checklist in
+      [`PRODUCTION_CHECKLIST.md`](./PRODUCTION_CHECKLIST.md)
 
 ## Now
 

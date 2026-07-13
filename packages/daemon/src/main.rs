@@ -42,6 +42,8 @@ static STOP: AtomicBool = AtomicBool::new(false);
 /// interval — the interval is for periodic temperature re-evaluation, not
 /// for how long a user-issued command should take to land.
 static APPLY_NOW: AtomicBool = AtomicBool::new(false);
+const FAN_WRITE_RETRY_BASE_SECS: u64 = 5;
+const FAN_WRITE_RETRY_MAX_SECS: u64 = 60;
 
 // ── State persistence ────────────────────────────────────────────────────────
 
@@ -147,6 +149,8 @@ struct ControlHealth {
     sensor_failure_count: u64,
     consecutive_sensor_failures: u32,
     fan_write_failure_count: u64,
+    consecutive_fan_write_failures: u32,
+    retry_after_unix: Option<u64>,
     last_sensor_ok_unix: Option<u64>,
     last_error: Option<String>,
 }
@@ -352,6 +356,13 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+fn fan_write_retry_delay_secs(consecutive_failures: u32) -> u64 {
+    let exponent = consecutive_failures.saturating_sub(1).min(6);
+    FAN_WRITE_RETRY_BASE_SECS
+        .saturating_mul(1u64 << exponent)
+        .min(FAN_WRITE_RETRY_MAX_SECS)
+}
+
 fn restore_fans_to_auto(provider: &dyn HardwareProvider, fan_ids: &[String]) -> Vec<String> {
     fan_ids
         .iter()
@@ -457,6 +468,18 @@ fn control_loop(
             }
         };
 
+        if state
+            .control_health
+            .retry_after_unix
+            .is_some_and(|retry_after| unix_now() < retry_after)
+        {
+            if once {
+                break;
+            }
+            sleep_control_interval(interval);
+            continue;
+        }
+
         let mut write_errors = Vec::new();
 
         if auto {
@@ -559,6 +582,8 @@ fn control_loop(
             let recovered = state.control_health.failsafe_active;
             let mut s = shared.lock().expect("state poisoned");
             s.control_health.failsafe_active = false;
+            s.control_health.consecutive_fan_write_failures = 0;
+            s.control_health.retry_after_unix = None;
             s.control_health.last_error = None;
             drop(s);
             if recovered {
@@ -579,6 +604,11 @@ fn control_loop(
                 )
             };
             let first_failure = !state.control_health.failsafe_active;
+            let consecutive = state
+                .control_health
+                .consecutive_fan_write_failures
+                .saturating_add(1);
+            let retry_after = unix_now().saturating_add(fan_write_retry_delay_secs(consecutive));
             {
                 let mut s = shared.lock().expect("state poisoned");
                 s.control_health.failsafe_active = true;
@@ -586,6 +616,8 @@ fn control_loop(
                     .control_health
                     .fan_write_failure_count
                     .saturating_add((write_errors.len() + restore_errors.len()) as u64);
+                s.control_health.consecutive_fan_write_failures = consecutive;
+                s.control_health.retry_after_unix = Some(retry_after);
                 s.control_health.last_error = Some(detail.clone());
             }
             if first_failure {
@@ -1171,11 +1203,54 @@ mod tests {
         let state = shared.lock().unwrap();
         assert!(state.control_health.failsafe_active);
         assert_eq!(state.control_health.fan_write_failure_count, 1);
+        assert_eq!(state.control_health.consecutive_fan_write_failures, 1);
+        assert!(state
+            .control_health
+            .retry_after_unix
+            .is_some_and(|retry_after| retry_after >= unix_now() + 4));
         assert!(state
             .control_health
             .last_error
             .as_deref()
             .is_some_and(|error| error.contains("fan write fail-safe")));
+    }
+
+    #[test]
+    fn fan_write_retry_delay_uses_bounded_exponential_backoff() {
+        assert_eq!(fan_write_retry_delay_secs(1), 5);
+        assert_eq!(fan_write_retry_delay_secs(2), 10);
+        assert_eq!(fan_write_retry_delay_secs(3), 20);
+        assert_eq!(fan_write_retry_delay_secs(4), 40);
+        assert_eq!(fan_write_retry_delay_secs(5), 60);
+        assert_eq!(fan_write_retry_delay_secs(100), 60);
+    }
+
+    #[test]
+    fn active_fan_write_cooldown_skips_hardware_writes() {
+        STOP.store(false, Ordering::Relaxed);
+        let provider = FaultProvider::new(false, false);
+        let mut monitor = peterfan_platform::mock_monitor();
+        let shared = test_state();
+        {
+            let mut state = shared.lock().unwrap();
+            state.control_health.failsafe_active = true;
+            state.control_health.consecutive_fan_write_failures = 2;
+            state.control_health.retry_after_unix = Some(unix_now() + 30);
+        }
+
+        control_loop(
+            &provider,
+            monitor.as_mut(),
+            Profile::Balanced,
+            &["fan.test".into()],
+            true,
+            &shared,
+        )
+        .unwrap();
+
+        assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(provider.auto_calls.load(Ordering::Relaxed), 0);
+        assert!(shared.lock().unwrap().control_health.failsafe_active);
     }
 
     #[test]

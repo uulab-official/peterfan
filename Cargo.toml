@@ -13,7 +13,7 @@ members = [
 exclude = ["tools/icongen", "tools/license-keygen"]
 
 [workspace.package]
-version = "1.27.11"
+version = "1.27.12"
 edition = "2021"
 license = "MIT"
 authors = ["PeterFan contributors"]

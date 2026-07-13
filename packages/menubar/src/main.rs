@@ -2341,6 +2341,8 @@ fn update(app: &mut App) {
                 "sensor_failure_count": 0,
                 "consecutive_sensor_failures": 0,
                 "fan_write_failure_count": 0,
+                "consecutive_fan_write_failures": 0,
+                "retry_after_unix": null,
                 "last_sensor_ok_unix": null,
                 "last_error": null,
             })
@@ -3604,6 +3606,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Safety State<", ">안전 상태<")
             .replace(">Sensor Failures<", ">센서 실패<")
             .replace(">Fan Write Failures<", ">팬 쓰기 실패<")
+            .replace(">Control Retry<", ">제어 재시도<")
             .replace(">Last Control Error<", ">마지막 제어 오류<")
             .replace(">Fans Detected<", ">감지된 팬<")
             .replace(">Admin Approval<", ">관리자 승인<")
@@ -3911,6 +3914,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="health-row"><span class="health-label">Critical Limit</span><span class="health-value" id="health-critical-limit">—</span></div>
 <div class="health-row"><span class="health-label">Sensor Failures</span><span class="health-value" id="health-sensor-failures">—</span></div>
 <div class="health-row"><span class="health-label">Fan Write Failures</span><span class="health-value" id="health-write-failures">—</span></div>
+<div class="health-row"><span class="health-label">Control Retry</span><span class="health-value" id="health-control-retry">—</span></div>
 <div class="health-row"><span class="health-label">Last Control Error</span><span class="health-value" id="health-control-error">—</span></div>
 </div></details>
 </div>
@@ -5043,6 +5047,8 @@ function updateHealthPanel(d){
   var sensorFailures=Number(health.sensor_failure_count||0),consecutive=Number(health.consecutive_sensor_failures||0);
   setHealthValue('health-sensor-failures',sensorFailures+(consecutive?' ('+consecutive+' active)':''),consecutive?'warn':'info');
   setHealthValue('health-write-failures',String(Number(health.fan_write_failure_count||0)),health.fan_write_failure_count?'warn':'info');
+  var retrySeconds=Math.max(0,Number(health.retry_after_unix||0)-Math.floor(Date.now()/1000));
+  setHealthValue('health-control-retry',retrySeconds?(retrySeconds+'s'):(LANG==='ko'?'대기 없음':'ready'),retrySeconds?'warn':'info');
   setHealthValue('health-control-error',health.last_error||'—',health.last_error?'warn':'info');
   setText('fan-curve-input',tempValue(d.fan_curve_input_temp_c));
   setText('fan-safety-hottest',tempValue(d.fan_safety_temp_c));
@@ -5603,6 +5609,7 @@ mod tests {
         assert!(en.contains(r#"id="health-critical-limit""#));
         assert!(en.contains(r#"id="health-sensor-failures""#));
         assert!(en.contains(r#"id="health-write-failures""#));
+        assert!(en.contains(r#"id="health-control-retry""#));
         assert!(en.contains(r#"id="health-control-error""#));
         assert!(en.contains(r#"id="fan-curve-input""#));
         assert!(en.contains(r#"id="fan-safety-hottest""#));
@@ -5628,6 +5635,7 @@ mod tests {
         assert!(en.contains("health.failsafe_active"));
         assert!(ko.contains(">안전 상태<"));
         assert!(ko.contains(">센서 실패<"));
+        assert!(ko.contains(">제어 재시도<"));
         assert!(en.contains("d.fan_safety_temp_c"));
         assert!(en.contains("d.fan_critical_temp_c"));
 

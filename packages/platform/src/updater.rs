@@ -1131,29 +1131,7 @@ fn install_downloaded_update(
     let script_path = tmp_dir.join("apply-update.sh");
     let backup_path = tmp_dir.join("PreviousPeterFan.app");
     let log_path = tmp_dir.join("apply-update.log");
-    let script = format!(
-        "#!/bin/bash\n\
-         set -e\n\
-         exec >{log} 2>&1\n\
-         sleep 1\n\
-         rm -rf {backup}\n\
-         mv {app} {backup}\n\
-         if ditto {new_app} {app}; then\n\
-         \txcrun stapler validate {app} >/dev/null 2>&1 || true\n\
-         \topen -g {app}\n\
-         \trm -rf {tmp}\n\
-         else\n\
-         \trm -rf {app}\n\
-         \tmv {backup} {app}\n\
-         \topen -g {app}\n\
-         \texit 1\n\
-         fi\n",
-        app = shell_quote(app_path),
-        new_app = shell_quote(&new_app),
-        backup = shell_quote(&backup_path),
-        tmp = shell_quote(tmp_dir),
-        log = shell_quote(&log_path),
-    );
+    let script = build_apply_update_script(app_path, &new_app, &backup_path, tmp_dir, &log_path);
     std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
     let _ = std::process::Command::new("chmod")
         .args(["+x"])
@@ -1169,6 +1147,50 @@ fn install_downloaded_update(
         .map_err(|e| format!("could not launch the updater script: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn build_apply_update_script(
+    app_path: &std::path::Path,
+    new_app: &std::path::Path,
+    backup_path: &std::path::Path,
+    tmp_dir: &std::path::Path,
+    log_path: &std::path::Path,
+) -> String {
+    let executable = app_path.join("Contents/MacOS/PeterFan");
+    format!(
+        "#!/bin/bash\n\
+         set -u\n\
+         exec >{log} 2>&1\n\
+         rollback() {{\n\
+         \t/usr/bin/pkill -fx {executable} >/dev/null 2>&1 || true\n\
+         \t/bin/rm -rf {app}\n\
+         \t/bin/mv {backup} {app}\n\
+         \t/usr/bin/open -g -j {app} || true\n\
+         \texit 1\n\
+         }}\n\
+         sleep 1\n\
+         /bin/rm -rf {backup}\n\
+         /bin/mv {app} {backup} || exit 1\n\
+         /usr/bin/ditto {new_app} {app} || rollback\n\
+         /usr/bin/codesign --verify --deep --strict {app} || rollback\n\
+         /usr/bin/xcrun stapler validate {app} >/dev/null 2>&1 || rollback\n\
+         /usr/bin/open -g -j {app} || rollback\n\
+         healthy=0\n\
+         for _ in 1 2 3 4 5 6 7 8; do\n\
+         \tsleep 1\n\
+         \tif /usr/bin/pgrep -fx {executable} >/dev/null 2>&1; then healthy=1; break; fi\n\
+         done\n\
+         [[ $healthy -eq 1 ]] || rollback\n\
+         /bin/rm -rf {backup}\n\
+         /bin/rm -rf {tmp}\n",
+        app = shell_quote(app_path),
+        new_app = shell_quote(new_app),
+        backup = shell_quote(backup_path),
+        tmp = shell_quote(tmp_dir),
+        log = shell_quote(log_path),
+        executable = shell_quote(&executable),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -1711,6 +1733,65 @@ TeamIdentifier=N99FMBQ662
             Some(EXPECTED_TEAM_ID)
         );
         assert!(has_developer_id_authority(details));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ota_apply_script_keeps_backup_until_new_app_is_healthy() {
+        let script = build_apply_update_script(
+            std::path::Path::new("/Applications/PeterFan.app"),
+            std::path::Path::new("/tmp/update/PeterFan.app"),
+            std::path::Path::new("/tmp/update/PreviousPeterFan.app"),
+            std::path::Path::new("/tmp/update"),
+            std::path::Path::new("/tmp/update/apply-update.log"),
+        );
+
+        let health_check = script.find("pgrep -fx").unwrap();
+        let delete_backup = script
+            .rfind("rm -rf '/tmp/update/PreviousPeterFan.app'")
+            .unwrap();
+        assert!(script.contains("codesign --verify --deep --strict"));
+        assert!(script.contains("stapler validate"));
+        assert!(script.contains("open -g -j"));
+        assert!(script.contains("[[ $healthy -eq 1 ]] || rollback"));
+        assert!(delete_backup > health_check);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ota_apply_script_rolls_back_when_replacement_signature_is_invalid() {
+        let root = std::env::temp_dir().join(format!(
+            "peterfan updater rollback test {}",
+            std::process::id()
+        ));
+        let app = root.join("Installed/PeterFan.app");
+        let new_app = root.join("Update/PeterFan.app");
+        let backup = root.join("Update/PreviousPeterFan.app");
+        let log = root.join("Update/apply-update.log");
+        let script_path = root.join("Update/apply-update.sh");
+        let old_marker = app.join("old-version");
+        let new_marker = new_app.join("new-version");
+
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(new_app.join("Contents/MacOS")).unwrap();
+        std::fs::write(&old_marker, "old").unwrap();
+        std::fs::write(&new_marker, "new").unwrap();
+        std::fs::write(app.join("Contents/MacOS/PeterFan"), "not executable").unwrap();
+        std::fs::write(new_app.join("Contents/MacOS/PeterFan"), "invalid signature").unwrap();
+
+        let script = build_apply_update_script(&app, &new_app, &backup, &root.join("Update"), &log);
+        std::fs::write(&script_path, script).unwrap();
+        let status = std::process::Command::new("/bin/bash")
+            .arg(&script_path)
+            .status()
+            .unwrap();
+
+        assert!(!status.success());
+        assert_eq!(std::fs::read_to_string(&old_marker).unwrap(), "old");
+        assert!(!app.join("new-version").exists());
+        assert!(!backup.exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
