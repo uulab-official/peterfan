@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use tao::dpi::{LogicalSize, PhysicalPosition};
 use tao::event::{Event, StartCause, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopWindowTarget};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use tao::monitor::MonitorHandle;
 use tao::window::{Window, WindowBuilder};
 
@@ -62,6 +62,8 @@ const DASHBOARD_SLOW_REFRESH: Duration = Duration::from_secs(3);
 const DASHBOARD_SLOW_OPEN_GRACE: Duration = Duration::from_millis(450);
 const ALL_TEMP_REFRESH: Duration = Duration::from_secs(10);
 const DAEMON_REFRESH: Duration = Duration::from_secs(2);
+const CONTROL_CONFIRM_REFRESH: Duration = Duration::from_millis(100);
+const CONTROL_CONFIRM_WINDOW: Duration = Duration::from_millis(1500);
 const SINGLE_INSTANCE_LOCK_BASENAME: &str = "kr.co.uulab.peterfan.menubar";
 const DASHBOARD_BACKGROUND: RGBA = (27, 27, 29, 255);
 /// Samples kept for the menu-bar runner icon (always shows the short-term
@@ -338,6 +340,7 @@ struct App {
     next_all_temp_refresh: Instant,
     daemon_json_cache: Option<serde_json::Value>,
     next_daemon_refresh: Instant,
+    control_confirm_until: Option<Instant>,
 }
 
 struct DashboardSlowCache {
@@ -1105,6 +1108,7 @@ fn main() {
     let mut event_loop = EventLoopBuilder::<()>::new().build();
     #[cfg(target_os = "macos")]
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
+    let event_proxy = event_loop.create_proxy();
 
     let mut app = App {
         monitor,
@@ -1140,6 +1144,7 @@ fn main() {
         next_all_temp_refresh: Instant::now() + ALL_TEMP_REFRESH,
         daemon_json_cache: None,
         next_daemon_refresh: Instant::now() + DAEMON_REFRESH,
+        control_confirm_until: None,
     };
 
     let mut next_metric_at = Instant::now();
@@ -1153,7 +1158,7 @@ fn main() {
 
         if OPEN_DETAIL.swap(false, Ordering::Relaxed) {
             hide_popover(&mut app);
-            open_detail_window(&mut app, target);
+            open_detail_window(&mut app, target, &event_proxy);
         }
 
         match event {
@@ -1219,7 +1224,7 @@ fn main() {
         if let Some(at) = prewarm_popover_at {
             if now >= at {
                 if app.window.is_none() {
-                    build_popover(&mut app, target);
+                    build_popover(&mut app, target, &event_proxy);
                 }
                 prewarm_popover_at = None;
             }
@@ -1228,9 +1233,21 @@ fn main() {
             app.next_daemon_refresh = now;
             next_metric_at = now;
         }
+        let confirming_control = app.control_confirm_until.is_some_and(|until| now < until);
+        if app.control_confirm_until.is_some_and(|until| now >= until) {
+            app.control_confirm_until = None;
+        }
+        if confirming_control {
+            app.next_daemon_refresh = now;
+        }
         if now >= next_metric_at {
             update(&mut app);
-            next_metric_at = now + REFRESH;
+            next_metric_at = now
+                + if confirming_control {
+                    CONTROL_CONFIRM_REFRESH
+                } else {
+                    REFRESH
+                };
             if runner_enabled(app.display) {
                 // A CPU spike must accelerate the runner immediately instead
                 // of waiting for the old idle-speed deadline to expire.
@@ -1307,10 +1324,14 @@ fn main() {
                     *STATUS.lock().expect("status poisoned") = "applying…".into();
                     let provider = std::sync::Arc::clone(&app.provider);
                     let cmd = c.clone();
+                    let proxy = event_proxy.clone();
                     std::thread::spawn(move || {
                         let status = execute_control_logged(provider.as_ref(), &cmd);
                         *STATUS.lock().expect("status poisoned") = status;
+                        let _ = proxy.send_event(());
                     });
+                    app.control_confirm_until = Some(now + CONTROL_CONFIRM_WINDOW);
+                    next_metric_at = now;
                     refresh_after_pending = true;
                 }
             }
@@ -1375,7 +1396,7 @@ fn main() {
 
             if open_detail_requested {
                 hide_popover(&mut app);
-                open_detail_window(&mut app, target);
+                open_detail_window(&mut app, target, &event_proxy);
             }
             if let Some(d) = matched_display {
                 app.display = d;
@@ -1411,7 +1432,7 @@ fn main() {
                 if app.window.is_some() {
                     app.window = None;
                     app.webview = None;
-                    build_popover(&mut app, target);
+                    build_popover(&mut app, target, &event_proxy);
                     if was_visible {
                         if let Some(w) = &app.window {
                             w.set_visible(true);
@@ -1425,7 +1446,7 @@ fn main() {
                     app.detail_window = None;
                     app.detail_webview = None;
                     if was_detail_visible {
-                        open_detail_window(&mut app, target);
+                        open_detail_window(&mut app, target, &event_proxy);
                     }
                 }
                 update(&mut app);
@@ -1436,6 +1457,7 @@ fn main() {
                 // menu-click handling, so blocking here freezes the menu bar.
                 let provider = std::sync::Arc::clone(&app.provider);
                 let cmd = c.clone();
+                let proxy = event_proxy.clone();
                 std::thread::spawn(move || {
                     let status = execute_control_logged(provider.as_ref(), &cmd);
                     // The right-click menu has no visible status line (unlike
@@ -1444,6 +1466,7 @@ fn main() {
                     // looks like it silently did nothing.
                     notify_control_result(&cmd, control_result_is_ok(&status), &status);
                     *STATUS.lock().expect("status poisoned") = status;
+                    let _ = proxy.send_event(());
                 });
             }
         }
@@ -1457,7 +1480,7 @@ fn main() {
                 ..
             } = ev
             {
-                toggle_popover(&mut app, target, rect);
+                toggle_popover(&mut app, target, rect, &event_proxy);
                 if let Some(show_at) = app.popover_show_at {
                     // Tray events are drained after the normal wake deadline is
                     // calculated. Pull both the window show and first payload
@@ -1717,7 +1740,11 @@ fn tray_attributes(
 // Popover
 // ---------------------------------------------------------------------------
 
-fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
+fn build_popover(
+    app: &mut App,
+    target: &EventLoopWindowTarget<()>,
+    event_proxy: &EventLoopProxy<()>,
+) {
     let window = match WindowBuilder::new()
         .with_decorations(false)
         .with_resizable(false)
@@ -1734,11 +1761,12 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
         }
     };
 
+    let ipc_proxy = event_proxy.clone();
     match WebViewBuilder::new()
         .with_html(dashboard_html(app.language.resolve(), false))
         .with_background_color(DASHBOARD_BACKGROUND)
         .with_accept_first_mouse(true)
-        .with_ipc_handler(|req| {
+        .with_ipc_handler(move |req| {
             let body = req.body();
             if body == "quit" {
                 QUIT.store(true, Ordering::Relaxed);
@@ -1786,6 +1814,7 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
             {
                 kill_process(pid);
             }
+            let _ = ipc_proxy.send_event(());
         })
         .build(&window)
     {
@@ -1800,7 +1829,11 @@ fn build_popover(app: &mut App, target: &EventLoopWindowTarget<()>) {
 /// Opens (or, if already created, shows) the persistent detail
 /// window — same dashboard content as the popover, in an ordinary decorated,
 /// resizable, user-positioned window that stays open regardless of focus.
-fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
+fn open_detail_window(
+    app: &mut App,
+    target: &EventLoopWindowTarget<()>,
+    event_proxy: &EventLoopProxy<()>,
+) {
     if let Some(w) = &app.detail_window {
         w.set_visible(true);
         defer_dashboard_io_after_open(app);
@@ -1822,10 +1855,11 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
         }
     };
 
+    let ipc_proxy = event_proxy.clone();
     match WebViewBuilder::new()
         .with_html(dashboard_html(app.language.resolve(), true))
         .with_background_color(DASHBOARD_BACKGROUND)
-        .with_ipc_handler(|req| {
+        .with_ipc_handler(move |req| {
             let body = req.body();
             // Same command surface as the popover, minus "h:" — a resizable
             // window sizes itself; it shouldn't fight the user by snapping
@@ -1870,6 +1904,7 @@ fn open_detail_window(app: &mut App, target: &EventLoopWindowTarget<()>) {
             {
                 kill_process(pid);
             }
+            let _ = ipc_proxy.send_event(());
         })
         .build(&window)
     {
@@ -1980,7 +2015,12 @@ fn popover_position_for_rect(
     PhysicalPosition::new(x, anchor_y)
 }
 
-fn toggle_popover(app: &mut App, target: &EventLoopWindowTarget<()>, rect: Rect) {
+fn toggle_popover(
+    app: &mut App,
+    target: &EventLoopWindowTarget<()>,
+    rect: Rect,
+    event_proxy: &EventLoopProxy<()>,
+) {
     if app.popover_visible || app.popover_show_at.is_some() {
         hide_popover(app);
         return;
@@ -1989,7 +2029,7 @@ fn toggle_popover(app: &mut App, target: &EventLoopWindowTarget<()>, rect: Rect)
         detail.set_visible(false);
     }
     if app.window.is_none() {
-        build_popover(app, target);
+        build_popover(app, target, event_proxy);
     }
     let Some(w) = &app.window else { return };
     let scale = w.scale_factor();
@@ -2363,6 +2403,16 @@ fn update(app: &mut App) {
         .unwrap_or_default();
     let active_control_mode =
         resolved_active_control_mode(reported_mode, !fan_overrides.is_empty());
+    let control_revision = daemon_json
+        .as_ref()
+        .and_then(|value| value.get("control_revision"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let applied_control_revision = daemon_json
+        .as_ref()
+        .and_then(|value| value.get("applied_control_revision"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     let fan_rows: Vec<_> = fans
         .iter()
         .map(|f| {
@@ -2465,6 +2515,8 @@ fn update(app: &mut App) {
         "login_item_supported": login_item_supported(),
         "active_profile": active_profile,
         "active_control_mode": active_control_mode,
+        "control_revision": control_revision,
+        "applied_control_revision": applied_control_revision,
         "fan_setup_needed": (!daemon_running || daemon_update_needed) && can_control,
         "fan_count": fans.len(),
         "controllable_fan_count": fans.iter().filter(|f| f.controllable).count(),
@@ -4876,7 +4928,7 @@ function beginFanControl(mode,profile){
   var current=window.__pf_pending||{};
   var wantedProfile=profile||'';
   if(current.active_control_mode===mode&&(mode!=='profile'||current.active_profile===wantedProfile))return false;
-  FAN_CONTROL_PENDING={mode:mode,profile:wantedProfile,startedAt:Date.now(),statusBefore:current.last_cmd_status||''};
+  FAN_CONTROL_PENDING={mode:mode,profile:wantedProfile,startedAt:Date.now(),statusBefore:current.last_cmd_status||'',revisionBefore:Number(current.applied_control_revision||0)};
   updateProfileStrip(window.__pf_pending||{can_control:true,active_control_mode:'',active_profile:'',last_cmd_status:''});
   return true;
 }
@@ -4890,7 +4942,8 @@ function updateProfileStrip(d){
   var activeMode=d.active_control_mode||'';
   var activeProfile=d.active_profile||'';
   if(FAN_CONTROL_PENDING){
-    var matches=FAN_CONTROL_PENDING.mode===activeMode&&(activeMode!=='profile'||FAN_CONTROL_PENDING.profile===activeProfile);
+    var revisionApplied=Number(d.applied_control_revision||0)>FAN_CONTROL_PENDING.revisionBefore;
+    var matches=revisionApplied&&FAN_CONTROL_PENDING.mode===activeMode&&(activeMode!=='profile'||FAN_CONTROL_PENDING.profile===activeProfile);
     var status=d.last_cmd_status||'';
     var failed=status!==FAN_CONTROL_PENDING.statusBefore&&status!=='applying…'&&fanControlStatusFailed(status);
     var expired=Date.now()-FAN_CONTROL_PENDING.startedAt>5000;
@@ -6021,6 +6074,8 @@ mod tests {
         assert!(en.contains("if(FAN_CONTROL_PENDING)return false;"));
         assert!(en.contains("if(!beginFanControl('profile',profile))return;"));
         assert!(en.contains("if(!beginFanControl('auto',''))return;"));
+        assert!(en.contains("revisionBefore:Number(current.applied_control_revision||0)"));
+        assert!(en.contains("var revisionApplied=Number(d.applied_control_revision||0)>FAN_CONTROL_PENDING.revisionBefore;"));
         assert!(en.contains("strip.setAttribute('aria-busy',pending?'true':'false');"));
         assert!(en.contains("b.disabled=!enabled||pending;"));
         assert!(source.contains("static CONTROL_REFRESH_REQUESTED: AtomicBool"));
@@ -6109,7 +6164,8 @@ mod tests {
         assert!(!peterfan_platform::daemon_update_required(
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         ));
-        assert!(!peterfan_platform::daemon_update_required("1.27.12"));
+        assert!(peterfan_platform::daemon_update_required("1.27.13"));
+        assert!(!peterfan_platform::daemon_update_required("1.27.15"));
     }
 
     #[test]

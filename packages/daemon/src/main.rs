@@ -19,7 +19,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::sleep;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
@@ -42,6 +42,9 @@ static STOP: AtomicBool = AtomicBool::new(false);
 /// interval — the interval is for periodic temperature re-evaluation, not
 /// for how long a user-issued command should take to land.
 static APPLY_NOW: AtomicBool = AtomicBool::new(false);
+static CONTROL_THREAD: std::sync::LazyLock<Mutex<Option<thread::Thread>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+static FAN_WRITE_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 const FAN_WRITE_RETRY_BASE_SECS: u64 = 5;
 const FAN_WRITE_RETRY_MAX_SECS: u64 = 60;
 
@@ -141,6 +144,10 @@ struct State {
     /// Runtime safety telemetry. This is intentionally not persisted: every
     /// daemon launch starts by proving that sensors and writes work again.
     control_health: ControlHealth,
+    /// Monotonic request/apply revisions let clients distinguish an accepted
+    /// mode change from one that has actually reached the hardware loop.
+    control_revision: u64,
+    applied_control_revision: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -201,10 +208,10 @@ fn run(cli: Cli) -> Result<()> {
     let interval = cli.interval.unwrap_or(cfg.interval_secs).max(1);
     let critical = cli.critical.unwrap_or(cfg.critical_temp_c);
 
-    let provider: Box<dyn HardwareProvider> = if cli.mock {
-        peterfan_platform::mock()
+    let provider: Arc<dyn HardwareProvider> = if cli.mock {
+        peterfan_platform::mock().into()
     } else {
-        peterfan_platform::detect()
+        peterfan_platform::detect().into()
     };
     if !provider.capabilities().control_fans {
         bail!(
@@ -251,6 +258,8 @@ fn run(cli: Cli) -> Result<()> {
             last_fans: Vec::new(),
             last_power_w: None,
             control_health: ControlHealth::default(),
+            control_revision: 1,
+            applied_control_revision: 0,
         };
         // Restore the last user-chosen mode so a reboot doesn't reset fan settings.
         if let Some(saved) = load_saved_state() {
@@ -296,7 +305,7 @@ fn run(cli: Cli) -> Result<()> {
     // curve, it just isn't remotely controllable yet.
     #[cfg(unix)]
     if !cli.once {
-        spawn_ipc_server(Arc::clone(&shared));
+        spawn_ipc_server(Arc::clone(&shared), Arc::clone(&provider), fan_ids.clone());
     }
 
     println!(
@@ -376,13 +385,40 @@ fn restore_fans_to_auto(provider: &dyn HardwareProvider, fan_ids: &[String]) -> 
 }
 
 fn sleep_control_interval(interval: u64) {
-    let mut slept = 0u64;
-    while slept < interval * 1000 && !STOP.load(Ordering::Relaxed) {
-        sleep(Duration::from_millis(200));
-        slept += 200;
-        if APPLY_NOW.swap(false, Ordering::Relaxed) {
-            break;
+    let deadline = std::time::Instant::now() + Duration::from_secs(interval);
+    while !STOP.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+        if APPLY_NOW.swap(false, Ordering::Acquire) {
+            return;
         }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        thread::park_timeout(remaining.min(Duration::from_millis(200)));
+    }
+}
+
+fn request_apply_now() {
+    APPLY_NOW.store(true, Ordering::Release);
+    if let Some(control_thread) = CONTROL_THREAD
+        .lock()
+        .expect("control thread poisoned")
+        .as_ref()
+    {
+        control_thread.unpark();
+    }
+}
+
+fn mark_control_requested(state: &mut State) {
+    state.control_revision = state.control_revision.wrapping_add(1).max(1);
+    request_apply_now();
+}
+
+fn publish_effective_rule_profile(
+    shared: &Arc<Mutex<State>>,
+    observed_revision: u64,
+    profile: Profile,
+) {
+    let mut current = shared.lock().expect("state poisoned");
+    if !current.manual && current.control_revision == observed_revision {
+        current.profile = profile;
     }
 }
 
@@ -394,6 +430,7 @@ fn control_loop(
     once: bool,
     shared: &Arc<Mutex<State>>,
 ) -> Result<()> {
+    *CONTROL_THREAD.lock().expect("control thread poisoned") = Some(thread::current());
     let mut auto_applied = false;
     let mut was_critical = false;
     // Track last-logged duty/mode so we only log on changes (keeps the log lean).
@@ -480,6 +517,11 @@ fn control_loop(
             continue;
         }
 
+        let write_guard = FAN_WRITE_LOCK.lock().expect("fan write lock poisoned");
+        if shared.lock().expect("state poisoned").control_revision != state.control_revision {
+            continue;
+        }
+
         let mut write_errors = Vec::new();
 
         if auto {
@@ -525,8 +567,13 @@ fn control_loop(
             } else {
                 state.config.active_profile(&ctx).unwrap_or(base)
             };
-            // Reflect the effective profile so `status` is accurate.
-            shared.lock().expect("state poisoned").profile = profile;
+            // Reflect a rule-selected profile only if no newer command arrived
+            // while the slow sensor scan was in progress. Manual profiles are
+            // already stored by the command handler and must never be replaced
+            // by an older control-loop snapshot.
+            if !state.manual {
+                publish_effective_rule_profile(shared, state.control_revision, profile);
+            }
 
             let (duty, why): (u8, String) = if safety_temp >= critical {
                 (100, "CRITICAL".into())
@@ -585,6 +632,7 @@ fn control_loop(
             s.control_health.consecutive_fan_write_failures = 0;
             s.control_health.retry_after_unix = None;
             s.control_health.last_error = None;
+            s.applied_control_revision = state.control_revision;
             drop(s);
             if recovered {
                 println!("peterfand: control recovered; resumed requested mode");
@@ -625,6 +673,7 @@ fn control_loop(
             }
         }
 
+        drop(write_guard);
         if once {
             break;
         }
@@ -636,9 +685,109 @@ fn control_loop(
     Ok(())
 }
 
+fn apply_cached_control_request(
+    provider: &dyn HardwareProvider,
+    fan_ids: &[String],
+    shared: &Arc<Mutex<State>>,
+) {
+    let state = shared.lock().expect("state poisoned").clone();
+    if !state.auto && !state.manual {
+        return;
+    }
+    if state
+        .control_health
+        .retry_after_unix
+        .is_some_and(|retry_after| unix_now() < retry_after)
+    {
+        return;
+    }
+
+    let needs_temperature = !state.auto || !state.fan_overrides.is_empty();
+    let control_temps = needs_temperature
+        .then(|| control_temperatures(&state.last_temps))
+        .transpose();
+    let Ok(control_temps) = control_temps else {
+        return;
+    };
+    let (representative_temp, safety_temp) = control_temps.unwrap_or((0.0, 0.0));
+    let critical_now = needs_temperature && safety_temp >= state.config.critical_temp_c;
+    let duty = state.held_duty.unwrap_or_else(|| {
+        state
+            .config
+            .curve_for(state.profile)
+            .duty_at(representative_temp)
+    });
+
+    let _write_guard = FAN_WRITE_LOCK.lock().expect("fan write lock poisoned");
+    if shared.lock().expect("state poisoned").control_revision != state.control_revision {
+        return;
+    }
+
+    let mut write_errors = Vec::new();
+    for id in fan_ids {
+        let result = if state.auto && !state.fan_overrides.contains_key(id) {
+            provider.set_fan_auto(id)
+        } else {
+            provider.set_fan_duty(
+                id,
+                effective_duty(&state.fan_overrides, id, duty, critical_now),
+            )
+        };
+        if let Err(error) = result {
+            write_errors.push(format!("{id}: {error}"));
+        }
+    }
+
+    let mut current = shared.lock().expect("state poisoned");
+    if current.control_revision != state.control_revision {
+        return;
+    }
+    if write_errors.is_empty() {
+        current.control_health.failsafe_active = false;
+        current.control_health.consecutive_fan_write_failures = 0;
+        current.control_health.retry_after_unix = None;
+        current.control_health.last_error = None;
+        current.applied_control_revision = state.control_revision;
+    } else {
+        drop(current);
+        let restore_errors = restore_fans_to_auto(provider, fan_ids);
+        let detail = if restore_errors.is_empty() {
+            format!(
+                "fan write fail-safe: {}; fans returned to OS auto",
+                write_errors.join(", ")
+            )
+        } else {
+            format!(
+                "fan write fail-safe: {}; auto restore errors: {}",
+                write_errors.join(", "),
+                restore_errors.join(", ")
+            )
+        };
+        let mut current = shared.lock().expect("state poisoned");
+        current.control_health.failsafe_active = true;
+        current.control_health.fan_write_failure_count = current
+            .control_health
+            .fan_write_failure_count
+            .saturating_add(write_errors.len() as u64);
+        current.control_health.consecutive_fan_write_failures = current
+            .control_health
+            .consecutive_fan_write_failures
+            .saturating_add(1);
+        current.control_health.retry_after_unix = Some(
+            unix_now()
+                + fan_write_retry_delay_secs(current.control_health.consecutive_fan_write_failures),
+        );
+        current.control_health.last_error = Some(detail);
+    }
+}
+
 /// Accept IPC connections and apply commands to the shared state.
 #[cfg(unix)]
-fn spawn_ipc_server(shared: Arc<Mutex<State>>) {
+fn spawn_ipc_server(
+    shared: Arc<Mutex<State>>,
+    provider: Arc<dyn HardwareProvider>,
+    fan_ids: Vec<String>,
+) {
     use std::io::{BufRead, BufReader, Write};
 
     let (listener, path) = match peterfan_platform::ipc::bind_listener() {
@@ -660,7 +809,11 @@ fn spawn_ipc_server(shared: Arc<Mutex<State>>) {
             if BufReader::new(clone).read_line(&mut line).is_err() {
                 continue;
             }
+            let revision_before = shared.lock().expect("state poisoned").control_revision;
             let reply = handle_command(line.trim(), &shared);
+            if shared.lock().expect("state poisoned").control_revision != revision_before {
+                apply_cached_control_request(provider.as_ref(), &fan_ids, &shared);
+            }
             let _ = writeln!(stream, "{reply}");
         }
     });
@@ -729,7 +882,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             s.held_duty = None;
             s.fan_overrides.clear();
             save_state(&s);
-            APPLY_NOW.store(true, Ordering::Relaxed);
+            mark_control_requested(&mut s);
             format!("ok auto ({backend})")
         }
         // Hand control back to the automation rules (clear manual override).
@@ -740,7 +893,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             s.held_duty = None;
             s.fan_overrides.clear();
             save_state(&s);
-            APPLY_NOW.store(true, Ordering::Relaxed);
+            mark_control_requested(&mut s);
             format!("ok rules ({backend})")
         }
         Some("profile") => match parts.next().and_then(Profile::parse) {
@@ -752,7 +905,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 s.manual = true;
                 s.fan_overrides.clear();
                 save_state(&s);
-                APPLY_NOW.store(true, Ordering::Relaxed);
+                mark_control_requested(&mut s);
                 format!("ok {} ({backend})", p.as_str())
             }
             None => "error: unknown profile".into(),
@@ -767,7 +920,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 s.manual = true;
                 s.fan_overrides.clear();
                 save_state(&s);
-                APPLY_NOW.store(true, Ordering::Relaxed);
+                mark_control_requested(&mut s);
                 format!("ok hold:{d}% ({backend})")
             }
             None => "error: hold requires a percent 0-100".into(),
@@ -783,7 +936,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                     let d = pct.min(100);
                     s.fan_overrides.insert(id.clone(), d);
                     save_state(&s);
-                    APPLY_NOW.store(true, Ordering::Relaxed);
+                    mark_control_requested(&mut s);
                     format!("ok fanhold:{id}:{d}% ({backend})")
                 }
                 _ => "error: fanhold requires <fan_id> <percent 0-100>".into(),
@@ -796,7 +949,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 let mut s = shared.lock().expect("state poisoned");
                 s.fan_overrides.remove(id);
                 save_state(&s);
-                APPLY_NOW.store(true, Ordering::Relaxed);
+                mark_control_requested(&mut s);
                 format!("ok fanauto:{id} ({backend})")
             }
             None => "error: fanauto requires <fan_id>".into(),
@@ -835,6 +988,8 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 "backend": s.backend,
                 "fan_overrides": s.fan_overrides,
                 "control_health": s.control_health,
+                "control_revision": s.control_revision,
+                "applied_control_revision": s.applied_control_revision,
             })) {
                 Ok(json) => format!("ok {json}"),
                 Err(_) => "error: serialization failed".into(),
@@ -1053,6 +1208,8 @@ mod tests {
             last_fans: Vec::new(),
             last_power_w: None,
             control_health: ControlHealth::default(),
+            control_revision: 1,
+            applied_control_revision: 0,
         }))
     }
 
@@ -1295,6 +1452,70 @@ mod tests {
         assert_eq!(json["control_health"]["failsafe_active"], true);
         assert_eq!(json["control_health"]["sensor_failure_count"], 2);
         assert_eq!(json["control_health"]["last_error"], "sensor unavailable");
+        assert_eq!(json["control_revision"], 1);
+        assert_eq!(json["applied_control_revision"], 0);
+    }
+
+    #[test]
+    fn control_revision_is_applied_only_after_hardware_loop_succeeds() {
+        STOP.store(false, Ordering::Relaxed);
+        let provider = FaultProvider::new(false, false);
+        let mut monitor = peterfan_platform::mock_monitor();
+        let shared = test_state();
+
+        let reply = handle_command("profile performance", &shared);
+        assert!(reply.starts_with("ok performance"));
+        {
+            let state = shared.lock().unwrap();
+            assert_eq!(state.control_revision, 2);
+            assert_eq!(state.applied_control_revision, 0);
+        }
+
+        control_loop(
+            &provider,
+            monitor.as_mut(),
+            Profile::Balanced,
+            &["fan.test".into()],
+            true,
+            &shared,
+        )
+        .unwrap();
+
+        let state = shared.lock().unwrap();
+        assert_eq!(state.control_revision, 2);
+        assert_eq!(state.applied_control_revision, 2);
+    }
+
+    #[test]
+    fn cached_control_request_confirms_hardware_write_immediately() {
+        let provider = FaultProvider::new(false, false);
+        let shared = test_state();
+        shared.lock().unwrap().last_temps = provider.temperatures().unwrap();
+
+        let reply = handle_command("profile performance", &shared);
+        assert!(reply.starts_with("ok performance"));
+        apply_cached_control_request(&provider, &["fan.test".into()], &shared);
+
+        let state = shared.lock().unwrap();
+        assert_eq!(state.control_revision, 2);
+        assert_eq!(state.applied_control_revision, 2);
+        assert_eq!(state.profile, Profile::Performance);
+        assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn stale_rule_snapshot_cannot_replace_new_manual_profile() {
+        let shared = test_state();
+        let observed_revision = shared.lock().unwrap().control_revision;
+
+        let reply = handle_command("profile performance", &shared);
+        assert!(reply.starts_with("ok performance"));
+        publish_effective_rule_profile(&shared, observed_revision, Profile::Silent);
+
+        let state = shared.lock().unwrap();
+        assert!(state.manual);
+        assert_eq!(state.control_revision, observed_revision + 1);
+        assert_eq!(state.profile, Profile::Performance);
     }
 
     #[test]
