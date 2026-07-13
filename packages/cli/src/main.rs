@@ -2035,6 +2035,7 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
             "battery": battery,
             "temps": sensors.temps,
             "fans": sensors.fans,
+            "control_health": sensors.daemon_control_health,
         });
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
@@ -2159,6 +2160,8 @@ struct Sensors {
     daemon_power_w: Option<f32>,
     /// Daemon backend name, e.g. "macos".
     daemon_backend: Option<String>,
+    /// Runtime fan-control safety state reported by the daemon.
+    daemon_control_health: Option<serde_json::Value>,
 }
 
 /// Read temps + fans, transparently falling back to the mock backend (and
@@ -2173,6 +2176,7 @@ fn read_sensors(provider: &dyn HardwareProvider) -> Result<Sensors> {
             daemon_mode: None,
             daemon_power_w: None,
             daemon_backend: None,
+            daemon_control_health: None,
         });
     }
     let mock = peterfan_platform::mock();
@@ -2183,6 +2187,7 @@ fn read_sensors(provider: &dyn HardwareProvider) -> Result<Sensors> {
         daemon_mode: None,
         daemon_power_w: None,
         daemon_backend: None,
+        daemon_control_health: None,
     })
 }
 
@@ -2241,10 +2246,12 @@ fn cmd_fans(mock: bool, json: bool) -> Result<()> {
         read_sensors(prov.as_ref())?
     };
     let daemon_mode = sensors.daemon_mode.clone();
+    let control_health = sensors.daemon_control_health.clone();
     if json {
         let val = serde_json::json!({
             "fans": sensors.fans,
             "daemon_mode": daemon_mode,
+            "control_health": control_health,
         });
         println!("{}", serde_json::to_string_pretty(&val)?);
         return Ok(());
@@ -2254,6 +2261,17 @@ fn cmd_fans(mock: bool, json: bool) -> Result<()> {
     }
     if let Some(ref mode) = daemon_mode {
         println!("  {} daemon: {}", "•".cyan(), mode.bold());
+    }
+    if control_health
+        .as_ref()
+        .and_then(|health| health["failsafe_active"].as_bool())
+        .unwrap_or(false)
+    {
+        let error = control_health
+            .as_ref()
+            .and_then(|health| health["last_error"].as_str())
+            .unwrap_or("fan control is using OS automatic fallback");
+        println!("  {} {error}", "!".yellow());
     }
     print_fans(&sensors.fans);
     Ok(())
@@ -3369,6 +3387,7 @@ fn daemon_sensors() -> Option<Sensors> {
         daemon_mode: v["mode"].as_str().map(str::to_string),
         daemon_power_w: v["power_w"].as_f64().map(|f| f as f32),
         daemon_backend: v["backend"].as_str().map(str::to_string),
+        daemon_control_health: v.get("control_health").cloned(),
     })
 }
 #[cfg(not(unix))]

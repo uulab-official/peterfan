@@ -2332,6 +2332,19 @@ fn update(app: &mut App) {
     } else {
         local_fan_overrides()
     };
+    let control_health = daemon_json
+        .as_ref()
+        .and_then(|value| value.get("control_health").cloned())
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "failsafe_active": false,
+                "sensor_failure_count": 0,
+                "consecutive_sensor_failures": 0,
+                "fan_write_failure_count": 0,
+                "last_sensor_ok_unix": null,
+                "last_error": null,
+            })
+        });
     // Compatibility controls whether we can trust the daemon for writes and
     // detailed cached state. Its mode string is still safe read-only state,
     // so an older daemon reporting `auto` must keep Auto selected in the UI.
@@ -2452,6 +2465,7 @@ fn update(app: &mut App) {
         "fan_core_hottest_temp_c": core_hottest,
         "fan_safety_temp_c": safety_temp,
         "fan_critical_temp_c": app.critical_temp_c,
+        "control_health": control_health,
         "fan_action_log": fan_action_log_snapshot(),
         "app_version": env!("CARGO_PKG_VERSION"),
         "setup_tone": setup_tone(!daemon_st.is_empty(), daemon_update_needed),
@@ -3587,6 +3601,10 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Daemon<", ">데몬<")
             .replace(">Control Path<", ">제어 경로<")
             .replace(">Last Command<", ">마지막 명령<")
+            .replace(">Safety State<", ">안전 상태<")
+            .replace(">Sensor Failures<", ">센서 실패<")
+            .replace(">Fan Write Failures<", ">팬 쓰기 실패<")
+            .replace(">Last Control Error<", ">마지막 제어 오류<")
             .replace(">Fans Detected<", ">감지된 팬<")
             .replace(">Admin Approval<", ">관리자 승인<")
             .replace(">App<", ">앱<")
@@ -3878,6 +3896,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="health-row"><span class="health-label">Daemon</span><span class="health-value" id="health-daemon">—</span></div>
 <div class="health-row"><span class="health-label">Control Path</span><span class="health-value" id="health-control-path">—</span></div>
 <div class="health-row"><span class="health-label">Last Command</span><span class="health-value" id="health-last-command">—</span></div>
+<div class="health-row"><span class="health-label">Safety State</span><span class="health-value" id="health-safety-state">—</span></div>
 <div class="health-row"><span class="health-label">Fans Detected</span><span class="health-value" id="health-fans">—</span></div>
 <div class="health-row"><span class="health-label">Admin Approval</span><span class="health-value" id="health-approval">—</span></div>
 <div class="health-row"><span class="health-label">App</span><span class="health-value" id="health-app">—</span></div>
@@ -3890,6 +3909,9 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="health-row"><span class="health-label">Core Hottest</span><span class="health-value" id="health-core-hottest">—</span></div>
 <div class="health-row"><span class="health-label">Safety Hottest</span><span class="health-value" id="health-safety-hottest">—</span></div>
 <div class="health-row"><span class="health-label">Critical Limit</span><span class="health-value" id="health-critical-limit">—</span></div>
+<div class="health-row"><span class="health-label">Sensor Failures</span><span class="health-value" id="health-sensor-failures">—</span></div>
+<div class="health-row"><span class="health-label">Fan Write Failures</span><span class="health-value" id="health-write-failures">—</span></div>
+<div class="health-row"><span class="health-label">Last Control Error</span><span class="health-value" id="health-control-error">—</span></div>
 </div></details>
 </div>
 <div class="health-card" id="fan-action-log-card">
@@ -4987,10 +5009,13 @@ function tempValue(value){
   return typeof value==='number'&&isFinite(value)?Math.round(value)+'°C':'—';
 }
 function updateHealthPanel(d){
-  var tone=d.daemon_update_needed?'warn':(d.daemon_running?'ok':(d.can_control?'warn':'info'));
-  var pill=d.daemon_update_needed
+  var health=d.control_health||{},failsafe=!!health.failsafe_active;
+  var tone=failsafe?'warn':(d.daemon_update_needed?'warn':(d.daemon_running?'ok':(d.can_control?'warn':'info')));
+  var pill=failsafe
+    ?(LANG==='ko'?'OS 자동 복귀':'OS fallback')
+    :(d.daemon_update_needed
     ?(LANG==='ko'?'재설치 필요':'Reinstall')
-    :(d.daemon_running?(LANG==='ko'?'정상':'OK'):(d.can_control?(LANG==='ko'?'설정 필요':'Setup'):(LANG==='ko'?'읽기 전용':'Read-only')));
+    :(d.daemon_running?(LANG==='ko'?'정상':'OK'):(d.can_control?(LANG==='ko'?'설정 필요':'Setup'):(LANG==='ko'?'읽기 전용':'Read-only'))));
   setPanelPill('rail-settings-pill',pill,tone);
   setPanelPill('health-pill',pill,tone);
   var daemonText=d.daemon_running
@@ -5007,11 +5032,18 @@ function updateHealthPanel(d){
   var last=d.last_cmd_status||d.ctl_status||'';
   var lastTone=/error|invalid|unknown|failed|needs root|needs at least/i.test(last)?'warn':'info';
   setHealthValue('health-last-command',last||'—',lastTone);
+  setHealthValue('health-safety-state',
+    failsafe?(LANG==='ko'?'OS 자동 제어':'OS automatic'):(LANG==='ko'?'정상':'normal'),
+    failsafe?'warn':'ok');
   setHealthValue('health-fans',(d.controllable_fan_count||0)+' / '+(d.fan_count||0),d.controllable_fan_count?'ok':'info');
   setHealthValue('health-curve-input',tempValue(d.fan_curve_input_temp_c),'info');
   setHealthValue('health-core-hottest',tempValue(d.fan_core_hottest_temp_c),'info');
   setHealthValue('health-safety-hottest',tempValue(d.fan_safety_temp_c),d.fan_safety_temp_c>=d.fan_critical_temp_c?'warn':'info');
   setHealthValue('health-critical-limit',tempValue(d.fan_critical_temp_c),'info');
+  var sensorFailures=Number(health.sensor_failure_count||0),consecutive=Number(health.consecutive_sensor_failures||0);
+  setHealthValue('health-sensor-failures',sensorFailures+(consecutive?' ('+consecutive+' active)':''),consecutive?'warn':'info');
+  setHealthValue('health-write-failures',String(Number(health.fan_write_failure_count||0)),health.fan_write_failure_count?'warn':'info');
+  setHealthValue('health-control-error',health.last_error||'—',health.last_error?'warn':'info');
   setText('fan-curve-input',tempValue(d.fan_curve_input_temp_c));
   setText('fan-safety-hottest',tempValue(d.fan_safety_temp_c));
   setText('fan-critical-limit',tempValue(d.fan_critical_temp_c));
@@ -5564,10 +5596,14 @@ mod tests {
         assert!(en.contains(r#"id="health-team-id""#));
         assert!(en.contains(r#"id="health-control-path""#));
         assert!(en.contains(r#"id="health-last-command""#));
+        assert!(en.contains(r#"id="health-safety-state""#));
         assert!(en.contains(r#"id="health-curve-input""#));
         assert!(en.contains(r#"id="health-core-hottest""#));
         assert!(en.contains(r#"id="health-safety-hottest""#));
         assert!(en.contains(r#"id="health-critical-limit""#));
+        assert!(en.contains(r#"id="health-sensor-failures""#));
+        assert!(en.contains(r#"id="health-write-failures""#));
+        assert!(en.contains(r#"id="health-control-error""#));
         assert!(en.contains(r#"id="fan-curve-input""#));
         assert!(en.contains(r#"id="fan-safety-hottest""#));
         assert!(en.contains(r#"id="fan-critical-limit""#));
@@ -5588,6 +5624,10 @@ mod tests {
         assert!(en.contains("d.controllable_fan_count"));
         assert!(en.contains("d.fan_curve_input_temp_c"));
         assert!(en.contains("d.fan_core_hottest_temp_c"));
+        assert!(en.contains("d.control_health"));
+        assert!(en.contains("health.failsafe_active"));
+        assert!(ko.contains(">안전 상태<"));
+        assert!(ko.contains(">센서 실패<"));
         assert!(en.contains("d.fan_safety_temp_c"));
         assert!(en.contains("d.fan_critical_temp_c"));
 
@@ -6056,11 +6096,11 @@ mod tests {
 
     #[test]
     fn daemon_update_uses_min_required_version_not_app_version() {
-        assert!(peterfan_platform::daemon_update_required("1.26.61"));
+        assert!(peterfan_platform::daemon_update_required("1.27.10"));
         assert!(!peterfan_platform::daemon_update_required(
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         ));
-        assert!(!peterfan_platform::daemon_update_required("1.26.63"));
+        assert!(!peterfan_platform::daemon_update_required("1.27.12"));
     }
 
     #[test]

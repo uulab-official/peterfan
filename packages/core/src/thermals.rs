@@ -2,6 +2,11 @@
 
 use crate::types::{SensorKind, TempSensor};
 
+/// Plausible range for a temperature used to drive fan control.
+pub fn valid_control_temperature_c(value: f32) -> bool {
+    value.is_finite() && (1.0..=125.0).contains(&value)
+}
+
 /// Hottest reading across every available sensor.
 ///
 /// Use this for safety decisions such as critical-temperature overrides.
@@ -23,13 +28,13 @@ pub fn safety_temperature_c(temps: &[TempSensor]) -> Option<f32> {
     fn max_value<'a>(sensors: impl Iterator<Item = &'a TempSensor>) -> Option<f32> {
         sensors
             .map(|sensor| sensor.value.0)
-            .filter(|value| value.is_finite())
+            .filter(|value| valid_control_temperature_c(*value))
             .max_by(f32::total_cmp)
     }
 
     let cpu = temps
         .iter()
-        .find(|sensor| sensor.id == "cpu.die.hot" && sensor.value.0.is_finite())
+        .find(|sensor| sensor.id == "cpu.die.hot" && valid_control_temperature_c(sensor.value.0))
         .map(|sensor| sensor.value.0)
         .or_else(|| {
             max_value(
@@ -41,10 +46,7 @@ pub fn safety_temperature_c(temps: &[TempSensor]) -> Option<f32> {
         });
     let non_cpu = max_value(temps.iter().filter(|sensor| sensor.kind != SensorKind::Cpu));
 
-    cpu.into_iter()
-        .chain(non_cpu)
-        .max_by(f32::total_cmp)
-        .or_else(|| hottest_temperature_c(temps))
+    cpu.into_iter().chain(non_cpu).max_by(f32::total_cmp)
 }
 
 /// Human-facing representative temperature.
@@ -256,5 +258,19 @@ mod tests {
         ];
 
         assert_eq!(super::safety_temperature_c(&temps), Some(76.0));
+    }
+
+    #[test]
+    fn safety_temperature_rejects_non_physical_control_values() {
+        let temps = vec![
+            temp("cpu.die.hot", SensorKind::Cpu, 0.0),
+            temp("cpu.smc.hotspot.hot", SensorKind::Cpu, 255.0),
+            temp("ssd", SensorKind::Storage, f32::NAN),
+        ];
+
+        assert_eq!(super::safety_temperature_c(&temps), None);
+        assert!(!super::valid_control_temperature_c(0.0));
+        assert!(!super::valid_control_temperature_c(255.0));
+        assert!(super::valid_control_temperature_c(85.0));
     }
 }

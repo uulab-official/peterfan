@@ -28,7 +28,9 @@ use serde::{Deserialize, Serialize};
 
 use peterfan_core::config::RuleContext;
 use peterfan_core::profile::Profile;
-use peterfan_core::thermals::{representative_temperature_c, safety_temperature_c};
+use peterfan_core::thermals::{
+    representative_temperature_c, safety_temperature_c, valid_control_temperature_c,
+};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 /// Set by the signal handler; the control loop checks it and exits cleanly.
@@ -134,6 +136,19 @@ struct State {
     last_fans: Vec<peterfan_core::types::Fan>,
     /// Most recent power draw in watts.
     last_power_w: Option<f32>,
+    /// Runtime safety telemetry. This is intentionally not persisted: every
+    /// daemon launch starts by proving that sensors and writes work again.
+    control_health: ControlHealth,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct ControlHealth {
+    failsafe_active: bool,
+    sensor_failure_count: u64,
+    consecutive_sensor_failures: u32,
+    fan_write_failure_count: u64,
+    last_sensor_ok_unix: Option<u64>,
+    last_error: Option<String>,
 }
 
 #[derive(Parser)]
@@ -231,6 +246,7 @@ fn run(cli: Cli) -> Result<()> {
             last_temps: Vec::new(),
             last_fans: Vec::new(),
             last_power_w: None,
+            control_health: ControlHealth::default(),
         };
         // Restore the last user-chosen mode so a reboot doesn't reset fan settings.
         if let Some(saved) = load_saved_state() {
@@ -319,6 +335,46 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
+fn control_temperatures(
+    temps: &[peterfan_core::types::TempSensor],
+) -> Result<(f32, f32), &'static str> {
+    let safety = safety_temperature_c(temps).ok_or("no trustworthy temperature reading")?;
+    let representative = representative_temperature_c(temps)
+        .filter(|value| valid_control_temperature_c(*value))
+        .unwrap_or(safety);
+    Ok((representative, safety))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn restore_fans_to_auto(provider: &dyn HardwareProvider, fan_ids: &[String]) -> Vec<String> {
+    fan_ids
+        .iter()
+        .filter_map(|id| {
+            provider
+                .set_fan_auto(id)
+                .err()
+                .map(|error| format!("{id}: {error}"))
+        })
+        .collect()
+}
+
+fn sleep_control_interval(interval: u64) {
+    let mut slept = 0u64;
+    while slept < interval * 1000 && !STOP.load(Ordering::Relaxed) {
+        sleep(Duration::from_millis(200));
+        slept += 200;
+        if APPLY_NOW.swap(false, Ordering::Relaxed) {
+            break;
+        }
+    }
+}
+
 fn control_loop(
     provider: &dyn HardwareProvider,
     monitor: &mut dyn SystemMonitor,
@@ -340,7 +396,11 @@ fn control_loop(
         let auto = state.auto;
         let critical = state.config.critical_temp_c;
 
-        let temps = provider.temperatures().unwrap_or_default();
+        let temperature_result = provider.temperatures();
+        let (temps, temperature_read_error) = match temperature_result {
+            Ok(temps) => (temps, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
         let fans_now = provider.fans().unwrap_or_default();
         let power_now = provider.power_watts();
         {
@@ -349,8 +409,55 @@ fn control_loop(
             s.last_fans = fans_now.clone();
             s.last_power_w = power_now;
         }
-        let safety_temp = safety_temperature_c(&temps).unwrap_or(0.0);
-        let representative_temp = representative_temperature_c(&temps).unwrap_or(safety_temp);
+        let (representative_temp, safety_temp) = match control_temperatures(&temps) {
+            Ok(values) if temperature_read_error.is_none() => {
+                let mut s = shared.lock().expect("state poisoned");
+                s.control_health.consecutive_sensor_failures = 0;
+                s.control_health.last_sensor_ok_unix = Some(unix_now());
+                values
+            }
+            _ => {
+                let reason = temperature_read_error
+                    .unwrap_or_else(|| "no trustworthy temperature reading".to_string());
+                let restore_errors = restore_fans_to_auto(provider, fan_ids);
+                let detail = if restore_errors.is_empty() {
+                    format!("sensor fail-safe: {reason}; fans returned to OS auto")
+                } else {
+                    format!(
+                        "sensor fail-safe: {reason}; auto restore errors: {}",
+                        restore_errors.join(", ")
+                    )
+                };
+                let first_failure = !state.control_health.failsafe_active;
+                {
+                    let mut s = shared.lock().expect("state poisoned");
+                    s.control_health.failsafe_active = true;
+                    s.control_health.sensor_failure_count =
+                        s.control_health.sensor_failure_count.saturating_add(1);
+                    s.control_health.consecutive_sensor_failures = s
+                        .control_health
+                        .consecutive_sensor_failures
+                        .saturating_add(1);
+                    s.control_health.last_error = Some(detail.clone());
+                    if !restore_errors.is_empty() {
+                        s.control_health.fan_write_failure_count = s
+                            .control_health
+                            .fan_write_failure_count
+                            .saturating_add(restore_errors.len() as u64);
+                    }
+                }
+                if first_failure {
+                    eprintln!("peterfand: {detail}");
+                }
+                if once {
+                    break;
+                }
+                sleep_control_interval(interval);
+                continue;
+            }
+        };
+
+        let mut write_errors = Vec::new();
 
         if auto {
             // Per-fan overrides still apply on top of the global "auto" mode
@@ -369,7 +476,7 @@ fn control_loop(
                     provider.set_fan_auto(id)
                 };
                 if let Err(e) = result {
-                    eprintln!("peterfand: fan {id} control error: {e}");
+                    write_errors.push(format!("{id}: {e}"));
                 }
             }
             if !auto_applied {
@@ -413,7 +520,7 @@ fn control_loop(
             for id in fan_ids {
                 let effective = effective_duty(&state.fan_overrides, id, duty, critical_now);
                 if let Err(e) = provider.set_fan_duty(id, effective) {
-                    eprintln!("peterfand: fan {id} control error: {e}");
+                    write_errors.push(format!("{id}: {e}"));
                 }
             }
             let src = if state.held_duty.is_some() {
@@ -448,20 +555,51 @@ fn control_loop(
             }
         }
 
+        if write_errors.is_empty() {
+            let recovered = state.control_health.failsafe_active;
+            let mut s = shared.lock().expect("state poisoned");
+            s.control_health.failsafe_active = false;
+            s.control_health.last_error = None;
+            drop(s);
+            if recovered {
+                println!("peterfand: control recovered; resumed requested mode");
+            }
+        } else {
+            let restore_errors = restore_fans_to_auto(provider, fan_ids);
+            let detail = if restore_errors.is_empty() {
+                format!(
+                    "fan write fail-safe: {}; fans returned to OS auto",
+                    write_errors.join(", ")
+                )
+            } else {
+                format!(
+                    "fan write fail-safe: {}; auto restore errors: {}",
+                    write_errors.join(", "),
+                    restore_errors.join(", ")
+                )
+            };
+            let first_failure = !state.control_health.failsafe_active;
+            {
+                let mut s = shared.lock().expect("state poisoned");
+                s.control_health.failsafe_active = true;
+                s.control_health.fan_write_failure_count = s
+                    .control_health
+                    .fan_write_failure_count
+                    .saturating_add((write_errors.len() + restore_errors.len()) as u64);
+                s.control_health.last_error = Some(detail.clone());
+            }
+            if first_failure {
+                eprintln!("peterfand: {detail}");
+            }
+        }
+
         if once {
             break;
         }
         // Sleep in small slices so a signal stops us promptly, and so a
         // freshly-issued command (APPLY_NOW) wakes us well before the rest
         // of a multi-second interval elapses.
-        let mut slept = 0u64;
-        while slept < interval * 1000 && !STOP.load(Ordering::Relaxed) {
-            sleep(Duration::from_millis(200));
-            slept += 200;
-            if APPLY_NOW.swap(false, Ordering::Relaxed) {
-                break;
-            }
-        }
+        sleep_control_interval(interval);
     }
     Ok(())
 }
@@ -664,6 +802,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 "mode": mode,
                 "backend": s.backend,
                 "fan_overrides": s.fan_overrides,
+                "control_health": s.control_health,
             })) {
                 Ok(json) => format!("ok {json}"),
                 Err(_) => "error: serialization failed".into(),
@@ -881,7 +1020,206 @@ mod tests {
             last_temps: Vec::new(),
             last_fans: Vec::new(),
             last_power_w: None,
+            control_health: ControlHealth::default(),
         }))
+    }
+
+    struct FaultProvider {
+        fail_temperatures: bool,
+        fail_writes: bool,
+        duty_calls: std::sync::atomic::AtomicUsize,
+        auto_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FaultProvider {
+        fn new(fail_temperatures: bool, fail_writes: bool) -> Self {
+            Self {
+                fail_temperatures,
+                fail_writes,
+                duty_calls: std::sync::atomic::AtomicUsize::new(0),
+                auto_calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl HardwareProvider for FaultProvider {
+        fn name(&self) -> &str {
+            "fault-test"
+        }
+
+        fn capabilities(&self) -> peterfan_core::provider::Capabilities {
+            peterfan_core::provider::Capabilities {
+                read_temps: true,
+                read_fans: true,
+                control_fans: true,
+            }
+        }
+
+        fn hardware_info(
+            &self,
+        ) -> peterfan_core::error::Result<peterfan_core::types::HardwareInfo> {
+            Ok(peterfan_core::types::HardwareInfo {
+                cpu: "Fault Test CPU".into(),
+                gpu: None,
+                motherboard: None,
+                memory: None,
+                os: "Test".into(),
+            })
+        }
+
+        fn temperatures(
+            &self,
+        ) -> peterfan_core::error::Result<Vec<peterfan_core::types::TempSensor>> {
+            use peterfan_core::types::{Celsius, SensorKind, SensorSource, TempSensor};
+
+            if self.fail_temperatures {
+                return Err(peterfan_core::error::CoreError::Hardware(
+                    "injected sensor failure".into(),
+                ));
+            }
+            Ok(vec![TempSensor {
+                id: "cpu.die.hot".into(),
+                label: "CPU Core Hottest".into(),
+                kind: SensorKind::Cpu,
+                source: SensorSource::Simulated,
+                value: Celsius(70.0),
+            }])
+        }
+
+        fn fans(&self) -> peterfan_core::error::Result<Vec<peterfan_core::types::Fan>> {
+            Ok(vec![peterfan_core::types::Fan {
+                id: "fan.test".into(),
+                label: "Test Fan".into(),
+                rpm: 1_000,
+                min_rpm: Some(500),
+                max_rpm: Some(2_000),
+                duty_percent: Some(25),
+                controllable: true,
+            }])
+        }
+
+        fn set_fan_duty(
+            &self,
+            _fan_id: &str,
+            _duty_percent: u8,
+        ) -> peterfan_core::error::Result<()> {
+            self.duty_calls.fetch_add(1, Ordering::Relaxed);
+            if self.fail_writes {
+                Err(peterfan_core::error::CoreError::Hardware(
+                    "injected fan write failure".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn set_fan_auto(&self, _fan_id: &str) -> peterfan_core::error::Result<()> {
+            self.auto_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn sensor_failure_restores_os_auto_without_writing_duty() {
+        STOP.store(false, Ordering::Relaxed);
+        let provider = FaultProvider::new(true, false);
+        let mut monitor = peterfan_platform::mock_monitor();
+        let shared = test_state();
+
+        control_loop(
+            &provider,
+            monitor.as_mut(),
+            Profile::Balanced,
+            &["fan.test".into()],
+            true,
+            &shared,
+        )
+        .unwrap();
+
+        assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(provider.auto_calls.load(Ordering::Relaxed), 1);
+        let state = shared.lock().unwrap();
+        assert!(state.control_health.failsafe_active);
+        assert_eq!(state.control_health.sensor_failure_count, 1);
+        assert_eq!(state.control_health.consecutive_sensor_failures, 1);
+        assert!(state
+            .control_health
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("fans returned to OS auto")));
+    }
+
+    #[test]
+    fn fan_write_failure_restores_os_auto_and_records_health() {
+        STOP.store(false, Ordering::Relaxed);
+        let provider = FaultProvider::new(false, true);
+        let mut monitor = peterfan_platform::mock_monitor();
+        let shared = test_state();
+
+        control_loop(
+            &provider,
+            monitor.as_mut(),
+            Profile::Balanced,
+            &["fan.test".into()],
+            true,
+            &shared,
+        )
+        .unwrap();
+
+        assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(provider.auto_calls.load(Ordering::Relaxed), 1);
+        let state = shared.lock().unwrap();
+        assert!(state.control_health.failsafe_active);
+        assert_eq!(state.control_health.fan_write_failure_count, 1);
+        assert!(state
+            .control_health
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("fan write fail-safe")));
+    }
+
+    #[test]
+    fn control_temperatures_reject_missing_and_non_physical_readings() {
+        use peterfan_core::types::{Celsius, SensorKind, SensorSource, TempSensor};
+
+        assert_eq!(
+            control_temperatures(&[]),
+            Err("no trustworthy temperature reading")
+        );
+        let invalid = vec![TempSensor {
+            id: "cpu.die.hot".into(),
+            label: "CPU Core Hottest".into(),
+            kind: SensorKind::Cpu,
+            source: SensorSource::Smc,
+            value: Celsius(255.0),
+        }];
+        assert_eq!(
+            control_temperatures(&invalid),
+            Err("no trustworthy temperature reading")
+        );
+    }
+
+    #[test]
+    fn temps_ipc_exposes_control_health() {
+        let shared = test_state();
+        {
+            let mut state = shared.lock().unwrap();
+            state.control_health.failsafe_active = true;
+            state.control_health.sensor_failure_count = 2;
+            state.control_health.consecutive_sensor_failures = 1;
+            state.control_health.last_error = Some("sensor unavailable".into());
+        }
+
+        let reply = handle_command("temps", &shared);
+        let json: serde_json::Value = serde_json::from_str(
+            reply
+                .strip_prefix("ok ")
+                .expect("temps command should return JSON"),
+        )
+        .unwrap();
+        assert_eq!(json["control_health"]["failsafe_active"], true);
+        assert_eq!(json["control_health"]["sensor_failure_count"], 2);
+        assert_eq!(json["control_health"]["last_error"], "sensor unavailable");
     }
 
     #[test]

@@ -65,6 +65,10 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] Keep a short local log of fan-control actions and failures
 - [x] Document why macOS requires approval for first LaunchDaemon install
 - [x] Optimistic fan-control feedback with duplicate-command prevention
+- [x] Reject missing or non-physical control temperatures and immediately
+      return every fan to macOS automatic control
+- [x] Watch fan writes, expose failure counters in the UI/CLI, and fall back to
+      macOS automatic control when a write fails
 
 ### v1.28 — Sensor Accuracy
 
@@ -80,7 +84,7 @@ These are the highest-leverage improvements before adding large new surfaces.
       when a mapped core-hottest reading is available
 - [x] Route LaunchDaemon notifications through the logged-in user's bootstrap
       session without focus or authorization prompts
-- [ ] Add tests for representative temperature selection across mixed sensors
+- [x] Add tests for representative temperature selection across mixed sensors
 
 ### v1.29 — Distribution & Updates
 
