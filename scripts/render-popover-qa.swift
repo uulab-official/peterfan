@@ -188,7 +188,7 @@ func drawCase(_ spec: CaseSpec, origin: CGPoint) {
         label("Fan", "팬", spec),
         label("Update", "업데이트", spec),
         label("Settings", "설정", spec),
-        label("More", "더보기", spec),
+        label("System", "시스템", spec),
     ]
     for (index, item) in railLabels.enumerated() {
         let y = rail.maxY - 66 - CGFloat(index) * 82

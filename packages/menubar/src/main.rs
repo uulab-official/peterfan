@@ -51,11 +51,10 @@ use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
 const TEMPERATURE_REFRESH: Duration = Duration::from_secs(2);
-// Replacing a macOS status-item image is substantially more expensive than
-// advancing an in-memory animation frame. Five frames per second still reads
-// as a fast run while avoiding a measurable 2-3% app CPU tax at full load.
-const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(200);
-const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(800);
+// The runner should be nearly still at idle and unmistakably fast under load.
+// Frames are pre-rendered, so each tick only swaps a cached status-item image.
+const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(140);
+const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(1000);
 const POPOVER_PREWARM_DELAY: Duration = Duration::from_millis(1200);
 const POPOVER_SHOW_DELAY: Duration = Duration::from_millis(35);
 const DASHBOARD_OPEN_GRACE: Duration = Duration::from_millis(900);
@@ -1232,6 +1231,12 @@ fn main() {
         if now >= next_metric_at {
             update(&mut app);
             next_metric_at = now + REFRESH;
+            if runner_enabled(app.display) {
+                // A CPU spike must accelerate the runner immediately instead
+                // of waiting for the old idle-speed deadline to expire.
+                next_runner_at =
+                    next_runner_at.min(now + runner_frame_interval(app.runner_cpu_pct));
+            }
         }
         if runner_enabled(app.display) && now >= next_runner_at {
             animate_runner(&mut app);
@@ -3250,10 +3255,13 @@ fn to_vec(hist: &VecDeque<f32>) -> Vec<f32> {
 }
 
 fn runner_frame_interval(cpu_pct: f32) -> Duration {
-    let pct = cpu_pct.clamp(0.0, 100.0);
+    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
     let min_ms = RUNNER_MIN_INTERVAL.as_millis() as f32;
     let max_ms = RUNNER_MAX_INTERVAL.as_millis() as f32;
-    let ms = max_ms - (max_ms - min_ms) * (pct / 100.0);
+    // Ease-out curve: modest load is visibly faster, while the upper range
+    // has enough separation to feel like a sprint rather than a color change.
+    let idle_weight = (1.0 - load).powi(2);
+    let ms = min_ms + (max_ms - min_ms) * idle_weight;
     Duration::from_millis(ms.round() as u64)
 }
 
@@ -3634,27 +3642,23 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">No fan actions yet<", ">팬 제어 이력 없음<")
             .replace(">Detail<", ">상세<")
             .replace(">Updates<", ">업데이트<")
-            .replace(">More<", ">더보기<")
+            .replace(">System<", ">시스템<")
             .replace(">Quit<", ">종료<")
-            .replace(">More Metrics<", ">추가 지표<")
-            .replace(">More Actions<", ">더보기<")
+            .replace(">System Metrics<", ">시스템 지표<")
+            .replace(">Live<", ">실시간<")
             .replace(">Open Detail Window<", ">상세 창 열기<")
             .replace(">Open Detail Window…<", ">상세 창 열기…<")
             .replace(
-                "Open a larger dashboard window, use the native menu for advanced settings, or quit PeterFan.",
-                "큰 대시보드 창을 열거나, 고급 설정은 기본 메뉴에서 조정하고, PeterFan을 종료할 수 있습니다.",
+                "Storage, battery, network, and active processes.",
+                "저장공간, 배터리, 네트워크와 실행 중인 프로세스를 확인합니다.",
             )
             .replace(
                 "No controllable fans detected. PeterFan can still monitor CPU, memory, temperature, and network activity.",
                 "제어 가능한 팬을 찾지 못했습니다. PeterFan은 CPU, 메모리, 온도, 네트워크 상태는 계속 모니터링합니다.",
             )
             .replace(
-                "Manage startup and app behavior from one place.",
-                "시작 동작과 앱 동작을 한 화면에서 관리합니다.",
-            )
-            .replace(
-                "Open the full dashboard when you need more room.",
-                "더 넓은 화면이 필요할 때 전체 대시보드를 엽니다.",
+                "Manage startup and fan-control safety.",
+                "시작 동작과 팬 제어 안전 상태를 관리합니다.",
             )
             .replace(">Startup<", ">시작 설정<")
             .replace("Start on login", "Run on startup")
@@ -3891,7 +3895,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 
 <div class="rail-panel" id="rail-settings-panel">
 <div class="panel-title-row"><div class="panel-title">General Settings</div><span class="panel-pill info" id="rail-settings-pill">App Preferences</span></div>
-<div class="panel-copy">Manage startup and app behavior from one place.</div>
+<div class="panel-copy">Manage startup and fan-control safety.</div>
 <div class="settings-list">
 <div class="health-card" id="fan-health-card">
 <div class="health-head"><div class="health-title">Fan Control Health</div><span class="panel-pill info" id="health-pill">Ready</span></div>
@@ -3922,19 +3926,6 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="health-head"><div class="health-title">Recent Fan Actions</div><button class="health-action" id="fan-diagnostic-button" onclick="runFanDiagnostics(this)">Run Diagnostics</button></div>
 <div class="action-log" id="fan-action-log"><div class="action-log-empty">No fan actions yet</div></div>
 </div>
-<div class="health-card" id="hardware-availability-card">
-<div class="health-head"><div class="health-title">Hardware Availability</div><span class="panel-pill info" id="hardware-pill">Ready</span></div>
-<div class="health-grid">
-<div class="health-row"><span class="health-label">Fans Detected</span><span class="health-value" id="hardware-fans">—</span></div>
-<div class="health-row"><span class="health-label">Battery</span><span class="health-value" id="hardware-battery">—</span></div>
-<div class="health-row"><span class="health-label">Network</span><span class="health-value" id="hardware-network">—</span></div>
-</div>
-</div>
- <div class="settings-item">
-  <div><div class="settings-item-title">Detail Window</div><div class="settings-item-copy">Open the full dashboard when you need more room.</div></div>
-  <button class="panel-action secondary" onclick="window.ipc.postMessage('open_detail')">Open Detail Window…</button>
-  </div>
-
 <div class="settings-item" id="startup-setting">
 <div><div class="settings-item-title">Start on login</div><div class="settings-item-copy">Run PeterFan automatically on startup.</div></div>
 <button id="startup-toggle" class="panel-action secondary" onclick="toggleStartupItem(this)">Enable</button>
@@ -3943,12 +3934,17 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 </div>
 
 <div class="rail-panel" id="rail-more-panel">
-<div class="panel-title-row"><div class="panel-title">More Metrics</div><span class="panel-pill info" id="rail-more-pill">Tools</span></div>
-<div class="panel-copy">Open a larger dashboard window, use the native menu for advanced settings, or quit PeterFan.</div>
-<div class="panel-actions">
-<button class="panel-action" onclick="window.ipc.postMessage('open_detail')">Open Detail Window</button>
-<button class="panel-action danger" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button>
+<div class="panel-title-row"><div class="panel-title">System Metrics</div><span class="panel-pill info" id="rail-more-pill">Live</span></div>
+<div class="panel-copy">Storage, battery, network, and active processes.</div>
+<div class="health-card" id="hardware-availability-card">
+<div class="health-head"><div class="health-title">Hardware Availability</div><span class="panel-pill info" id="hardware-pill">Ready</span></div>
+<div class="health-grid">
+<div class="health-row"><span class="health-label">Fans Detected</span><span class="health-value" id="hardware-fans">—</span></div>
+<div class="health-row"><span class="health-label">Battery</span><span class="health-value" id="hardware-battery">—</span></div>
+<div class="health-row"><span class="health-label">Network</span><span class="health-value" id="hardware-network">—</span></div>
 </div>
+</div>
+<div class="panel-actions"><button class="panel-action secondary" onclick="window.ipc.postMessage('open_detail')">Open Detail Window</button></div>
 </div>
 
 <div class="ctl" id="fan-control-section" style="border-top:0;border-bottom:1px solid var(--line)">
@@ -4032,7 +4028,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <button class="rail-btn" id="railFan" data-rail-action="fan" aria-pressed="false" onclick="runRailAction('fan',this)" title="Fan control"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fan</span></button>
 <button class="rail-btn" id="railUpdate" data-rail-action="update" aria-pressed="false" onclick="runRailAction('update',this)" title="Check for Updates…"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
 <button class="rail-btn" id="railSettings" data-rail-action="settings" aria-pressed="false" onclick="runRailAction('settings',this)" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.2-.1a1.7 1.7 0 0 0-1.9-.1 8 8 0 0 1-1.4.8 1.7 1.7 0 0 0-1.1 1.5V23h-4v-.5A1.7 1.7 0 0 0 8.1 21a8 8 0 0 1-1.4-.8 1.7 1.7 0 0 0-1.9.1l-.2.1-2-3.4.1-.1A1.7 1.7 0 0 0 3 15a8.6 8.6 0 0 1 0-1.7 1.7 1.7 0 0 0-.3-1.9l-.1-.1 2-3.4.2.1a1.7 1.7 0 0 0 1.9.1A8 8 0 0 1 8.1 7a1.7 1.7 0 0 0 1.1-1.5V5h4v.5A1.7 1.7 0 0 0 14.3 7a8 8 0 0 1 1.4.8 1.7 1.7 0 0 0 1.9-.1l.2-.1 2 3.4-.1.1a1.7 1.7 0 0 0-.3 1.9 8.6 8.6 0 0 1 0 2z"/></svg><span>Settings</span></button>
-<button class="rail-btn" id="railMore" data-rail-action="more" aria-pressed="false" onclick="runRailAction('more',this)" title="Show more"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg><span>More</span></button>
+<button class="rail-btn" id="railMore" data-rail-action="more" aria-pressed="false" onclick="runRailAction('more',this)" title="System metrics"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg><span>System</span></button>
 </aside></div></div>
 <div class="chart-tip" id="chart-tip"></div>
 <script>
@@ -4128,9 +4124,9 @@ function applyPopoverMode(){
   document.body.classList.toggle('expanded',!compact);
   var more=document.getElementById('railMore');
   if(more){
-    more.title=LANG==='ko'?'더보기':'More actions';
+    more.title=LANG==='ko'?'시스템 지표':'System metrics';
     var label=more.querySelector('span');
-    if(label)label.textContent=LANG==='ko'?'더보기':'More';
+    if(label)label.textContent=LANG==='ko'?'시스템':'System';
   }
   reportHeight();
 }
@@ -5000,7 +4996,7 @@ function updateRail(d){
   } else if(view==='settings'){
     updateHealthPanel(d);
   } else if(view==='more'){
-    setPanelPill('rail-more-pill',LANG==='ko'?'도구':'Tools','info');
+    setPanelPill('rail-more-pill',LANG==='ko'?'실시간':'Live','info');
   }
 }
 function setHealthValue(id,text,tone){
@@ -5311,9 +5307,9 @@ mod tests {
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
         assert!(ko.contains(">팬 제어<"));
         assert!(ko.contains(">PeterFan 종료<"));
-        assert!(ko.contains(">더보기<"));
+        assert!(ko.contains(">시스템<"));
         assert!(ko.contains(">상세 창 열기<"));
-        assert!(ko.contains("큰 대시보드 창을 열거나"));
+        assert!(ko.contains("저장공간, 배터리, 네트워크"));
         assert!(ko.contains(">자동<"));
         assert!(ko.contains(">균형<"));
         // Auto/Manual per-fan card labels are rendered by JS at runtime
@@ -5409,12 +5405,12 @@ mod tests {
         assert!(en.contains(">Fan<"));
         assert!(en.contains(">Updates<"));
         assert!(en.contains(">Settings<"));
-        assert!(en.contains(">More<"));
+        assert!(en.contains(">System<"));
         assert!(ko.contains(">상태<"));
         assert!(ko.contains(">팬<"));
         assert!(ko.contains(">업데이트<"));
         assert!(ko.contains(">설정<"));
-        assert!(ko.contains(">더보기<"));
+        assert!(ko.contains(">시스템<"));
     }
 
     #[test]
@@ -5468,6 +5464,9 @@ mod tests {
         assert!(normal > busy);
         assert!(idle <= RUNNER_MAX_INTERVAL);
         assert!(busy >= RUNNER_MIN_INTERVAL);
+        assert!(idle.as_millis() >= 900);
+        assert!((300..=450).contains(&normal.as_millis()));
+        assert!(busy.as_millis() <= 160);
 
         assert!(!runner_enabled(MenubarDisplay::Number));
         assert!(runner_enabled(MenubarDisplay::Graph));
@@ -5698,7 +5697,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_panel_contains_hardware_empty_states() {
+    fn system_panel_contains_hardware_empty_states() {
         let en = dashboard_html(ResolvedLanguage::En, false);
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
 
@@ -5861,7 +5860,7 @@ mod tests {
     }
 
     #[test]
-    fn action_rail_commands_live_inside_more_panel() {
+    fn system_view_keeps_metrics_and_detail_action_together() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
         assert!(en.contains(r#"id="rail-more-panel""#));
@@ -5869,6 +5868,7 @@ mod tests {
         assert!(en.contains("case 'more':setRailView('more');break;"));
         assert!(en.contains(r#"onclick="window.ipc.postMessage('open_detail')""#));
         assert!(en.contains(r#"onclick="window.ipc.postMessage('quit')""#));
+        assert_eq!(en.matches(">Open Detail Window<").count(), 1);
         assert!(en.contains(
             "['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach"
         ));
@@ -5888,7 +5888,8 @@ mod tests {
         assert!(en.contains(r#"data-compact-extra="battery""#));
         assert!(en.contains(r#"data-compact-extra="network""#));
         assert!(en.contains(r#"data-compact-extra="processes""#));
-        assert!(en.contains("More Metrics"));
+        assert!(en.contains("System Metrics"));
+        assert!(en.contains("Storage, battery, network, and active processes."));
     }
 
     #[test]

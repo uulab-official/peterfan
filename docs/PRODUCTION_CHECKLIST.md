@@ -28,6 +28,8 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Enforce one menu-bar app instance.
 - [x] Keep the privileged daemon update path passwordless after first approval.
 - [x] Keep expensive system metrics out of fast refresh ticks.
+- [x] Keep Settings limited to preferences/safety and System limited to metrics.
+- [x] Drive the menu-bar runner cadence from CPU load with tested idle/busy bounds.
 - [ ] Add a 6-hour control-loop soak test with bounded CPU and memory assertions.
 - [ ] Add sleep/wake and multi-display regression automation.
 - [ ] Persist a bounded diagnostic log across app and daemon restarts.
