@@ -3877,10 +3877,10 @@ fn cmd_integrity(options: IntegrityOptions) -> Result<()> {
         let report = peterfan_platform::updater::verify_release_directory_integrity(&release_dir);
         if json {
             println!("{}", serde_json::to_string_pretty(&report)?);
-            return Ok(());
+            return require_integrity(report.ok, "release directory");
         }
         print_release_directory_integrity_report(&report);
-        return Ok(());
+        return require_integrity(report.ok, "release directory");
     }
 
     if let Some(dmg) = dmg {
@@ -3894,10 +3894,10 @@ fn cmd_integrity(options: IntegrityOptions) -> Result<()> {
         );
         if json {
             println!("{}", serde_json::to_string_pretty(&report)?);
-            return Ok(());
+            return require_integrity(report.ok, "artifact");
         }
         print_artifact_integrity_report(&report);
-        return Ok(());
+        return require_integrity(report.ok, "artifact");
     }
     if checksums.is_some() || expected_sha256.is_some() {
         anyhow::bail!("--checksums and --expected-sha256 require --dmg");
@@ -3915,10 +3915,10 @@ fn cmd_integrity(options: IntegrityOptions) -> Result<()> {
         let report = peterfan_platform::updater::verify_release_integrity(&release);
         if json {
             println!("{}", serde_json::to_string_pretty(&report)?);
-            return Ok(());
+            return require_integrity(report.ok, "release");
         }
         print_release_integrity_report(&report);
-        return Ok(());
+        return require_integrity(report.ok, "release");
     }
 
     #[cfg(target_os = "macos")]
@@ -3929,11 +3929,19 @@ fn cmd_integrity(options: IntegrityOptions) -> Result<()> {
     let report = peterfan_platform::updater::verify_app_integrity(&app);
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
+        return require_integrity(report.ok, "installed app");
     }
 
     print_app_integrity_report(&report);
-    Ok(())
+    require_integrity(report.ok, "installed app")
+}
+
+fn require_integrity(ok: bool, subject: &str) -> Result<()> {
+    if ok {
+        Ok(())
+    } else {
+        anyhow::bail!("{subject} integrity verification failed")
+    }
 }
 
 fn print_release_directory_integrity_report(
@@ -4572,6 +4580,13 @@ mod tests {
         assert!(super::control_reply_ok("ok balanced (macos)"));
         assert!(!super::control_reply_ok("error: write failed"));
         assert!(!super::control_reply_ok(""));
+    }
+
+    #[test]
+    fn failed_integrity_reports_return_an_error_exit_path() {
+        assert!(super::require_integrity(true, "artifact").is_ok());
+        let error = super::require_integrity(false, "artifact").unwrap_err();
+        assert_eq!(error.to_string(), "artifact integrity verification failed");
     }
 
     fn temp(id: &str, label: &str, kind: SensorKind, value: f32) -> TempSensor {

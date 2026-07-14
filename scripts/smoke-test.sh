@@ -98,6 +98,28 @@ run_bounded_contains() {
     rm -f /tmp/smoke_out.$$ /tmp/smoke_err.$$
 }
 
+# A validation command must fail closed when its input is invalid. Confirm it
+# exits promptly, returns non-zero, and explains why instead of silently
+# printing a red report with a successful process status.
+run_bounded_failure_contains() {
+    local desc="$1" timeout_secs="$2" needle="$3"
+    shift 3
+    run_timeout "$timeout_secs" "$@" >/tmp/smoke_out.$$ 2>/tmp/smoke_err.$$
+    local code=$?
+    if [[ $code -eq 124 ]]; then
+        fail "$desc (timed out after ${timeout_secs}s)"
+    elif [[ $code -eq 0 ]]; then
+        fail "$desc (unexpected success exit)"
+    elif grep -q "$needle" /tmp/smoke_out.$$ /tmp/smoke_err.$$; then
+        pass "$desc"
+    else
+        fail "$desc (missing expected output: '$needle')"
+        sed 's/^/      /' /tmp/smoke_out.$$
+        sed 's/^/      /' /tmp/smoke_err.$$
+    fi
+    rm -f /tmp/smoke_out.$$ /tmp/smoke_err.$$
+}
+
 # Runs a command and validates its stdout is well-formed JSON.
 run_json() {
     local desc="$1" timeout_secs="$2"
@@ -116,6 +138,25 @@ run_json() {
         pass "$desc"
     else
         fail "$desc (invalid JSON)"
+        echo "$out" | head -5 | sed 's/^/      /'
+    fi
+    rm -f /tmp/smoke_err.$$
+}
+
+run_json_failure() {
+    local desc="$1" timeout_secs="$2"
+    shift 2
+    local out
+    out=$(run_timeout "$timeout_secs" "$@" 2>/tmp/smoke_err.$$)
+    local code=$?
+    if [[ $code -eq 124 ]]; then
+        fail "$desc (timed out after ${timeout_secs}s)"
+    elif [[ $code -eq 0 ]]; then
+        fail "$desc (unexpected success exit)"
+    elif echo "$out" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+        pass "$desc"
+    else
+        fail "$desc (failure output is not valid JSON)"
         echo "$out" | head -5 | sed 's/^/      /'
     fi
     rm -f /tmp/smoke_err.$$
@@ -237,13 +278,16 @@ echo "== read-only CLI commands must not crash (--mock) =="
 for cmd in status cpu memory disk network "top -n 5" battery system temps fans hardware doctor config "curve balanced" "profile list"; do
     run_bounded "peterfan --mock $cmd" 10 "$PETERFAN" --mock $cmd
 done
-run_bounded "peterfan integrity" 15 "$PETERFAN" integrity
+MISSING_APP="/tmp/PeterFan-smoke-missing-$$.app"
+run_bounded_failure_contains "peterfan integrity rejects a missing app" 15 "integrity verification failed" \
+    "$PETERFAN" integrity --app "$MISSING_APP"
 
 echo "== --json output must be valid JSON =="
 for cmd in status cpu memory disk network temps fans hardware; do
     run_json "peterfan --mock --json $cmd" 10 "$PETERFAN" --mock --json $cmd
 done
-run_json "peterfan --json integrity" 15 "$PETERFAN" --json integrity
+run_json_failure "peterfan --json integrity reports a missing app" 15 \
+    "$PETERFAN" --json integrity --app "$MISSING_APP"
 
 echo "== mock control commands must stay isolated from the real daemon =="
 run_bounded_contains "peterfan --mock profile uses simulated fans" 10 'applied_to' \

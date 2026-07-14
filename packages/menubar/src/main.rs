@@ -2337,9 +2337,14 @@ fn configure_native_popover_window(
         return None;
     }
     let native_window = unsafe { &*raw };
+    let (x, y) = appkit_window_top_left(position, primary_top);
     native_window.setContentSize(NSSize::new(width, height));
-    native_window.setFrameTopLeftPoint(NSPoint::new(position.x, primary_top - position.y));
+    native_window.setFrameTopLeftPoint(NSPoint::new(x, y));
     Some(native_window.frame())
+}
+
+fn appkit_window_top_left(position: LogicalPosition<f64>, primary_top: f64) -> (f64, f64) {
+    (position.x, primary_top - position.y)
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -2969,7 +2974,13 @@ fn update(app: &mut App) {
         })
         .collect();
 
-    let can_control = app.provider.capabilities().control_fans || daemon_usable;
+    let fan_control_supported = app.provider.capabilities().control_fans || daemon_usable;
+    let can_control = fan_control_access(
+        app.provider.capabilities().control_fans,
+        daemon_usable,
+        direct_fan_control_allowed(),
+        app.provider.name() == "mock",
+    );
     let ctl_status = if daemon_update_needed {
         match app.language.resolve() {
             ResolvedLanguage::Ko => "팬 제어 재설치 필요".to_string(),
@@ -2977,6 +2988,11 @@ fn update(app: &mut App) {
         }
     } else if daemon_usable {
         daemon_st.clone()
+    } else if fan_control_supported && !can_control {
+        match app.language.resolve() {
+            ResolvedLanguage::Ko => "팬 제어 설정 필요".to_string(),
+            ResolvedLanguage::En => "fan control setup required".to_string(),
+        }
     } else {
         STATUS.lock().expect("status poisoned").clone()
     };
@@ -3039,6 +3055,7 @@ fn update(app: &mut App) {
         "disk_io_hist": to_vec(app.disk_io_h.range(chart_range)),
         "chart_range": chart_range.as_str(),
         "can_control": can_control,
+        "fan_control_supported": fan_control_supported,
         "ctl_status": ctl_status,
         "daemon_running": !daemon_st.is_empty(),
         "daemon_version": daemon_version.clone(),
@@ -3054,7 +3071,7 @@ fn update(app: &mut App) {
         "active_control_mode": active_control_mode,
         "control_revision": control_revision,
         "applied_control_revision": applied_control_revision,
-        "fan_setup_needed": (!daemon_running || daemon_update_needed) && can_control,
+        "fan_setup_needed": fan_control_supported && !can_control,
         "fan_count": fans.len(),
         "controllable_fan_count": fans.iter().filter(|f| f.controllable).count(),
         "fan_curve_input_temp_c": display_temp,
@@ -3595,8 +3612,32 @@ fn fan_control_ready() -> bool {
     if peterfan_platform::daemon_reachable() {
         return true;
     }
+    process_is_elevated()
+}
+
+fn fan_control_access(
+    hardware_supported: bool,
+    daemon_usable: bool,
+    elevated: bool,
+    mock: bool,
+) -> bool {
+    daemon_usable || (hardware_supported && (elevated || mock))
+}
+
+#[cfg(target_os = "macos")]
+fn process_is_elevated() -> bool {
     // SAFETY: geteuid() is always safe and has no preconditions.
     unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(target_os = "macos")]
+fn direct_fan_control_allowed() -> bool {
+    process_is_elevated()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn direct_fan_control_allowed() -> bool {
+    true
 }
 
 /// On first launch (and every launch after, until the user opts out), ask
@@ -4981,7 +5022,7 @@ window.__pf={
  } else if(view==='fan'){
    updateSetup(d);
    var note=document.getElementById('ctl-note');
-   if(d.can_control){
+   if(d.fan_control_supported){
      set('ctl-status', d.ctl_status||'');
      updateProfileStrip(d);
      updateFanApplyStatus(d);
@@ -5021,7 +5062,7 @@ window.__pf={
        note.style.display='none';
      }
      }
-     renderFanCards(d.fans);
+     renderFanCards(d.fans,d.can_control);
      updateFanEmptyState(d);
    } else {
      set('ctl-status',LANG==='ko'?'사용 불가':'unavailable');
@@ -5051,7 +5092,7 @@ if(window.ipc)window.ipc.postMessage('ready');
 // can pin e.g. just the left fan while the right one keeps following the
 // curve. Built once per fan id and updated in place on every tick, so an
 // in-progress slider drag never gets clobbered by the next poll.
-function renderFanCards(fans){
+function renderFanCards(fans,enabled){
   var container=document.getElementById('fan-cards');
   if(!container)return;
   var seen={};
@@ -5128,6 +5169,7 @@ function renderFanCards(fans){
       container.appendChild(card);
     }
     var manual=!!f.manual;
+    card.dataset.controlEnabled=enabled?'1':'0';
     var pendingMode=card.dataset.pendingMode||'';
     if(pendingMode){
       var pendingConfirmed=(pendingMode==='manual'&&manual)||(pendingMode==='auto'&&!manual);
@@ -5161,8 +5203,8 @@ function renderFanCards(fans){
       ?(targetRpm!=null?(f.cur_rpm+' RPM → '+targetRpm+' RPM'):(f.min_rpm+' — '+f.cur_rpm+' — '+f.max_rpm))
       :(Math.round(f.pct)+'%');
     card.classList.toggle('pending',!!pendingMode);
-    card.querySelector('.fa-auto').disabled=!!pendingMode;
-    card.querySelector('.fa-manual').disabled=!!pendingMode;
+    card.querySelector('.fa-auto').disabled=!enabled||!!pendingMode;
+    card.querySelector('.fa-manual').disabled=!enabled||!!pendingMode;
     card.querySelector('.fa-auto').classList.toggle('active',!displayManual);
     card.querySelector('.fa-manual').classList.toggle('active',displayManual);
     card.querySelector('.fa-min').textContent=useRpm?f.min_rpm:'0%';
@@ -5175,6 +5217,8 @@ function renderFanCards(fans){
     card.querySelector('.fan-rpm-row').classList.toggle('inactive', !displayManual);
     var slider=card.querySelector('input[type=range]');
     var numInput=card.querySelector('.fa-num');
+    slider.disabled=!enabled||!!pendingMode;
+    numInput.disabled=!enabled||!!pendingMode;
     slider.dataset.useRpm=useRpm?'1':'0';
     slider.min=numInput.min=useRpm?f.min_rpm:0;
     slider.max=numInput.max=useRpm?Math.max(f.max_rpm,f.min_rpm+1):100;
@@ -5196,6 +5240,7 @@ function renderFanCards(fans){
   });
 }
 function markFanPending(card,mode,refresh){
+  if(card.dataset.controlEnabled!=='1')return false;
   if(card.dataset.pendingMode&&!refresh)return false;
   card.dataset.pendingMode=mode;
   card.dataset.pendingAt=Date.now();
@@ -5735,12 +5780,12 @@ function tempValue(value){
 }
 function updateHealthPanel(d){
   var health=d.control_health||{},failsafe=!!health.failsafe_active;
-  var tone=failsafe?'warn':(d.daemon_update_needed?'warn':(d.daemon_running?'ok':(d.can_control?'warn':'info')));
+  var tone=failsafe?'warn':(d.daemon_update_needed?'warn':(d.daemon_running?'ok':(d.fan_setup_needed?'warn':'info')));
   var pill=failsafe
     ?(LANG==='ko'?'OS 자동 복귀':'OS fallback')
     :(d.daemon_update_needed
     ?(LANG==='ko'?'재설치 필요':'Reinstall')
-    :(d.daemon_running?(LANG==='ko'?'정상':'OK'):(d.can_control?(LANG==='ko'?'설정 필요':'Setup'):(LANG==='ko'?'읽기 전용':'Read-only'))));
+    :(d.daemon_running?(LANG==='ko'?'정상':'OK'):(d.fan_setup_needed?(LANG==='ko'?'설정 필요':'Setup'):(LANG==='ko'?'읽기 전용':'Read-only'))));
   setPanelPill('rail-settings-pill',pill,tone);
   setPanelPill('health-pill',pill,tone);
   var daemonText=d.daemon_running
@@ -5752,7 +5797,7 @@ function updateHealthPanel(d){
   setHealthValue('health-team-id',d.team_id||'—',d.team_id?'ok':'warn');
   var path=d.daemon_running
     ?(LANG==='ko'?'root 데몬':'root daemon')
-    :(d.can_control?(LANG==='ko'?'앱 직접 제어':'app direct'):(LANG==='ko'?'읽기 전용':'read-only'));
+    :(d.can_control?(LANG==='ko'?'앱 직접 제어':'app direct'):(d.fan_setup_needed?(LANG==='ko'?'1회 설정 필요':'setup required'):(LANG==='ko'?'읽기 전용':'read-only')));
   setHealthValue('health-control-path',path,d.daemon_running?'ok':(d.can_control?'info':'warn'));
   var last=d.last_cmd_status||d.ctl_status||'';
   var lastTone=/error|invalid|unknown|failed|needs root|needs at least/i.test(last)?'warn':'info';
@@ -5782,8 +5827,8 @@ function updateHealthPanel(d){
   setText('fan-critical-limit',tempValue(d.fan_critical_temp_c));
   var approval=d.daemon_running&&!d.daemon_update_needed
     ?(LANG==='ko'?'추가 승인 없음':'no extra prompt')
-    :(d.daemon_update_needed?(LANG==='ko'?'재설치 때 1회':'one prompt to reinstall'):(d.can_control?(LANG==='ko'?'최초 설정 때 1회':'one prompt for setup'):(LANG==='ko'?'필요 없음':'not needed')));
-  setHealthValue('health-approval',approval,d.daemon_running&&!d.daemon_update_needed?'ok':(d.can_control?'warn':'info'));
+    :(d.daemon_update_needed?(LANG==='ko'?'재설치 때 1회':'one prompt to reinstall'):(d.fan_setup_needed?(LANG==='ko'?'최초 설정 때 1회':'one prompt for setup'):(LANG==='ko'?'필요 없음':'not needed')));
+  setHealthValue('health-approval',approval,d.daemon_running&&!d.daemon_update_needed?'ok':(d.fan_setup_needed?'warn':'info'));
   setHealthValue('health-app','v'+(d.app_version||''),'info');
   renderFanActionLog(d);
 }
@@ -6054,6 +6099,27 @@ mod tests {
         assert!(pos.x < 0.0);
         assert!(pos.x >= anchor.display.x + 8.0);
         assert_eq!(popover_height_for_anchor(anchor), 520.0);
+    }
+
+    #[test]
+    fn appkit_top_left_conversion_preserves_external_display_coordinates() {
+        assert_eq!(
+            appkit_window_top_left(LogicalPosition::new(3800.0, 24.0), 1117.0),
+            (3800.0, 1093.0)
+        );
+        assert_eq!(
+            appkit_window_top_left(LogicalPosition::new(-1500.0, -1056.0), 1117.0),
+            (-1500.0, 2173.0)
+        );
+    }
+
+    #[test]
+    fn fan_controls_require_a_usable_daemon_or_direct_write_access() {
+        assert!(!fan_control_access(true, false, false, false));
+        assert!(fan_control_access(true, true, false, false));
+        assert!(fan_control_access(true, false, true, false));
+        assert!(fan_control_access(true, false, false, true));
+        assert!(fan_control_access(false, true, false, false));
     }
 
     #[test]
@@ -6862,6 +6928,10 @@ mod tests {
         assert!(en.contains("FAN_CONTROL_RESULT={ok:true"));
         assert!(en.contains("hardware confirmation timed out"));
         assert!(en.contains("Date.now()-FAN_CONTROL_PENDING.startedAt>8000"));
+        assert!(en.contains("if(d.fan_control_supported)"));
+        assert!(en.contains("renderFanCards(d.fans,d.can_control)"));
+        assert!(en.contains("card.dataset.controlEnabled=enabled?'1':'0'"));
+        assert!(en.contains("slider.disabled=!enabled||!!pendingMode"));
         assert!(en.contains("function updateFanApplyStatus(d)"));
         assert!(en.contains("typeof f.target_pct==='number'"));
         assert!(en.contains("strip.setAttribute('aria-busy',pending?'true':'false');"));
