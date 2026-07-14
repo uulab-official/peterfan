@@ -6,11 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.21] — 데몬 비정상 종료 복구
+
 ### Fixed
+- **시작 시 팬 안전 초기화** — 데몬이 시작될 때 저장된 프로필을 적용하기 전에 모든
+  팬을 macOS 자동 제어로 되돌려, SIGKILL이나 시스템 중단으로 이전 프로세스의 강제
+  SMC 상태가 남았더라도 새 프로세스가 먼저 안전 기준선을 복구함.
+- **복구 실패 가시성** — 정상 종료나 panic 이후 자동 제어 복구가 실패하면 성공처럼
+  종료하지 않고 팬 ID와 원인을 오류로 남김.
 - **macOS CI 스모크 이식성** — GNU `timeout`이 없는 깨끗한 macOS 러너에서는
   Python 기반 프로세스 그룹 타임아웃을 사용해 중단 감지 검사가 정상 동작함.
 - **CI 런타임과 감사 캐시** — GitHub Actions를 Node 24 호환 세대로 올리고
   `cargo-audit` 실행 파일을 캐시해 반복 검사의 설치 지연과 폐기 경고를 제거함.
+
+### Quality
+- **데몬 생명주기 회귀 검사** — SIGTERM 자동 복구, panic 자동 복구, SIGKILL 후
+  재시작 초기화, LaunchDaemon `RunAtLoad`/`KeepAlive` 계약을 자동 검증함.
 
 ## [1.27.20] — 최신 Rust CI 호환성
 

@@ -219,3 +219,49 @@ pub fn reinstall_via_running_daemon(dry_run: bool) -> Result<InstallOutcome, Str
 pub fn reinstall_via_running_daemon(_dry_run: bool) -> Result<InstallOutcome, String> {
     Err("daemon self-reinstall is only available on macOS".to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_daemon_restarts_after_crash_and_boot() {
+        let plist = daemon_plist();
+        let path = std::env::temp_dir().join(format!(
+            "peterfan-daemon-plist-test-{}.plist",
+            std::process::id()
+        ));
+        std::fs::write(&path, plist).expect("write test plist");
+
+        let lint = std::process::Command::new("plutil")
+            .args(["-lint", path.to_str().expect("utf-8 path")])
+            .output()
+            .expect("run plutil");
+        assert!(
+            lint.status.success(),
+            "{}",
+            String::from_utf8_lossy(&lint.stderr)
+        );
+
+        let extract = |key: &str| {
+            let output = std::process::Command::new("plutil")
+                .args([
+                    "-extract",
+                    key,
+                    "raw",
+                    "-o",
+                    "-",
+                    path.to_str().expect("utf-8 path"),
+                ])
+                .output()
+                .expect("extract plist value");
+            assert!(output.status.success());
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        assert_eq!(extract("RunAtLoad"), "true");
+        assert_eq!(extract("KeepAlive"), "true");
+        assert_eq!(extract("Label"), DAEMON_LABEL);
+
+        let _ = std::fs::remove_file(path);
+    }
+}

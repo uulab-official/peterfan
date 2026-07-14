@@ -219,6 +219,9 @@ struct Cli {
     /// Apply the curve once and exit (for testing).
     #[arg(long)]
     once: bool,
+    /// Disable IPC for isolated process-lifecycle tests.
+    #[arg(long, hide = true)]
+    no_ipc: bool,
 }
 
 fn main() {
@@ -230,6 +233,10 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    if cli.no_ipc && !cli.mock {
+        bail!("--no-ipc is only available with --mock");
+    }
+
     // Resolve settings: explicit flags win, otherwise fall back to the config
     // file, otherwise the built-in defaults.
     let cfg = peterfan_platform::config::load();
@@ -264,6 +271,21 @@ fn run(cli: Cli) -> Result<()> {
     if fan_ids.is_empty() {
         bail!("no controllable fans found");
     }
+
+    // A SIGKILL cannot run cleanup code. launchd restarts this daemon through
+    // KeepAlive, so every new process must first clear any forced SMC mode the
+    // previous process may have left behind before restoring the saved policy.
+    let startup_restore_errors = restore_fans_to_auto(provider.as_ref(), &fan_ids);
+    if !startup_restore_errors.is_empty() {
+        bail!(
+            "could not establish OS automatic fan control at startup: {}",
+            startup_restore_errors.join("; ")
+        );
+    }
+    println!(
+        "peterfand: reset {} fan(s) to automatic control at startup",
+        fan_ids.len()
+    );
 
     install_signal_handlers();
 
@@ -345,7 +367,7 @@ fn run(cli: Cli) -> Result<()> {
     // `spawn_ipc_server`) — on Windows the daemon still runs and applies its
     // curve, it just isn't remotely controllable yet.
     #[cfg(unix)]
-    if !cli.once {
+    if !cli.once && !cli.no_ipc {
         spawn_ipc_server(Arc::clone(&shared), Arc::clone(&provider), fan_ids.clone());
     }
 
@@ -360,7 +382,7 @@ fn run(cli: Cli) -> Result<()> {
 
     // Run the control loop, then ALWAYS restore automatic control — even on a
     // panic — so we never leave the fans forced.
-    let loop_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+    let loop_result = run_with_auto_restore(provider.as_ref(), &fan_ids, || {
         control_loop(
             provider.as_ref(),
             monitor.as_mut(),
@@ -369,23 +391,53 @@ fn run(cli: Cli) -> Result<()> {
             cli.once,
             &shared,
         )
-    }));
-
-    for id in &fan_ids {
-        let _ = provider.set_fan_auto(id);
-    }
+    });
     #[cfg(unix)]
-    for p in peterfan_platform::ipc::PATHS {
-        let _ = std::fs::remove_file(p);
+    if !cli.no_ipc {
+        for p in peterfan_platform::ipc::PATHS {
+            let _ = std::fs::remove_file(p);
+        }
     }
-    println!(
-        "peterfand: restored {} fan(s) to automatic control",
-        fan_ids.len()
-    );
+    loop_result
+}
 
-    match loop_result {
-        Ok(r) => r,
-        Err(_) => bail!("control loop panicked (fans restored to auto)"),
+fn run_with_auto_restore<F>(
+    provider: &dyn HardwareProvider,
+    fan_ids: &[String],
+    operation: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    let operation_result = std::panic::catch_unwind(AssertUnwindSafe(operation));
+    let restore_errors = restore_fans_to_auto(provider, fan_ids);
+    if restore_errors.is_empty() {
+        println!(
+            "peterfand: restored {} fan(s) to automatic control",
+            fan_ids.len()
+        );
+    } else {
+        eprintln!(
+            "peterfand: failed to restore automatic fan control: {}",
+            restore_errors.join("; ")
+        );
+    }
+
+    match (operation_result, restore_errors.is_empty()) {
+        (Ok(result), true) => result,
+        (Ok(Ok(())), false) => bail!(
+            "control loop stopped but automatic fan restore failed: {}",
+            restore_errors.join("; ")
+        ),
+        (Ok(Err(error)), false) => bail!(
+            "{error}; automatic fan restore also failed: {}",
+            restore_errors.join("; ")
+        ),
+        (Err(_), true) => bail!("control loop panicked (fans restored to auto)"),
+        (Err(_), false) => bail!(
+            "control loop panicked and automatic fan restore failed: {}",
+            restore_errors.join("; ")
+        ),
     }
 }
 
@@ -1485,6 +1537,7 @@ mod tests {
     struct FaultProvider {
         fail_temperatures: bool,
         fail_writes: bool,
+        fail_auto: bool,
         duty_calls: std::sync::atomic::AtomicUsize,
         auto_calls: std::sync::atomic::AtomicUsize,
     }
@@ -1494,9 +1547,15 @@ mod tests {
             Self {
                 fail_temperatures,
                 fail_writes,
+                fail_auto: false,
                 duty_calls: std::sync::atomic::AtomicUsize::new(0),
                 auto_calls: std::sync::atomic::AtomicUsize::new(0),
             }
+        }
+
+        fn with_auto_failure(mut self) -> Self {
+            self.fail_auto = true;
+            self
         }
     }
 
@@ -1573,8 +1632,42 @@ mod tests {
 
         fn set_fan_auto(&self, _fan_id: &str) -> peterfan_core::error::Result<()> {
             self.auto_calls.fetch_add(1, Ordering::Relaxed);
-            Ok(())
+            if self.fail_auto {
+                Err(peterfan_core::error::CoreError::Hardware(
+                    "injected automatic restore failure".into(),
+                ))
+            } else {
+                Ok(())
+            }
         }
+    }
+
+    #[test]
+    fn panic_restores_every_fan_to_os_auto() {
+        let provider = FaultProvider::new(false, false);
+        let fan_ids = vec!["fan.left".to_string(), "fan.right".to_string()];
+
+        let result = run_with_auto_restore(&provider, &fan_ids, || {
+            panic!("injected control-loop panic")
+        });
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("panicked (fans restored to auto)"));
+        assert_eq!(provider.auto_calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn automatic_restore_failure_is_never_reported_as_success() {
+        let provider = FaultProvider::new(false, false).with_auto_failure();
+
+        let result = run_with_auto_restore(&provider, &["fan.test".into()], || Ok(()));
+
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("automatic fan restore failed"));
+        assert!(error.contains("fan.test"));
+        assert_eq!(provider.auto_calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

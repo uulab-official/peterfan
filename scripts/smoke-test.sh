@@ -140,6 +140,79 @@ run_lifecycle() {
     rm -f /tmp/smoke_lifecycle.$$
 }
 
+wait_for_exit() {
+    local pid="$1"
+    for _ in {1..50}; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid" 2>/dev/null
+            return $?
+        fi
+        sleep 0.1
+    done
+    return 124
+}
+
+run_daemon_sigterm_restore() {
+    local log
+    log=$(mktemp)
+    "$PETERFAND" --mock --no-ipc --interval 1 >"$log" 2>&1 &
+    local pid=$!
+    sleep 2
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid" 2>/dev/null
+        if wait_for_exit "$pid" \
+            && grep -q "reset 2 fan(s) to automatic control at startup" "$log" \
+            && grep -q "restored 2 fan(s) to automatic control" "$log"; then
+            pass "peterfand SIGTERM restores OS automatic control"
+        else
+            fail "peterfand SIGTERM did not complete automatic restore"
+            sed 's/^/      /' "$log"
+            kill -KILL "$pid" 2>/dev/null
+        fi
+    else
+        fail "peterfand crashed before SIGTERM recovery test"
+        sed 's/^/      /' "$log"
+    fi
+    rm -f "$log"
+}
+
+run_daemon_forced_kill_restart() {
+    local first_log second_log
+    first_log=$(mktemp)
+    second_log=$(mktemp)
+    "$PETERFAND" --mock --no-ipc --interval 1 >"$first_log" 2>&1 &
+    local first_pid=$!
+    sleep 2
+    if ! kill -0 "$first_pid" 2>/dev/null; then
+        fail "peterfand crashed before forced-kill recovery test"
+        sed 's/^/      /' "$first_log"
+        rm -f "$first_log" "$second_log"
+        return
+    fi
+    kill -KILL "$first_pid" 2>/dev/null
+    wait "$first_pid" 2>/dev/null
+
+    "$PETERFAND" --mock --no-ipc --interval 1 >"$second_log" 2>&1 &
+    local second_pid=$!
+    sleep 2
+    if kill -0 "$second_pid" 2>/dev/null; then
+        kill -TERM "$second_pid" 2>/dev/null
+        if wait_for_exit "$second_pid" \
+            && grep -q "reset 2 fan(s) to automatic control at startup" "$second_log" \
+            && grep -q "restored 2 fan(s) to automatic control" "$second_log"; then
+            pass "peterfand restart recovers automatic control after SIGKILL"
+        else
+            fail "peterfand restart did not recover after SIGKILL"
+            sed 's/^/      /' "$second_log"
+            kill -KILL "$second_pid" 2>/dev/null
+        fi
+    else
+        fail "peterfand did not survive restart after SIGKILL"
+        sed 's/^/      /' "$second_log"
+    fi
+    rm -f "$first_log" "$second_log"
+}
+
 PETERFAN="$BIN_DIR/peterfan"
 PETERFAND="$BIN_DIR/peterfand"
 PETERFAN_TUI="$BIN_DIR/peterfan-tui"
@@ -204,6 +277,10 @@ fi
 
 echo "== daemon one-shot run must apply a curve and exit cleanly =="
 run_bounded_contains "peterfand --mock --once" 10 "restored" "$PETERFAND" --mock --once
+
+echo "== daemon must restore fan safety across termination and forced-kill restart =="
+run_daemon_sigterm_restore
+run_daemon_forced_kill_restart
 
 echo "== menu-bar app must survive startup and shut down on signal (--mock) =="
 run_lifecycle "peterfan-menubar --mock" 3 "$PETERFAN_MENUBAR" --mock

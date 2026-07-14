@@ -6343,7 +6343,7 @@ mod tests {
         ));
         assert!(peterfan_platform::daemon_update_required("1.27.13"));
         assert!(peterfan_platform::daemon_update_required("1.27.15"));
-        assert!(!peterfan_platform::daemon_update_required("1.27.16"));
+        assert!(!peterfan_platform::daemon_update_required("1.27.21"));
     }
 
     #[test]
