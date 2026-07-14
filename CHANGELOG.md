@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.23] — 로컬 서명 릴리스 경로 정리
+
+### Fixed
+- **이중 릴리스 방지** — 공식 태그를 올릴 때 로컬 서명 릴리스와 GitHub Actions가
+  동시에 배포를 시도하던 충돌을 제거함. 공식 macOS 배포는 로컬 Developer ID와
+  Keychain 공증 프로필을 사용하는 단일 경로로 유지됨.
+- **수동 Release 정확성** — Actions의 수동 대체 워크플로가 입력한 태그를 모든
+  플랫폼에서 실제로 checkout하고 Windows 산출물에도 같은 태그를 사용함.
+- **불필요한 데몬 갱신 방지** — 앱 버전은 올리되 최소 데몬 버전은 `1.27.22`로
+  유지하여 이번 업데이트가 팬 제어 재설치나 관리자 승인을 요구하지 않음.
+
 ## [1.27.22] — 센서 freshness와 stale 표시
 
 ### Added

@@ -1,15 +1,14 @@
 name: Release
 
-# 버전 태그(v*) 푸시 시 각 플랫폼 바이너리를 빌드하고 GitHub Release에 첨부.
+# 수동 실행 시 각 플랫폼 바이너리를 빌드하고 GitHub Release에 첨부.
+# 공식 macOS 릴리스는 로컬 Developer ID와 Keychain 공증 프로필을 사용하는
+# scripts/release-local-macos.sh가 게시한다. 이 워크플로는 CI signing secrets를
+# 별도로 구성한 경우에만 사용하는 명시적 대체 경로다.
 # Universal macOS 바이너리(arm64+x86_64 lipo), SHA256 체크섬, CHANGELOG 자동 추출 포함.
 #
-# 릴리즈 만들기:
-#   git tag -a v1.2.1 -m "..." && git push origin v1.2.1
-# 또는 Actions 탭 → Release → Run workflow
+# Actions 탭 → Release → Run workflow에서 이미 존재하는 태그를 입력한다.
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -32,15 +31,13 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
 
       - name: Resolve version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
 
       - name: Extract from CHANGELOG.md
         id: extract
@@ -67,6 +64,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
@@ -102,6 +101,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin
@@ -132,6 +133,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
 
       - name: Download arm64
         uses: actions/download-artifact@v4
@@ -272,9 +275,12 @@ jobs:
   # ── 5. Windows ─────────────────────────────────────────────────────────────
   build-windows:
     name: Build Windows x64
+    needs: release-notes
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
@@ -291,8 +297,8 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $ver = "${{ github.ref_name }}".TrimStart('v')
-          $name = "peterfan-${{ github.ref_name }}-x86_64-pc-windows-msvc"
+          $version = "${{ needs.release-notes.outputs.version }}"
+          $name = "peterfan-$version-x86_64-pc-windows-msvc"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
           foreach ($b in @("peterfan","peterfan-tui","peterfan-menubar","peterfand")) {
             Copy-Item "target/x86_64-pc-windows-msvc/release/$b.exe" "dist/$name/"
@@ -313,6 +319,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
 
       - name: Download all release assets
         uses: actions/download-artifact@v4
