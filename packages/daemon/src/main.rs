@@ -114,6 +114,10 @@ fn load_saved_state() -> Option<SavedState> {
     toml::from_str(&bytes).ok()
 }
 
+fn fresh_daemon_starts_in_auto(profile_was_explicit: bool) -> bool {
+    !profile_was_explicit
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Live control state, shared between the control loop and the IPC server.
@@ -312,7 +316,10 @@ fn run(cli: Cli) -> Result<()> {
             profile,
             held_duty: None,
             fan_overrides: std::collections::HashMap::new(),
-            auto: false,
+            // A fresh daemon starts in the safest, least surprising mode:
+            // macOS owns the fans. An explicit --profile or a persisted user
+            // choice below opts into PeterFan's control loop.
+            auto: fresh_daemon_starts_in_auto(cli.profile.is_some()),
             manual: false,
             backend: provider.name().to_string(),
             config: resolved_cfg,
@@ -336,6 +343,7 @@ fn run(cli: Cli) -> Result<()> {
                 }
                 "hold" => {
                     if let Some(pct) = saved.hold_pct {
+                        s.auto = false;
                         s.held_duty = Some(pct);
                         s.manual = true;
                     }
@@ -343,12 +351,16 @@ fn run(cli: Cli) -> Result<()> {
                 "profile" => {
                     if let Some(name) = &saved.profile {
                         if let Some(p) = Profile::parse(name) {
+                            s.auto = false;
                             s.profile = p;
                             s.manual = true;
                         }
                     }
                 }
-                _ => {} // "rules" or unknown → keep defaults
+                "rules" => {
+                    s.auto = false;
+                }
+                _ => {} // Unknown state keeps the safe OS-auto default.
             }
             s.fan_overrides = saved.fan_overrides;
         }
@@ -1542,6 +1554,12 @@ mod tests {
         let toml_str = "mode = \"auto\"\n";
         let back: SavedState = toml::from_str(toml_str).expect("deserializes");
         assert!(back.fan_overrides.is_empty());
+    }
+
+    #[test]
+    fn fresh_daemon_defaults_to_os_auto_unless_profile_is_explicit() {
+        assert!(fresh_daemon_starts_in_auto(false));
+        assert!(!fresh_daemon_starts_in_auto(true));
     }
 
     fn test_state() -> Arc<Mutex<State>> {

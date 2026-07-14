@@ -1275,9 +1275,19 @@ fn build_apply_update_script(
          write_result() {{\n\
          \t/usr/bin/printf '%s\\n' \"$1\" > {result_tmp} && /bin/mv -f {result_tmp} {result}\n\
          }}\n\
+         launch_until_healthy() {{\n\
+         \tfor _ in 1 2 3 4; do\n\
+         \t\t/usr/bin/open -g -j {app} || /usr/bin/open -g -j -n {app} || true\n\
+         \t\tfor __ in 1 2; do\n\
+         \t\t\tsleep 1\n\
+         \t\t\t/usr/bin/pgrep -fx {executable} >/dev/null 2>&1 && return 0\n\
+         \t\tdone\n\
+         \tdone\n\
+         \treturn 1\n\
+         }}\n\
          fail_before_replace() {{\n\
          \twrite_result {failed}\n\
-         \t/usr/bin/open -g -j {app} || true\n\
+         \tlaunch_until_healthy || true\n\
          \texit 1\n\
          }}\n\
          rollback() {{\n\
@@ -1285,7 +1295,7 @@ fn build_apply_update_script(
          \t/bin/rm -rf {app}\n\
          \tif /bin/mv {backup} {app}; then\n\
          \t\twrite_result {rolled_back}\n\
-         \t\t/usr/bin/open -g -j {app} || true\n\
+         \t\tlaunch_until_healthy || true\n\
          \telse\n\
          \t\twrite_result {restore_failed}\n\
          \tfi\n\
@@ -1297,13 +1307,7 @@ fn build_apply_update_script(
          /usr/bin/ditto {new_app} {app} || rollback\n\
          /usr/bin/codesign --verify --deep --strict {app} || rollback\n\
          /usr/bin/xcrun stapler validate {app} >/dev/null 2>&1 || rollback\n\
-         /usr/bin/open -g -j {app} || rollback\n\
-         healthy=0\n\
-         for _ in 1 2 3 4 5 6 7 8; do\n\
-         \tsleep 1\n\
-         \tif /usr/bin/pgrep -fx {executable} >/dev/null 2>&1; then healthy=1; break; fi\n\
-         done\n\
-         [[ $healthy -eq 1 ]] || rollback\n\
+         launch_until_healthy || rollback\n\
          write_result {installed}\n\
          /bin/rm -rf {backup}\n\
          /bin/rm -rf {tmp}\n",
@@ -1955,14 +1959,16 @@ TeamIdentifier=N99FMBQ662
             "1.2.3",
         );
 
-        let health_check = script.find("pgrep -fx").unwrap();
+        let health_check = script.rfind("launch_until_healthy || rollback").unwrap();
         let delete_backup = script
             .rfind("rm -rf '/tmp/update/PreviousPeterFan.app'")
             .unwrap();
         assert!(script.contains("codesign --verify --deep --strict"));
         assert!(script.contains("stapler validate"));
         assert!(script.contains("open -g -j"));
-        assert!(script.contains("[[ $healthy -eq 1 ]] || rollback"));
+        assert!(script.contains("open -g -j -n"));
+        assert!(script.contains("pgrep -fx"));
+        assert!(script.contains("launch_until_healthy || rollback"));
         assert!(script.contains("write_result"));
         assert!(script.contains("update-result.json"));
         assert!(script.contains(r#""status":"installed""#));

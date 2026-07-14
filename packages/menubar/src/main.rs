@@ -35,9 +35,13 @@ use tao::window::{Window, WindowBuilder};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSEvent, NSScreen, NSWindow};
+use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+use objc2::AllocAnyThread;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSEvent, NSImage, NSScreen, NSWindow};
+#[cfg(target_os = "macos")]
+use objc2_foundation::{MainThreadMarker, NSData, NSPoint, NSRect, NSSize, NSString};
 
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{
@@ -65,6 +69,12 @@ const FAN_REFRESH: Duration = Duration::from_secs(1);
 // Frames are pre-rendered, so each tick only swaps a cached status-item image.
 const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(140);
 const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(1000);
+#[cfg(target_os = "macos")]
+const MENUBAR_GRAPH_WIDTH: f64 = 28.0;
+#[cfg(target_os = "macos")]
+const MENUBAR_NUMBER_WIDTH: f64 = 50.0;
+#[cfg(target_os = "macos")]
+const MENUBAR_BOTH_WIDTH: f64 = 76.0;
 const POPOVER_PREWARM_DELAY: Duration = Duration::from_millis(1200);
 const POPOVER_SHOW_DELAY: Duration = Duration::from_millis(35);
 const DASHBOARD_OPEN_GRACE: Duration = Duration::from_millis(900);
@@ -408,6 +418,8 @@ struct App {
     runner_frame: u8,
     runner_cpu_pct: f32,
     runner_icons: Vec<Icon>,
+    #[cfg(target_os = "macos")]
+    runner_native_images: Vec<Retained<NSImage>>,
     last_runner_icon: Option<usize>,
     temperature_cache: Vec<TempSensor>,
     temperature_sampled_at: Option<Instant>,
@@ -1308,6 +1320,8 @@ fn main() {
         runner_frame: 0,
         runner_cpu_pct: 0.0,
         runner_icons: make_runner_icons(),
+        #[cfg(target_os = "macos")]
+        runner_native_images: make_runner_native_images(),
         last_runner_icon: None,
         temperature_cache: Vec::new(),
         temperature_sampled_at: None,
@@ -1362,6 +1376,10 @@ fn main() {
                     if should_auto_prompt_stale_daemon_update_on_launch() {
                         std::thread::spawn(maybe_prompt_stale_daemon_update);
                     }
+                    // Compatible root helpers can verify and install the
+                    // newly bundled daemon themselves. Keep required helper
+                    // updates silent after the one initial macOS approval.
+                    std::thread::spawn(maybe_silently_update_stale_daemon);
                     std::thread::spawn(check_for_updates_on_launch);
                 }
             }
@@ -1597,6 +1615,10 @@ fn main() {
             if let Some(d) = matched_display {
                 app.display = d;
                 next_runner_at = Instant::now();
+                #[cfg(target_os = "macos")]
+                if let Some(tray) = &app.tray {
+                    configure_native_status_item(tray, app.display);
+                }
                 if let Some(ref tm) = app.tray_menu {
                     for (dd, item) in &tm.display_items {
                         item.set_checked(*dd == d);
@@ -1683,7 +1705,12 @@ fn main() {
                     "tray left-click state={button_state:?} toggle={should_toggle} rect={rect:?}"
                 ));
                 if should_toggle {
-                    toggle_popover(&mut app, target, rect, &event_proxy);
+                    // The event rectangle can be one animation frame behind
+                    // the native status item. Re-read it at click time so a
+                    // mixed-DPI display switch cannot anchor the popover to a
+                    // stale menu-bar position.
+                    let live_rect = app.tray.as_ref().and_then(TrayIcon::rect).unwrap_or(rect);
+                    toggle_popover(&mut app, target, live_rect, &event_proxy);
                     if let Some(show_at) = app.popover_show_at {
                         // Tray events are drained after the normal wake deadline is
                         // calculated. Pull both the window show and first payload
@@ -1909,6 +1936,8 @@ fn build_tray(app: &mut App) {
     let initial_icon = initial_runner_icon.and_then(|index| app.runner_icons.get(index).cloned());
     match TrayIcon::new(tray_attributes(initial_icon, Box::new(menu))) {
         Ok(tray) => {
+            #[cfg(target_os = "macos")]
+            configure_native_status_item(&tray, app.display);
             app.tray = Some(tray);
             app.tray_menu = Some(tray_menu);
             app.last_runner_icon = initial_runner_icon;
@@ -3378,7 +3407,13 @@ fn clear_local_fan_overrides() {
 
 #[cfg(target_os = "macos")]
 fn set_menubar_text(tray: &TrayIcon, text: &str) {
-    tray.set_title(Some(text));
+    let Some(status_item) = tray.ns_status_item() else {
+        return;
+    };
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    if let Some(button) = status_item.button(mtm) {
+        button.setTitle(&NSString::from_str(text));
+    }
 }
 #[cfg(not(target_os = "macos"))]
 fn set_menubar_text(tray: &TrayIcon, text: &str) {
@@ -3697,6 +3732,57 @@ fn stale_daemon_version() -> Option<String> {
     None
 }
 
+fn daemon_can_self_update_silently(installed_version: &str) -> bool {
+    peterfan_platform::daemon_update_required(installed_version)
+        && peterfan_platform::daemon_self_reinstall_supported(installed_version)
+}
+
+#[cfg(target_os = "macos")]
+fn maybe_silently_update_stale_daemon() {
+    use peterfan_platform::daemon_install::InstallOutcome;
+
+    let Some(old_version) = stale_daemon_version() else {
+        return;
+    };
+    if !daemon_can_self_update_silently(&old_version)
+        || INSTALL_FAN_CONTROL_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+    {
+        return;
+    }
+
+    log_menubar_event(&format!(
+        "silently updating fan daemon v{old_version} -> v{}",
+        peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
+    ));
+    clear_daemon_version_cache();
+    let result = peterfan_platform::daemon_install::reinstall_via_running_daemon(false);
+    let (ok, message) = match result {
+        Ok(InstallOutcome::Installed) => {
+            clear_daemon_version_cache();
+            persist_clear_daemon_update_prompt_state();
+            let version = cached_installed_daemon_version()
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+            (true, format!("Fan control updated silently to v{version}."))
+        }
+        Ok(InstallOutcome::InstalledButUnreachable) => (
+            false,
+            "Fan control updated, but the daemon is still restarting.".to_string(),
+        ),
+        Ok(InstallOutcome::DryRun(_)) => unreachable!("automatic update never uses dry-run"),
+        Err(error) => (false, format!("Silent fan-control update failed: {error}")),
+    };
+    INSTALL_FAN_CONTROL_IN_FLIGHT.store(false, Ordering::SeqCst);
+    record_fan_action("silent daemon update", &message, ok);
+    *STATUS.lock().expect("status poisoned") = message.clone();
+    CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
+    log_menubar_event(&message);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn maybe_silently_update_stale_daemon() {}
+
 fn should_prompt_stale_daemon_update(
     _cfg: &peterfan_core::config::Config,
     _current_version: &str,
@@ -3952,6 +4038,62 @@ fn make_runner_icons() -> Vec<Icon> {
         .collect()
 }
 
+#[cfg(target_os = "macos")]
+fn make_runner_native_images() -> Vec<Retained<NSImage>> {
+    [0.0, 30.0, 65.0, 90.0]
+        .into_iter()
+        .flat_map(|cpu| (0..4).map(move |frame| make_runner_native_image(cpu, frame)))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn make_runner_native_image(cpu_pct: f32, frame: u8) -> Retained<NSImage> {
+    let rgba = make_cat_runner_rgba(cpu_pct, frame);
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, 32, 32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .and_then(|mut writer| writer.write_image_data(&rgba))
+            .expect("runner frame must encode as PNG");
+    }
+    let data = NSData::from_vec(encoded);
+    let image = NSImage::initWithData(NSImage::alloc(), &data)
+        .expect("encoded runner frame must decode as NSImage");
+    image.setSize(NSSize::new(18.0, 18.0));
+    image.setTemplate(false);
+    image
+}
+
+#[cfg(target_os = "macos")]
+fn native_status_item_width(display: MenubarDisplay) -> f64 {
+    match display {
+        MenubarDisplay::Number => MENUBAR_NUMBER_WIDTH,
+        MenubarDisplay::Graph => MENUBAR_GRAPH_WIDTH,
+        MenubarDisplay::Both => MENUBAR_BOTH_WIDTH,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn configure_native_status_item(tray: &TrayIcon, display: MenubarDisplay) {
+    let Some(status_item) = tray.ns_status_item() else {
+        return;
+    };
+    status_item.setLength(native_status_item_width(display));
+    // Let tray-icon resize its click target once after the fixed native width
+    // is installed. Subsequent title and frame updates bypass its expensive
+    // variable-width relayout path.
+    tray.set_title(Some(
+        if matches!(display, MenubarDisplay::Number | MenubarDisplay::Both) {
+            " --°C"
+        } else {
+            ""
+        },
+    ));
+}
+
 fn apply_runner_icon(app: &mut App) {
     let desired = runner_enabled(app.display)
         .then(|| runner_icon_index(app.runner_cpu_pct, app.runner_frame));
@@ -3959,8 +4101,26 @@ fn apply_runner_icon(app: &mut App) {
         return;
     }
 
-    let icon = desired.and_then(|index| app.runner_icons.get(index).cloned());
     if let Some(tray) = &app.tray {
+        #[cfg(target_os = "macos")]
+        {
+            let Some(status_item) = tray.ns_status_item() else {
+                return;
+            };
+            let mtm = unsafe { MainThreadMarker::new_unchecked() };
+            let Some(button) = status_item.button(mtm) else {
+                return;
+            };
+            let image = desired
+                .and_then(|index| app.runner_native_images.get(index))
+                .map(|image| &**image);
+            button.setImage(image);
+            app.last_runner_icon = desired;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        let icon = desired.and_then(|index| app.runner_icons.get(index).cloned());
+        #[cfg(not(target_os = "macos"))]
         if tray.set_icon_with_as_template(icon, false).is_ok() {
             app.last_runner_icon = desired;
         }
@@ -5970,6 +6130,14 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_status_item_width_is_stable_for_each_display_style() {
+        assert_eq!(native_status_item_width(MenubarDisplay::Graph), 28.0);
+        assert_eq!(native_status_item_width(MenubarDisplay::Number), 50.0);
+        assert_eq!(native_status_item_width(MenubarDisplay::Both), 76.0);
+    }
+
     #[test]
     fn left_click_opens_on_down_and_consumes_the_matching_up() {
         let mut down_seen = false;
@@ -7027,7 +7195,7 @@ mod tests {
         ));
         assert!(peterfan_platform::daemon_update_required("1.27.13"));
         assert!(peterfan_platform::daemon_update_required("1.27.15"));
-        assert!(!peterfan_platform::daemon_update_required("1.27.22"));
+        assert!(peterfan_platform::daemon_update_required("1.27.22"));
     }
 
     #[test]
@@ -7416,6 +7584,15 @@ mod tests {
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         )));
         assert!(!daemon_control_usable(None));
+    }
+
+    #[test]
+    fn compatible_stale_daemon_self_updates_without_another_approval() {
+        assert!(daemon_can_self_update_silently("1.27.22"));
+        assert!(!daemon_can_self_update_silently("1.26.24"));
+        assert!(!daemon_can_self_update_silently(
+            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
+        ));
     }
 
     #[test]

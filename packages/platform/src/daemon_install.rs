@@ -31,7 +31,6 @@ fn daemon_plist() -> String {
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/peterfand</string>
-    <string>--profile</string><string>balanced</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

@@ -79,7 +79,7 @@ impl Profile {
         let pts = match self {
             Profile::Silent => vec![(30.0, 0), (50.0, 20), (70.0, 40), (85.0, 70)],
             Profile::Balanced | Profile::Custom => {
-                vec![(30.0, 20), (50.0, 35), (70.0, 60), (85.0, 100)]
+                vec![(30.0, 15), (50.0, 25), (70.0, 45), (85.0, 75), (90.0, 100)]
             }
             Profile::Gaming => vec![(30.0, 30), (50.0, 50), (70.0, 75), (85.0, 100)],
             Profile::Performance => vec![(30.0, 40), (50.0, 60), (75.0, 90), (85.0, 100)],
@@ -120,5 +120,13 @@ mod tests {
     #[test]
     fn maximum_is_always_full() {
         assert_eq!(Profile::Maximum.default_curve().duty_at(10.0), 100);
+    }
+
+    #[test]
+    fn balanced_stays_moderate_until_the_critical_boundary() {
+        let curve = Profile::Balanced.default_curve();
+        assert_eq!(curve.duty_at(80.0), 65);
+        assert_eq!(curve.duty_at(85.0), 75);
+        assert_eq!(curve.duty_at(90.0), 100);
     }
 }
