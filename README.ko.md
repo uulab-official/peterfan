@@ -52,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.27.23.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.27.24.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -115,6 +115,10 @@ Windows는 `.zip`으로 제공됩니다(CLI/TUI/메뉴바 바이너리만 포함
 문제가 계속되면 `scripts/check-macos-release.sh`로 산출물을 검증하세요. 소스에서
 직접 빌드한 개발용 번들은 공증된 공식 릴리즈와 다를 수 있습니다.
 
+메뉴바 아이콘이 보이지만 눌러도 열리지 않는다면 아이콘을 오른쪽 클릭하고
+**진단 로그 열기…**를 선택하세요. PeterFan은 시작, 클릭, 팝오버 위치와 WebView
+오류를 `~/Library/Logs/PeterFan/menubar.log`에 제한된 크기로 보관합니다.
+
 ---
 
 ## 팬 제어 활성화(최초 1회)
@@ -175,7 +179,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.27.23
+PeterFan v1.27.24
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max

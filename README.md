@@ -171,6 +171,11 @@ scripts/bundle-macos.sh target/release/peterfan-menubar dist
 open dist/PeterFan.app
 ```
 
+If the menu-bar item is visible but its popover does not open, right-click it
+and choose **Open Diagnostic Log…**. PeterFan keeps a bounded log at
+`~/Library/Logs/PeterFan/menubar.log` with click routing, popover placement,
+and WebView creation failures.
+
 ## Fan Control Setup
 
 Reading metrics does not require administrator privileges. Writing fan speeds

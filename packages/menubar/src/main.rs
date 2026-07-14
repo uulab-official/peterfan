@@ -1,8 +1,8 @@
 //! `peterfan-menubar` — live system metrics in the macOS menu bar.
 //!
 //! The menu-bar title shows a tiny CPU sparkline + percentage. Clicking the
-//! icon (left **or** right / two-finger) toggles a clean popover dashboard — a
-//! borderless WebView rendering an HTML/CSS panel with CPU (per-core), memory,
+//! icon with the left button toggles a clean popover dashboard; right-click
+//! opens native controls and diagnostics. The borderless WebView shows memory,
 //! storage, temperatures, fans, battery, and network. Quit from the button in
 //! the popover. Runs as an accessory app (no Dock icon). `--mock` uses the
 //! simulated machine.
@@ -16,9 +16,10 @@
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tao::dpi::{LogicalSize, PhysicalPosition};
@@ -51,6 +52,7 @@ use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
 const TEMPERATURE_REFRESH: Duration = Duration::from_secs(2);
+const FAN_REFRESH: Duration = Duration::from_secs(1);
 // The runner should be nearly still at idle and unmistakably fast under load.
 // Frames are pre-rendered, so each tick only swaps a cached status-item image.
 const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(140);
@@ -67,6 +69,7 @@ const ALL_TEMPERATURE_STALE_AFTER: Duration = Duration::from_secs(30);
 const CONTROL_CONFIRM_REFRESH: Duration = Duration::from_millis(100);
 const CONTROL_CONFIRM_WINDOW: Duration = Duration::from_millis(1500);
 const SINGLE_INSTANCE_LOCK_BASENAME: &str = "kr.co.uulab.peterfan.menubar";
+const MENUBAR_LOG_MAX_BYTES: u64 = 512 * 1024;
 const DASHBOARD_BACKGROUND: RGBA = (27, 27, 29, 255);
 /// Samples kept for the menu-bar runner icon (always shows the short-term
 /// trend, independent of the popover's chart range selector) — 120 samples
@@ -82,6 +85,7 @@ static CHART_RANGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::n
 /// display preference" reasoning as `CHART_RANGE`.
 static PROC_SORT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 static DAEMON_VERSION_CACHE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
+static MENUBAR_LOG_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, PartialEq)]
 enum ChartRange {
@@ -196,6 +200,60 @@ static LOGIN_ITEM_TOGGLE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// is genuinely still pinned in hardware.
 static LOCAL_FAN_OVERRIDES: Mutex<Option<std::collections::HashMap<String, u8>>> = Mutex::new(None);
 
+struct BackgroundRead<T> {
+    in_flight: AtomicBool,
+    completed: Mutex<Option<T>>,
+}
+
+impl<T> Default for BackgroundRead<T> {
+    fn default() -> Self {
+        Self {
+            in_flight: AtomicBool::new(false),
+            completed: Mutex::new(None),
+        }
+    }
+}
+
+impl<T: Send + 'static> BackgroundRead<T> {
+    fn start<F>(self: &Arc<Self>, task: F) -> bool
+    where
+        F: FnOnce() -> Option<T> + Send + 'static,
+    {
+        if self
+            .in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        let state = Arc::clone(self);
+        std::thread::spawn(move || {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(task)) {
+                Ok(Some(value)) => {
+                    *state.completed.lock().expect("background read poisoned") = Some(value);
+                }
+                Ok(None) => {}
+                Err(_) => log_menubar_event("background hardware read panicked"),
+            }
+            state.in_flight.store(false, Ordering::Release);
+        });
+        true
+    }
+
+    fn take(&self) -> Option<T> {
+        self.completed
+            .lock()
+            .expect("background read poisoned")
+            .take()
+    }
+}
+
+struct TimedSample<T> {
+    values: T,
+    sampled_at: Instant,
+    sampled_at_unix_ms: u64,
+}
+
 /// IDs of the tray context-menu items so we can identify them in MenuEvent.
 struct TrayMenu {
     auto: tray_icon::menu::MenuId,
@@ -216,6 +274,7 @@ struct TrayMenu {
     enable_fan_control: tray_icon::menu::MenuId,
     check_updates: tray_icon::menu::MenuId,
     open_detail: tray_icon::menu::MenuId,
+    open_diagnostics: tray_icon::menu::MenuId,
     /// "Language" submenu — changing this saves to config and asks the user
     /// to relaunch (the native menu's labels are only built once, at
     /// startup, so a live-relabel isn't worth the complexity it'd add).
@@ -236,6 +295,7 @@ struct L10n {
     profile_performance: &'static str,
     profile_maximum: &'static str,
     open_detail: &'static str,
+    open_diagnostics: &'static str,
     check_updates: &'static str,
     quit: &'static str,
     menu_bar_style: &'static str,
@@ -259,6 +319,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             profile_performance: "Performance",
             profile_maximum: "Maximum",
             open_detail: "Open Detailed Window…",
+            open_diagnostics: "Open Diagnostic Log…",
             check_updates: "Check for Updates…",
             quit: "Quit PeterFan",
             menu_bar_style: "Menu Bar Style",
@@ -279,6 +340,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             profile_performance: "고성능",
             profile_maximum: "최대",
             open_detail: "상세 창 열기…",
+            open_diagnostics: "진단 로그 열기…",
             check_updates: "업데이트 확인…",
             quit: "PeterFan 종료",
             menu_bar_style: "메뉴 막대 스타일",
@@ -309,6 +371,9 @@ struct App {
     webview: Option<WebView>,
     popover_visible: bool,
     popover_show_at: Option<Instant>,
+    /// `tray-icon` normally sends both Down and Up. Open on Down for macOS
+    /// menu bars that swallow Up, then consume the matching Up event.
+    left_button_down_seen: bool,
     /// A persistent, resizable, normal-chrome window with the same
     /// dashboard content — for "leave it open while I work" use, unlike the
     /// dropdown popover which hides the moment focus moves elsewhere.
@@ -340,10 +405,15 @@ struct App {
     temperature_sampled_at: Option<Instant>,
     temperature_sampled_at_unix_ms: Option<u64>,
     next_temperature_refresh: Instant,
+    temperature_read: Arc<BackgroundRead<TimedSample<Vec<TempSensor>>>>,
+    fan_cache: Vec<Fan>,
+    next_fan_refresh: Instant,
+    fan_read: Arc<BackgroundRead<Vec<Fan>>>,
     all_temp_rows_cache: Vec<serde_json::Value>,
     all_temp_sampled_at: Option<Instant>,
     all_temp_sampled_at_unix_ms: Option<u64>,
     next_all_temp_refresh: Instant,
+    all_temp_read: Arc<BackgroundRead<TimedSample<Vec<TempSensor>>>>,
     daemon_json_cache: Option<serde_json::Value>,
     next_daemon_refresh: Instant,
     update_install_result: Option<peterfan_platform::updater::UpdateInstallResult>,
@@ -929,6 +999,62 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn menubar_log_path() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Library/Logs/PeterFan/menubar.log"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        peterfan_platform::config::path()?
+            .parent()
+            .map(|dir| dir.join("menubar.log"))
+    }
+}
+
+fn log_menubar_event(message: &str) {
+    let Some(path) = menubar_log_path() else {
+        return;
+    };
+    let _guard = MENUBAR_LOG_LOCK.lock().expect("menubar log poisoned");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if path
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() >= MENUBAR_LOG_MAX_BYTES)
+    {
+        let previous = path.with_extension("previous.log");
+        let _ = std::fs::remove_file(&previous);
+        let _ = std::fs::rename(&path, previous);
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(
+            file,
+            "{} v{} {}",
+            now_unix_ms(),
+            env!("CARGO_PKG_VERSION"),
+            message
+        );
+    }
+}
+
+fn open_menubar_log() {
+    log_menubar_event("diagnostic log requested");
+    let Some(path) = menubar_log_path() else {
+        return;
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+    let _ = command.arg(path).spawn();
+}
+
 fn sample_age(sampled_at: Option<Instant>, now: Instant) -> Option<Duration> {
     sampled_at.map(|sampled| now.saturating_duration_since(sampled))
 }
@@ -1106,10 +1232,12 @@ fn main() {
     let _single_instance = match acquire_single_instance_lock(use_mock) {
         Ok(lock) => lock,
         Err(e) => {
+            log_menubar_event(&format!("startup rejected: single instance lock: {e}"));
             eprintln!("PeterFan is already running ({e}).");
             return;
         }
     };
+    log_menubar_event(&format!("startup mock={use_mock}"));
     load_fan_action_log();
 
     let saved_config = peterfan_platform::config::load();
@@ -1158,6 +1286,7 @@ fn main() {
         webview: None,
         popover_visible: false,
         popover_show_at: None,
+        left_button_down_seen: false,
         detail_window: None,
         detail_webview: None,
         fan_hist: VecDeque::with_capacity(HIST_CAP),
@@ -1176,10 +1305,15 @@ fn main() {
         temperature_sampled_at: None,
         temperature_sampled_at_unix_ms: None,
         next_temperature_refresh: Instant::now(),
+        temperature_read: Arc::new(BackgroundRead::default()),
+        fan_cache: Vec::new(),
+        next_fan_refresh: Instant::now(),
+        fan_read: Arc::new(BackgroundRead::default()),
         all_temp_rows_cache: Vec::new(),
         all_temp_sampled_at: None,
         all_temp_sampled_at_unix_ms: None,
         next_all_temp_refresh: Instant::now() + ALL_TEMP_REFRESH,
+        all_temp_read: Arc::new(BackgroundRead::default()),
         daemon_json_cache: None,
         next_daemon_refresh: Instant::now() + DAEMON_REFRESH,
         update_install_result: peterfan_platform::updater::read_update_install_result(),
@@ -1230,6 +1364,7 @@ fn main() {
                 ..
             } => {
                 if app.window.as_ref().is_some_and(|w| w.id() == window_id) {
+                    log_menubar_event("popover focus lost");
                     hide_popover(&mut app);
                 }
             }
@@ -1257,6 +1392,7 @@ fn main() {
             if let Some(w) = &app.window {
                 w.set_visible(true);
                 app.popover_visible = true;
+                log_menubar_event("popover shown");
                 defer_dashboard_io_after_open(&mut app);
             }
             app.popover_show_at = None;
@@ -1264,7 +1400,7 @@ fn main() {
         if let Some(at) = prewarm_popover_at {
             if now >= at {
                 if app.window.is_none() {
-                    build_popover(&mut app, target, &event_proxy);
+                    let _ = build_popover(&mut app, target, &event_proxy);
                 }
                 prewarm_popover_at = None;
             }
@@ -1387,6 +1523,7 @@ fn main() {
             let mut matched_temperature_source: Option<TemperatureSource> = None;
             let mut matched_language: Option<Language> = None;
             let mut open_detail_requested = false;
+            let mut open_diagnostics_requested = false;
             let cmd: Option<String> = if let Some(ref tm) = app.tray_menu {
                 if id == &tm.auto {
                     Some("auto".into())
@@ -1424,6 +1561,9 @@ fn main() {
                 } else if tm.open_detail == *id {
                     open_detail_requested = true;
                     None
+                } else if tm.open_diagnostics == *id {
+                    open_diagnostics_requested = true;
+                    None
                 } else {
                     tm.profiles
                         .iter()
@@ -1437,6 +1577,9 @@ fn main() {
             if open_detail_requested {
                 hide_popover(&mut app);
                 open_detail_window(&mut app, target, &event_proxy);
+            }
+            if open_diagnostics_requested {
+                open_menubar_log();
             }
             if let Some(d) = matched_display {
                 app.display = d;
@@ -1472,7 +1615,7 @@ fn main() {
                 if app.window.is_some() {
                     app.window = None;
                     app.webview = None;
-                    build_popover(&mut app, target, &event_proxy);
+                    let _ = build_popover(&mut app, target, &event_proxy);
                     if was_visible {
                         if let Some(w) = &app.window {
                             w.set_visible(true);
@@ -1512,22 +1655,30 @@ fn main() {
         }
 
         while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-            // Left click toggles the popover; right click shows the native menu.
+            // Open on mouse-down. Some macOS menu-bar configurations swallow
+            // mouse-up while the bar is auto-hiding or changing displays.
+            // Consume the matching Up event so a normal click toggles once.
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
+                button_state,
                 rect,
                 ..
             } = ev
             {
-                toggle_popover(&mut app, target, rect, &event_proxy);
-                if let Some(show_at) = app.popover_show_at {
-                    // Tray events are drained after the normal wake deadline is
-                    // calculated. Pull both the window show and first payload
-                    // forward to the 25 ms placement tick instead of waiting
-                    // for up to one full metrics interval.
-                    next_metric_at = show_at;
-                    *control_flow = ControlFlow::WaitUntil(show_at);
+                let should_toggle = route_left_click(button_state, &mut app.left_button_down_seen);
+                log_menubar_event(&format!(
+                    "tray left-click state={button_state:?} toggle={should_toggle} rect={rect:?}"
+                ));
+                if should_toggle {
+                    toggle_popover(&mut app, target, rect, &event_proxy);
+                    if let Some(show_at) = app.popover_show_at {
+                        // Tray events are drained after the normal wake deadline is
+                        // calculated. Pull both the window show and first payload
+                        // forward to the placement tick instead of waiting for up
+                        // to one full metrics interval.
+                        next_metric_at = show_at;
+                        *control_flow = ControlFlow::WaitUntil(show_at);
+                    }
                 }
             }
         }
@@ -1610,6 +1761,7 @@ fn build_tray(app: &mut App) {
         })
         .collect();
     let open_detail_item = MenuItem::new(s.open_detail, true, None);
+    let open_diagnostics_item = MenuItem::new(s.open_diagnostics, true, None);
     let check_updates_item = MenuItem::new(s.check_updates, true, None);
     let quit_item = MenuItem::new(s.quit, true, None);
 
@@ -1715,6 +1867,7 @@ fn build_tray(app: &mut App) {
     let _ = menu.append(&language_submenu);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&open_detail_item);
+    let _ = menu.append(&open_diagnostics_item);
     let _ = menu.append(&check_updates_item);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&quit_item);
@@ -1734,6 +1887,7 @@ fn build_tray(app: &mut App) {
         enable_fan_control: enable_fan_control_item.id().clone(),
         check_updates: check_updates_item.id().clone(),
         open_detail: open_detail_item.id().clone(),
+        open_diagnostics: open_diagnostics_item.id().clone(),
         language_items,
     };
 
@@ -1745,8 +1899,12 @@ fn build_tray(app: &mut App) {
             app.tray = Some(tray);
             app.tray_menu = Some(tray_menu);
             app.last_runner_icon = initial_runner_icon;
+            log_menubar_event("tray created");
         }
-        Err(e) => eprintln!("failed to create menu-bar item: {e}"),
+        Err(e) => {
+            log_menubar_event(&format!("tray creation failed: {e}"));
+            eprintln!("failed to create menu-bar item: {e}");
+        }
     }
 }
 
@@ -1759,6 +1917,16 @@ fn build_tray(app: &mut App) {
 /// unreachable (this shipped broken once already — v1.9.3 fixed it).
 fn click_routing() -> (bool, bool) {
     (false, true)
+}
+
+fn route_left_click(state: MouseButtonState, down_seen: &mut bool) -> bool {
+    match state {
+        MouseButtonState::Down => {
+            *down_seen = true;
+            true
+        }
+        MouseButtonState::Up => !std::mem::replace(down_seen, false),
+    }
 }
 
 fn tray_attributes(
@@ -1784,7 +1952,7 @@ fn build_popover(
     app: &mut App,
     target: &EventLoopWindowTarget<()>,
     event_proxy: &EventLoopProxy<()>,
-) {
+) -> bool {
     let window = match WindowBuilder::new()
         .with_decorations(false)
         .with_resizable(false)
@@ -1796,8 +1964,9 @@ fn build_popover(
     {
         Ok(w) => w,
         Err(e) => {
+            log_menubar_event(&format!("popover window creation failed: {e}"));
             eprintln!("failed to create popover window: {e}");
-            return;
+            return false;
         }
     };
 
@@ -1861,8 +2030,14 @@ fn build_popover(
         Ok(webview) => {
             app.window = Some(window);
             app.webview = Some(webview);
+            log_menubar_event("popover webview created");
+            true
         }
-        Err(e) => eprintln!("failed to create popover webview: {e}"),
+        Err(e) => {
+            log_menubar_event(&format!("popover webview creation failed: {e}"));
+            eprintln!("failed to create popover webview: {e}");
+            false
+        }
     }
 }
 
@@ -2062,14 +2237,16 @@ fn toggle_popover(
     event_proxy: &EventLoopProxy<()>,
 ) {
     if app.popover_visible || app.popover_show_at.is_some() {
+        log_menubar_event("popover closed by tray click");
         hide_popover(app);
         return;
     }
     if let Some(detail) = &app.detail_window {
         detail.set_visible(false);
     }
-    if app.window.is_none() {
-        build_popover(app, target, event_proxy);
+    if app.window.is_none() && !build_popover(app, target, event_proxy) {
+        log_menubar_event("popover toggle aborted: window unavailable");
+        return;
     }
     let Some(w) = &app.window else { return };
     let scale = w.scale_factor();
@@ -2089,6 +2266,10 @@ fn toggle_popover(
     // window flash at its old/default location and then slide into place.
     w.set_outer_position(position);
     app.popover_show_at = Some(Instant::now() + POPOVER_SHOW_DELAY);
+    log_menubar_event(&format!(
+        "popover scheduled position=({:.0},{:.0}) size=({POPOVER_W:.0},{height:.0}) scale={scale:.2}",
+        position.x, position.y
+    ));
 }
 
 fn hide_popover(app: &mut App) {
@@ -2208,6 +2389,73 @@ fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
 // Update: sample once, refresh the menu-bar title and (if open) the popover.
 // ---------------------------------------------------------------------------
 
+fn refresh_temperature_cache(app: &mut App, now: Instant) {
+    if let Some(sample) = app.temperature_read.take() {
+        if !sample.values.is_empty() {
+            app.temperature_cache = sample.values;
+            app.temperature_sampled_at = Some(sample.sampled_at);
+            app.temperature_sampled_at_unix_ms = Some(sample.sampled_at_unix_ms);
+        }
+    }
+    if app.temperature_cache.is_empty() || now >= app.next_temperature_refresh {
+        app.next_temperature_refresh = now + TEMPERATURE_REFRESH;
+        let provider = Arc::clone(&app.provider);
+        app.temperature_read.start(move || {
+            provider
+                .temperatures()
+                .ok()
+                .filter(|sample| !sample.is_empty())
+                .map(|values| TimedSample {
+                    values,
+                    sampled_at: Instant::now(),
+                    sampled_at_unix_ms: now_unix_ms(),
+                })
+        });
+    }
+}
+
+fn refresh_fan_cache(app: &mut App, now: Instant, dashboard_visible: bool) {
+    if let Some(fans) = app.fan_read.take() {
+        app.fan_cache = fans;
+    }
+    if dashboard_visible && now >= app.next_fan_refresh {
+        app.next_fan_refresh = now + FAN_REFRESH;
+        let provider = Arc::clone(&app.provider);
+        app.fan_read.start(move || provider.fans().ok());
+    }
+}
+
+fn refresh_all_temperature_cache(app: &mut App, now: Instant, dashboard_visible: bool) {
+    if let Some(sample) = app.all_temp_read.take() {
+        app.all_temp_rows_cache = sample
+            .values
+            .iter()
+            .map(|temp| {
+                serde_json::json!({
+                    "l": raw_temperature_row_label(temp),
+                    "c": format!("{:.0}°C", temp.value.0),
+                    "cls": temp_cls(temp.value),
+                    "group": sensor_group_label(app.language.resolve(), temp.kind),
+                    "source": temp.source.short(),
+                })
+            })
+            .collect();
+        app.all_temp_sampled_at = Some(sample.sampled_at);
+        app.all_temp_sampled_at_unix_ms = Some(sample.sampled_at_unix_ms);
+    }
+    if dashboard_visible && now >= app.next_all_temp_refresh {
+        app.next_all_temp_refresh = now + ALL_TEMP_REFRESH;
+        app.all_temp_read.start(|| {
+            let values = peterfan_platform::all_temperature_sensors();
+            (!values.is_empty()).then(|| TimedSample {
+                values,
+                sampled_at: Instant::now(),
+                sampled_at_unix_ms: now_unix_ms(),
+            })
+        });
+    }
+}
+
 fn update(app: &mut App) {
     let now = Instant::now();
     app.monitor.refresh_quick();
@@ -2230,28 +2478,20 @@ fn update(app: &mut App) {
     // even while the popover is closed and the runner icon keeps moving.
     let mem = app.monitor.memory();
     let nets = app.monitor.networks();
-    let read_fans = dashboard_visible;
     // CPU temperatures are much more expensive than sysinfo counters because
-    // they cross SMC and IOHID. A two-second cache keeps the headline current
-    // without making an idle menu-bar utility poll hardware every second.
-    if app.temperature_cache.is_empty() || now >= app.next_temperature_refresh {
-        if let Ok(sample) = app.provider.temperatures() {
-            if !sample.is_empty() {
-                app.temperature_cache = sample;
-                app.temperature_sampled_at = Some(now);
-                app.temperature_sampled_at_unix_ms = Some(now_unix_ms());
-            }
-        }
-        app.next_temperature_refresh = now + TEMPERATURE_REFRESH;
-    }
+    // they cross SMC and IOHID. Never perform those calls on the event-loop
+    // thread: on unsupported or waking hardware they can take long enough to
+    // make the menu-bar item appear unclickable.
+    refresh_temperature_cache(app, now);
+    refresh_fan_cache(app, now, dashboard_visible);
     let temperature_stale =
         sample_is_stale(app.temperature_sampled_at, now, TEMPERATURE_STALE_AFTER);
     let temperature_age_secs = sample_age(app.temperature_sampled_at, now)
         .map(|age| age.as_secs())
         .unwrap_or(0);
     let temps = app.temperature_cache.clone();
-    let fans = if read_fans {
-        app.provider.fans().unwrap_or_default()
+    let fans = if dashboard_visible {
+        app.fan_cache.clone()
     } else {
         Vec::new()
     };
@@ -2406,26 +2646,7 @@ fn update(app: &mut App) {
             })
         })
         .collect();
-    if now >= app.next_all_temp_refresh {
-        let sample = peterfan_platform::all_temperature_sensors();
-        if !sample.is_empty() {
-            app.all_temp_rows_cache = sample
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "l": raw_temperature_row_label(t),
-                        "c": format!("{:.0}°C", t.value.0),
-                        "cls": temp_cls(t.value),
-                        "group": sensor_group_label(app.language.resolve(), t.kind),
-                        "source": t.source.short(),
-                    })
-                })
-                .collect();
-            app.all_temp_sampled_at = Some(now);
-            app.all_temp_sampled_at_unix_ms = Some(now_unix_ms());
-        }
-        app.next_all_temp_refresh = now + ALL_TEMP_REFRESH;
-    }
+    refresh_all_temperature_cache(app, now, dashboard_visible);
     let all_temp_stale = sample_is_stale(app.all_temp_sampled_at, now, ALL_TEMPERATURE_STALE_AFTER);
     let all_temp_age_secs = sample_age(app.all_temp_sampled_at, now)
         .map(|age| age.as_secs())
@@ -5479,6 +5700,39 @@ mod tests {
             menu_on_right_click,
             "right-click should still show the native context menu"
         );
+    }
+
+    #[test]
+    fn left_click_opens_on_down_and_consumes_the_matching_up() {
+        let mut down_seen = false;
+        assert!(route_left_click(MouseButtonState::Down, &mut down_seen));
+        assert!(down_seen);
+        assert!(!route_left_click(MouseButtonState::Up, &mut down_seen));
+        assert!(!down_seen);
+
+        // Preserve compatibility if a platform ever emits only mouse-up.
+        assert!(route_left_click(MouseButtonState::Up, &mut down_seen));
+    }
+
+    #[test]
+    fn background_read_never_starts_duplicate_hardware_calls() {
+        let state = Arc::new(BackgroundRead::<u8>::default());
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+        assert!(state.start(move || {
+            release_rx.recv().ok()?;
+            Some(42)
+        }));
+        assert!(!state.start(|| Some(7)));
+        release_tx.send(()).unwrap();
+
+        let value = (0..100).find_map(|_| {
+            let value = state.take();
+            if value.is_none() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            value
+        });
+        assert_eq!(value, Some(42));
     }
 
     fn tray_rect(x: f64, y: f64, width: u32, height: u32) -> Rect {

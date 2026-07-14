@@ -37,7 +37,9 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Drive the menu-bar runner cadence from CPU load with tested idle/busy bounds.
 - [ ] Add a 6-hour control-loop soak test with bounded CPU and memory assertions.
 - [ ] Add sleep/wake and multi-display regression automation.
-- [ ] Persist a bounded diagnostic log across app and daemon restarts.
+- [x] Persist bounded diagnostic logs across app and daemon restarts: the
+      menu-bar app rotates `~/Library/Logs/PeterFan/menubar.log`, while the
+      daemon uses the installed `newsyslog` policy for `/var/log/peterfand.log`.
 
 ## P1 - Sensor Confidence
 
