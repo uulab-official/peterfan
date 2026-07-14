@@ -21,10 +21,8 @@ PeterFan **不只是**一个风扇转速滑块。它是为开发者和高阶用�
 Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 ```
 
-**CLI、TUI 以及风扇控制守护进程永久免费，并采用 MIT 协议开源。**
-菜单栏应用提供 14 天免费试用；试用期结束后，需要一次性授权
-（`peterfan license activate <key>`）才能继续使用常驻的菜单栏组件和持久化的后台风扇
-控制 —— 只读命令则永远不受影响，可以一直正常使用。详见下方[价格](#pricing--licensing)。
+**PeterFan 全部采用 MIT 协议开源。** 菜单栏应用、CLI、TUI 和风扇控制守护进程
+无需注册账号、登录、试用期或许可证密钥，所有功能均可直接使用。
 
 ---
 
@@ -36,7 +34,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 3. 从「应用程序」（或 Spotlight）中打开 **PeterFan** —— 首次启动时，
    **右键点击 → 打开** 以确认（[为什么？](#download)）
 
-就这样 —— PeterFan 会安静地驻留在你的菜单栏中。14 天免费试用，无需注册账号。
+就这样 —— PeterFan 会安静地驻留在你的菜单栏中，无需注册、登录或输入许可证。
 更喜欢命令行，或者需要 Windows 版本？请参阅下方的[下载](#download)章节，获取
 `.tar.gz`/`.zip` 压缩包以及源码构建说明。
 
@@ -44,7 +42,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 状态
 
-**Beta 版 —— v1.26.2。** 项目正在积极开发中；下表反映的是目前已经实际交付的功能：
+**Beta 版 —— v1.27.17。** 项目正在积极开发中；下表反映的是目前已经实际交付的功能：
 
 | 领域 | 状态 |
 | --- | --- |
@@ -58,13 +56,12 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 | Windows 温度/风扇读取（EC） | 🚧 规划中 |
 | GPU 利用率 | 🔬 已调研 —— IOReport 链路可以跑通，但它暴露出的占用率与「活动监视器」的 GPU % 对不上，因此暂缓交付，而不是提供不准确的数据（详见 [`docs/RESEARCH.md`](./docs/RESEARCH.md)） |
 | 风扇**控制** | ⚙️ 通过 SMC 写入，**需要 root 权限**（`sudo peterfan fan set N` 或使用守护进程）。`fan set` 会**通过回读转速进行校验**，因此你得到的是真实的 ✓/✗，而非虚假的「ok」。在 Intel 机型上已确认可用；在 Apple Silicon 上会尝试并校验（部分机型的固件可能会忽略该指令） |
-| CLI —— `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`/`serve`/`benchmark`/`log`/`alert`/`license`/`completions`，以及全局的 `--watch` 与 `--json` | ✅ 可运行 |
+| CLI —— `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`/`serve`/`benchmark`/`log`/`alert`/`completions`，以及全局的 `--watch` 与 `--json` | ✅ 可运行 |
 | TUI 系统仪表盘（ratatui）—— CPU/内存/磁盘/网络/电池/进程 + 温度/风扇/功耗 | ✅ 可运行 |
 | **菜单栏应用** —— 迷你图表图标（数字/图表/两者皆可，自由选择）、悬停显示快速摘要的提示框、带有 2 分钟/1 小时/1 天历史曲线图的弹出式仪表盘（悬停可查看精确数值及均值/峰值）、**每个风扇独立的自动/手动控制，配有限定在该风扇真实转速范围内的转速滑块**、配置文件/自动/规则控制、可在「Top Processes」中直接结束进程、支持英文/한국어、独立可调整大小的详情窗口、明暗两种主题 | ✅ 可运行 |
 | **守护进程**（`peterfand`）—— 持续曲线控制 + 退出时自动恢复 + 临界温度强制介入 + IPC 服务；支持 LaunchDaemon 安装 | ✅ 可运行 |
 | **自动更新** —— 菜单栏中的「检查更新…」（以及 `peterfan update`）会检查 GitHub Releases 并原地安装 | ✅ 可运行 |
 | **本地 HTTP API**（`peterfan serve`）—— 提供 JSON 格式的指标数据与控制接口，便于集成 | ✅ 可运行 |
-| 授权系统 —— 14 天试用期，Ed25519 离线验证密钥 | ✅ 已实现（仅限菜单栏应用及守护进程的风扇控制功能） |
 | 桌面 GUI（Tauri）、插件系统 | 🗺️ 路线图中 |
 
 当某个后端尚无法读取真实传感器数据时，CLI/TUI **会自动无缝回退到模拟后端，并明确将
@@ -75,23 +72,10 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ---
 
-## 价格与许可 (Pricing & licensing)
+## 开源
 
-- **CLI（`peterfan`）、TUI（`peterfan-tui`）以及守护进程中的风扇控制核心均采用
-  MIT 协议，永久免费** —— 你可以随意编写脚本调用它们、将它们嵌入其他项目、或者
-  fork 它们。
-- **菜单栏应用**（`peterfan-menubar` / `PeterFan.app`）自首次启动起可免费试用
-  **14 天**。试用期结束后，继续运行它（以及守护进程*持续性*的后台风扇控制）需要
-  授权：
-  ```sh
-  peterfan license status              # trial days left / license status
-  peterfan license activate <key>      # PFAN1-... key from your purchase
-  ```
-  即使试用期结束后没有授权，菜单栏应用依然会持续显示实时指标 —— 仅有常驻的后台
-  组件和持续性风扇控制会被锁定；你仍然可以通过 `sudo peterfan fan set N`
-  手动控制风扇。
-- 授权密钥采用 Ed25519 签名，完全离线验证（无需联网校验，不依赖任何服务器）。
-  购买授权：*（商店链接即将上线）*。
+整个仓库，包括菜单栏应用、CLI、TUI 和守护进程，都采用 MIT 协议。
+所有监控和风扇控制功能均无需账号或许可证密钥，可自由使用、修改和分发。
 
 ---
 
@@ -182,7 +166,7 @@ cargo run -p peterfan-menubar
 ### 示例：`peterfan status`
 
 ```text
-PeterFan v1.26.2
+PeterFan v1.27.17
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
@@ -257,8 +241,7 @@ peterfan/
 │   ├── menubar/     peterfan-menubar   — macOS menu-bar / Windows tray app
 │   └── daemon/      peterfand          — fan-control daemon (curve + safety)
 ├── tools/
-│   ├── icongen/          generates the app icon PNG — dev-only, excluded from workspace
-│   └── license-keygen/   issues license keys — dev-only, never shipped, excluded from workspace
+│   └── icongen/          generates the app icon PNG — dev-only, excluded from workspace
 ├── apps/
 │   └── landing/     static marketing website (open apps/landing/index.html)
 ├── packaging/       LaunchDaemon plist · Homebrew formula · scripts/ install helpers
@@ -292,8 +275,5 @@ Windows 上的 EC/WMI 后端）。
 
 ## 许可协议
 
-本仓库中的代码采用 [MIT](./LICENSE) 协议 © PeterFan contributors ——
-包括菜单栏应用的源代码在内。真正*作为产品收费授权*的，是**在 14 天试用期之后
-继续运行菜单栏应用常驻后台组件与持久化风扇控制的权利**（详见上方的
-[价格与许可](#pricing--licensing)）；而底层的 CLI、TUI 以及守护进程的风扇曲线
-逻辑并不受此限制，与本项目的其余部分一样，可依据 MIT 条款自由使用、研究和修改。
+本仓库中的代码采用 [MIT](./LICENSE) 协议 © PeterFan contributors。
+菜单栏应用、CLI、TUI 和守护进程均无需账号或许可证密钥，可自由使用、研究、修改和分发。

@@ -92,27 +92,6 @@ impl AlertConfig {
     }
 }
 
-/// Licensing state. The CLI's read-only commands (`temps`, `status`, …) never
-/// check this — only the menu-bar app and the daemon's persistent fan control
-/// gate on it, after a free trial. See [`crate::license`] for key format.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LicenseConfig {
-    /// A `PFAN1-...` key entered via `peterfan license activate <key>`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-    /// Unix seconds of first launch, used to compute the trial countdown.
-    /// Set once and never overwritten.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub first_run_unix: Option<u64>,
-}
-
-impl LicenseConfig {
-    pub fn is_empty(&self) -> bool {
-        self.key.is_none() && self.first_run_unix.is_none()
-    }
-}
-
 /// Which live metric the menu-bar item shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -334,9 +313,6 @@ pub struct Config {
     /// Alert thresholds for `peterfan alert`.
     #[serde(default, skip_serializing_if = "AlertConfig::is_empty")]
     pub alert: AlertConfig,
-    /// License key + trial start, for the menu-bar app and daemon.
-    #[serde(default, skip_serializing_if = "LicenseConfig::is_empty")]
-    pub license: LicenseConfig,
     /// Menu-bar item appearance (metric shown + number/cat/both style).
     #[serde(default, skip_serializing_if = "MenubarConfig::is_default")]
     pub menubar: MenubarConfig,
@@ -352,7 +328,6 @@ impl Default for Config {
             custom_curve: None,
             named_curves: BTreeMap::new(),
             alert: AlertConfig::default(),
-            license: LicenseConfig::default(),
             menubar: MenubarConfig::default(),
         }
     }
@@ -510,6 +485,18 @@ mod tests {
         assert!(cfg.rules.is_empty());
         let back = Config::from_toml(&cfg.to_toml()).unwrap();
         assert_eq!(back.profile, Profile::Gaming);
+    }
+
+    #[test]
+    fn legacy_license_section_is_ignored_and_removed_on_save() {
+        let cfg = Config::from_toml(
+            "profile = \"balanced\"\n[license]\nkey = \"PFAN1-old\"\nfirst_run_unix = 1\n",
+        )
+        .unwrap();
+
+        let saved = cfg.to_toml();
+        assert!(!saved.contains("[license]"));
+        assert!(!saved.contains("PFAN1-old"));
     }
 
     #[test]

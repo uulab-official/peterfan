@@ -20,7 +20,6 @@ use clap::{CommandFactory, Parser, Subcommand};
 use owo_colors::OwoColorize;
 
 use peterfan_core::error::CoreError;
-use peterfan_core::license::{self, Entitlement, LicenseStatus};
 use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
 use peterfan_core::thermals::{hottest_temperature_c, representative_temperature_c};
@@ -265,23 +264,6 @@ enum Command {
         #[command(subcommand)]
         sub: Option<AlertAction>,
     },
-    /// Manage your PeterFan license (the menu-bar app and persistent fan
-    /// control need one after the free trial; every other command stays free).
-    /// With no subcommand, shows current trial/license status.
-    License {
-        #[command(subcommand)]
-        sub: Option<LicenseAction>,
-    },
-}
-
-#[derive(Subcommand, Clone)]
-enum LicenseAction {
-    /// Show trial days remaining or the active license's email/expiry.
-    Status,
-    /// Save a `PFAN1-...` license key.
-    Activate { key: String },
-    /// Remove the saved license key (falls back to the trial clock).
-    Deactivate,
 }
 
 #[derive(Subcommand, Clone)]
@@ -522,7 +504,6 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
             save,
             sub,
         } => cmd_alert(mock, cpu, memory, temp, interval, cooldown, once, save, sub),
-        Command::License { sub } => cmd_license(json, sub.unwrap_or(LicenseAction::Status)),
     }
 }
 
@@ -1343,122 +1324,6 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
             "    interval {}s · cooldown {}s",
             cfg.alert.interval_secs, cfg.alert.cooldown_secs
         );
-    }
-    Ok(())
-}
-
-/// Seconds since the Unix epoch, or 0 if the system clock is before 1970.
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// Format Unix seconds as `YYYY-MM-DD` (UTC), with no date-library dependency —
-/// the civil-from-days algorithm (Howard Hinnant, public domain).
-fn format_unix_date(secs: u64) -> String {
-    let days = (secs / 86_400) as i64;
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-fn cmd_license(json: bool, action: LicenseAction) -> Result<()> {
-    let mut cfg = peterfan_platform::config::load();
-    let now = now_unix();
-
-    match action {
-        LicenseAction::Status => {
-            let entitlement = license::check_entitlement(
-                cfg.license.key.as_deref(),
-                cfg.license.first_run_unix,
-                now,
-            );
-            if json {
-                let val = match &entitlement {
-                    Entitlement::Licensed { email } => {
-                        serde_json::json!({"status": "licensed", "email": email})
-                    }
-                    Entitlement::Trial { days_left } => {
-                        serde_json::json!({"status": "trial", "days_left": days_left})
-                    }
-                    Entitlement::TrialExpired => serde_json::json!({"status": "trial_expired"}),
-                };
-                println!("{}", serde_json::to_string_pretty(&val)?);
-                return Ok(());
-            }
-            println!("{}", render::heading("License"));
-            match &entitlement {
-                Entitlement::Licensed { email } => {
-                    print_kv("Status", &format!("licensed — {email}"));
-                }
-                Entitlement::Trial { days_left } => {
-                    print_kv("Status", &format!("free trial — {days_left} day(s) left"));
-                    println!(
-                        "  {}",
-                        "activate with: peterfan license activate <key>".dimmed()
-                    );
-                }
-                Entitlement::TrialExpired => {
-                    print_kv("Status", "trial expired");
-                    println!(
-                        "  {}",
-                        "the menu-bar app and persistent fan control need a license now.".yellow()
-                    );
-                    println!(
-                        "  {}",
-                        "every other command (status, temps, fan set, …) stays free.".dimmed()
-                    );
-                }
-            }
-        }
-        LicenseAction::Activate { key } => match license::verify_key(&key, now) {
-            LicenseStatus::Valid { email, expires } => {
-                cfg.license.key = Some(key);
-                peterfan_platform::config::save(&cfg)
-                    .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
-                if json {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "status": "activated", "email": email, "expires": expires,
-                        }))?
-                    );
-                } else {
-                    println!("  {} licensed to {}", "✓".green(), email.bold());
-                    match expires {
-                        Some(exp) => println!("  expires: {}", format_unix_date(exp)),
-                        None => println!("  {}", "lifetime license".dimmed()),
-                    }
-                }
-            }
-            LicenseStatus::Expired { email, expired_at } => {
-                anyhow::bail!(
-                    "license for {email} expired on {} — you'll need a new key",
-                    format_unix_date(expired_at)
-                );
-            }
-            LicenseStatus::Invalid(reason) => {
-                anyhow::bail!("invalid license key: {reason}");
-            }
-        },
-        LicenseAction::Deactivate => {
-            cfg.license.key = None;
-            peterfan_platform::config::save(&cfg)
-                .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
-            if !json {
-                println!("  {} license removed — trial clock resumes", "✓".green());
-            }
-        }
     }
     Ok(())
 }
@@ -4517,7 +4382,20 @@ fn cmd_alert_agent(action: AlertAction) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use clap::CommandFactory;
     use peterfan_core::types::{Celsius, SensorKind, SensorSource, TempSensor};
+
+    #[test]
+    fn cli_has_no_account_or_license_command() {
+        let command = super::Cli::command();
+        let names: Vec<_> = command
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name())
+            .collect();
+
+        assert!(!names.contains(&"license"));
+        assert!(!names.contains(&"login"));
+    }
 
     fn temp(id: &str, label: &str, kind: SensorKind, value: f32) -> TempSensor {
         TempSensor {

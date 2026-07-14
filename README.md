@@ -356,12 +356,12 @@ cases PeterFan reports the failed verification instead of claiming success.
 
 ## Licensing
 
-The repository is MIT-licensed. The CLI, TUI, core crates, and daemon
-fan-control logic are free to use, fork, and modify under MIT.
+The entire repository, including the menu-bar app, CLI, TUI, core crates, and
+daemon, is free to use, fork, modify, and redistribute under MIT.
 
-There is no required account or login for core monitoring. Fan-control
-installation still requires local macOS privileges and is controlled via the
-one-time setup flow shown inside the app.
+No PeterFan feature requires an account, login, trial, or license key.
+Fan-control installation still requires local macOS privileges and is handled
+by the one-time setup flow shown inside the app.
 
 ## Contributing
 

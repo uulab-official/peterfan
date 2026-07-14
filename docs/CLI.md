@@ -374,18 +374,6 @@ peterfan alert status                     # LaunchAgent 설치 여부 확인
 peterfan alert remove                     # LaunchAgent 제거
 ```
 
-### `license` — 메뉴바 앱 라이선스
-
-CLI/TUI/데몬의 팬 커브 로직 자체는 게이팅되지 않음 — 이 커맨드는 메뉴바 앱과
-데몬의 상시 백그라운드 팬 제어에만 적용되는 14일 체험판/라이선스 상태를 다룸.
-
-```bash
-peterfan license                          # 체험판 잔여일 또는 라이선스 상태
-peterfan license activate PFAN1-...       # 구매한 라이선스 키 등록
-peterfan license deactivate               # 등록된 키 제거 (체험판 시계로 복귀)
-peterfan --json license
-```
-
 ## Scripting
 
 `--json` makes every command pipeable. Example with `jq`:

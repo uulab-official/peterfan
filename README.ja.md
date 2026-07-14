@@ -23,12 +23,9 @@ PeterFan は単なるファン速度スライダーでは**ない**。開発者�
 Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 ```
 
-**CLI・TUI・ファンコントロールデーモンは無料、MIT ライセンスで永続的に提供される。**
-メニューバーアプリには 14 日間の無料トライアルがあり、それ以降は常時稼働の
-メニューバーウィジェットと永続的なバックグラウンドファンコントロールを使い続けるために
-一度限りのライセンス（`peterfan license activate <key>`）が必要になる —
-読み取り専用のコマンドは無効化されることはない。詳細は下記の
-[料金](#pricing--licensing) を参照。
+**PeterFan はすべて MIT ライセンスのオープンソースです。** メニューバーアプリ、
+CLI、TUI、ファンコントロールデーモンは、アカウント登録、ログイン、トライアル、
+ライセンスキーなしですべての機能を利用できます。
 
 ---
 
@@ -41,8 +38,8 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 3. Applications（または Spotlight）から **PeterFan** を開く — 初回起動時は
    **右クリック → 開く** で確認する（[理由は？](#download)）
 
-これだけだ — PeterFan はメニューバーに静かに常駐する。14 日間の無料トライアルがあり、
-アカウント登録やサインアップは不要。コマンドラインを使いたい、あるいは Windows が
+これだけだ — PeterFan はメニューバーに静かに常駐する。アカウント登録、ログイン、
+ライセンス入力は不要。コマンドラインを使いたい、あるいは Windows が
 必要な場合は、`.tar.gz`/`.zip` アーカイブとソースからのビルド手順について下記の
 [ダウンロード](#download) を参照。
 
@@ -50,7 +47,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## ステータス
 
-**ベータ — v1.26.2。** 開発は活発に継続中。以下の表は実際にリリース済みの内容を示す。
+**ベータ — v1.27.17。** 開発は活発に継続中。以下の表は実際にリリース済みの内容を示す。
 
 | 領域 | 状態 |
 | --- | --- |
@@ -69,7 +66,7 @@ Activity Monitor の GPU % と一致しないため、不正確な値を出荷�
 デーモン経由）。`fan set` は**回転数を読み戻して検証する**ため、見せかけの「ok」ではなく
 本物の ✓/✗ が得られる。Intel Mac では動作確認済み。Apple Silicon でも試行・検証されるが、
 一部モデルのファームウェアはこれを無視する場合がある |
-| CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`/`serve`/`benchmark`/`log`/`alert`/`license`/`completions`、グローバルな `--watch` と `--json` | ✅ 実行可能 |
+| CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`config`/`serve`/`benchmark`/`log`/`alert`/`completions`、グローバルな `--watch` と `--json` | ✅ 実行可能 |
 | TUI システムダッシュボード（ratatui） — CPU/メモリ/ディスク/ネットワーク/バッテリー/プロセス + 温度/ファン/電力 | ✅ 実行可能 |
 | **メニューバーアプリ** — スパークライングラフアイコン（数値/グラフ/両方を選択可）、
 クイックサマリー付きホバーツールチップ、2分/1時間/1日の履歴チャートを持つポップオーバー
@@ -82,7 +79,6 @@ Top Processes からのプロセス終了、英語/한국어、独立したリ�
 | **自己アップデート** — メニューバーの「アップデートを確認…」（および
 `peterfan update`）が GitHub Releases を確認しその場でインストールする | ✅ 実行可能 |
 | **ローカル HTTP API**（`peterfan serve`） — 連携用の JSON メトリクスと制御 | ✅ 実行可能 |
-| ライセンス — 14 日間トライアル、Ed25519 オフライン検証キー | ✅ 実装済み（メニューバーアプリとデーモンのファン制御のみ対象） |
 | デスクトップ GUI（Tauri）、プラグイン | 🗺️ ロードマップ |
 
 バックエンドがまだ実センサーを読み取れない場合、CLI/TUI は**透過的にモックバックエンドへ
@@ -93,24 +89,10 @@ Top Processes からのプロセス終了、英語/한국어、独立したリ�
 
 ---
 
-## 料金とライセンス (Pricing & licensing)
+## オープンソース
 
-- **CLI（`peterfan`）、TUI（`peterfan-tui`）、そしてデーモンのファン制御コアは
-  MIT ライセンスであり、永続的に無料** — スクリプトに組み込む、埋め込む、フォークする、
-  すべて自由。
-- **メニューバーアプリ**（`peterfan-menubar` / `PeterFan.app`）は初回起動から
-  **14 日間**無料で試用できる。トライアル後、これを実行する（およびデーモンの
-  *永続的な*バックグラウンドファン制御）にはライセンスが必要になる。
-  ```sh
-  peterfan license status              # トライアル残日数 / ライセンス状態
-  peterfan license activate <key>      # 購入時に発行される PFAN1-... キー
-  ```
-  トライアル期間を過ぎてもライセンスがない場合、メニューバーアプリはリアルタイムの
-  メトリクス表示を続ける — 制限されるのは常時稼働のバックグラウンドウィジェットと
-  継続的なファン制御のみで、`sudo peterfan fan set N` による手動でのファン操作は
-  引き続き可能。
-- ライセンスキーは Ed25519 で署名され、完全にオフラインで検証される
-  （フォンホームなし、サーバー依存なし）。ライセンスの購入: *（ストアリンクは近日公開）*。
+メニューバーアプリ、CLI、TUI、デーモンを含むリポジトリ全体が MIT ライセンスです。
+すべての監視・ファン制御機能をアカウントやライセンスキーなしで利用、改変、配布できます。
 
 ---
 
@@ -204,7 +186,7 @@ cargo run -p peterfan-menubar
 ### 例: `peterfan status`
 
 ```text
-PeterFan v1.26.2
+PeterFan v1.27.17
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
@@ -279,8 +261,7 @@ peterfan/
 │   ├── menubar/     peterfan-menubar   — macOS menu-bar / Windows tray app
 │   └── daemon/      peterfand          — fan-control daemon (curve + safety)
 ├── tools/
-│   ├── icongen/          generates the app icon PNG — dev-only, excluded from workspace
-│   └── license-keygen/   issues license keys — dev-only, never shipped, excluded from workspace
+│   └── icongen/          generates the app icon PNG — dev-only, excluded from workspace
 ├── apps/
 │   └── landing/     static marketing website (open apps/landing/index.html)
 ├── packaging/       LaunchDaemon plist · Homebrew formula · scripts/ install helpers
@@ -315,10 +296,6 @@ PeterFan の設計は以下を徹底している。
 
 ## ライセンス
 
-このリポジトリのコードは [MIT](./LICENSE) © PeterFan contributors —
-メニューバーアプリのソースコードを含む。*製品としてライセンスされている*のは、
-**14 日間のトライアルを超えてメニューバーアプリの常時稼働バックグラウンドウィジェットと
-永続的なファン制御を実行する権利**だ（上記の
-[料金とライセンス](#pricing--licensing) を参照）。その下にある CLI、TUI、
-デーモンのファンカーブロジックにはそのような制限は一切なく、プロジェクトの他の部分と
-同様に MIT の条件のもとで自由に使用、study、改変できる。
+このリポジトリのコードは [MIT](./LICENSE) © PeterFan contributors ライセンスです。
+メニューバーアプリ、CLI、TUI、デーモンのすべてを、アカウントやライセンスキーなしで
+自由に利用、研究、改変、配布できます。

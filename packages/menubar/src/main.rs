@@ -1280,7 +1280,7 @@ fn main() {
         .unwrap_or(next_metric_at);
         *control_flow = ControlFlow::WaitUntil(next_tick);
 
-        // Run any control commands (or a license key) queued by the popover.
+        // Run any control commands queued by the popover.
         let cmds: Vec<String> = std::mem::take(&mut *PENDING.lock().expect("pending poisoned"));
         if !cmds.is_empty() {
             let mut refresh_after_pending = false;

@@ -95,11 +95,11 @@ text("54 C", 1430, 774, 18, c(245, 247, 250), weight: .semibold)
 let panel = NSRect(x: 164, y: 142, width: 622, height: 560)
 rounded(panel, radius: 18, fill: c(27, 28, 32), stroke: c(255, 255, 255, 0.10))
 text("Ready", 202, 658, 22, c(245, 247, 250), weight: .bold)
-text("app v\(version) - daemon v1.26.24 compatible - login on", 202, 632, 15, c(143, 153, 169))
+text("app v\(version) - daemon v1.27.16 compatible - no account", 202, 632, 15, c(143, 153, 169))
 rounded(NSRect(x: 202, y: 586, width: 130, height: 34), radius: 9, fill: c(64, 116, 216))
 text("App", 252, 594, 15, .white, weight: .semibold)
 rounded(NSRect(x: 346, y: 586, width: 130, height: 34), radius: 9, fill: c(255, 255, 255, 0.08))
-text("Login On", 372, 594, 15, c(231, 235, 242), weight: .semibold)
+text("RPM Verified", 364, 594, 15, c(231, 235, 242), weight: .semibold)
 
 let cards: [(String, String, CGFloat, NSColor)] = [
     ("CPU", "38%", 0.38, c(91, 157, 255)),
@@ -109,25 +109,25 @@ let cards: [(String, String, CGFloat, NSColor)] = [
 ]
 for (index, card) in cards.enumerated() {
     let x = 202 + CGFloat(index % 2) * 278
-    let y = 454 - CGFloat(index / 2) * 104
+    let y = 470 - CGFloat(index / 2) * 92
     rounded(NSRect(x: x, y: y, width: 246, height: 78), radius: 13, fill: c(255, 255, 255, 0.045), stroke: c(255, 255, 255, 0.07))
     text(card.0, x + 18, y + 48, 14, c(151, 161, 176))
     text(card.1, x + 18, y + 20, 28, c(246, 248, 252), weight: .bold)
     meter(x + 122, y + 28, 96, card.2, card.3)
 }
 
-let chart = NSRect(x: 202, y: 280, width: 520, height: 116)
+let chart = NSRect(x: 202, y: 244, width: 520, height: 110)
 rounded(chart, radius: 13, fill: c(255, 255, 255, 0.045), stroke: c(255, 255, 255, 0.07))
-text("Temperature - CPU avg", 220, 364, 15, c(205, 212, 224), weight: .semibold)
+text("Temperature - CPU avg", 220, 326, 15, c(205, 212, 224), weight: .semibold)
 let temps: [CGFloat] = [0.24, 0.29, 0.34, 0.30, 0.41, 0.38, 0.48, 0.45, 0.56, 0.51, 0.44, 0.49, 0.58, 0.63, 0.60, 0.66, 0.62, 0.69]
 let points = temps.enumerated().map { index, value in
-    CGPoint(x: 226 + CGFloat(index) * 27.5, y: 302 + value * 54)
+    CGPoint(x: 226 + CGFloat(index) * 27.5, y: 260 + value * 50)
 }
 line(points, color: c(48, 209, 88), width: 4)
 
-text("Fans", 202, 242, 17, c(245, 247, 250), weight: .bold)
+text("Fans", 202, 212, 17, c(245, 247, 250), weight: .bold)
 for row in 0..<2 {
-    let y = 212 - CGFloat(row * 34)
+    let y = 182 - CGFloat(row * 32)
     text(row == 0 ? "Left fan" : "Right fan", 202, y, 14, c(191, 199, 211))
     text(row == 0 ? "2440 RPM" : "2388 RPM", 316, y, 14, c(239, 242, 247), weight: .semibold)
     meter(418, y + 4, 210, row == 0 ? 0.43 : 0.41, c(91, 157, 255))
@@ -150,8 +150,8 @@ let terminalLines: [(String, NSColor, NSFont.Weight)] = [
     ("", .white, .regular),
     ("Setup", c(91, 205, 255), .bold),
     ("app version:          v\(version)", c(224, 231, 242), .medium),
-    ("daemon requirement:   >= v1.26.22", c(224, 231, 242), .medium),
-    ("installed daemon:     v1.26.24 compatible", c(48, 209, 88), .medium),
+    ("daemon requirement:   >= v1.27.16", c(224, 231, 242), .medium),
+    ("installed daemon:     v1.27.16 compatible", c(48, 209, 88), .medium),
     ("daemon_update_required: false", c(143, 153, 169), .medium),
 ]
 var y: CGFloat = 626
@@ -164,7 +164,7 @@ for lineText in terminalLines {
     y -= 30
 }
 
-text("Open source core - signed DMG releases - local-first diagnostics", 164, 48, 20, c(167, 178, 194), weight: .medium)
+text("Open source app - signed DMG releases - local-first diagnostics", 164, 48, 20, c(167, 178, 194), weight: .medium)
 image.unlockFocus()
 
 guard let tiff = image.tiffRepresentation,

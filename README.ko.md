@@ -52,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.27.16.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.27.17.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -175,7 +175,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.27.16
+PeterFan v1.27.17
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
@@ -259,8 +259,7 @@ peterfan/
 │   ├── menubar/     peterfan-menubar   — macOS menu-bar / Windows tray app
 │   └── daemon/      peterfand          — fan-control daemon (curve + safety)
 ├── tools/
-│   ├── icongen/          generates the app icon PNG — dev-only, excluded from workspace
-│   └── license-keygen/   legacy dev-only key tool, never shipped, excluded from workspace
+│   └── icongen/          generates the app icon PNG — dev-only, excluded from workspace
 ├── apps/
 │   └── landing/     static marketing website (open apps/landing/index.html)
 ├── packaging/       LaunchDaemon plist · Homebrew formula · scripts/ install helpers

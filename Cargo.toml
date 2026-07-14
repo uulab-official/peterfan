@@ -8,12 +8,11 @@ members = [
     "packages/menubar",
     "packages/daemon",
 ]
-# Standalone dev tools, not part of the product build (and, for the license
-# keygen, never shipped — it holds the offline signing logic).
-exclude = ["tools/icongen", "tools/license-keygen"]
+# Standalone dev tools, not part of the product build.
+exclude = ["tools/icongen"]
 
 [workspace.package]
-version = "1.27.16"
+version = "1.27.17"
 edition = "2021"
 license = "MIT"
 authors = ["PeterFan contributors"]
@@ -42,8 +41,6 @@ core-foundation = "0.10"
 core-foundation-sys = "0.8"
 toml = "0.8"
 dirs = "6"
-ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
-base64 = "0.22"
 
 [profile.release]
 lto = "thin"
