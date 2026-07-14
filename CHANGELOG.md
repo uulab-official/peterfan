@@ -9,6 +9,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 - **macOS CI 스모크 이식성** — GNU `timeout`이 없는 깨끗한 macOS 러너에서는
   Python 기반 프로세스 그룹 타임아웃을 사용해 중단 감지 검사가 정상 동작함.
+- **CI 런타임과 감사 캐시** — GitHub Actions를 Node 24 호환 세대로 올리고
+  `cargo-audit` 실행 파일을 캐시해 반복 검사의 설치 지연과 폐기 경고를 제거함.
 
 ## [1.27.20] — 최신 Rust CI 호환성
 
