@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tao::dpi::{LogicalSize, PhysicalPosition};
+use tao::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use tao::monitor::MonitorHandle;
@@ -30,6 +30,11 @@ use tao::window::{Window, WindowBuilder};
 
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSEvent, NSScreen};
+#[cfg(target_os = "macos")]
+use objc2_foundation::MainThreadMarker;
 
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{
@@ -2197,6 +2202,87 @@ fn monitor_bounds(monitor: &MonitorHandle) -> DisplayBounds {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LogicalPopoverAnchor {
+    x: f64,
+    y: f64,
+    display: DisplayBounds,
+    scale: f64,
+}
+
+fn popover_position_for_anchor(
+    anchor: LogicalPopoverAnchor,
+    popover_width: f64,
+) -> LogicalPosition<f64> {
+    let min_x = anchor.display.x + 8.0;
+    let max_x = anchor.display.right() - popover_width - 8.0;
+    let x = if min_x <= max_x {
+        (anchor.x - popover_width).clamp(min_x, max_x)
+    } else {
+        min_x
+    };
+    LogicalPosition::new(x, anchor.y)
+}
+
+fn popover_height_for_anchor(anchor: LogicalPopoverAnchor) -> f64 {
+    let available = (anchor.display.bottom() - anchor.y - 12.0).max(200.0);
+    POPOVER_H.min(available)
+}
+
+/// Resolve the clicked status item's screen in AppKit's global point space.
+/// `tray-icon` scales the global origin by the clicked screen's backing scale,
+/// while Tao later divides a physical position by the hidden window's previous
+/// screen scale. Those two scales differ on mixed-DPI desktops and can place a
+/// popover between displays. Keeping the complete placement in logical points
+/// avoids both conversions.
+#[cfg(target_os = "macos")]
+fn native_logical_popover_anchor(rect: Rect) -> Option<LogicalPopoverAnchor> {
+    let mtm = MainThreadMarker::new()?;
+    let screens = NSScreen::screens(mtm);
+    let primary = screens.iter().next()?;
+    let primary_frame = primary.frame();
+    let primary_top = primary_frame.origin.y + primary_frame.size.height;
+    let mouse = NSEvent::mouseLocation();
+    let screen = screens.iter().find(|screen| {
+        let frame = screen.frame();
+        mouse.x >= frame.origin.x
+            && mouse.x < frame.origin.x + frame.size.width
+            && mouse.y >= frame.origin.y
+            && mouse.y < frame.origin.y + frame.size.height
+    })?;
+    let frame = screen.frame();
+    let scale = screen.backingScaleFactor();
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+
+    let display = DisplayBounds {
+        x: frame.origin.x,
+        y: primary_top - (frame.origin.y + frame.size.height),
+        width: frame.size.width,
+        height: frame.size.height,
+    };
+    let tray_width = rect.size.width as f64 / scale;
+    let tray_height = rect.size.height as f64 / scale;
+    let reported_left = rect.position.x / scale;
+    let reported_right = reported_left + tray_width;
+    // The event rectangle is normally exact after removing the screen-local
+    // backing scale. Fall back to the live pointer when a tray implementation
+    // reports an origin outside the screen so the popup still stays local.
+    let anchor_x = if reported_right >= display.x && reported_left <= display.right() {
+        reported_right
+    } else {
+        mouse.x + tray_width / 2.0
+    };
+
+    Some(LogicalPopoverAnchor {
+        x: anchor_x,
+        y: display.y + tray_height,
+        display,
+        scale,
+    })
+}
+
 fn popover_position_for_rect(
     rect: Rect,
     popover_width: f64,
@@ -2249,6 +2335,27 @@ fn toggle_popover(
         return;
     }
     let Some(w) = &app.window else { return };
+
+    #[cfg(target_os = "macos")]
+    if let Some(anchor) = native_logical_popover_anchor(rect) {
+        let height = popover_height_for_anchor(anchor);
+        let position = popover_position_for_anchor(anchor, POPOVER_W);
+        w.set_inner_size(LogicalSize::new(POPOVER_W, height));
+        w.set_outer_position(position);
+        app.popover_show_at = Some(Instant::now() + POPOVER_SHOW_DELAY);
+        log_menubar_event(&format!(
+            "popover scheduled logical position=({:.0},{:.0}) size=({POPOVER_W:.0},{height:.0}) clicked_display=({:.0},{:.0},{:.0}x{:.0}) scale={:.2}",
+            position.x,
+            position.y,
+            anchor.display.x,
+            anchor.display.y,
+            anchor.display.width,
+            anchor.display.height,
+            anchor.scale
+        ));
+        return;
+    }
+
     let scale = w.scale_factor();
     let win_w = POPOVER_W * scale;
     // Flush against the menu bar rather than leaving a visible gap — matches
@@ -4215,6 +4322,10 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .profile-strip.pending button{cursor:progress;}
 .profile-strip.pending button:not(.active){opacity:.48;}
 .profile-strip.pending button.active{box-shadow:inset 0 -2px 0 var(--accent);}
+.fan-apply-status{min-height:15px;margin:-2px 0 5px;color:var(--dim);font-size:9.5px;line-height:1.45;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fan-apply-status.pending{color:var(--accent);}
+.fan-apply-status.ok{color:var(--g);}
+.fan-apply-status.error{color:var(--r);}
 .fan-cards{display:flex;flex-direction:column;}
 .fan-card{padding:5px 0;}
 .fan-card+.fan-card{border-top:1px solid var(--line);}
@@ -4412,6 +4523,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <button data-mode="profile" data-profile="performance" title="Performance" onclick="setProfile('performance')">Performance</button>
 <button data-mode="profile" data-profile="maximum" title="Maximum" onclick="setProfile('maximum')">Max</button>
 </div>
+<div class="fan-apply-status" id="fan-apply-status"></div>
 <div class="fan-cards" id="fan-cards"></div>
 <div class="empty-state" id="fan-empty-state" style="display:none">No controllable fans detected. PeterFan can still monitor CPU, memory, temperature, and network activity.</div>
 <div class="ctl-note" id="ctl-note" style="display:none"></div>
@@ -4492,6 +4604,7 @@ var APP_UPDATE_CHECK_PENDING=false;
 var APP_UPDATE_STATUS=null;
 var APP_PERSISTED_UPDATE_KEY='';
 var FAN_CONTROL_PENDING=null;
+var FAN_CONTROL_RESULT=null;
 if(!('__pf_pending' in window))window.__pf_pending=null;
 function applyPendingUpdate(){
   if(window.__pf&&window.__pf.update&&window.__pf_pending)window.__pf.update(window.__pf_pending);
@@ -4799,6 +4912,7 @@ window.__pf={
    if(d.can_control){
      set('ctl-status', d.ctl_status||'');
      updateProfileStrip(d);
+     updateFanApplyStatus(d);
      if(note){
      // A command failure (e.g. a running daemon too old to understand a
      // command we just sent it) used to be silently swallowed — ctl-status
@@ -4840,6 +4954,7 @@ window.__pf={
    } else {
      set('ctl-status',LANG==='ko'?'사용 불가':'unavailable');
      updateProfileStrip(d);
+     updateFanApplyStatus(d);
      if(note){note.style.display='';note.textContent=LANG==='ko'?'이 Mac에서는 팬 제어를 사용할 수 없습니다. 실시간 RPM만 표시합니다.':'Fan control unavailable on this Mac — showing live RPM only.';}
      var fc=document.getElementById('fan-cards');if(fc)fc.innerHTML='';
      updateFanEmptyState(d);
@@ -5363,6 +5478,7 @@ function beginFanControl(mode,profile){
   var current=window.__pf_pending||{};
   var wantedProfile=profile||'';
   if(current.active_control_mode===mode&&(mode!=='profile'||current.active_profile===wantedProfile))return false;
+  FAN_CONTROL_RESULT=null;
   FAN_CONTROL_PENDING={mode:mode,profile:wantedProfile,startedAt:Date.now(),statusBefore:current.last_cmd_status||'',revisionBefore:Number(current.applied_control_revision||0)};
   updateProfileStrip(window.__pf_pending||{can_control:true,active_control_mode:'',active_profile:'',last_cmd_status:''});
   return true;
@@ -5382,7 +5498,13 @@ function updateProfileStrip(d){
     var status=d.last_cmd_status||'';
     var failed=status!==FAN_CONTROL_PENDING.statusBefore&&status!=='applying…'&&fanControlStatusFailed(status);
     var expired=Date.now()-FAN_CONTROL_PENDING.startedAt>5000;
-    if(matches||failed||expired)FAN_CONTROL_PENDING=null;
+    if(matches){
+      FAN_CONTROL_RESULT={ok:true,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,at:Date.now(),message:''};
+      FAN_CONTROL_PENDING=null;
+    } else if(failed||expired){
+      FAN_CONTROL_RESULT={ok:false,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,at:Date.now(),message:failed?status:(LANG==='ko'?'하드웨어 적용 확인 시간 초과':'hardware confirmation timed out')};
+      FAN_CONTROL_PENDING=null;
+    }
   }
   if(FAN_CONTROL_PENDING){
     activeMode=FAN_CONTROL_PENDING.mode;
@@ -5398,6 +5520,35 @@ function updateProfileStrip(d){
     var isProfile=b.dataset.mode==='profile'&&activeMode==='profile'&&b.dataset.profile===activeProfile;
     b.classList.toggle('active',enabled&&(isAuto||isProfile));
   });
+}
+function fanModeLabel(mode,profile){
+  if(mode==='auto')return LANG==='ko'?'macOS 자동':'macOS Auto';
+  var labels=LANG==='ko'
+    ?{silent:'저소음',balanced:'균형',gaming:'게임',performance:'고성능',maximum:'최대'}
+    :{silent:'Silent',balanced:'Balanced',gaming:'Gaming',performance:'Performance',maximum:'Maximum'};
+  return labels[profile]||profile||(LANG==='ko'?'수동':'Manual');
+}
+function updateFanApplyStatus(d){
+  var el=document.getElementById('fan-apply-status');
+  if(!el)return;
+  var mode=d.active_control_mode||'',profile=d.active_profile||'';
+  var tone='';
+  if(FAN_CONTROL_PENDING){
+    mode=FAN_CONTROL_PENDING.mode;profile=FAN_CONTROL_PENDING.profile;tone='pending';
+  } else if(FAN_CONTROL_RESULT&&Date.now()-FAN_CONTROL_RESULT.at<12000){
+    mode=FAN_CONTROL_RESULT.mode;profile=FAN_CONTROL_RESULT.profile;tone=FAN_CONTROL_RESULT.ok?'ok':'error';
+  }
+  var parts=[fanModeLabel(mode,profile)];
+  if(FAN_CONTROL_PENDING)parts.push(LANG==='ko'?'적용 확인 중…':'confirming…');
+  else if(FAN_CONTROL_RESULT&&Date.now()-FAN_CONTROL_RESULT.at<12000){
+    parts.push(FAN_CONTROL_RESULT.ok?(LANG==='ko'?'적용 완료':'applied'):(LANG==='ko'?'적용 실패':'failed'));
+    if(!FAN_CONTROL_RESULT.ok&&FAN_CONTROL_RESULT.message)parts.push(FAN_CONTROL_RESULT.message);
+  } else if(mode)parts.push(LANG==='ko'?'현재 모드':'current');
+  if(mode!=='auto'&&typeof d.fan_curve_input_temp_c==='number')parts.push((LANG==='ko'?'입력 ':'input ')+Math.round(d.fan_curve_input_temp_c)+'°C');
+  var targets=(d.fans||[]).filter(function(f){return typeof f.target_pct==='number';}).map(function(f){return Number(f.target_pct);}).filter(function(v){return isFinite(v);});
+  if(mode!=='auto'&&targets.length)parts.push((LANG==='ko'?'목표 ':'target ')+Math.max.apply(null,targets)+'%');
+  el.textContent=parts.filter(Boolean).join(' · ');
+  el.className='fan-apply-status '+tone;
 }
 function setProcSort(s){
   var cpu=document.getElementById('ps-cpu'),mem=document.getElementById('ps-mem');
@@ -5790,6 +5941,47 @@ mod tests {
         );
         assert!(pos.x + 440.0 <= displays[1].right() - 8.0);
         assert_eq!(pos.y, 24.0);
+    }
+
+    #[test]
+    fn logical_popover_anchor_ignores_previous_window_scale_on_mixed_dpi_display() {
+        let anchor = LogicalPopoverAnchor {
+            x: 4240.0,
+            y: 24.0,
+            display: DisplayBounds {
+                x: 1728.0,
+                y: 0.0,
+                width: 2560.0,
+                height: 1440.0,
+            },
+            scale: 1.0,
+        };
+        let pos = popover_position_for_anchor(anchor, POPOVER_W);
+
+        assert_eq!(pos.x, 3800.0);
+        assert_eq!(pos.y, 24.0);
+        assert!(pos.x >= anchor.display.x);
+        assert!(pos.x + POPOVER_W <= anchor.display.right());
+    }
+
+    #[test]
+    fn logical_popover_anchor_stays_on_left_retina_display() {
+        let anchor = LogicalPopoverAnchor {
+            x: -20.0,
+            y: -876.0,
+            display: DisplayBounds {
+                x: -1512.0,
+                y: -900.0,
+                width: 1512.0,
+                height: 982.0,
+            },
+            scale: 2.0,
+        };
+        let pos = popover_position_for_anchor(anchor, POPOVER_W);
+
+        assert!(pos.x < 0.0);
+        assert!(pos.x >= anchor.display.x + 8.0);
+        assert_eq!(popover_height_for_anchor(anchor), 520.0);
     }
 
     #[test]
@@ -6588,11 +6780,17 @@ mod tests {
         let source = include_str!("main.rs");
 
         assert!(en.contains("var FAN_CONTROL_PENDING=null;"));
+        assert!(en.contains("var FAN_CONTROL_RESULT=null;"));
+        assert!(en.contains(r#"id="fan-apply-status""#));
         assert!(en.contains("if(FAN_CONTROL_PENDING)return false;"));
         assert!(en.contains("if(!beginFanControl('profile',profile))return;"));
         assert!(en.contains("if(!beginFanControl('auto',''))return;"));
         assert!(en.contains("revisionBefore:Number(current.applied_control_revision||0)"));
         assert!(en.contains("var revisionApplied=Number(d.applied_control_revision||0)>FAN_CONTROL_PENDING.revisionBefore;"));
+        assert!(en.contains("FAN_CONTROL_RESULT={ok:true"));
+        assert!(en.contains("hardware confirmation timed out"));
+        assert!(en.contains("function updateFanApplyStatus(d)"));
+        assert!(en.contains("typeof f.target_pct==='number'"));
         assert!(en.contains("strip.setAttribute('aria-busy',pending?'true':'false');"));
         assert!(en.contains("b.disabled=!enabled||pending;"));
         assert!(source.contains("static CONTROL_REFRESH_REQUESTED: AtomicBool"));

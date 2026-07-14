@@ -32,7 +32,7 @@ working product map we use to decide what to polish next.
 - [x] RunCat-style compact popover with a right-side action rail
 - [x] Menu-bar metric selection, animated cat/number/both styles, and hover tooltip
 - [x] 2m / 1h / 1d charts with range averages and peaks
-- [x] Multi-monitor popover placement pinned to the clicked display
+- [x] Mixed-DPI multi-monitor popover placement pinned to the clicked display
 - [x] GitHub Releases OTA update path and local release scripts
 - [x] LaunchDaemon install, self-reinstall path, and admin-prompt explanation
 - [x] README screenshot generation and release readiness checks
@@ -67,6 +67,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] Keep a short local log of fan-control actions and failures
 - [x] Document why macOS requires approval for first LaunchDaemon install
 - [x] Optimistic fan-control feedback with duplicate-command prevention
+- [x] Hardware-confirmed fan mode feedback with curve temperature and target duty
 - [x] Reject missing or non-physical control temperatures and immediately
       return every fan to macOS automatic control
 - [x] Watch fan writes, expose failure counters in the UI/CLI, and fall back to
