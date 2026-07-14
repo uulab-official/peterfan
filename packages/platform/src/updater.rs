@@ -500,11 +500,11 @@ pub fn verify_app_integrity(app: &std::path::Path) -> AppIntegrityReport {
         Ok(output) if output.status.success() => {
             report.push("Gatekeeper", true, "accepted by spctl");
         }
-        Ok(output) if spctl_failed_from_resource_exhaustion(&output) => {
+        Ok(output) if spctl_service_unavailable(&output) => {
             report.push(
                 "Gatekeeper",
                 true,
-                "spctl skipped because the system reported too many open files",
+                "spctl unavailable system-wide; signature and notarization checks passed",
             );
         }
         Ok(output) => {
@@ -1490,7 +1490,7 @@ fn validate_update_dmg(dmg: &std::path::Path) -> Result<(), String> {
         .arg(dmg)
         .output()
         .map_err(|e| e.to_string())?;
-    if !output.status.success() && !spctl_failed_from_resource_exhaustion(&output) {
+    if !output.status.success() && !spctl_service_unavailable(&output) {
         return Err("Gatekeeper rejected the downloaded update DMG".into());
     }
 
@@ -1521,7 +1521,7 @@ fn validate_update_app(app: &std::path::Path) -> Result<(), String> {
         .arg(app)
         .output()
         .map_err(|e| e.to_string())?;
-    if !output.status.success() && !spctl_failed_from_resource_exhaustion(&output) {
+    if !output.status.success() && !spctl_service_unavailable(&output) {
         return Err("Gatekeeper rejected the downloaded PeterFan.app".into());
     }
 
@@ -1608,10 +1608,59 @@ fn is_executable(path: &std::path::Path) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn spctl_failed_from_resource_exhaustion(output: &std::process::Output) -> bool {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stderr.contains("Too many open files") || stdout.contains("Too many open files")
+fn spctl_service_unavailable(output: &std::process::Output) -> bool {
+    let target = spctl_output_text(output);
+    if spctl_text_is_resource_exhaustion(&target) {
+        return true;
+    }
+    if !spctl_text_is_internal_assessment_failure(&target) {
+        return false;
+    }
+
+    let probe = [
+        "/System/Applications/Calculator.app",
+        "/System/Library/CoreServices/Finder.app",
+    ]
+    .into_iter()
+    .find(|path| std::path::Path::new(path).is_dir())
+    .and_then(|path| {
+        std::process::Command::new("spctl")
+            .args(["-a", "-vv", "-t", "exec", path])
+            .output()
+            .ok()
+    });
+    let Some(probe) = probe else { return false };
+    if probe.status.success() {
+        return false;
+    }
+    let probe_text = spctl_output_text(&probe);
+    spctl_internal_failure_is_system_wide(&target, &probe_text)
+}
+
+#[cfg(target_os = "macos")]
+fn spctl_output_text(output: &std::process::Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn spctl_text_is_resource_exhaustion(text: &str) -> bool {
+    text.contains("Too many open files")
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn spctl_text_is_internal_assessment_failure(text: &str) -> bool {
+    text.contains("bundle format unrecognized, invalid, or unsuitable")
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn spctl_internal_failure_is_system_wide(target: &str, known_good_probe: &str) -> bool {
+    spctl_text_is_internal_assessment_failure(target)
+        && (spctl_text_is_resource_exhaustion(known_good_probe)
+            || spctl_text_is_internal_assessment_failure(known_good_probe))
 }
 
 /// Find the first `*.app` directory anywhere under `root` (one or two levels
@@ -1987,6 +2036,29 @@ TeamIdentifier=N99FMBQ662
         report.push("one", true, "ok");
         report.push("two", true, "ok");
         assert!(report.finish().ok);
+    }
+
+    #[test]
+    fn spctl_service_error_markers_do_not_match_normal_rejections() {
+        assert!(spctl_text_is_resource_exhaustion("Too many open files"));
+        assert!(spctl_text_is_internal_assessment_failure(
+            "bundle format unrecognized, invalid, or unsuitable"
+        ));
+        assert!(!spctl_text_is_resource_exhaustion(
+            "rejected source=Unnotarized Developer ID"
+        ));
+        assert!(!spctl_text_is_internal_assessment_failure(
+            "rejected source=Unnotarized Developer ID"
+        ));
+        let internal = "bundle format unrecognized, invalid, or unsuitable";
+        let rejected = "rejected source=Unnotarized Developer ID";
+        assert!(spctl_internal_failure_is_system_wide(internal, internal));
+        assert!(spctl_internal_failure_is_system_wide(
+            internal,
+            "Too many open files"
+        ));
+        assert!(!spctl_internal_failure_is_system_wide(internal, rejected));
+        assert!(!spctl_internal_failure_is_system_wide(rejected, internal));
     }
 
     #[test]

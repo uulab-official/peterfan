@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.28] — Gatekeeper 서비스 장애 시 OTA 복구
+
+### Fixed
+- **정상 앱을 손상으로 오인하는 OTA** — macOS `spctl`이 파일 디스크립터
+  고갈 뒤 정상 공증 앱에도 `bundle format unrecognized`를 반환하는 경우를
+  시스템 앱 교차 검사로 구분함. 계산기/Finder도 같은 내부 오류일 때만
+  Gatekeeper 서비스 장애로 처리함.
+
+### Security
+- **신뢰 검사는 그대로 fail-closed** — SHA-256, Developer ID 서명,
+  `kr.co.uulab.peterfan` 번들 ID, `N99FMBQ662` Team ID, stapled 공증 티켓은
+  계속 모두 필수임. 정상적인 Gatekeeper 거부나 신원 불일치는 우회하지 않음.
+
+### Quality
+- **실환경 회귀 검증** — Gatekeeper 서비스가 정상 Apple 앱까지 거부하는
+  상태에서 설치 앱과 공개 DMG의 전체 무결성 검사가 통과하는 것을 확인함.
+- **앱 전용 업데이트** — 최소 데몬 버전은 `1.27.22`로 유지함. 관리자 암호나
+  팬 제어 데몬 재설치 없이 앱만 교체됨.
+
 ## [1.27.27] — 팬 제어 권한 정직성 및 무결성 실패 차단
 
 ### Fixed
