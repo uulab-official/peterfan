@@ -95,7 +95,7 @@ text("54 C", 1430, 774, 18, c(245, 247, 250), weight: .semibold)
 let panel = NSRect(x: 164, y: 142, width: 622, height: 560)
 rounded(panel, radius: 18, fill: c(27, 28, 32), stroke: c(255, 255, 255, 0.10))
 text("Ready", 202, 658, 22, c(245, 247, 250), weight: .bold)
-text("app v\(version) - daemon v1.27.21 required - no account", 202, 632, 15, c(143, 153, 169))
+text("app v\(version) - daemon v1.27.22 required - no account", 202, 632, 15, c(143, 153, 169))
 rounded(NSRect(x: 202, y: 586, width: 130, height: 34), radius: 9, fill: c(64, 116, 216))
 text("App", 252, 594, 15, .white, weight: .semibold)
 rounded(NSRect(x: 346, y: 586, width: 130, height: 34), radius: 9, fill: c(255, 255, 255, 0.08))
@@ -150,8 +150,8 @@ let terminalLines: [(String, NSColor, NSFont.Weight)] = [
     ("", .white, .regular),
     ("Setup", c(91, 205, 255), .bold),
     ("app version:          v\(version)", c(224, 231, 242), .medium),
-    ("daemon requirement:   >= v1.27.21", c(224, 231, 242), .medium),
-    ("installed daemon:     v1.27.21 compatible", c(48, 209, 88), .medium),
+    ("daemon requirement:   >= v1.27.22", c(224, 231, 242), .medium),
+    ("installed daemon:     v1.27.22 compatible", c(48, 209, 88), .medium),
     ("daemon_update_required: false", c(143, 153, 169), .medium),
 ]
 var y: CGFloat = 626

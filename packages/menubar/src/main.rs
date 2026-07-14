@@ -62,6 +62,8 @@ const DASHBOARD_SLOW_REFRESH: Duration = Duration::from_secs(3);
 const DASHBOARD_SLOW_OPEN_GRACE: Duration = Duration::from_millis(450);
 const ALL_TEMP_REFRESH: Duration = Duration::from_secs(10);
 const DAEMON_REFRESH: Duration = Duration::from_secs(2);
+const TEMPERATURE_STALE_AFTER: Duration = Duration::from_secs(6);
+const ALL_TEMPERATURE_STALE_AFTER: Duration = Duration::from_secs(30);
 const CONTROL_CONFIRM_REFRESH: Duration = Duration::from_millis(100);
 const CONTROL_CONFIRM_WINDOW: Duration = Duration::from_millis(1500);
 const SINGLE_INSTANCE_LOCK_BASENAME: &str = "kr.co.uulab.peterfan.menubar";
@@ -335,8 +337,12 @@ struct App {
     runner_icons: Vec<Icon>,
     last_runner_icon: Option<usize>,
     temperature_cache: Vec<TempSensor>,
+    temperature_sampled_at: Option<Instant>,
+    temperature_sampled_at_unix_ms: Option<u64>,
     next_temperature_refresh: Instant,
     all_temp_rows_cache: Vec<serde_json::Value>,
+    all_temp_sampled_at: Option<Instant>,
+    all_temp_sampled_at_unix_ms: Option<u64>,
     next_all_temp_refresh: Instant,
     daemon_json_cache: Option<serde_json::Value>,
     next_daemon_refresh: Instant,
@@ -916,6 +922,23 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
+}
+
+fn sample_age(sampled_at: Option<Instant>, now: Instant) -> Option<Duration> {
+    sampled_at.map(|sampled| now.saturating_duration_since(sampled))
+}
+
+fn sample_is_stale(sampled_at: Option<Instant>, now: Instant, limit: Duration) -> bool {
+    sample_age(sampled_at, now)
+        .map(|age| age > limit)
+        .unwrap_or(true)
+}
+
 fn fan_action_log_path() -> Option<PathBuf> {
     peterfan_platform::config::path()?
         .parent()
@@ -1150,8 +1173,12 @@ fn main() {
         runner_icons: make_runner_icons(),
         last_runner_icon: None,
         temperature_cache: Vec::new(),
+        temperature_sampled_at: None,
+        temperature_sampled_at_unix_ms: None,
         next_temperature_refresh: Instant::now(),
         all_temp_rows_cache: Vec::new(),
+        all_temp_sampled_at: None,
+        all_temp_sampled_at_unix_ms: None,
         next_all_temp_refresh: Instant::now() + ALL_TEMP_REFRESH,
         daemon_json_cache: None,
         next_daemon_refresh: Instant::now() + DAEMON_REFRESH,
@@ -2208,23 +2235,46 @@ fn update(app: &mut App) {
     // they cross SMC and IOHID. A two-second cache keeps the headline current
     // without making an idle menu-bar utility poll hardware every second.
     if app.temperature_cache.is_empty() || now >= app.next_temperature_refresh {
-        app.temperature_cache = app.provider.temperatures().unwrap_or_default();
+        if let Ok(sample) = app.provider.temperatures() {
+            if !sample.is_empty() {
+                app.temperature_cache = sample;
+                app.temperature_sampled_at = Some(now);
+                app.temperature_sampled_at_unix_ms = Some(now_unix_ms());
+            }
+        }
         app.next_temperature_refresh = now + TEMPERATURE_REFRESH;
     }
+    let temperature_stale =
+        sample_is_stale(app.temperature_sampled_at, now, TEMPERATURE_STALE_AFTER);
+    let temperature_age_secs = sample_age(app.temperature_sampled_at, now)
+        .map(|age| age.as_secs())
+        .unwrap_or(0);
     let temps = app.temperature_cache.clone();
     let fans = if read_fans {
         app.provider.fans().unwrap_or_default()
     } else {
         Vec::new()
     };
-    let display_temp = primary_menu_temperature(&temps, TemperatureSource::CoreAverage)
+    let display_temp = (!temperature_stale)
+        .then(|| primary_menu_temperature(&temps, TemperatureSource::CoreAverage))
+        .flatten()
         .map(|t| t.value)
-        .or_else(|| representative_temperature_c(&temps));
-    let safety_temp = safety_temperature_c(&temps);
-    let core_hottest = temps
-        .iter()
-        .find(|temp| temp.id == "cpu.die.hot")
-        .map(|temp| temp.value.0);
+        .or_else(|| {
+            (!temperature_stale)
+                .then(|| representative_temperature_c(&temps))
+                .flatten()
+        });
+    let safety_temp = (!temperature_stale)
+        .then(|| safety_temperature_c(&temps))
+        .flatten();
+    let core_hottest = (!temperature_stale)
+        .then(|| {
+            temps
+                .iter()
+                .find(|temp| temp.id == "cpu.die.hot")
+                .map(|temp| temp.value.0)
+        })
+        .flatten();
     let fastest_rpm = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
     let fastest_pct = fans
         .iter()
@@ -2247,7 +2297,9 @@ fn update(app: &mut App) {
     push_hist(&mut app.fan_hist, fastest_pct);
     app.cpu_h.push(cpu.usage_percent);
     app.mem_h.push(mem.used_percent);
-    app.temp_h.push(display_temp.unwrap_or(0.0));
+    if let Some(temp) = display_temp {
+        app.temp_h.push(temp);
+    }
     app.net_h.push((rx + tx) as f32);
     app.runner_cpu_pct = cpu.usage_percent;
 
@@ -2327,13 +2379,19 @@ fn update(app: &mut App) {
     // Temperatures: CPU average is the headline users compare with iStat/Stats;
     // raw diagnostic sensors remain listed below, while fan safety uses the
     // mapped core hottest value exposed by the platform backend.
-    let selected_temp = primary_menu_temperature(&temps, app.temperature_source).or_else(|| {
-        representative_temperature_c(&temps).map(|value| SelectedTemperature {
-            id: "cpu.die".to_string(),
-            value,
-            label_hint: None,
-        })
-    });
+    let selected_temp = (!temperature_stale)
+        .then(|| primary_menu_temperature(&temps, app.temperature_source))
+        .flatten()
+        .or_else(|| {
+            (!temperature_stale)
+                .then(|| representative_temperature_c(&temps))
+                .flatten()
+                .map(|value| SelectedTemperature {
+                    id: "cpu.die".to_string(),
+                    value,
+                    label_hint: None,
+                })
+        });
     let display_temp_value = selected_temp.as_ref().map(|t| t.value);
     let temp_rows: Vec<_> = temps
         .iter()
@@ -2342,24 +2400,47 @@ fn update(app: &mut App) {
                 "l": temperature_row_label(app.language.resolve(), t),
                 "c": format!("{:.0}°C", t.value.0),
                 "cls": temp_cls(t.value),
+                "sampled_at_unix_ms": app.temperature_sampled_at_unix_ms,
+                "age_secs": temperature_age_secs,
+                "stale": temperature_stale,
             })
         })
         .collect();
     if now >= app.next_all_temp_refresh {
-        app.all_temp_rows_cache = peterfan_platform::all_temperature_sensors()
-            .iter()
-            .map(|t| {
-                serde_json::json!({
-                    "l": raw_temperature_row_label(t),
-                    "c": format!("{:.0}°C", t.value.0),
-                    "cls": temp_cls(t.value),
-                    "group": sensor_group_label(app.language.resolve(), t.kind),
-                    "source": t.source.short(),
+        let sample = peterfan_platform::all_temperature_sensors();
+        if !sample.is_empty() {
+            app.all_temp_rows_cache = sample
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "l": raw_temperature_row_label(t),
+                        "c": format!("{:.0}°C", t.value.0),
+                        "cls": temp_cls(t.value),
+                        "group": sensor_group_label(app.language.resolve(), t.kind),
+                        "source": t.source.short(),
+                    })
                 })
-            })
-            .collect();
+                .collect();
+            app.all_temp_sampled_at = Some(now);
+            app.all_temp_sampled_at_unix_ms = Some(now_unix_ms());
+        }
         app.next_all_temp_refresh = now + ALL_TEMP_REFRESH;
     }
+    let all_temp_stale = sample_is_stale(app.all_temp_sampled_at, now, ALL_TEMPERATURE_STALE_AFTER);
+    let all_temp_age_secs = sample_age(app.all_temp_sampled_at, now)
+        .map(|age| age.as_secs())
+        .unwrap_or(0);
+    let all_temp_rows: Vec<_> = app
+        .all_temp_rows_cache
+        .iter()
+        .cloned()
+        .map(|mut row| {
+            row["sampled_at_unix_ms"] = serde_json::json!(app.all_temp_sampled_at_unix_ms);
+            row["age_secs"] = serde_json::json!(all_temp_age_secs);
+            row["stale"] = serde_json::json!(all_temp_stale);
+            row
+        })
+        .collect();
 
     // Fans: every fan listed with its own RPM and a speed bar (rpm / max).
     // Daemon status is useful, but a stale/missing socket can block for its
@@ -2528,9 +2609,12 @@ fn update(app: &mut App) {
         "disk_io_sub": &app.dashboard_slow_cache.disk_io_sub,
         "procs": &app.dashboard_slow_cache.procs,
         "proc_sort": if matches!(proc_sort, ProcSort::Memory) { "mem" } else { "cpu" },
-        "temp_present": display_temp_value.is_some(),
+        "temp_present": !temps.is_empty(),
+        "temp_stale": temperature_stale,
+        "temp_age_secs": temperature_age_secs,
+        "temp_sampled_at_unix_ms": app.temperature_sampled_at_unix_ms,
         "temp_pct": display_temp_value.unwrap_or(0.0),
-        "temp_text": display_temp_value.map(|t| format!("{t:.0}°C")).unwrap_or_default(),
+        "temp_text": if temperature_stale { "--°C".to_string() } else { display_temp_value.map(|t| format!("{t:.0}°C")).unwrap_or_default() },
         "temp_cls": display_temp_value.map(|t| temp_cls(Celsius(t))).unwrap_or("g"),
         "temp_source": display_temperature_source_for_temps(
             app.language.resolve(),
@@ -2538,7 +2622,7 @@ fn update(app: &mut App) {
             selected_temp.as_ref()
         ),
         "temps": temp_rows,
-        "all_temps": &app.all_temp_rows_cache,
+        "all_temps": &all_temp_rows,
         "fans": fan_rows,
         "batt_present": app.dashboard_slow_cache.batt_present,
         "batt_pct": app.dashboard_slow_cache.batt_pct,
@@ -3878,6 +3962,8 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .trow .l{color:var(--dim);}
 .trow .v{font-weight:600;font-variant-numeric:tabular-nums;}
 .v.g{color:var(--g);}.v.y{color:var(--y);}.v.r{color:var(--r);}
+.trow.stale .l,.trow.stale .src,.trow.stale .v{color:var(--dim);opacity:.72;}
+.val.stale{color:var(--dim);}
 .all-temp-head{font-size:9px;font-weight:700;color:var(--dim);text-transform:uppercase;margin-top:8px;padding-top:7px;border-top:1px solid var(--line);letter-spacing:.08em;cursor:pointer;}
 .all-temp-head:hover{color:var(--accent);}
 .all-temp-list .trow{font-size:9.5px;margin-top:4px;gap:10px;}
@@ -4443,7 +4529,7 @@ function renderRawTempList(d){
       all.forEach(function(t){var name=t.group||'Other',g=groups.find(function(x){return x.name===name;});if(!g){g={name:name,items:[]};groups.push(g);}g.items.push(t);});
       groups.forEach(function(g){
         var h=document.createElement('div');h.className='sensor-group-head';h.textContent=g.name;al.appendChild(h);
-        g.items.forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="src"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[0].title=t.l;r.children[1].textContent=t.source||'';r.children[2].textContent=t.c;r.children[2].className='v '+t.cls;al.appendChild(r);});
+        g.items.forEach(function(t){var r=document.createElement('div');r.className='trow'+(t.stale?' stale':'');r.innerHTML='<span class="l"></span><span class="src"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[0].title=t.l;r.children[1].textContent=(t.source||'')+(t.stale?' · '+(LANG==='ko'?'오래됨 ':'stale ')+Number(t.age_secs||0)+'s':'');r.children[2].textContent=t.c;r.children[2].className='v '+t.cls;al.appendChild(r);});
       });
     }
   }
@@ -4462,12 +4548,12 @@ window.__pf={
    set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
    var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span');s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title='Core '+(i+1)+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
    set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
-   show('sec-temp',d.temp_present);if(d.temp_present){set('temp-name',(LANG==='ko'?'온도':'Temperature')+(d.temp_source?' · '+d.temp_source:''));set('temp-val',d.temp_text);bar('temp-bar',d.temp_pct,d.temp_cls);
-     var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow';r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c;r.children[1].className='v '+t.cls;tl.appendChild(r);});}
+   show('sec-temp',d.temp_present);if(d.temp_present){set('temp-name',(LANG==='ko'?'온도':'Temperature')+(d.temp_source?' · '+d.temp_source:'')+(d.temp_stale?' · '+(LANG==='ko'?'오래됨 ':'stale ')+Number(d.temp_age_secs||0)+'s':''));set('temp-val',d.temp_text);var tv=document.getElementById('temp-val');if(tv)tv.classList.toggle('stale',!!d.temp_stale);bar('temp-bar',d.temp_stale?0:d.temp_pct,d.temp_cls);
+     var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow'+(t.stale?' stale':'');r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c+(t.stale?' · '+Number(t.age_secs||0)+'s':'');r.children[1].className='v '+t.cls;tl.appendChild(r);});}
      renderRawTempList(d);}
    drawChart('cpu-chart', d.cpu_hist, '#5b9dff', 100, function(v){return v.toFixed(1)+'%';});
    drawChart('mem-chart', d.mem_hist, '#5b9dff', 100, function(v){return v.toFixed(1)+'%';});
-   if(d.temp_present)drawChart('temp-chart', d.temp_hist, '#ff9f0a', null, function(v){return v.toFixed(0)+'°C';});
+   if(d.temp_present)drawChart('temp-chart', d.temp_stale?[]:d.temp_hist, '#ff9f0a', null, function(v){return v.toFixed(0)+'°C';});
    document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){b.classList.toggle('active',b.dataset.range===d.chart_range);});
  } else if(view==='more'){
    set('disk-val',d.disk_text);set('disk-sub',d.disk_sub);bar('disk-bar',d.disk_pct);
@@ -6343,7 +6429,7 @@ mod tests {
         ));
         assert!(peterfan_platform::daemon_update_required("1.27.13"));
         assert!(peterfan_platform::daemon_update_required("1.27.15"));
-        assert!(!peterfan_platform::daemon_update_required("1.27.21"));
+        assert!(!peterfan_platform::daemon_update_required("1.27.22"));
     }
 
     #[test]
@@ -6979,5 +7065,31 @@ mod tests {
         assert!(!control_result_is_ok("daemon: invalid percent"));
         assert!(control_result_is_ok("daemon: ok auto (mock)"));
         assert!(control_result_is_ok("applied locally"));
+    }
+
+    #[test]
+    fn temperature_sample_becomes_stale_only_after_the_limit() {
+        let now = Instant::now();
+        let sampled = now - Duration::from_secs(6);
+        assert!(!sample_is_stale(
+            Some(sampled),
+            now,
+            TEMPERATURE_STALE_AFTER
+        ));
+        assert!(sample_is_stale(
+            Some(sampled - Duration::from_millis(1)),
+            now,
+            TEMPERATURE_STALE_AFTER
+        ));
+        assert!(sample_is_stale(None, now, TEMPERATURE_STALE_AFTER));
+    }
+
+    #[test]
+    fn temperature_ui_marks_cached_readings_as_stale() {
+        let html = dashboard_html(ResolvedLanguage::En, false);
+        assert!(html.contains("d.temp_stale?' · '"));
+        assert!(html.contains("t.stale?' stale':'"));
+        assert!(html.contains("d.temp_stale?[]:d.temp_hist"));
+        assert!(html.contains(".trow.stale"));
     }
 }

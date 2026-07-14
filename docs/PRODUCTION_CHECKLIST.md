@@ -43,7 +43,8 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 
 - [x] Label sensor source and keep CPU average, hottest, and hotspot separate.
 - [x] Show the raw sensor inventory for comparison with established monitors.
-- [ ] Record the last update time per sensor and mark stale readings.
+- [x] Record the last update time per sensor, retain the last successful sample,
+      and mark or suppress stale readings across daemon IPC, CLI JSON, and UI.
 - [ ] Expand model-specific core maps with samples from M1 through M5 Macs.
 - [ ] Export a privacy-safe comparison report for support and calibration.
 

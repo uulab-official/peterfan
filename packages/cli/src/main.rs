@@ -1831,6 +1831,10 @@ fn cmd_status_compact(mock: bool, json: bool) -> Result<()> {
     };
     let cpu = m.cpu();
     let mem = m.memory();
+    let temps_stale = daemon_s
+        .as_ref()
+        .map(|sensors| sensors.temps_stale)
+        .unwrap_or(false);
     let (temps, fans, daemon) = if let Some(ds) = daemon_s {
         (ds.temps, ds.fans, ds.daemon_mode)
     } else {
@@ -1841,8 +1845,14 @@ fn cmd_status_compact(mock: bool, json: bool) -> Result<()> {
             None,
         )
     };
-    let display_temp = representative_temperature_c(&temps).unwrap_or(0.0);
-    let hottest = hottest_temperature_c(&temps).unwrap_or(0.0);
+    let display_temp = (!temps_stale)
+        .then(|| representative_temperature_c(&temps))
+        .flatten()
+        .unwrap_or(0.0);
+    let hottest = (!temps_stale)
+        .then(|| hottest_temperature_c(&temps))
+        .flatten()
+        .unwrap_or(0.0);
     let fastest = fans.iter().map(|f| f.rpm).fold(0u32, u32::max);
 
     if json {
@@ -1853,6 +1863,7 @@ fn cmd_status_compact(mock: bool, json: bool) -> Result<()> {
                 "mem_pct": mem.used_percent,
                 "temp_c": display_temp,
                 "hottest_c": hottest,
+                "temps_stale": temps_stale,
                 "fastest_rpm": fastest,
                 "daemon_mode": daemon,
             }))?
@@ -1913,6 +1924,7 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
     let battery = m.battery();
 
     if json {
+        let temperature_rows = temperature_rows_json(&sensors);
         let value = serde_json::json!({
             "metrics_backend": m.name(),
             "thermal_backend": thermal_backend,
@@ -1923,7 +1935,12 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
             "disks": disks,
             "networks": nets,
             "battery": battery,
-            "temps": sensors.temps,
+            "temps": temperature_rows,
+            "temperature_freshness": {
+                "sampled_at_unix_ms": sensors.temps_sampled_at_unix_ms,
+                "age_ms": sensors.temps_age_ms,
+                "stale": sensors.temps_stale,
+            },
             "fans": sensors.fans,
             "control_health": sensors.daemon_control_health,
             "fan_readbacks": sensors.daemon_fan_readbacks,
@@ -2045,6 +2062,9 @@ struct Sensors {
     temps: Vec<TempSensor>,
     fans: Vec<Fan>,
     simulated: bool,
+    temps_sampled_at_unix_ms: Option<u64>,
+    temps_age_ms: Option<u64>,
+    temps_stale: bool,
     /// Daemon fan-control mode, e.g. "rules:balanced" — set when data came from IPC.
     daemon_mode: Option<String>,
     /// Daemon-reported power draw in watts.
@@ -2057,15 +2077,54 @@ struct Sensors {
     daemon_fan_readbacks: Option<serde_json::Value>,
 }
 
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
+}
+
+fn temperature_rows_json(sensors: &Sensors) -> Vec<serde_json::Value> {
+    temperature_rows_json_with_freshness(
+        &sensors.temps,
+        sensors.temps_sampled_at_unix_ms,
+        sensors.temps_age_ms,
+        sensors.temps_stale,
+    )
+}
+
+fn temperature_rows_json_with_freshness(
+    temps: &[TempSensor],
+    sampled_at_unix_ms: Option<u64>,
+    age_ms: Option<u64>,
+    stale: bool,
+) -> Vec<serde_json::Value> {
+    temps
+        .iter()
+        .filter_map(|temp| {
+            let mut value = serde_json::to_value(temp).ok()?;
+            value["sampled_at_unix_ms"] = serde_json::json!(sampled_at_unix_ms);
+            value["age_ms"] = serde_json::json!(age_ms);
+            value["stale"] = serde_json::json!(stale);
+            Some(value)
+        })
+        .collect()
+}
+
 /// Read temps + fans, transparently falling back to the mock backend (and
 /// flagging the data as simulated) when the real backend can't read sensors yet.
 fn read_sensors(provider: &dyn HardwareProvider) -> Result<Sensors> {
     let caps = provider.capabilities();
     if caps.read_temps && caps.read_fans {
+        let temps = provider.temperatures()?;
+        let sampled_at = unix_now_ms();
         return Ok(Sensors {
-            temps: provider.temperatures()?,
+            temps,
             fans: provider.fans()?,
             simulated: false,
+            temps_sampled_at_unix_ms: Some(sampled_at),
+            temps_age_ms: Some(0),
+            temps_stale: false,
             daemon_mode: None,
             daemon_power_w: None,
             daemon_backend: None,
@@ -2074,10 +2133,15 @@ fn read_sensors(provider: &dyn HardwareProvider) -> Result<Sensors> {
         });
     }
     let mock = peterfan_platform::mock();
+    let temps = mock.temperatures()?;
+    let sampled_at = unix_now_ms();
     Ok(Sensors {
-        temps: mock.temperatures()?,
+        temps,
         fans: mock.fans()?,
         simulated: true,
+        temps_sampled_at_unix_ms: Some(sampled_at),
+        temps_age_ms: Some(0),
+        temps_stale: false,
         daemon_mode: None,
         daemon_power_w: None,
         daemon_backend: None,
@@ -2099,7 +2163,16 @@ fn cmd_temps(mock: bool, json: bool, all: bool) -> Result<()> {
     if all && !mock {
         let temps = peterfan_platform::all_temperature_sensors();
         if json {
-            println!("{}", serde_json::to_string_pretty(&temps)?);
+            let sampled_at = unix_now_ms();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&temperature_rows_json_with_freshness(
+                    &temps,
+                    Some(sampled_at),
+                    Some(0),
+                    false,
+                ))?
+            );
             return Ok(());
         }
         print_temps(&temps);
@@ -2118,11 +2191,24 @@ fn cmd_temps(mock: bool, json: bool, all: bool) -> Result<()> {
         read_sensors(prov.as_ref())?
     };
     if json {
-        println!("{}", serde_json::to_string_pretty(&sensors.temps)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&temperature_rows_json(&sensors))?
+        );
         return Ok(());
     }
     if sensors.simulated {
         println!("{}", simulated_note());
+    }
+    if sensors.temps_stale {
+        println!(
+            "{}",
+            format!(
+                "temperature cache is stale ({}s old)",
+                sensors.temps_age_ms.unwrap_or(0) / 1_000
+            )
+            .yellow()
+        );
     }
     print_temps(&sensors.temps);
     Ok(())
@@ -3345,6 +3431,9 @@ fn daemon_sensors() -> Option<Sensors> {
         temps,
         fans,
         simulated: false,
+        temps_sampled_at_unix_ms: v["temps_sampled_at_unix_ms"].as_u64(),
+        temps_age_ms: v["temps_age_ms"].as_u64(),
+        temps_stale: v["temps_stale"].as_bool().unwrap_or(true),
         daemon_mode: v["mode"].as_str().map(str::to_string),
         daemon_power_w: v["power_w"].as_f64().map(|f| f as f32),
         daemon_backend: v["backend"].as_str().map(str::to_string),
@@ -4617,5 +4706,45 @@ mod tests {
             super::fan_control_readiness(true, true, false, false),
             FanControlReadiness::DaemonReady
         );
+    }
+
+    #[test]
+    fn temperature_json_rows_include_freshness_without_changing_array_shape() {
+        let sensors = super::Sensors {
+            temps: vec![temp("cpu.die", "CPU", SensorKind::Cpu, 64.0)],
+            fans: Vec::new(),
+            simulated: false,
+            temps_sampled_at_unix_ms: Some(1_000),
+            temps_age_ms: Some(7_000),
+            temps_stale: true,
+            daemon_mode: None,
+            daemon_power_w: None,
+            daemon_backend: None,
+            daemon_control_health: None,
+            daemon_fan_readbacks: None,
+        };
+
+        let rows = super::temperature_rows_json(&sensors);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "cpu.die");
+        assert_eq!(rows[0]["sampled_at_unix_ms"], 1_000);
+        assert_eq!(rows[0]["age_ms"], 7_000);
+        assert_eq!(rows[0]["stale"], true);
+    }
+
+    #[test]
+    fn raw_temperature_json_rows_use_the_same_freshness_contract() {
+        let rows = super::temperature_rows_json_with_freshness(
+            &[temp("cpu.core.0", "CPU Core 1", SensorKind::Cpu, 67.0)],
+            Some(2_000),
+            Some(0),
+            false,
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "cpu.core.0");
+        assert_eq!(rows[0]["sampled_at_unix_ms"], 2_000);
+        assert_eq!(rows[0]["age_ms"], 0);
+        assert_eq!(rows[0]["stale"], false);
     }
 }

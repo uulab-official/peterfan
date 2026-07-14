@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.22] — 센서 freshness와 stale 표시
+
+### Added
+- **센서 갱신 메타데이터** — 데몬 IPC와 CLI JSON이 각 온도 센서에 마지막 성공
+  샘플 시각, 경과 시간, stale 여부를 제공함.
+
+### Fixed
+- **오래된 온도 오인 방지** — SMC 읽기가 일시적으로 실패해도 마지막 성공 목록은
+  유지하되, 3회 제어 주기 또는 최소 6초를 넘기면 상단 온도는 `--°C`로 숨기고
+  센서 목록을 stale 상태와 경과 시간으로 표시함. 새 샘플이 들어오면 즉시 복구됨.
+- **온도 그래프 정합성** — stale 구간에는 0°C를 기록하거나 오래된 그래프를 계속
+  그리지 않아 측정 이력과 실제 센서 상태가 섞이지 않음.
+
+### Quality
+- **freshness 회귀 검사** — stale 경계값, 실패 시 마지막 성공 샘플 보존, IPC 필드,
+  CLI 배열 호환성, UI stale 렌더링을 자동 검증함.
+
 ## [1.27.21] — 데몬 비정상 종료 복구
 
 ### Fixed

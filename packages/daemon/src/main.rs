@@ -52,6 +52,7 @@ const FAN_READBACK_PROGRESS_GRACE_MS: u64 = 6_000;
 const FAN_READBACK_MIN_PROGRESS_RPM: u32 = 50;
 const FAN_READBACK_STALE_CONFIRMATIONS: u32 = 3;
 const FAN_READBACK_RETRY_SECS: u64 = 15;
+const SENSOR_STALE_MIN_MS: u64 = 6_000;
 
 // ── State persistence ────────────────────────────────────────────────────────
 
@@ -142,6 +143,8 @@ struct State {
     /// Most recent temperature readings from the last control-loop tick.
     /// Used by the `temps` IPC command so the CLI can skip SMC init.
     last_temps: Vec<peterfan_core::types::TempSensor>,
+    /// Wall-clock time of the last successful, trustworthy temperature sample.
+    last_temps_sampled_at_unix_ms: Option<u64>,
     /// Most recent fan states from the last control-loop tick.
     last_fans: Vec<peterfan_core::types::Fan>,
     /// Most recent power draw in watts.
@@ -314,6 +317,7 @@ fn run(cli: Cli) -> Result<()> {
             backend: provider.name().to_string(),
             config: resolved_cfg,
             last_temps: Vec::new(),
+            last_temps_sampled_at_unix_ms: None,
             last_fans: Vec::new(),
             last_power_w: None,
             control_health: ControlHealth::default(),
@@ -463,6 +467,25 @@ fn unix_now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
+}
+
+fn sensor_stale_after_ms(interval_secs: u64) -> u64 {
+    interval_secs
+        .max(1)
+        .saturating_mul(3_000)
+        .max(SENSOR_STALE_MIN_MS)
+}
+
+fn sensor_sample_freshness(
+    sampled_at_unix_ms: Option<u64>,
+    now_unix_ms: u64,
+    interval_secs: u64,
+) -> (Option<u64>, bool) {
+    let age_ms = sampled_at_unix_ms.map(|sampled| now_unix_ms.saturating_sub(sampled));
+    let stale = age_ms
+        .map(|age| age > sensor_stale_after_ms(interval_secs))
+        .unwrap_or(true);
+    (age_ms, stale)
 }
 
 fn fan_target_rpm(fan: &peterfan_core::types::Fan, duty_percent: u8) -> Option<(u32, u32)> {
@@ -713,13 +736,14 @@ fn control_loop(
         let power_now = provider.power_watts();
         {
             let mut s = shared.lock().expect("state poisoned");
-            s.last_temps = temps.clone();
             s.last_fans = fans_now.clone();
             s.last_power_w = power_now;
         }
         let (representative_temp, safety_temp) = match control_temperatures(&temps) {
             Ok(values) if temperature_read_error.is_none() => {
                 let mut s = shared.lock().expect("state poisoned");
+                s.last_temps = temps.clone();
+                s.last_temps_sampled_at_unix_ms = Some(unix_now_ms());
                 s.control_health.consecutive_sensor_failures = 0;
                 s.control_health.last_sensor_ok_unix = Some(unix_now());
                 values
@@ -1285,6 +1309,11 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
         // The CLI uses this to skip SMC init (saves ~350ms per invocation).
         Some("temps") => {
             let s = shared.lock().expect("state poisoned");
+            let (temps_age_ms, temps_stale) = sensor_sample_freshness(
+                s.last_temps_sampled_at_unix_ms,
+                unix_now_ms(),
+                s.config.interval_secs,
+            );
             let mode = if s.auto {
                 "auto".to_string()
             } else if let Some(d) = s.held_duty {
@@ -1296,6 +1325,9 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
             };
             match serde_json::to_string(&serde_json::json!({
                 "temps": s.last_temps,
+                "temps_sampled_at_unix_ms": s.last_temps_sampled_at_unix_ms,
+                "temps_age_ms": temps_age_ms,
+                "temps_stale": temps_stale,
                 "fans": s.last_fans,
                 "power_w": s.last_power_w,
                 "mode": mode,
@@ -1522,6 +1554,7 @@ mod tests {
             backend: "mock".to_string(),
             config: peterfan_core::config::Config::default(),
             last_temps: Vec::new(),
+            last_temps_sampled_at_unix_ms: None,
             last_fans: Vec::new(),
             last_power_w: None,
             control_health: ControlHealth::default(),
@@ -1676,6 +1709,11 @@ mod tests {
         let provider = FaultProvider::new(true, false);
         let mut monitor = peterfan_platform::mock_monitor();
         let shared = test_state();
+        {
+            let mut state = shared.lock().unwrap();
+            state.last_temps = FaultProvider::new(false, false).temperatures().unwrap();
+            state.last_temps_sampled_at_unix_ms = Some(1_234);
+        }
 
         control_loop(
             &provider,
@@ -1693,6 +1731,9 @@ mod tests {
         assert!(state.control_health.failsafe_active);
         assert_eq!(state.control_health.sensor_failure_count, 1);
         assert_eq!(state.control_health.consecutive_sensor_failures, 1);
+        assert_eq!(state.last_temps.len(), 1);
+        assert_eq!(state.last_temps[0].id, "cpu.die.hot");
+        assert_eq!(state.last_temps_sampled_at_unix_ms, Some(1_234));
         assert!(state
             .control_health
             .last_error
@@ -1794,6 +1835,22 @@ mod tests {
     }
 
     #[test]
+    fn sensor_freshness_uses_three_intervals_with_a_six_second_floor() {
+        assert_eq!(sensor_stale_after_ms(1), 6_000);
+        assert_eq!(sensor_stale_after_ms(2), 6_000);
+        assert_eq!(sensor_stale_after_ms(5), 15_000);
+        assert_eq!(
+            sensor_sample_freshness(Some(1_000), 7_000, 2),
+            (Some(6_000), false)
+        );
+        assert_eq!(
+            sensor_sample_freshness(Some(1_000), 7_001, 2),
+            (Some(6_001), true)
+        );
+        assert_eq!(sensor_sample_freshness(None, 7_001, 2), (None, true));
+    }
+
+    #[test]
     fn temps_ipc_exposes_control_health() {
         let shared = test_state();
         {
@@ -1814,6 +1871,9 @@ mod tests {
         assert_eq!(json["control_health"]["failsafe_active"], true);
         assert_eq!(json["control_health"]["sensor_failure_count"], 2);
         assert_eq!(json["control_health"]["last_error"], "sensor unavailable");
+        assert_eq!(json["temps_stale"], true);
+        assert!(json["temps_sampled_at_unix_ms"].is_null());
+        assert!(json["temps_age_ms"].is_null());
         assert_eq!(json["control_revision"], 1);
         assert_eq!(json["applied_control_revision"], 0);
         assert_eq!(json["fan_targets"], serde_json::json!({}));
