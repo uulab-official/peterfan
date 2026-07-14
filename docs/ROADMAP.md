@@ -96,7 +96,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] In-app release notes preview before install
 - [ ] Homebrew cask
 - [ ] Update channel preference: stable / pre-release
-- [ ] Rollback path when an update fails after download
+- [x] Rollback path when an update fails after download
 - [ ] Clearer docs for moving signing material to another Mac
 
 ## Next
@@ -157,7 +157,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] Accessory app with no Dock icon
 - [x] Menu-bar number/graph/both display modes
 - [x] Popover dashboard with CPU, memory, storage, temperature, battery,
-      network, process, fan, and license sections
+      network, process, fan, settings, and system sections
 - [x] Per-fan Auto/Manual controls with fan-specific RPM ranges
 - [x] Detail window with fan curve editor
 - [x] Korean and English UI

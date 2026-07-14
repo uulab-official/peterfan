@@ -2387,6 +2387,21 @@ fn update(app: &mut App) {
         .and_then(|value| value.get("fan_targets").cloned())
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
+    let fan_readback_status: std::collections::HashMap<String, String> = daemon_json
+        .as_ref()
+        .and_then(|value| value.get("fan_readbacks"))
+        .and_then(serde_json::Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    Some((
+                        row.get("id")?.as_str()?.to_string(),
+                        row.get("status")?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let control_health = daemon_json
         .as_ref()
         .and_then(|value| value.get("control_health").cloned())
@@ -2397,6 +2412,10 @@ fn update(app: &mut App) {
                 "consecutive_sensor_failures": 0,
                 "fan_write_failure_count": 0,
                 "consecutive_fan_write_failures": 0,
+                "fan_readback_failure_count": 0,
+                "consecutive_fan_readback_failures": 0,
+                "last_fan_readback_ok_unix": null,
+                "stale_fan_ids": [],
                 "retry_after_unix": null,
                 "last_sensor_ok_unix": null,
                 "last_error": null,
@@ -2432,6 +2451,7 @@ fn update(app: &mut App) {
             let pct = normalized_fan_speed_percent(f).unwrap_or(0.0);
             let override_pct = fan_overrides.get(&f.id).copied();
             let target_pct = fan_targets.get(&f.id).copied();
+            let readback_status = fan_readback_status.get(&f.id).cloned();
             let target_rpm = target_pct.and_then(|target| match (f.min_rpm, f.max_rpm) {
                 (Some(min), Some(max)) if max > min => {
                     Some((min as f32 + (target as f32 / 100.0) * (max - min) as f32).round() as u32)
@@ -2450,6 +2470,7 @@ fn update(app: &mut App) {
                 "override_pct": override_pct,
                 "target_pct": target_pct,
                 "target_rpm": target_rpm,
+                "readback_status": readback_status,
             })
         })
         .collect();
@@ -2639,15 +2660,28 @@ fn execute_control_logged(provider: &dyn HardwareProvider, cmd: &str) -> String 
     result
 }
 
-fn format_fan_diagnostic(
+struct FanDiagnosticInput<'a> {
     fan_count: usize,
     controllable_count: usize,
     average_c: Option<f32>,
     safety_c: Option<f32>,
     critical_c: f32,
-    daemon_version: Option<&str>,
+    daemon_version: Option<&'a str>,
     daemon_reachable: bool,
-) -> (bool, String) {
+    readback_stale: bool,
+}
+
+fn format_fan_diagnostic(input: FanDiagnosticInput<'_>) -> (bool, String) {
+    let FanDiagnosticInput {
+        fan_count,
+        controllable_count,
+        average_c,
+        safety_c,
+        critical_c,
+        daemon_version,
+        daemon_reachable,
+        readback_stale,
+    } = input;
     let daemon_update = daemon_version.is_some_and(peterfan_platform::daemon_update_required);
     let daemon = match (daemon_reachable, daemon_version) {
         (true, Some(version)) if daemon_update => format!("daemon v{version} needs update"),
@@ -2664,11 +2698,17 @@ fn format_fan_diagnostic(
         && controllable_count > 0
         && average_c.is_some()
         && daemon_reachable
-        && !daemon_update;
+        && !daemon_update
+        && !readback_stale;
+    let readback = if readback_stale {
+        ", RPM readback stale"
+    } else {
+        ", RPM readback healthy"
+    };
     (
         ok,
         format!(
-            "diagnostic: fans {controllable_count}/{fan_count}, CPU avg {}, safety {}, limit {critical_c:.0}°C, {daemon}",
+            "diagnostic: fans {controllable_count}/{fan_count}, CPU avg {}, safety {}, limit {critical_c:.0}°C, {daemon}{readback}",
             temp(average_c),
             temp(safety_c),
         ),
@@ -2680,15 +2720,28 @@ fn run_fan_diagnostic(provider: &dyn HardwareProvider) -> (bool, String) {
     let fans = provider.fans().unwrap_or_default();
     let controllable_count = fans.iter().filter(|fan| fan.controllable).count();
     let config = peterfan_platform::config::load();
-    format_fan_diagnostic(
-        fans.len(),
+    let daemon_json = daemon_temps_json();
+    let readback_stale = daemon_json.as_ref().is_some_and(|value| {
+        value
+            .pointer("/control_health/stale_fan_ids")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|ids| !ids.is_empty())
+            || value
+                .pointer("/control_health/failsafe_active")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+    });
+    let daemon_version = peterfan_platform::installed_daemon_version();
+    format_fan_diagnostic(FanDiagnosticInput {
+        fan_count: fans.len(),
         controllable_count,
-        representative_temperature_c(&temps),
-        safety_temperature_c(&temps),
-        config.critical_temp_c,
-        peterfan_platform::installed_daemon_version().as_deref(),
-        peterfan_platform::daemon_reachable(),
-    )
+        average_c: representative_temperature_c(&temps),
+        safety_c: safety_temperature_c(&temps),
+        critical_c: config.critical_temp_c,
+        daemon_version: daemon_version.as_deref(),
+        daemon_reachable: peterfan_platform::daemon_reachable(),
+        readback_stale,
+    })
 }
 
 /// Apply a control action directly via the hardware provider (needs privileges).
@@ -3685,6 +3738,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Safety State<", ">안전 상태<")
             .replace(">Sensor Failures<", ">센서 실패<")
             .replace(">Fan Write Failures<", ">팬 쓰기 실패<")
+            .replace(">Fan RPM Verification<", ">팬 RPM 검증<")
             .replace(">Control Retry<", ">제어 재시도<")
             .replace(">Last Control Error<", ">마지막 제어 오류<")
             .replace(">Fans Detected<", ">감지된 팬<")
@@ -3850,6 +3904,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .fan-bar i{display:block;height:100%;background:var(--accent);border-radius:99px;width:0;transition:width .35s;}
 .fan-target-marker{display:none;position:absolute;top:-2px;width:2px;height:7px;margin-left:-1px;border-radius:1px;background:var(--text);box-shadow:0 0 0 1px var(--bg);transition:left .2s;}
 .fan-card.ramping .fan-card-head .fv{color:var(--accent);}
+.fan-card.stale .fan-card-head .fv{color:var(--y);}
 .fan-bottom{display:flex;justify-content:space-between;align-items:center;gap:8px;}
 .fan-rpm-text{font-size:9.5px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .fan-seg{display:flex;gap:4px;flex:0 0 auto;}
@@ -3991,6 +4046,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="health-row"><span class="health-label">Critical Limit</span><span class="health-value" id="health-critical-limit">—</span></div>
 <div class="health-row"><span class="health-label">Sensor Failures</span><span class="health-value" id="health-sensor-failures">—</span></div>
 <div class="health-row"><span class="health-label">Fan Write Failures</span><span class="health-value" id="health-write-failures">—</span></div>
+<div class="health-row"><span class="health-label">Fan RPM Verification</span><span class="health-value" id="health-readback">—</span></div>
 <div class="health-row"><span class="health-label">Control Retry</span><span class="health-value" id="health-control-retry">—</span></div>
 <div class="health-row"><span class="health-label">Last Control Error</span><span class="health-value" id="health-control-error">—</span></div>
 </div></details>
@@ -4562,13 +4618,16 @@ function renderFanCards(fans){
     var appliedTarget=f.target_pct==null?null:Number(f.target_pct);
     var targetRpm=f.target_rpm==null?null:Number(f.target_rpm);
     var tolerance=useRpm?Math.max(100,Math.round(f.max_rpm*0.025)):3;
-    var ramping=targetRpm!=null&&Math.abs(f.cur_rpm-targetRpm)>tolerance;
+    var daemonReadback=f.readback_status||'';
+    var stale=daemonReadback==='stale';
+    var ramping=daemonReadback==='adjusting'||(!daemonReadback&&targetRpm!=null&&Math.abs(f.cur_rpm-targetRpm)>tolerance);
     var marker=card.querySelector('.fan-target-marker');
     if(marker){
       marker.style.display=appliedTarget==null?'none':'block';
       if(appliedTarget!=null)marker.style.left=Math.max(0,Math.min(100,appliedTarget))+'%';
     }
     card.classList.toggle('ramping',ramping);
+    card.classList.toggle('stale',stale);
     card.querySelector('.fan-rpm-text').textContent=useRpm
       ?(targetRpm!=null?(f.cur_rpm+' RPM → '+targetRpm+' RPM'):(f.min_rpm+' — '+f.cur_rpm+' — '+f.max_rpm))
       :(Math.round(f.pct)+'%');
@@ -4599,7 +4658,7 @@ function renderFanCards(fans){
       numInput.value=editRpm;
       var shownTarget=appliedTarget==null?targetPct:appliedTarget;
       card.querySelector('.fv').textContent=appliedTarget!=null
-        ?(Math.round(shownTarget)+'% · '+(ramping?(LANG==='ko'?'조정 중':'adjusting'):(LANG==='ko'?'적용됨':'applied')))
+        ?(Math.round(shownTarget)+'% · '+(stale?(LANG==='ko'?'응답 없음':'not responding'):(ramping?(LANG==='ko'?'조정 중':'adjusting'):(LANG==='ko'?'적용됨':'applied'))))
         :(displayManual?(useRpm?(editRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%'));
     }
   });
@@ -5130,6 +5189,12 @@ function updateHealthPanel(d){
   var sensorFailures=Number(health.sensor_failure_count||0),consecutive=Number(health.consecutive_sensor_failures||0);
   setHealthValue('health-sensor-failures',sensorFailures+(consecutive?' ('+consecutive+' active)':''),consecutive?'warn':'info');
   setHealthValue('health-write-failures',String(Number(health.fan_write_failure_count||0)),health.fan_write_failure_count?'warn':'info');
+  var staleFans=health.stale_fan_ids||[],readbackFailures=Number(health.fan_readback_failure_count||0);
+  var readbackText=staleFans.length
+    ?((LANG==='ko'?'응답 없음: ':'not responding: ')+staleFans.join(', '))
+    :(d.active_control_mode==='auto'?(LANG==='ko'?'macOS 자동':'macOS automatic'):(LANG==='ko'?'정상':'verified'));
+  if(readbackFailures&&!staleFans.length)readbackText+=' · '+readbackFailures;
+  setHealthValue('health-readback',readbackText,staleFans.length?'warn':'ok');
   var retrySeconds=Math.max(0,Number(health.retry_after_unix||0)-Math.floor(Date.now()/1000));
   setHealthValue('health-control-retry',retrySeconds?(retrySeconds+'s'):(LANG==='ko'?'대기 없음':'ready'),retrySeconds?'warn':'info');
   setHealthValue('health-control-error',health.last_error||'—',health.last_error?'warn':'info');
@@ -5695,6 +5760,7 @@ mod tests {
         assert!(en.contains(r#"id="health-critical-limit""#));
         assert!(en.contains(r#"id="health-sensor-failures""#));
         assert!(en.contains(r#"id="health-write-failures""#));
+        assert!(en.contains(r#"id="health-readback""#));
         assert!(en.contains(r#"id="health-control-retry""#));
         assert!(en.contains(r#"id="health-control-error""#));
         assert!(en.contains(r#"id="fan-curve-input""#));
@@ -5726,6 +5792,7 @@ mod tests {
         assert!(en.contains("d.fan_critical_temp_c"));
 
         assert!(ko.contains(">팬 제어 상태<"));
+        assert!(ko.contains(">팬 RPM 검증<"));
         assert!(ko.contains(">데몬<"));
         assert!(ko.contains(">도우미<"));
         assert!(ko.contains(">제어 경로<"));
@@ -5741,15 +5808,16 @@ mod tests {
 
     #[test]
     fn fan_diagnostic_reports_ready_hardware_without_writing() {
-        let (ok, status) = format_fan_diagnostic(
-            2,
-            2,
-            Some(67.4),
-            Some(74.1),
-            95.0,
-            Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION),
-            true,
-        );
+        let (ok, status) = format_fan_diagnostic(FanDiagnosticInput {
+            fan_count: 2,
+            controllable_count: 2,
+            average_c: Some(67.4),
+            safety_c: Some(74.1),
+            critical_c: 95.0,
+            daemon_version: Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION),
+            daemon_reachable: true,
+            readback_stale: false,
+        });
 
         assert!(ok);
         assert!(status.contains("fans 2/2"));
@@ -5761,15 +5829,30 @@ mod tests {
 
     #[test]
     fn fan_diagnostic_rejects_stale_or_unreachable_daemon() {
-        let (stale_ok, stale) =
-            format_fan_diagnostic(2, 2, Some(70.0), Some(75.0), 95.0, Some("0.1.0"), true);
-        let (offline_ok, offline) =
-            format_fan_diagnostic(2, 2, Some(70.0), Some(75.0), 95.0, None, false);
+        let base = |daemon_version, daemon_reachable, readback_stale| FanDiagnosticInput {
+            fan_count: 2,
+            controllable_count: 2,
+            average_c: Some(70.0),
+            safety_c: Some(75.0),
+            critical_c: 95.0,
+            daemon_version,
+            daemon_reachable,
+            readback_stale,
+        };
+        let (stale_ok, stale) = format_fan_diagnostic(base(Some("0.1.0"), true, false));
+        let (offline_ok, offline) = format_fan_diagnostic(base(None, false, false));
+        let (readback_ok, readback) = format_fan_diagnostic(base(
+            Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION),
+            true,
+            true,
+        ));
 
         assert!(!stale_ok);
         assert!(stale.contains("needs update"));
         assert!(!offline_ok);
         assert!(offline.contains("not running"));
+        assert!(!readback_ok);
+        assert!(readback.contains("RPM readback stale"));
     }
 
     #[test]
@@ -6099,6 +6182,9 @@ mod tests {
         assert!(en.contains("card.querySelector('.fv').textContent=appliedTarget!=null"));
         assert!(en.contains("(LANG==='ko'?'조정 중':'adjusting')"));
         assert!(en.contains("(LANG==='ko'?'적용됨':'applied')"));
+        assert!(en.contains("var daemonReadback=f.readback_status||'';"));
+        assert!(en.contains("daemonReadback==='stale'"));
+        assert!(en.contains("(LANG==='ko'?'응답 없음':'not responding')"));
         assert!(en.contains("if(!markFanPending(card,'auto'))return;"));
         assert!(en.contains("if(!markFanPending(card,'manual'))return;"));
     }
@@ -6203,7 +6289,8 @@ mod tests {
             peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
         ));
         assert!(peterfan_platform::daemon_update_required("1.27.13"));
-        assert!(!peterfan_platform::daemon_update_required("1.27.15"));
+        assert!(peterfan_platform::daemon_update_required("1.27.15"));
+        assert!(!peterfan_platform::daemon_update_required("1.27.16"));
     }
 
     #[test]

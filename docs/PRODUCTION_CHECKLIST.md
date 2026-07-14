@@ -10,8 +10,9 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Return every fan to macOS automatic control when a fan write fails.
 - [x] Expose fail-safe state and failure counters through daemon IPC, CLI, and UI.
 - [x] Back off repeated fan writes after a failure and expose the next retry.
-- [ ] Verify commanded fan speed with delayed RPM readback and tolerance bands.
-- [ ] Detect stale fan RPM while manual control is active.
+- [x] Verify commanded fan speed with delayed RPM readback and tolerance bands.
+- [x] Detect stale fan RPM while manual control is active and return to OS auto
+      after repeated stale samples.
 - [ ] Run suspend, wake, logout, daemon crash, and forced-kill recovery tests.
 
 ## P0 - Updates And Recovery

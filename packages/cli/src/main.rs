@@ -2036,6 +2036,7 @@ fn cmd_status(mock: bool, json: bool) -> Result<()> {
             "temps": sensors.temps,
             "fans": sensors.fans,
             "control_health": sensors.daemon_control_health,
+            "fan_readbacks": sensors.daemon_fan_readbacks,
         });
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
@@ -2162,6 +2163,8 @@ struct Sensors {
     daemon_backend: Option<String>,
     /// Runtime fan-control safety state reported by the daemon.
     daemon_control_health: Option<serde_json::Value>,
+    /// Delayed RPM verification for the most recent fan targets.
+    daemon_fan_readbacks: Option<serde_json::Value>,
 }
 
 /// Read temps + fans, transparently falling back to the mock backend (and
@@ -2177,6 +2180,7 @@ fn read_sensors(provider: &dyn HardwareProvider) -> Result<Sensors> {
             daemon_power_w: None,
             daemon_backend: None,
             daemon_control_health: None,
+            daemon_fan_readbacks: None,
         });
     }
     let mock = peterfan_platform::mock();
@@ -2188,6 +2192,7 @@ fn read_sensors(provider: &dyn HardwareProvider) -> Result<Sensors> {
         daemon_power_w: None,
         daemon_backend: None,
         daemon_control_health: None,
+        daemon_fan_readbacks: None,
     })
 }
 
@@ -2247,11 +2252,13 @@ fn cmd_fans(mock: bool, json: bool) -> Result<()> {
     };
     let daemon_mode = sensors.daemon_mode.clone();
     let control_health = sensors.daemon_control_health.clone();
+    let fan_readbacks = sensors.daemon_fan_readbacks.clone();
     if json {
         let val = serde_json::json!({
             "fans": sensors.fans,
             "daemon_mode": daemon_mode,
             "control_health": control_health,
+            "fan_readbacks": fan_readbacks,
         });
         println!("{}", serde_json::to_string_pretty(&val)?);
         return Ok(());
@@ -2272,6 +2279,21 @@ fn cmd_fans(mock: bool, json: bool) -> Result<()> {
             .and_then(|health| health["last_error"].as_str())
             .unwrap_or("fan control is using OS automatic fallback");
         println!("  {} {error}", "!".yellow());
+    }
+    if let Some(rows) = fan_readbacks.as_ref().and_then(serde_json::Value::as_array) {
+        for row in rows {
+            let label = row["label"].as_str().unwrap_or("fan");
+            let current = row["current_rpm"]
+                .as_u64()
+                .map(|rpm| format!("{rpm}"))
+                .unwrap_or_else(|| "—".into());
+            let target = row["target_rpm"].as_u64().unwrap_or(0);
+            let status = row["status"].as_str().unwrap_or("unknown");
+            println!(
+                "  {} {label}: {current} → {target} RPM ({status})",
+                "•".cyan()
+            );
+        }
     }
     print_fans(&sensors.fans);
     Ok(())
@@ -3388,6 +3410,7 @@ fn daemon_sensors() -> Option<Sensors> {
         daemon_power_w: v["power_w"].as_f64().map(|f| f as f32),
         daemon_backend: v["backend"].as_str().map(str::to_string),
         daemon_control_health: v.get("control_health").cloned(),
+        daemon_fan_readbacks: v.get("fan_readbacks").cloned(),
     })
 }
 #[cfg(not(unix))]

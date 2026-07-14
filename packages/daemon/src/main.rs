@@ -47,6 +47,11 @@ static CONTROL_THREAD: std::sync::LazyLock<Mutex<Option<thread::Thread>>> =
 static FAN_WRITE_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 const FAN_WRITE_RETRY_BASE_SECS: u64 = 5;
 const FAN_WRITE_RETRY_MAX_SECS: u64 = 60;
+const FAN_READBACK_SETTLE_GRACE_MS: u64 = 10_000;
+const FAN_READBACK_PROGRESS_GRACE_MS: u64 = 6_000;
+const FAN_READBACK_MIN_PROGRESS_RPM: u32 = 50;
+const FAN_READBACK_STALE_CONFIRMATIONS: u32 = 3;
+const FAN_READBACK_RETRY_SECS: u64 = 15;
 
 // ── State persistence ────────────────────────────────────────────────────────
 
@@ -152,6 +157,28 @@ struct State {
     /// write. OS-managed fans are omitted because their target belongs to macOS.
     fan_targets: std::collections::HashMap<String, u8>,
     last_control_apply_unix_ms: Option<u64>,
+    fan_readbacks: Vec<FanReadback>,
+    fan_readback_trackers: std::collections::HashMap<String, FanReadbackTracker>,
+}
+
+#[derive(Clone, Debug)]
+struct FanReadbackTracker {
+    target_rpm: u32,
+    tolerance_rpm: u32,
+    started_ms: u64,
+    last_progress_ms: u64,
+    last_distance_rpm: u32,
+    stale: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct FanReadback {
+    id: String,
+    label: String,
+    current_rpm: Option<u32>,
+    target_rpm: u32,
+    tolerance_rpm: u32,
+    status: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -161,6 +188,10 @@ struct ControlHealth {
     consecutive_sensor_failures: u32,
     fan_write_failure_count: u64,
     consecutive_fan_write_failures: u32,
+    fan_readback_failure_count: u64,
+    consecutive_fan_readback_failures: u32,
+    last_fan_readback_ok_unix: Option<u64>,
+    stale_fan_ids: Vec<String>,
     retry_after_unix: Option<u64>,
     last_sensor_ok_unix: Option<u64>,
     last_error: Option<String>,
@@ -236,11 +267,13 @@ fn run(cli: Cli) -> Result<()> {
 
     install_signal_handlers();
 
-    // A monitor for battery state (used by automation rules).
+    // Automation rules only need battery state. Keep the daemon on the quick
+    // monitor so its control cadence never scans processes, disks, or network
+    // interfaces in the background.
     let mut monitor: Box<dyn SystemMonitor> = if cli.mock {
         peterfan_platform::mock_monitor()
     } else {
-        peterfan_platform::system_monitor()
+        peterfan_platform::quick_monitor()
     };
 
     let initial_state = {
@@ -266,6 +299,8 @@ fn run(cli: Cli) -> Result<()> {
             applied_control_revision: 0,
             fan_targets: std::collections::HashMap::new(),
             last_control_apply_unix_ms: None,
+            fan_readbacks: Vec::new(),
+            fan_readback_trackers: std::collections::HashMap::new(),
         };
         // Restore the last user-chosen mode so a reboot doesn't reset fan settings.
         if let Some(saved) = load_saved_state() {
@@ -378,6 +413,166 @@ fn unix_now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn fan_target_rpm(fan: &peterfan_core::types::Fan, duty_percent: u8) -> Option<(u32, u32)> {
+    let (min, max) = (fan.min_rpm?, fan.max_rpm?);
+    if max <= min {
+        return None;
+    }
+    let span = max - min;
+    let target = (min as f32 + (duty_percent.min(100) as f32 / 100.0) * span as f32).round() as u32;
+    let tolerance = ((span as f32 * 0.04).round() as u32).max(150);
+    Some((target, tolerance))
+}
+
+/// Compare live RPM with the most recently written targets. A fan gets a long
+/// acceleration grace period, then must either arrive within tolerance or keep
+/// making measurable progress toward the target. Returns true only after the
+/// same stale condition has been observed repeatedly.
+fn refresh_fan_readbacks(
+    state: &mut State,
+    fans: &[peterfan_core::types::Fan],
+    now_ms: u64,
+) -> bool {
+    if state.fan_targets.is_empty() {
+        state.fan_readbacks.clear();
+        state.fan_readback_trackers.clear();
+        state.control_health.consecutive_fan_readback_failures = 0;
+        state.control_health.stale_fan_ids.clear();
+        return false;
+    }
+
+    let targets = state.fan_targets.clone();
+    state
+        .fan_readback_trackers
+        .retain(|id, _| targets.contains_key(id));
+
+    let mut readbacks = Vec::new();
+    let mut stale_ids = Vec::new();
+    let mut newly_stale = 0u64;
+    let mut all_settled = true;
+
+    for (id, duty) in targets {
+        let fan = fans.iter().find(|fan| fan.id == id);
+        let resolved = fan.and_then(|fan| fan_target_rpm(fan, duty)).or_else(|| {
+            state
+                .fan_readback_trackers
+                .get(&id)
+                .map(|tracker| (tracker.target_rpm, tracker.tolerance_rpm))
+        });
+        let Some((target_rpm, tolerance_rpm)) = resolved else {
+            all_settled = false;
+            continue;
+        };
+
+        let current_rpm = fan.map(|fan| fan.rpm);
+        let distance = current_rpm
+            .map(|rpm| rpm.abs_diff(target_rpm))
+            .unwrap_or(u32::MAX);
+        let tracker = state
+            .fan_readback_trackers
+            .entry(id.clone())
+            .or_insert_with(|| FanReadbackTracker {
+                target_rpm,
+                tolerance_rpm,
+                started_ms: now_ms,
+                last_progress_ms: now_ms,
+                last_distance_rpm: distance,
+                stale: false,
+            });
+
+        if tracker.target_rpm.abs_diff(target_rpm) > tracker.tolerance_rpm.max(tolerance_rpm) {
+            tracker.started_ms = now_ms;
+            tracker.last_progress_ms = now_ms;
+            tracker.last_distance_rpm = distance;
+            tracker.stale = false;
+        }
+        tracker.target_rpm = target_rpm;
+        tracker.tolerance_rpm = tolerance_rpm;
+
+        if distance <= tolerance_rpm
+            || tracker.last_distance_rpm.saturating_sub(distance) >= FAN_READBACK_MIN_PROGRESS_RPM
+        {
+            tracker.last_progress_ms = now_ms;
+        }
+
+        let status = if distance <= tolerance_rpm {
+            "settled"
+        } else if now_ms.saturating_sub(tracker.started_ms) < FAN_READBACK_SETTLE_GRACE_MS
+            || now_ms.saturating_sub(tracker.last_progress_ms) < FAN_READBACK_PROGRESS_GRACE_MS
+        {
+            all_settled = false;
+            "adjusting"
+        } else {
+            all_settled = false;
+            stale_ids.push(id.clone());
+            if !tracker.stale {
+                newly_stale = newly_stale.saturating_add(1);
+            }
+            "stale"
+        };
+
+        tracker.last_distance_rpm = distance;
+        tracker.stale = status == "stale";
+        readbacks.push(FanReadback {
+            id: id.clone(),
+            label: fan.map(|fan| fan.label.clone()).unwrap_or(id),
+            current_rpm,
+            target_rpm,
+            tolerance_rpm,
+            status: status.to_string(),
+        });
+    }
+
+    readbacks.sort_by(|a, b| a.id.cmp(&b.id));
+    stale_ids.sort();
+    state.fan_readbacks = readbacks;
+    state.control_health.fan_readback_failure_count = state
+        .control_health
+        .fan_readback_failure_count
+        .saturating_add(newly_stale);
+    state.control_health.stale_fan_ids = stale_ids;
+    if state.control_health.stale_fan_ids.is_empty() {
+        state.control_health.consecutive_fan_readback_failures = 0;
+        if all_settled && !state.fan_readbacks.is_empty() {
+            state.control_health.last_fan_readback_ok_unix = Some(now_ms / 1_000);
+        }
+    } else {
+        state.control_health.consecutive_fan_readback_failures = state
+            .control_health
+            .consecutive_fan_readback_failures
+            .saturating_add(1);
+    }
+
+    state.control_health.consecutive_fan_readback_failures >= FAN_READBACK_STALE_CONFIRMATIONS
+}
+
+fn fan_targets_materially_changed(
+    previous: &std::collections::HashMap<String, u8>,
+    next: &std::collections::HashMap<String, u8>,
+) -> bool {
+    previous.len() != next.len()
+        || next.iter().any(|(id, duty)| {
+            previous
+                .get(id)
+                .map(|old| old.abs_diff(*duty) >= 5)
+                .unwrap_or(true)
+        })
+}
+
+fn publish_successful_fan_targets(
+    state: &mut State,
+    targets: std::collections::HashMap<String, u8>,
+) {
+    if fan_targets_materially_changed(&state.fan_targets, &targets) {
+        state.fan_readbacks.clear();
+        state.fan_readback_trackers.clear();
+        state.control_health.consecutive_fan_readback_failures = 0;
+        state.control_health.stale_fan_ids.clear();
+    }
+    state.fan_targets = targets;
+    state.last_control_apply_unix_ms = Some(unix_now_ms());
+}
+
 fn fan_write_retry_delay_secs(consecutive_failures: u32) -> u64 {
     let exponent = consecutive_failures.saturating_sub(1).min(6);
     FAN_WRITE_RETRY_BASE_SECS
@@ -450,7 +645,7 @@ fn control_loop(
     let mut last_duty: Option<u8> = None;
     let mut last_src = String::new();
     while !STOP.load(Ordering::Relaxed) {
-        monitor.refresh();
+        monitor.refresh_quick();
         let state = shared.lock().expect("state poisoned").clone();
         // Read interval/critical from live config so `reload` takes effect immediately.
         let interval = state.config.interval_secs.max(1);
@@ -517,6 +712,45 @@ fn control_loop(
                 continue;
             }
         };
+
+        let readback_failsafe = {
+            let mut current = shared.lock().expect("state poisoned");
+            refresh_fan_readbacks(&mut current, &fans_now, unix_now_ms())
+        };
+        if readback_failsafe {
+            let stale_ids = shared
+                .lock()
+                .expect("state poisoned")
+                .control_health
+                .stale_fan_ids
+                .clone();
+            let restore_errors = restore_fans_to_auto(provider, fan_ids);
+            let mut detail = format!(
+                "fan RPM readback stalled for {}; fans returned to OS auto",
+                stale_ids.join(", ")
+            );
+            if !restore_errors.is_empty() {
+                detail.push_str(&format!(
+                    "; auto restore errors: {}",
+                    restore_errors.join(", ")
+                ));
+            }
+            {
+                let mut current = shared.lock().expect("state poisoned");
+                current.control_health.failsafe_active = true;
+                current.control_health.retry_after_unix =
+                    Some(unix_now().saturating_add(FAN_READBACK_RETRY_SECS));
+                current.control_health.last_error = Some(detail.clone());
+                current.fan_targets.clear();
+                current.fan_readback_trackers.clear();
+            }
+            eprintln!("peterfand: {detail}");
+            if once {
+                break;
+            }
+            sleep_control_interval(interval);
+            continue;
+        }
 
         if state
             .control_health
@@ -647,8 +881,7 @@ fn control_loop(
             s.control_health.retry_after_unix = None;
             s.control_health.last_error = None;
             s.applied_control_revision = state.control_revision;
-            s.fan_targets = requested_targets;
-            s.last_control_apply_unix_ms = Some(unix_now_ms());
+            publish_successful_fan_targets(&mut s, requested_targets);
             drop(s);
             if recovered {
                 println!("peterfand: control recovered; resumed requested mode");
@@ -765,8 +998,7 @@ fn apply_cached_control_request(
         current.control_health.retry_after_unix = None;
         current.control_health.last_error = None;
         current.applied_control_revision = state.control_revision;
-        current.fan_targets = requested_targets;
-        current.last_control_apply_unix_ms = Some(unix_now_ms());
+        publish_successful_fan_targets(&mut current, requested_targets);
     } else {
         drop(current);
         let restore_errors = restore_fans_to_auto(provider, fan_ids);
@@ -1022,6 +1254,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 "applied_control_revision": s.applied_control_revision,
                 "fan_targets": s.fan_targets,
                 "last_control_apply_unix_ms": s.last_control_apply_unix_ms,
+                "fan_readbacks": s.fan_readbacks,
             })) {
                 Ok(json) => format!("ok {json}"),
                 Err(_) => "error: serialization failed".into(),
@@ -1244,6 +1477,8 @@ mod tests {
             applied_control_revision: 0,
             fan_targets: std::collections::HashMap::new(),
             last_control_apply_unix_ms: None,
+            fan_readbacks: Vec::new(),
+            fan_readback_trackers: std::collections::HashMap::new(),
         }))
     }
 
@@ -1490,6 +1725,132 @@ mod tests {
         assert_eq!(json["applied_control_revision"], 0);
         assert_eq!(json["fan_targets"], serde_json::json!({}));
         assert!(json["last_control_apply_unix_ms"].is_null());
+        assert_eq!(json["fan_readbacks"], serde_json::json!([]));
+    }
+
+    fn readback_fan(rpm: u32) -> peterfan_core::types::Fan {
+        peterfan_core::types::Fan {
+            id: "fan.test".into(),
+            label: "Test Fan".into(),
+            rpm,
+            min_rpm: Some(500),
+            max_rpm: Some(2_000),
+            duty_percent: None,
+            controllable: true,
+        }
+    }
+
+    #[test]
+    fn fan_readback_allows_ramp_progress_then_confirms_target() {
+        let shared = test_state();
+        let mut state = shared.lock().unwrap();
+        state.fan_targets.insert("fan.test".into(), 100);
+
+        assert!(!refresh_fan_readbacks(
+            &mut state,
+            &[readback_fan(1_000)],
+            0
+        ));
+        assert_eq!(state.fan_readbacks[0].status, "adjusting");
+        assert!(!refresh_fan_readbacks(
+            &mut state,
+            &[readback_fan(1_500)],
+            8_000
+        ));
+        assert_eq!(state.fan_readbacks[0].status, "adjusting");
+        assert!(!refresh_fan_readbacks(
+            &mut state,
+            &[readback_fan(1_950)],
+            12_000
+        ));
+        assert_eq!(state.fan_readbacks[0].status, "settled");
+        assert_eq!(state.control_health.last_fan_readback_ok_unix, Some(12));
+    }
+
+    #[test]
+    fn fan_readback_requires_repeated_stale_samples_before_failsafe() {
+        let shared = test_state();
+        let mut state = shared.lock().unwrap();
+        state.fan_targets.insert("fan.test".into(), 100);
+
+        assert!(!refresh_fan_readbacks(
+            &mut state,
+            &[readback_fan(1_000)],
+            0
+        ));
+        assert!(!refresh_fan_readbacks(
+            &mut state,
+            &[readback_fan(1_000)],
+            11_000
+        ));
+        assert_eq!(state.fan_readbacks[0].status, "stale");
+        assert!(!refresh_fan_readbacks(
+            &mut state,
+            &[readback_fan(1_000)],
+            13_000
+        ));
+        assert!(refresh_fan_readbacks(
+            &mut state,
+            &[readback_fan(1_000)],
+            15_000
+        ));
+        assert_eq!(state.control_health.fan_readback_failure_count, 1);
+        assert_eq!(state.control_health.consecutive_fan_readback_failures, 3);
+        assert_eq!(state.control_health.stale_fan_ids, ["fan.test"]);
+    }
+
+    #[test]
+    fn material_target_change_restarts_fan_readback_grace() {
+        let shared = test_state();
+        let mut state = shared.lock().unwrap();
+        state.fan_targets.insert("fan.test".into(), 100);
+        assert!(!refresh_fan_readbacks(
+            &mut state,
+            &[readback_fan(1_000)],
+            0
+        ));
+        assert!(!refresh_fan_readbacks(
+            &mut state,
+            &[readback_fan(1_000)],
+            11_000
+        ));
+        assert_eq!(state.fan_readbacks[0].status, "stale");
+
+        state.fan_targets.insert("fan.test".into(), 20);
+        assert!(!refresh_fan_readbacks(
+            &mut state,
+            &[readback_fan(1_000)],
+            12_000
+        ));
+        assert_eq!(state.fan_readbacks[0].status, "adjusting");
+        assert_eq!(state.control_health.consecutive_fan_readback_failures, 0);
+    }
+
+    #[test]
+    fn publishing_new_targets_discards_only_materially_stale_readback() {
+        let shared = test_state();
+        let mut state = shared.lock().unwrap();
+        state.fan_targets.insert("fan.test".into(), 40);
+        state.fan_readbacks.push(FanReadback {
+            id: "fan.test".into(),
+            label: "Test Fan".into(),
+            current_rpm: Some(1_100),
+            target_rpm: 1_100,
+            tolerance_rpm: 150,
+            status: "settled".into(),
+        });
+
+        publish_successful_fan_targets(
+            &mut state,
+            std::collections::HashMap::from([("fan.test".into(), 44)]),
+        );
+        assert_eq!(state.fan_readbacks.len(), 1);
+
+        publish_successful_fan_targets(
+            &mut state,
+            std::collections::HashMap::from([("fan.test".into(), 50)]),
+        );
+        assert!(state.fan_readbacks.is_empty());
     }
 
     #[test]
