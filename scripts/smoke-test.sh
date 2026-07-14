@@ -20,12 +20,48 @@ TESTED=0
 pass() { printf '  \033[32m✓\033[0m %s\n' "$1"; TESTED=$((TESTED+1)); }
 fail() { printf '  \033[31m✗\033[0m %s\n' "$1"; FAILURES=$((FAILURES+1)); TESTED=$((TESTED+1)); }
 
+# GNU coreutils provides `timeout`, but a clean macOS runner does not. Keep
+# the fast native command when available and use Python (already required for
+# JSON validation below) as a process-group-aware fallback everywhere else.
+run_timeout() {
+    local timeout_secs="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        command timeout "$timeout_secs" "$@"
+        return
+    fi
+    python3 - "$timeout_secs" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+seconds = float(sys.argv[1])
+try:
+    process = subprocess.Popen(sys.argv[2:], start_new_session=True)
+except FileNotFoundError as error:
+    print(error, file=sys.stderr)
+    raise SystemExit(127)
+
+try:
+    raise SystemExit(process.wait(timeout=seconds))
+except subprocess.TimeoutExpired:
+    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+    raise SystemExit(124)
+PY
+}
+
 # Run a command with a hard timeout; fail if it doesn't exit in time (catches
 # "should print and exit" commands that instead hang or launch a GUI).
 run_bounded() {
     local desc="$1" timeout_secs="$2"
     shift 2
-    if timeout "$timeout_secs" "$@" >/tmp/smoke_out.$$ 2>/tmp/smoke_err.$$; then
+    if run_timeout "$timeout_secs" "$@" >/tmp/smoke_out.$$ 2>/tmp/smoke_err.$$; then
         pass "$desc"
     else
         local code=$?
@@ -43,7 +79,7 @@ run_bounded() {
 run_bounded_contains() {
     local desc="$1" timeout_secs="$2" needle="$3"
     shift 3
-    if timeout "$timeout_secs" "$@" >/tmp/smoke_out.$$ 2>/tmp/smoke_err.$$; then
+    if run_timeout "$timeout_secs" "$@" >/tmp/smoke_out.$$ 2>/tmp/smoke_err.$$; then
         if grep -q "$needle" /tmp/smoke_out.$$; then
             pass "$desc"
         else
@@ -67,7 +103,7 @@ run_json() {
     local desc="$1" timeout_secs="$2"
     shift 2
     local out
-    out=$(timeout "$timeout_secs" "$@" 2>/tmp/smoke_err.$$)
+    out=$(run_timeout "$timeout_secs" "$@" 2>/tmp/smoke_err.$$)
     local code=$?
     if [[ $code -ne 0 ]]; then
         if [[ $code -eq 124 ]]; then

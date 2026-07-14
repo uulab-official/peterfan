@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **macOS CI 스모크 이식성** — GNU `timeout`이 없는 깨끗한 macOS 러너에서는
+  Python 기반 프로세스 그룹 타임아웃을 사용해 중단 감지 검사가 정상 동작함.
+
 ## [1.27.20] — 최신 Rust CI 호환성
 
 ### Fixed
