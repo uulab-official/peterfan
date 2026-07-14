@@ -136,6 +136,12 @@ for cmd in status cpu memory disk network temps fans hardware; do
 done
 run_json "peterfan --json integrity" 15 "$PETERFAN" --json integrity
 
+echo "== mock control commands must stay isolated from the real daemon =="
+run_bounded_contains "peterfan --mock profile uses simulated fans" 10 'applied_to' \
+    "$PETERFAN" --mock --json profile maximum
+run_bounded_contains "peterfan --mock fan set bypasses daemon" 10 '"via_daemon": false' \
+    "$PETERFAN" --mock --json fan set 100
+
 if command -v node >/dev/null 2>&1; then
     echo "== embedded menu-bar JavaScript must parse =="
     js_dir=$(mktemp -d)

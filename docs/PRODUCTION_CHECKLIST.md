@@ -13,6 +13,7 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Verify commanded fan speed with delayed RPM readback and tolerance bands.
 - [x] Detect stale fan RPM while manual control is active and return to OS auto
       after repeated stale samples.
+- [x] Keep every `--mock` control path isolated from the real fan-control daemon.
 - [ ] Run suspend, wake, logout, daemon crash, and forced-kill recovery tests.
 
 ## P0 - Updates And Recovery
@@ -29,6 +30,7 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Enforce one menu-bar app instance.
 - [x] Keep the privileged daemon update path passwordless after first approval.
 - [x] Keep expensive system metrics out of fast refresh ticks.
+- [x] Route CLI profile changes through the running daemon before direct SMC access.
 - [x] Keep Settings limited to preferences/safety and System limited to metrics.
 - [x] Drive the menu-bar runner cadence from CPU load with tested idle/busy bounds.
 - [ ] Add a 6-hour control-loop soak test with bounded CPU and memory assertions.

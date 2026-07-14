@@ -97,6 +97,11 @@ profile's curve at the current temperature and:
 - **applies** it to controllable fans if the backend supports control, or
 - **previews** the resulting duty if the backend is read-only.
 
+When `peterfand` is installed, profile changes use its privileged IPC path and
+apply without `sudo`. Without the daemon, PeterFan falls back to direct hardware
+control, which requires root on macOS. `--mock` is always isolated from the real
+daemon and only changes the simulated fans.
+
 ```bash
 peterfan profile                 # list
 peterfan profile gaming          # preview (read-only backend) or apply

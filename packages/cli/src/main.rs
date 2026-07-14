@@ -445,12 +445,12 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::System => cmd_system(mock, json),
         Command::Temps { all } => cmd_temps(mock, json, all),
         Command::Fans => cmd_fans(mock, json),
-        Command::Fan { action } => cmd_fan(provider(mock).as_ref(), action, json),
+        Command::Fan { action } => cmd_fan(provider(mock).as_ref(), action, json, !mock),
         Command::Profile { name, sub } => {
             if let Some(action) = sub {
                 cmd_profile_action(json, action)
             } else {
-                cmd_profile(provider(mock).as_ref(), name, json)
+                cmd_profile(provider(mock).as_ref(), name, json, !mock)
             }
         }
         Command::Curve { name } => cmd_curve(name, json),
@@ -702,16 +702,19 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64, bench_profile: Option<String
     let provider = provider(mock);
 
     // Remember what the daemon is doing now so we can restore it after.
-    let pre_mode = ipc_send("status")
+    let pre_mode = ipc_send_if(!mock, "status")
         .as_deref()
         .and_then(|r| r.strip_prefix("ok "))
         .and_then(|s| s.split_once(" (").map(|(m, _)| m.to_string()));
 
     // Apply the requested profile for the duration of the benchmark.
+    let mut daemon_profile_applied = false;
     let applied_profile = if let Some(ref p) = bench_profile {
         let parsed = peterfan_core::profile::Profile::parse(p)
             .ok_or_else(|| anyhow::anyhow!("unknown profile '{p}'"))?;
-        let ipc_ok = ipc_send(&format!("profile {}", parsed.as_str())).is_some();
+        let daemon_reply = ipc_send_if(!mock, &format!("profile {}", parsed.as_str()));
+        let ipc_ok = daemon_reply.as_deref().is_some_and(control_reply_ok);
+        daemon_profile_applied = ipc_ok;
         if !json {
             if ipc_ok {
                 println!(
@@ -816,7 +819,7 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64, bench_profile: Option<String
     let peak_power = samples.iter().map(|s| s.power).fold(0.0_f32, f32::max);
 
     // Restore the previous daemon mode after the benchmark.
-    if applied_profile.is_some() {
+    if daemon_profile_applied {
         let restore_cmd = match pre_mode.as_deref() {
             Some(m) if m.starts_with("hold:") => {
                 let pct = m.trim_start_matches("hold:").trim_end_matches('%');
@@ -829,7 +832,7 @@ fn cmd_benchmark(mock: bool, json: bool, secs: u64, bench_profile: Option<String
             Some("auto") => "auto".into(),
             _ => "rules".into(),
         };
-        let _ = ipc_send(&restore_cmd);
+        let _ = ipc_send_if(!mock, &restore_cmd);
         if !json {
             println!(
                 "  {} restored daemon to: {}",
@@ -945,7 +948,14 @@ fn cmd_serve(mock: bool, port: u16) -> Result<()> {
             continue;
         }
 
-        let (code, value) = route(&method, &path, &body, monitor.as_ref(), provider.as_ref());
+        let (code, value) = route(
+            &method,
+            &path,
+            &body,
+            monitor.as_ref(),
+            provider.as_ref(),
+            !mock,
+        );
         let json = serde_json::to_string(&value).unwrap_or_else(|_| "{}".into());
         let resp = Response::from_string(json)
             .with_status_code(code)
@@ -966,6 +976,7 @@ fn route(
     body: &str,
     m: &dyn SystemMonitor,
     provider: &dyn HardwareProvider,
+    allow_daemon: bool,
 ) -> (u16, serde_json::Value) {
     match (method, path) {
         ("GET", "/api/v1/status") => (
@@ -997,14 +1008,18 @@ fn route(
         ),
         ("GET", "/api/v1/fans") => (200, serde_json::json!(provider.fans().unwrap_or_default())),
         ("GET", "/api/v1/power") => (200, serde_json::json!({ "watts": provider.power_watts() })),
-        ("POST", "/api/v1/profile") => api_apply_profile(body, provider),
-        ("POST", "/api/v1/fan") => api_apply_fan(body, provider),
+        ("POST", "/api/v1/profile") => api_apply_profile(body, provider, allow_daemon),
+        ("POST", "/api/v1/fan") => api_apply_fan(body, provider, allow_daemon),
         ("OPTIONS", _) => (204, serde_json::Value::Null),
         _ => (404, serde_json::json!({ "error": "not found" })),
     }
 }
 
-fn api_apply_profile(body: &str, provider: &dyn HardwareProvider) -> (u16, serde_json::Value) {
+fn api_apply_profile(
+    body: &str,
+    provider: &dyn HardwareProvider,
+    allow_daemon: bool,
+) -> (u16, serde_json::Value) {
     let name = serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string));
@@ -1022,7 +1037,10 @@ fn api_apply_profile(body: &str, provider: &dyn HardwareProvider) -> (u16, serde
     };
 
     // Prefer routing through the daemon (no root needed for the HTTP server process).
-    if let Some(reply) = ipc_send(&format!("profile {name}")) {
+    if let Some(reply) = ipc_send_if(allow_daemon, &format!("profile {name}")) {
+        if !control_reply_ok(&reply) {
+            return (409, serde_json::json!({ "applied": false, "error": reply }));
+        }
         let curve = profile.default_curve();
         let temps = provider.temperatures().unwrap_or_default();
         let temp = representative_temperature_c(&temps).unwrap_or(0.0);
@@ -1065,7 +1083,11 @@ fn api_apply_profile(body: &str, provider: &dyn HardwareProvider) -> (u16, serde
     )
 }
 
-fn api_apply_fan(body: &str, provider: &dyn HardwareProvider) -> (u16, serde_json::Value) {
+fn api_apply_fan(
+    body: &str,
+    provider: &dyn HardwareProvider,
+    allow_daemon: bool,
+) -> (u16, serde_json::Value) {
     let v = match serde_json::from_str::<serde_json::Value>(body) {
         Ok(v) => v,
         Err(_) => return (400, serde_json::json!({ "error": "invalid JSON" })),
@@ -1074,18 +1096,21 @@ fn api_apply_fan(body: &str, provider: &dyn HardwareProvider) -> (u16, serde_jso
 
     // Prefer routing through the daemon (no root needed for the HTTP server).
     let ipc_reply = match action {
-        "auto" => ipc_send("auto"),
+        "auto" => ipc_send_if(allow_daemon, "auto"),
         "set" => {
             let pct = v
                 .get("percent")
                 .and_then(|p| p.as_u64())
                 .unwrap_or(50)
                 .min(100) as u8;
-            ipc_send(&format!("hold {pct}"))
+            ipc_send_if(allow_daemon, &format!("hold {pct}"))
         }
         _ => None,
     };
     if let Some(reply) = ipc_reply {
+        if !control_reply_ok(&reply) {
+            return (409, serde_json::json!({ "applied": false, "error": reply }));
+        }
         return (
             200,
             serde_json::json!({ "applied": true, "via": "daemon", "action": action, "daemon_reply": reply }),
@@ -2185,10 +2210,23 @@ fn ipc_send(_cmd: &str) -> Option<String> {
     None
 }
 
-fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Result<()> {
+fn ipc_send_if(allow_daemon: bool, cmd: &str) -> Option<String> {
+    allow_daemon.then(|| ipc_send(cmd)).flatten()
+}
+
+fn control_reply_ok(reply: &str) -> bool {
+    reply == "ok" || reply.starts_with("ok ")
+}
+
+fn cmd_fan(
+    provider: &dyn HardwareProvider,
+    action: FanAction,
+    json: bool,
+    allow_daemon: bool,
+) -> Result<()> {
     // `fan status` works without control capability — just reads state.
     if matches!(action, FanAction::Status) {
-        return cmd_fan_status(provider, json);
+        return cmd_fan_status(provider, json, allow_daemon);
     }
 
     if !provider.capabilities().control_fans {
@@ -2220,7 +2258,11 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
 
             // Prefer routing through the daemon: no sudo needed, and the daemon
             // re-asserts the duty every tick so it persists until `fan auto`.
-            let via_daemon = if let Some(reply) = ipc_send(&format!("hold {pct}")) {
+            let via_daemon = if let Some(reply) = ipc_send_if(allow_daemon, &format!("hold {pct}"))
+            {
+                if !control_reply_ok(&reply) {
+                    anyhow::bail!("daemon rejected fan setting: {reply}");
+                }
                 if !json {
                     println!(
                         "Routing through daemon: {} {}",
@@ -2329,7 +2371,10 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
         }
         FanAction::Auto { .. } => {
             // Prefer daemon IPC: no sudo needed.
-            let via_daemon = if let Some(reply) = ipc_send("auto") {
+            let via_daemon = if let Some(reply) = ipc_send_if(allow_daemon, "auto") {
+                if !control_reply_ok(&reply) {
+                    anyhow::bail!("daemon rejected automatic fan control: {reply}");
+                }
                 if !json {
                     println!(
                         "Restored to automatic control via daemon: {}",
@@ -2367,9 +2412,9 @@ fn cmd_fan(provider: &dyn HardwareProvider, action: FanAction, json: bool) -> Re
     Ok(())
 }
 
-fn cmd_fan_status(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
+fn cmd_fan_status(provider: &dyn HardwareProvider, json: bool, allow_daemon: bool) -> Result<()> {
     let fans = provider.fans().unwrap_or_default();
-    let daemon_mode = ipc_send("status")
+    let daemon_mode = ipc_send_if(allow_daemon, "status")
         .as_deref()
         .and_then(|r| r.strip_prefix("ok "))
         .map(str::to_string);
@@ -2435,7 +2480,12 @@ fn cmd_hardware(provider: &dyn HardwareProvider, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_profile(provider: &dyn HardwareProvider, name: Option<String>, json: bool) -> Result<()> {
+fn cmd_profile(
+    provider: &dyn HardwareProvider,
+    name: Option<String>,
+    json: bool,
+    allow_daemon: bool,
+) -> Result<()> {
     let Some(name) = name else {
         return list_profiles(json);
     };
@@ -2450,6 +2500,30 @@ fn cmd_profile(provider: &dyn HardwareProvider, name: Option<String>, json: bool
                 .join(", ")
         )
     })?;
+
+    if let Some(reply) = ipc_send_if(allow_daemon, &format!("profile {}", profile.as_str())) {
+        if !control_reply_ok(&reply) {
+            anyhow::bail!("daemon rejected profile '{}': {reply}", profile.as_str());
+        }
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "profile": profile.as_str(),
+                    "applied": true,
+                    "via": "daemon",
+                    "daemon_reply": reply,
+                }))?
+            );
+        } else {
+            println!(
+                "  {} profile {} applied via peterfand",
+                "✓".green(),
+                profile.as_str().bold()
+            );
+        }
+        return Ok(());
+    }
 
     let curve = profile.default_curve();
     let sensors = read_sensors(provider)?;
@@ -3486,7 +3560,7 @@ fn cmd_watch(mock: bool, interval_secs: u64) -> Result<()> {
         let power = prov.power_watts();
 
         // Read daemon mode (strip backend qualifier).
-        let mode = ipc_send("status")
+        let mode = ipc_send_if(!mock, "status")
             .as_deref()
             .and_then(|r| r.strip_prefix("ok "))
             .map(|s| s.split_once(" (").map_or(s, |(m, _)| m).to_string())
@@ -4395,6 +4469,20 @@ mod tests {
 
         assert!(!names.contains(&"license"));
         assert!(!names.contains(&"login"));
+    }
+
+    #[test]
+    fn disabled_daemon_routing_never_opens_control_ipc() {
+        assert_eq!(super::ipc_send_if(false, "profile maximum"), None);
+        assert_eq!(super::ipc_send_if(false, "hold 100"), None);
+    }
+
+    #[test]
+    fn control_commands_only_accept_explicit_ok_replies() {
+        assert!(super::control_reply_ok("ok"));
+        assert!(super::control_reply_ok("ok balanced (macos)"));
+        assert!(!super::control_reply_ok("error: write failed"));
+        assert!(!super::control_reply_ok(""));
     }
 
     fn temp(id: &str, label: &str, kind: SensorKind, value: f32) -> TempSensor {

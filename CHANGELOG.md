@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.18] — CLI 팬 제어 경로 정합성
+
+### Fixed
+- **프로파일 즉시 적용** — 실행 중인 루트 데몬이 있어도 `peterfan profile <name>`이
+  SMC에 직접 쓰려다 권한 오류를 내던 문제를 수정함. 이제 메뉴바와 동일하게 데몬 IPC를
+  우선 사용하고, 데몬이 없을 때만 기존 직접 제어 경로로 폴백함.
+- **모의 모드 격리** — `--mock fan`, `--mock profile`, `--mock benchmark`, `--mock serve`
+  가 로컬의 실제 데몬에 연결할 수 있던 경로를 차단함. 모의 명령과 API는 실제 팬 상태를
+  변경하지 않음.
+- **IPC 성공 판정** — CLI, 벤치마크와 로컬 API가 데몬의 `error:` 응답을 적용 성공으로
+  표시하지 않고 사용자에게 실패로 전달하도록 통일함.
+
 ## [1.27.17] — 로그인·라이선스 잔여 기능 제거
 
 ### Removed
