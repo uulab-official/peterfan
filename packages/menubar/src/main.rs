@@ -22,19 +22,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tao::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
+#[cfg(any(not(target_os = "macos"), test))]
+use tao::dpi::PhysicalPosition;
+use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
+#[cfg(not(target_os = "macos"))]
 use tao::monitor::MonitorHandle;
 use tao::window::{Window, WindowBuilder};
 
 #[cfg(target_os = "macos")]
-use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSEvent, NSScreen};
+use objc2_app_kit::{NSEvent, NSScreen, NSWindow};
 #[cfg(target_os = "macos")]
-use objc2_foundation::MainThreadMarker;
+use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{
@@ -71,8 +74,8 @@ const ALL_TEMP_REFRESH: Duration = Duration::from_secs(10);
 const DAEMON_REFRESH: Duration = Duration::from_secs(2);
 const TEMPERATURE_STALE_AFTER: Duration = Duration::from_secs(6);
 const ALL_TEMPERATURE_STALE_AFTER: Duration = Duration::from_secs(30);
-const CONTROL_CONFIRM_REFRESH: Duration = Duration::from_millis(100);
-const CONTROL_CONFIRM_WINDOW: Duration = Duration::from_millis(1500);
+const CONTROL_CONFIRM_REFRESH: Duration = Duration::from_millis(200);
+const CONTROL_CONFIRM_WINDOW: Duration = Duration::from_secs(8);
 const SINGLE_INSTANCE_LOCK_BASENAME: &str = "kr.co.uulab.peterfan.menubar";
 const MENUBAR_LOG_MAX_BYTES: u64 = 512 * 1024;
 const DASHBOARD_BACKGROUND: RGBA = (27, 27, 29, 255);
@@ -1506,8 +1509,13 @@ fn main() {
                     let provider = std::sync::Arc::clone(&app.provider);
                     let cmd = c.clone();
                     let proxy = event_proxy.clone();
+                    log_menubar_event(&format!("fan command received cmd={cmd}"));
                     std::thread::spawn(move || {
                         let status = execute_control_logged(provider.as_ref(), &cmd);
+                        log_menubar_event(&format!(
+                            "fan command completed cmd={cmd} ok={} result={status}",
+                            control_result_is_ok(&status)
+                        ));
                         *STATUS.lock().expect("status poisoned") = status;
                         let _ = proxy.send_event(());
                     });
@@ -2149,6 +2157,7 @@ fn max_popover_height_for_bounds(display: DisplayBounds, popover_top_y: f64) -> 
     (display.bottom() - popover_top_y - 12.0).max(200.0)
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn popover_height_for_rect(rect: Rect, scale: f64, displays: &[DisplayBounds]) -> f64 {
     let anchor_x = rect.position.x + rect.size.width as f64;
     let anchor_y = rect.position.y + rect.size.height as f64;
@@ -2186,11 +2195,13 @@ impl DisplayBounds {
         self.y + self.height
     }
 
+    #[cfg(any(not(target_os = "macos"), test))]
     fn contains_point(self, x: f64, y: f64) -> bool {
         x >= self.x && x < self.right() && y >= self.y && y < self.bottom()
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn monitor_bounds(monitor: &MonitorHandle) -> DisplayBounds {
     let pos = monitor.position();
     let size = monitor.size();
@@ -2237,19 +2248,25 @@ fn popover_height_for_anchor(anchor: LogicalPopoverAnchor) -> f64 {
 /// avoids both conversions.
 #[cfg(target_os = "macos")]
 fn native_logical_popover_anchor(rect: Rect) -> Option<LogicalPopoverAnchor> {
-    let mtm = MainThreadMarker::new()?;
+    // SAFETY: Tao's macOS event loop and tray event drain both execute on the
+    // process main thread. Using an unchecked marker here prevents a silent
+    // fallback to mixed physical coordinates if runtime marker detection is
+    // unavailable on a particular macOS release.
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
     let screens = NSScreen::screens(mtm);
     let primary = screens.iter().next()?;
     let primary_frame = primary.frame();
     let primary_top = primary_frame.origin.y + primary_frame.size.height;
     let mouse = NSEvent::mouseLocation();
-    let screen = screens.iter().find(|screen| {
-        let frame = screen.frame();
-        mouse.x >= frame.origin.x
-            && mouse.x < frame.origin.x + frame.size.width
-            && mouse.y >= frame.origin.y
-            && mouse.y < frame.origin.y + frame.size.height
-    })?;
+    let screen = screens
+        .iter()
+        .find(|screen| appkit_frame_contains(screen.frame(), mouse))
+        .or_else(|| {
+            screens.iter().min_by(|left, right| {
+                appkit_frame_distance_sq(left.frame(), mouse)
+                    .total_cmp(&appkit_frame_distance_sq(right.frame(), mouse))
+            })
+        })?;
     let frame = screen.frame();
     let scale = screen.backingScaleFactor();
     if !scale.is_finite() || scale <= 0.0 {
@@ -2283,6 +2300,49 @@ fn native_logical_popover_anchor(rect: Rect) -> Option<LogicalPopoverAnchor> {
     })
 }
 
+#[cfg(target_os = "macos")]
+fn appkit_frame_contains(frame: NSRect, point: NSPoint) -> bool {
+    point.x >= frame.origin.x
+        && point.x < frame.origin.x + frame.size.width
+        && point.y >= frame.origin.y
+        && point.y < frame.origin.y + frame.size.height
+}
+
+#[cfg(target_os = "macos")]
+fn appkit_frame_distance_sq(frame: NSRect, point: NSPoint) -> f64 {
+    let nearest_x = point
+        .x
+        .clamp(frame.origin.x, frame.origin.x + frame.size.width);
+    let nearest_y = point
+        .y
+        .clamp(frame.origin.y, frame.origin.y + frame.size.height);
+    (point.x - nearest_x).powi(2) + (point.y - nearest_y).powi(2)
+}
+
+#[cfg(target_os = "macos")]
+fn configure_native_popover_window(
+    window: &Window,
+    position: LogicalPosition<f64>,
+    width: f64,
+    height: f64,
+) -> Option<NSRect> {
+    // SAFETY: This function is called only from Tao's main-thread event loop,
+    // and `ns_window()` remains valid for the lifetime of `window`.
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let primary = NSScreen::screens(mtm).iter().next()?;
+    let primary_frame = primary.frame();
+    let primary_top = primary_frame.origin.y + primary_frame.size.height;
+    let raw = window.ns_window().cast::<NSWindow>();
+    if raw.is_null() {
+        return None;
+    }
+    let native_window = unsafe { &*raw };
+    native_window.setContentSize(NSSize::new(width, height));
+    native_window.setFrameTopLeftPoint(NSPoint::new(position.x, primary_top - position.y));
+    Some(native_window.frame())
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
 fn popover_position_for_rect(
     rect: Rect,
     popover_width: f64,
@@ -2337,46 +2397,58 @@ fn toggle_popover(
     let Some(w) = &app.window else { return };
 
     #[cfg(target_os = "macos")]
-    if let Some(anchor) = native_logical_popover_anchor(rect) {
+    {
+        let Some(anchor) = native_logical_popover_anchor(rect) else {
+            log_menubar_event("popover placement aborted: AppKit reported no screens");
+            return;
+        };
         let height = popover_height_for_anchor(anchor);
         let position = popover_position_for_anchor(anchor, POPOVER_W);
-        w.set_inner_size(LogicalSize::new(POPOVER_W, height));
-        w.set_outer_position(position);
+        let Some(frame) = configure_native_popover_window(w, position, POPOVER_W, height) else {
+            log_menubar_event("popover placement aborted: native window unavailable");
+            return;
+        };
         app.popover_show_at = Some(Instant::now() + POPOVER_SHOW_DELAY);
         log_menubar_event(&format!(
-            "popover scheduled logical position=({:.0},{:.0}) size=({POPOVER_W:.0},{height:.0}) clicked_display=({:.0},{:.0},{:.0}x{:.0}) scale={:.2}",
+            "popover scheduled native position=({:.0},{:.0}) size=({POPOVER_W:.0},{height:.0}) frame=({:.0},{:.0},{:.0}x{:.0}) clicked_display=({:.0},{:.0},{:.0}x{:.0}) scale={:.2}",
             position.x,
             position.y,
+            frame.origin.x,
+            frame.origin.y,
+            frame.size.width,
+            frame.size.height,
             anchor.display.x,
             anchor.display.y,
             anchor.display.width,
             anchor.display.height,
             anchor.scale
         ));
-        return;
     }
 
-    let scale = w.scale_factor();
-    let win_w = POPOVER_W * scale;
-    // Flush against the menu bar rather than leaving a visible gap — matches
-    // how native menu extras (Control Center, Wi-Fi, …) sit right under the
-    // icon instead of floating below it.
-    let displays: Vec<_> = w.available_monitors().map(|m| monitor_bounds(&m)).collect();
-    // Snap to the product-defined fixed height before showing. On very short
-    // displays we cap to the available area; the left pane owns scrolling.
-    let height = popover_height_for_rect(rect, scale, &displays);
-    let position = popover_position_for_rect(rect, win_w, &displays);
-    w.set_inner_size(LogicalSize::new(POPOVER_W, height));
-    w.set_outer_position(position);
-    // macOS can apply size/position asynchronously. Showing on the next short
-    // event-loop tick prevents the user from seeing the prewarmed hidden
-    // window flash at its old/default location and then slide into place.
-    w.set_outer_position(position);
-    app.popover_show_at = Some(Instant::now() + POPOVER_SHOW_DELAY);
-    log_menubar_event(&format!(
+    #[cfg(not(target_os = "macos"))]
+    {
+        let scale = w.scale_factor();
+        let win_w = POPOVER_W * scale;
+        // Flush against the menu bar rather than leaving a visible gap — matches
+        // how native menu extras (Control Center, Wi-Fi, …) sit right under the
+        // icon instead of floating below it.
+        let displays: Vec<_> = w.available_monitors().map(|m| monitor_bounds(&m)).collect();
+        // Snap to the product-defined fixed height before showing. On very short
+        // displays we cap to the available area; the left pane owns scrolling.
+        let height = popover_height_for_rect(rect, scale, &displays);
+        let position = popover_position_for_rect(rect, win_w, &displays);
+        w.set_inner_size(LogicalSize::new(POPOVER_W, height));
+        w.set_outer_position(position);
+        // macOS can apply size/position asynchronously. Showing on the next short
+        // event-loop tick prevents the user from seeing the prewarmed hidden
+        // window flash at its old/default location and then slide into place.
+        w.set_outer_position(position);
+        app.popover_show_at = Some(Instant::now() + POPOVER_SHOW_DELAY);
+        log_menubar_event(&format!(
         "popover scheduled position=({:.0},{:.0}) size=({POPOVER_W:.0},{height:.0}) scale={scale:.2}",
         position.x, position.y
     ));
+    }
 }
 
 fn hide_popover(app: &mut App) {
@@ -5497,7 +5569,7 @@ function updateProfileStrip(d){
     var matches=revisionApplied&&FAN_CONTROL_PENDING.mode===activeMode&&(activeMode!=='profile'||FAN_CONTROL_PENDING.profile===activeProfile);
     var status=d.last_cmd_status||'';
     var failed=status!==FAN_CONTROL_PENDING.statusBefore&&status!=='applying…'&&fanControlStatusFailed(status);
-    var expired=Date.now()-FAN_CONTROL_PENDING.startedAt>5000;
+    var expired=Date.now()-FAN_CONTROL_PENDING.startedAt>8000;
     if(matches){
       FAN_CONTROL_RESULT={ok:true,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,at:Date.now(),message:''};
       FAN_CONTROL_PENDING=null;
@@ -6789,6 +6861,7 @@ mod tests {
         assert!(en.contains("var revisionApplied=Number(d.applied_control_revision||0)>FAN_CONTROL_PENDING.revisionBefore;"));
         assert!(en.contains("FAN_CONTROL_RESULT={ok:true"));
         assert!(en.contains("hardware confirmation timed out"));
+        assert!(en.contains("Date.now()-FAN_CONTROL_PENDING.startedAt>8000"));
         assert!(en.contains("function updateFanApplyStatus(d)"));
         assert!(en.contains("typeof f.target_pct==='number'"));
         assert!(en.contains("strip.setAttribute('aria-busy',pending?'true':'false');"));
@@ -6816,6 +6889,9 @@ mod tests {
         assert!(source.contains(".with_focused(false)"));
         assert!(source.contains(".with_accept_first_mouse(true)"));
         assert!(source.contains("defer_dashboard_io_after_open(app);"));
+        assert!(source.contains("configure_native_popover_window(w, position, POPOVER_W, height)"));
+        assert!(source.contains("native_window.setFrameTopLeftPoint"));
+        assert!(source.contains("#[cfg(not(target_os = \"macos\"))]"));
         assert!(source.contains("Let the normal tick deliver data"));
         assert!(source.contains("next_metric_at = show_at;"));
         assert!(source.contains("*control_flow = ControlFlow::WaitUntil(show_at);"));
