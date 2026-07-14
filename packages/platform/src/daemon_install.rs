@@ -105,6 +105,23 @@ pub enum InstallOutcome {
     InstalledButUnreachable,
 }
 
+fn required_daemon_is_healthy(installed_version: Option<&str>, reachable: bool) -> bool {
+    reachable && installed_version.is_some_and(|version| !crate::daemon_update_required(version))
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_required_daemon(timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let version = crate::installed_daemon_version();
+        if required_daemon_is_healthy(version.as_deref(), crate::daemon_reachable()) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    false
+}
+
 /// Install the daemon: copies the binary to `/usr/local/bin`, registers the
 /// LaunchDaemon, and sets up log rotation. Shows exactly one macOS admin
 /// password dialog (via `osascript … with administrator privileges`).
@@ -200,17 +217,23 @@ pub fn reinstall_via_running_daemon(dry_run: bool) -> Result<InstallOutcome, Str
     if dry_run {
         return Ok(InstallOutcome::DryRun(cmd));
     }
-    match crate::ipc::send_command(&cmd) {
-        Some(reply) if reply.starts_with("ok ") => {
-            std::thread::sleep(std::time::Duration::from_millis(1800));
-            if crate::daemon_reachable() {
-                Ok(InstallOutcome::Installed)
-            } else {
-                Ok(InstallOutcome::InstalledButUnreachable)
-            }
+    let reply = crate::ipc::send_command_with_timeout(&cmd, std::time::Duration::from_secs(5));
+    if let Some(reply) = reply.as_deref() {
+        if !reply.starts_with("ok ") {
+            return Err(reply.to_string());
         }
-        Some(reply) => Err(reply),
-        None => Err("no running fan-control daemon".to_string()),
+    }
+
+    // The daemon verifies the bundled Developer ID signature before replying,
+    // then deliberately replaces and restarts itself. Either step can close
+    // IPC before the client receives the acknowledgement, so the installed
+    // binary version plus a fresh socket is the authoritative success signal.
+    if wait_for_required_daemon(std::time::Duration::from_secs(10)) {
+        Ok(InstallOutcome::Installed)
+    } else if reply.is_some() {
+        Ok(InstallOutcome::InstalledButUnreachable)
+    } else {
+        Err("fan-control daemon did not acknowledge or complete its update".to_string())
     }
 }
 
@@ -262,5 +285,19 @@ mod tests {
         assert_eq!(extract("Label"), DAEMON_LABEL);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn required_daemon_health_needs_both_version_and_reachability() {
+        assert!(required_daemon_is_healthy(
+            Some(crate::MIN_REQUIRED_DAEMON_VERSION),
+            true
+        ));
+        assert!(!required_daemon_is_healthy(Some("1.27.22"), true));
+        assert!(!required_daemon_is_healthy(
+            Some(crate::MIN_REQUIRED_DAEMON_VERSION),
+            false
+        ));
+        assert!(!required_daemon_is_healthy(None, true));
     }
 }

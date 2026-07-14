@@ -42,7 +42,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 状态
 
-**Beta 版 —— v1.27.29。** 项目正在积极开发中；下表反映的是目前已经实际交付的功能：
+**Beta 版 —— v1.27.30。** 项目正在积极开发中；下表反映的是目前已经实际交付的功能：
 
 | 领域 | 状态 |
 | --- | --- |
@@ -166,7 +166,7 @@ cargo run -p peterfan-menubar
 ### 示例：`peterfan status`
 
 ```text
-PeterFan v1.27.29
+PeterFan v1.27.30
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max

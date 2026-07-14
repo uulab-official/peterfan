@@ -48,9 +48,16 @@ pub fn connect() -> Option<UnixStream> {
 /// Send a newline-terminated command to the running daemon and return the reply.
 /// Returns `None` when no daemon is reachable or the send/receive fails.
 pub fn send_command(cmd: &str) -> Option<String> {
+    send_command_with_timeout(cmd, std::time::Duration::from_millis(500))
+}
+
+/// Send a command with a caller-selected reply timeout. Slow privileged
+/// operations such as signature verification need longer than normal fan
+/// control commands, while the default path should remain responsive.
+pub fn send_command_with_timeout(cmd: &str, timeout: std::time::Duration) -> Option<String> {
     use std::io::{BufRead, BufReader, Write};
     let mut stream = connect()?;
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+    let _ = stream.set_read_timeout(Some(timeout));
     writeln!(stream, "{cmd}").ok()?;
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).ok()?;
