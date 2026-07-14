@@ -22,7 +22,7 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Require Developer ID identity, bundle ID, Team ID, notarization, and Gatekeeper.
 - [x] Keep the previous app until the replacement passes an execution health check.
 - [x] Roll back automatically when copy, signature validation, launch, or startup fails.
-- [ ] Persist a user-visible update result after the updater process exits.
+- [x] Persist a user-visible update result after the updater process exits.
 - [ ] Add stable and prerelease update channels.
 
 ## P1 - Reliability And Performance
@@ -51,7 +51,7 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Sign and notarize both the app and DMG.
 - [x] Run workspace tests, Clippy, JavaScript parsing, docs, and DMG smoke checks.
 - [x] Install the release DMG and verify the app and daemon versions locally.
-- [ ] Enforce RustSec policy in CI and remove or isolate allowed warnings.
+- [x] Enforce RustSec policy in CI and remove or isolate allowed warnings.
 - [ ] Test release signing and notarization from a second authorized Mac.
 
 ## Release Evidence

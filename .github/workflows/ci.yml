@@ -44,6 +44,12 @@ jobs:
       - name: Tests
         run: cargo test --all --all-features
 
+      - name: Install RustSec audit
+        run: cargo install cargo-audit --locked
+
+      - name: RustSec dependency policy
+        run: cargo audit
+
       - name: Build release binaries
         run: cargo build --release
 

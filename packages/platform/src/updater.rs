@@ -10,6 +10,58 @@ pub const REPO: &str = "uulab-official/peterfan";
 pub const EXPECTED_BUNDLE_ID: &str = "kr.co.uulab.peterfan";
 pub const EXPECTED_TEAM_ID: &str = "N99FMBQ662";
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UpdateInstallResult {
+    /// `pending`, `installed`, `rolled_back`, or `failed`.
+    pub status: String,
+    pub version: String,
+    pub message: String,
+    pub updated_at_unix: u64,
+}
+
+impl UpdateInstallResult {
+    fn new(status: &str, version: &str, message: impl Into<String>) -> Self {
+        Self {
+            status: status.to_string(),
+            version: version.to_string(),
+            message: message.into(),
+            updated_at_unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        }
+    }
+}
+
+/// The detached updater outlives the app process, so its final result must
+/// live outside the temporary extraction directory that is removed on
+/// success. Keeping one small JSON record also bounds storage across updates.
+pub fn update_install_result_path() -> Option<std::path::PathBuf> {
+    dirs::data_dir().map(|dir| dir.join("PeterFan").join("update-result.json"))
+}
+
+pub fn read_update_install_result() -> Option<UpdateInstallResult> {
+    let path = update_install_result_path()?;
+    read_update_install_result_from(&path)
+}
+
+fn read_update_install_result_from(path: &std::path::Path) -> Option<UpdateInstallResult> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn write_update_install_result_to(
+    path: &std::path::Path,
+    result: &UpdateInstallResult,
+) -> Result<(), String> {
+    let parent = path.parent().ok_or("update result path has no parent")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+    let json = serde_json::to_vec(result).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct IntegrityCheck {
     pub name: String,
@@ -1025,6 +1077,7 @@ pub fn download_and_install_release(release: &ReleaseInfo) -> Result<(), String>
     download_and_install_verified(
         asset_url,
         asset_name,
+        &release.version,
         release.asset_digest.as_deref(),
         checksum_url,
         release.checksum_digest.as_deref(),
@@ -1041,13 +1094,15 @@ pub fn download_and_install(asset_url: &str) -> Result<(), String> {
         .next()
         .filter(|name| !name.is_empty())
         .unwrap_or("update.tar.gz");
-    download_and_install_unchecked(asset_url, asset_name)
+    let target_version = release_artifact_version(asset_name).unwrap_or_else(|| "unknown".into());
+    download_and_install_unchecked(asset_url, asset_name, &target_version)
 }
 
 #[cfg(target_os = "macos")]
 fn download_and_install_verified(
     asset_url: &str,
     asset_name: &str,
+    target_version: &str,
     asset_digest: Option<&str>,
     checksum_url: &str,
     checksum_digest: Option<&str>,
@@ -1070,17 +1125,21 @@ fn download_and_install_verified(
     let checksums = std::fs::read_to_string(&checksums_path).map_err(|e| e.to_string())?;
     verify_download_checksum(&checksums, asset_name, &download)?;
 
-    install_downloaded_update(&app_path, &tmp_dir, &download, asset_name)
+    install_downloaded_update(&app_path, &tmp_dir, &download, asset_name, target_version)
 }
 
 #[cfg(target_os = "macos")]
-fn download_and_install_unchecked(asset_url: &str, asset_name: &str) -> Result<(), String> {
+fn download_and_install_unchecked(
+    asset_url: &str,
+    asset_name: &str,
+    target_version: &str,
+) -> Result<(), String> {
     let app_path = current_app_bundle()?;
     let tmp_dir = std::env::temp_dir().join(format!("peterfan-update-{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
     let download = tmp_dir.join(asset_name);
     download_file(asset_url, &download)?;
-    install_downloaded_update(&app_path, &tmp_dir, &download, asset_name)
+    install_downloaded_update(&app_path, &tmp_dir, &download, asset_name, target_version)
 }
 
 #[cfg(target_os = "macos")]
@@ -1112,6 +1171,7 @@ fn install_downloaded_update(
     tmp_dir: &std::path::Path,
     download: &std::path::Path,
     asset_name: &str,
+    target_version: &str,
 ) -> Result<(), String> {
     let is_dmg = asset_name.ends_with(".dmg");
     if is_dmg {
@@ -1131,20 +1191,43 @@ fn install_downloaded_update(
     let script_path = tmp_dir.join("apply-update.sh");
     let backup_path = tmp_dir.join("PreviousPeterFan.app");
     let log_path = tmp_dir.join("apply-update.log");
-    let script = build_apply_update_script(app_path, &new_app, &backup_path, tmp_dir, &log_path);
+    let result_path = update_install_result_path().ok_or("could not locate Application Support")?;
+    let pending = UpdateInstallResult::new(
+        "pending",
+        target_version,
+        format!("Installing PeterFan v{target_version}."),
+    );
+    write_update_install_result_to(&result_path, &pending)?;
+    let script = build_apply_update_script(
+        app_path,
+        &new_app,
+        &backup_path,
+        tmp_dir,
+        &log_path,
+        &result_path,
+        target_version,
+    );
     std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
     let _ = std::process::Command::new("chmod")
         .args(["+x"])
         .arg(&script_path)
         .status();
 
-    std::process::Command::new("/bin/bash")
+    let launched = std::process::Command::new("/bin/bash")
         .arg(&script_path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("could not launch the updater script: {e}"))?;
+        .spawn();
+    if let Err(e) = launched {
+        let failed = UpdateInstallResult::new(
+            "failed",
+            target_version,
+            format!("Could not launch the updater: {e}"),
+        );
+        let _ = write_update_install_result_to(&result_path, &failed);
+        return Err(format!("could not launch the updater script: {e}"));
+    }
 
     Ok(())
 }
@@ -1156,22 +1239,61 @@ fn build_apply_update_script(
     backup_path: &std::path::Path,
     tmp_dir: &std::path::Path,
     log_path: &std::path::Path,
+    result_path: &std::path::Path,
+    target_version: &str,
 ) -> String {
     let executable = app_path.join("Contents/MacOS/PeterFan");
+    let result_tmp = result_path.with_extension("json.tmp-updater");
+    let installed = serde_json::to_string(&UpdateInstallResult::new(
+        "installed",
+        target_version,
+        format!("PeterFan v{target_version} was installed successfully."),
+    ))
+    .expect("update result serializes");
+    let rolled_back = serde_json::to_string(&UpdateInstallResult::new(
+        "rolled_back",
+        target_version,
+        "The update failed and the previous PeterFan version was restored.",
+    ))
+    .expect("update result serializes");
+    let failed = serde_json::to_string(&UpdateInstallResult::new(
+        "failed",
+        target_version,
+        "The installed app could not be moved. The existing app was left unchanged.",
+    ))
+    .expect("update result serializes");
+    let restore_failed = serde_json::to_string(&UpdateInstallResult::new(
+        "failed",
+        target_version,
+        "The update failed and the previous PeterFan version could not be restored automatically.",
+    ))
+    .expect("update result serializes");
     format!(
         "#!/bin/bash\n\
          set -u\n\
          exec >{log} 2>&1\n\
+         write_result() {{\n\
+         \t/usr/bin/printf '%s\\n' \"$1\" > {result_tmp} && /bin/mv -f {result_tmp} {result}\n\
+         }}\n\
+         fail_before_replace() {{\n\
+         \twrite_result {failed}\n\
+         \t/usr/bin/open -g -j {app} || true\n\
+         \texit 1\n\
+         }}\n\
          rollback() {{\n\
          \t/usr/bin/pkill -fx {executable} >/dev/null 2>&1 || true\n\
          \t/bin/rm -rf {app}\n\
-         \t/bin/mv {backup} {app}\n\
-         \t/usr/bin/open -g -j {app} || true\n\
+         \tif /bin/mv {backup} {app}; then\n\
+         \t\twrite_result {rolled_back}\n\
+         \t\t/usr/bin/open -g -j {app} || true\n\
+         \telse\n\
+         \t\twrite_result {restore_failed}\n\
+         \tfi\n\
          \texit 1\n\
          }}\n\
          sleep 1\n\
          /bin/rm -rf {backup}\n\
-         /bin/mv {app} {backup} || exit 1\n\
+         /bin/mv {app} {backup} || fail_before_replace\n\
          /usr/bin/ditto {new_app} {app} || rollback\n\
          /usr/bin/codesign --verify --deep --strict {app} || rollback\n\
          /usr/bin/xcrun stapler validate {app} >/dev/null 2>&1 || rollback\n\
@@ -1182,6 +1304,7 @@ fn build_apply_update_script(
          \tif /usr/bin/pgrep -fx {executable} >/dev/null 2>&1; then healthy=1; break; fi\n\
          done\n\
          [[ $healthy -eq 1 ]] || rollback\n\
+         write_result {installed}\n\
          /bin/rm -rf {backup}\n\
          /bin/rm -rf {tmp}\n",
         app = shell_quote(app_path),
@@ -1189,6 +1312,12 @@ fn build_apply_update_script(
         backup = shell_quote(backup_path),
         tmp = shell_quote(tmp_dir),
         log = shell_quote(log_path),
+        result = shell_quote(result_path),
+        result_tmp = shell_quote(&result_tmp),
+        installed = shell_quote_str(&installed),
+        rolled_back = shell_quote_str(&rolled_back),
+        failed = shell_quote_str(&failed),
+        restore_failed = shell_quote_str(&restore_failed),
         executable = shell_quote(&executable),
     )
 }
@@ -1262,7 +1391,12 @@ fn sha256_file(path: &std::path::Path) -> Result<String, String> {
 
 #[cfg(target_os = "macos")]
 fn shell_quote(p: &std::path::Path) -> String {
-    format!("'{}'", p.display().to_string().replace('\'', "'\\''"))
+    shell_quote_str(&p.display().to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote_str(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[cfg(target_os = "macos")]
@@ -1735,6 +1869,30 @@ TeamIdentifier=N99FMBQ662
         assert!(has_developer_id_authority(details));
     }
 
+    #[test]
+    fn update_install_result_round_trips_as_one_bounded_record() {
+        let root = std::env::temp_dir().join(format!(
+            "peterfan-update-result-test-{}",
+            std::process::id()
+        ));
+        let path = root.join("nested/update-result.json");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let result = UpdateInstallResult::new("installed", "1.2.3", "installed successfully");
+        write_update_install_result_to(&path, &result).unwrap();
+        assert_eq!(read_update_install_result_from(&path), Some(result));
+        assert!(!path.with_extension("json.tmp-updater").exists());
+
+        let replacement = UpdateInstallResult::new("rolled_back", "1.2.4", "restored");
+        write_update_install_result_to(&path, &replacement).unwrap();
+        assert_eq!(read_update_install_result_from(&path), Some(replacement));
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn ota_apply_script_keeps_backup_until_new_app_is_healthy() {
@@ -1744,6 +1902,8 @@ TeamIdentifier=N99FMBQ662
             std::path::Path::new("/tmp/update/PreviousPeterFan.app"),
             std::path::Path::new("/tmp/update"),
             std::path::Path::new("/tmp/update/apply-update.log"),
+            std::path::Path::new("/tmp/support/update-result.json"),
+            "1.2.3",
         );
 
         let health_check = script.find("pgrep -fx").unwrap();
@@ -1754,6 +1914,10 @@ TeamIdentifier=N99FMBQ662
         assert!(script.contains("stapler validate"));
         assert!(script.contains("open -g -j"));
         assert!(script.contains("[[ $healthy -eq 1 ]] || rollback"));
+        assert!(script.contains("write_result"));
+        assert!(script.contains("update-result.json"));
+        assert!(script.contains(r#""status":"installed""#));
+        assert!(script.contains(r#""status":"rolled_back""#));
         assert!(delete_backup > health_check);
     }
 
@@ -1768,6 +1932,7 @@ TeamIdentifier=N99FMBQ662
         let new_app = root.join("Update/PeterFan.app");
         let backup = root.join("Update/PreviousPeterFan.app");
         let log = root.join("Update/apply-update.log");
+        let result = root.join("Support/update-result.json");
         let script_path = root.join("Update/apply-update.sh");
         let old_marker = app.join("old-version");
         let new_marker = new_app.join("new-version");
@@ -1775,12 +1940,21 @@ TeamIdentifier=N99FMBQ662
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
         std::fs::create_dir_all(new_app.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(result.parent().unwrap()).unwrap();
         std::fs::write(&old_marker, "old").unwrap();
         std::fs::write(&new_marker, "new").unwrap();
         std::fs::write(app.join("Contents/MacOS/PeterFan"), "not executable").unwrap();
         std::fs::write(new_app.join("Contents/MacOS/PeterFan"), "invalid signature").unwrap();
 
-        let script = build_apply_update_script(&app, &new_app, &backup, &root.join("Update"), &log);
+        let script = build_apply_update_script(
+            &app,
+            &new_app,
+            &backup,
+            &root.join("Update"),
+            &log,
+            &result,
+            "1.2.3",
+        );
         std::fs::write(&script_path, script).unwrap();
         let status = std::process::Command::new("/bin/bash")
             .arg(&script_path)
@@ -1791,6 +1965,12 @@ TeamIdentifier=N99FMBQ662
         assert_eq!(std::fs::read_to_string(&old_marker).unwrap(), "old");
         assert!(!app.join("new-version").exists());
         assert!(!backup.exists());
+        assert_eq!(
+            read_update_install_result_from(&result)
+                .expect("rollback result")
+                .status,
+            "rolled_back"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

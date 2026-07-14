@@ -340,6 +340,8 @@ struct App {
     next_all_temp_refresh: Instant,
     daemon_json_cache: Option<serde_json::Value>,
     next_daemon_refresh: Instant,
+    update_install_result: Option<peterfan_platform::updater::UpdateInstallResult>,
+    next_update_result_refresh: Instant,
     control_confirm_until: Option<Instant>,
 }
 
@@ -1153,6 +1155,8 @@ fn main() {
         next_all_temp_refresh: Instant::now() + ALL_TEMP_REFRESH,
         daemon_json_cache: None,
         next_daemon_refresh: Instant::now() + DAEMON_REFRESH,
+        update_install_result: peterfan_platform::updater::read_update_install_result(),
+        next_update_result_refresh: Instant::now() + Duration::from_secs(1),
         control_confirm_until: None,
     };
 
@@ -2300,6 +2304,15 @@ fn update(app: &mut App) {
         return;
     }
 
+    // The detached updater launches the replacement app before its health
+    // check completes. Refresh this one tiny record while a dashboard is open
+    // so `pending` becomes `installed` (or `rolled_back`) without another
+    // relaunch. This stays off the closed-popover fast path.
+    if now >= app.next_update_result_refresh {
+        app.update_install_result = peterfan_platform::updater::read_update_install_result();
+        app.next_update_result_refresh = now + Duration::from_secs(2);
+    }
+
     if refresh_slow_metrics {
         refresh_dashboard_slow_cache(app, proc_sort);
         app.next_dashboard_slow_refresh = now + DASHBOARD_SLOW_REFRESH;
@@ -2567,6 +2580,7 @@ fn update(app: &mut App) {
         "control_health": control_health,
         "fan_action_log": fan_action_log_snapshot(),
         "app_version": env!("CARGO_PKG_VERSION"),
+        "update_install_result": &app.update_install_result,
         "setup_tone": setup_tone(!daemon_st.is_empty(), daemon_update_needed),
         "setup_title": setup_title(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed),
         "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, daemon_version.as_deref()),
@@ -4169,6 +4183,7 @@ var FAN_DIAGNOSTIC_STARTED_AT=0;
 var LOGIN_ITEM_TOGGLE_PENDING=false;
 var APP_UPDATE_CHECK_PENDING=false;
 var APP_UPDATE_STATUS=null;
+var APP_PERSISTED_UPDATE_KEY='';
 var FAN_CONTROL_PENDING=null;
 if(!('__pf_pending' in window))window.__pf_pending=null;
 function applyPendingUpdate(){
@@ -4341,6 +4356,26 @@ function renderUpdateStatus(status){
     pillText=LANG==='ko'?'실패':'Failed';
     pillTone='warn';
     setText('update-check-result',LANG==='ko'?'확인 실패':'check failed');
+  } else if(s.install_status==='pending'){
+    msg=LANG==='ko'?'새 버전을 설치하고 있습니다. PeterFan이 자동으로 다시 열립니다.':(s.install_message||'Installing the new PeterFan version. The app will reopen automatically.');
+    pillText=LANG==='ko'?'설치 중':'Installing';
+    pillTone='info';
+    setText('update-check-result',LANG==='ko'?'설치 진행 중':'installation in progress');
+  } else if(s.install_status==='installed'){
+    msg=LANG==='ko'?('PeterFan v'+String(s.latest||current).replace(/^v/,'')+' 설치를 완료했습니다.'):(s.install_message||'PeterFan was installed successfully.');
+    pillText=LANG==='ko'?'완료':'Installed';
+    pillTone='ok';
+    setText('update-check-result',LANG==='ko'?'설치 완료':'installed successfully');
+  } else if(s.install_status==='rolled_back'){
+    msg=LANG==='ko'?'업데이트에 실패해 이전 PeterFan 버전을 자동으로 복원했습니다.':(s.install_message||'The update failed and the previous PeterFan version was restored.');
+    pillText=LANG==='ko'?'복원됨':'Restored';
+    pillTone='warn';
+    setText('update-check-result',LANG==='ko'?'이전 버전 복원':'previous version restored');
+  } else if(s.install_status==='failed'){
+    msg=(LANG==='ko'?'업데이트를 완료하지 못했습니다. 기존 앱은 변경하지 않았습니다.':(s.install_message||'The update could not be completed.'));
+    pillText=LANG==='ko'?'실패':'Failed';
+    pillTone='warn';
+    setText('update-check-result',LANG==='ko'?'설치 실패':'installation failed');
   } else if(s.latest){
     var newer=compareVersions(current,s.latest)<0;
     msg=newer
@@ -5135,6 +5170,20 @@ function updateRail(d){
   }
   var view=railView();
   if(view==='update'){
+    var persisted=d.update_install_result;
+    if(persisted&&(!APP_UPDATE_STATUS||APP_UPDATE_STATUS.persisted)){
+      var persistedKey=[persisted.status||'',persisted.version||'',persisted.updated_at_unix||''].join(':');
+      if(persistedKey!==APP_PERSISTED_UPDATE_KEY){
+        APP_PERSISTED_UPDATE_KEY=persistedKey;
+        APP_UPDATE_STATUS={
+          current:d.app_version||'',
+          latest:persisted.version||'',
+          install_status:persisted.status||'',
+          install_message:persisted.message||'',
+          persisted:true
+        };
+      }
+    }
     if(APP_UPDATE_STATUS){APP_UPDATE_STATUS.current=d.app_version||APP_UPDATE_STATUS.current;renderUpdateStatus();}
     else renderUpdateStatus({current:d.app_version||''});
     var updCheck=document.getElementById('rail-update-check');
@@ -5920,6 +5969,10 @@ mod tests {
         assert!(en.contains("notes:formatReleaseNotes(j.body||'')"));
         assert!(en.contains("fetchLatestReleaseStatus();"));
         assert!(en.contains("APP_UPDATE_STATUS.current=d.app_version||APP_UPDATE_STATUS.current;"));
+        assert!(en.contains("d.update_install_result"));
+        assert!(en.contains("s.install_status==='installed'"));
+        assert!(en.contains("s.install_status==='rolled_back'"));
+        assert!(en.contains("installed successfully"));
         assert!(en.contains("d.app_version"));
     }
 

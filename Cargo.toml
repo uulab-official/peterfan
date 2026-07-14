@@ -12,7 +12,7 @@ members = [
 exclude = ["tools/icongen"]
 
 [workspace.package]
-version = "1.27.18"
+version = "1.27.19"
 edition = "2021"
 license = "MIT"
 authors = ["PeterFan contributors"]
@@ -33,7 +33,9 @@ ratatui = "0.29"
 crossterm = "0.28"
 libc = "0.2"
 sysinfo = "0.36"
-battery = "0.7"
+# Maintained drop-in fork of rust-battery. The abandoned 0.7.x crate keeps an
+# old Linux-only nix dependency with RUSTSEC-2021-0119 in Cargo.lock.
+battery = { package = "starship-battery", version = "=0.10.2" }
 tray-icon = "0.24"
 tao = "0.35"
 macsmc = "0.1"

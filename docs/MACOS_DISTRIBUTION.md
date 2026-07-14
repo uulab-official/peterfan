@@ -140,6 +140,12 @@ scripts/release-local-macos.sh vX.Y.Z --draft
 This builds universal macOS binaries, signs the app, notarizes the app and DMG,
 staples tickets, creates checksums, and uploads release assets with `gh`.
 
+The in-app updater keeps its last bounded result at
+`~/Library/Application Support/PeterFan/update-result.json`. The replacement
+app reads this record to show whether installation completed, rolled back to
+the previous app, or failed before replacement. It contains no credentials or
+hardware data and is overwritten by the next OTA attempt.
+
 For a local dry run without uploading:
 
 ```bash

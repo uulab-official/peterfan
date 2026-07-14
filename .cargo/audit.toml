@@ -1,0 +1,29 @@
+[advisories]
+ignore = [
+    # NetBSD-only plist parser dependency of starship-battery. Neither parser
+    # nor quick-xml is linked into PeterFan's arm64/x86_64 macOS artifacts.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+
+    # Linux-only GTK3 backend dependencies pulled into Cargo.lock by wry/tao.
+    # PeterFan's supported release target uses WebKit/AppKit on macOS.
+    "RUSTSEC-2024-0411",
+    "RUSTSEC-2024-0412",
+    "RUSTSEC-2024-0413",
+    "RUSTSEC-2024-0414",
+    "RUSTSEC-2024-0415",
+    "RUSTSEC-2024-0416",
+    "RUSTSEC-2024-0417",
+    "RUSTSEC-2024-0418",
+    "RUSTSEC-2024-0419",
+    "RUSTSEC-2024-0420",
+    "RUSTSEC-2024-0429",
+    "RUSTSEC-2024-0370",
+
+    # ratatui 0.29 transitive dependencies. The menu-bar app and daemon do not
+    # link them; PeterFan TUI does not call lru::IterMut, the affected API.
+    # Remove these exceptions when an MSRV-1.80-compatible ratatui upgrade is
+    # available.
+    "RUSTSEC-2024-0436",
+    "RUSTSEC-2026-0002",
+]
