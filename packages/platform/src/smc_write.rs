@@ -131,9 +131,9 @@ pub struct FanProbe {
 pub fn probe() -> FanProbe {
     match Conn::open() {
         Ok(c) => {
-            let mode_key = if c.key_exists(fan_key(0, [b'M', b'd'])) {
+            let mode_key = if c.key_exists(fan_key(0, *b"Md")) {
                 Some("F0Md")
-            } else if c.key_exists(fan_key(0, [b'm', b'd'])) {
+            } else if c.key_exists(fan_key(0, *b"md")) {
                 Some("F0md")
             } else {
                 None
@@ -191,12 +191,12 @@ fn fan_key(idx: u8, suffix: [u8; 2]) -> u32 {
 
 /// The `FS! ` fan-force bitmask key (one bit per fan = manual mode).
 fn fs_key() -> u32 {
-    u32::from_be_bytes([b'F', b'S', b'!', b' '])
+    u32::from_be_bytes(*b"FS! ")
 }
 
 /// The `Ftst` diagnostic/force-test unlock key (Apple Silicon).
 fn ftst_key() -> u32 {
-    u32::from_be_bytes([b'F', b't', b's', b't'])
+    u32::from_be_bytes(*b"Ftst")
 }
 
 /// Flip fan `idx`'s bit in the `FS! ` manual-mode bitmask (best-effort; the key
@@ -366,11 +366,11 @@ impl Conn {
     /// Resolve the mode key for fan `idx`: uppercase `FnMd` on M1–M4, lowercase
     /// `Fnmd` on M5. Falls back to uppercase if neither probe succeeds.
     fn mode_key(&self, idx: u8) -> u32 {
-        let upper = fan_key(idx, [b'M', b'd']);
+        let upper = fan_key(idx, *b"Md");
         if self.key_exists(upper) {
             return upper;
         }
-        let lower = fan_key(idx, [b'm', b'd']);
+        let lower = fan_key(idx, *b"md");
         if self.key_exists(lower) {
             return lower;
         }
@@ -414,7 +414,7 @@ impl Conn {
         }
 
         // 3) Set the target RPM (little-endian `flt` on Apple Silicon).
-        self.write_key(fan_key(idx, [b'T', b'g']), &rpm.to_le_bytes())
+        self.write_key(fan_key(idx, *b"Tg"), &rpm.to_le_bytes())
     }
 
     /// Return fan `idx` to automatic (OS-managed) control and hand the thermal

@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.20] — 최신 Rust CI 호환성
+
+### Fixed
+- **Rust 1.97 Clippy 게이트** — SMC 키 바이트 배열을 최신 Clippy가 요구하는 동일한
+  바이트 문자열 표기로 정리해 GitHub의 최신 stable runner에서도 경고 0으로 빌드됨.
+  팬 제어 키와 바이트 값은 변경하지 않음.
+
 ## [1.27.19] — OTA 설치 결과와 복구 상태
 
 ### Added
