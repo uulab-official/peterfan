@@ -371,14 +371,15 @@ if [[ "$(uname)" == "Darwin" && -f scripts/bundle-macos.sh ]]; then
     fi
 
     if [[ -f scripts/make-dmg.sh ]]; then
-        echo "== .dmg must build and contain the app + Applications shortcut + Gatekeeper helper =="
+        echo "== .dmg must build and contain only the app + Applications shortcut =="
         if scripts/make-dmg.sh "$TMP_BUNDLE_DIR/PeterFan.app" "$TMP_BUNDLE_DIR/PeterFan.dmg" >/dev/null 2>&1; then
             MOUNT_DIR=$(mktemp -d)
             if hdiutil attach "$TMP_BUNDLE_DIR/PeterFan.dmg" -nobrowse -mountpoint "$MOUNT_DIR" >/dev/null 2>&1; then
-                if [[ -d "$MOUNT_DIR/PeterFan.app" && -L "$MOUNT_DIR/Applications" && -x "$MOUNT_DIR/Open PeterFan if macOS blocks it.command" ]]; then
-                    pass "PeterFan.dmg mounts with PeterFan.app + Applications shortcut + Gatekeeper helper"
+                if [[ -d "$MOUNT_DIR/PeterFan.app" && -L "$MOUNT_DIR/Applications" ]] \
+                    && [[ ! -e "$MOUNT_DIR/Open PeterFan if macOS blocks it.command" ]]; then
+                    pass "PeterFan.dmg mounts with PeterFan.app + Applications shortcut"
                 else
-                    fail "PeterFan.dmg is missing the app bundle, Applications shortcut, or Gatekeeper helper"
+                    fail "PeterFan.dmg layout is incomplete or contains the obsolete Gatekeeper bypass"
                 fi
                 hdiutil detach "$MOUNT_DIR" >/dev/null 2>&1
             else

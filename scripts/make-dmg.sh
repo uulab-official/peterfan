@@ -61,12 +61,6 @@ trap 'rm -rf "$STAGING"' EXIT
 cp -R "$APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
 
-FIXER="scripts/dmg-fix-gatekeeper.command"
-if [[ -f "$FIXER" ]]; then
-  cp "$FIXER" "$STAGING/Open PeterFan if macOS blocks it.command"
-  chmod +x "$STAGING/Open PeterFan if macOS blocks it.command"
-fi
-
 detach_repo_peterfan_images
 rm -f "$OUT"
 if ! hdiutil create \

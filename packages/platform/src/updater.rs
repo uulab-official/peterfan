@@ -234,6 +234,10 @@ pub struct ReleaseInfo {
     pub version: String,
     pub tag: String,
     pub html_url: String,
+    /// Plain GitHub release notes. UI callers may present a shortened form,
+    /// but keeping the source in the native response avoids a second WebView
+    /// request that can be blocked by CORS or app transport policy.
+    pub notes: String,
     /// Preferred direct download URL for the macOS app update asset.
     ///
     /// PeterFan prefers the notarized DMG because it is the same artifact end
@@ -303,6 +307,7 @@ fn parse_release_response(body: &[u8]) -> Result<ReleaseInfo, String> {
         .to_string();
     let version = tag.trim_start_matches('v').to_string();
     let html_url = val["html_url"].as_str().unwrap_or_default().to_string();
+    let notes = val["body"].as_str().unwrap_or_default().to_string();
     let empty_assets = Vec::new();
     let assets = val["assets"].as_array().unwrap_or(&empty_assets);
     let dmg = find_asset(assets, is_macos_dmg);
@@ -314,6 +319,7 @@ fn parse_release_response(body: &[u8]) -> Result<ReleaseInfo, String> {
         version,
         tag,
         html_url,
+        notes,
         asset_url: preferred.map(|a| a.url.clone()),
         asset_name: preferred.map(|a| a.name.clone()),
         asset_digest: preferred.and_then(|a| a.digest.clone()),
@@ -1710,6 +1716,7 @@ mod tests {
         let body = br#"{
             "tag_name": "v0.27.1",
             "html_url": "https://github.com/uulab-official/peterfan/releases/tag/v0.27.1",
+            "body": "Signed update with native progress reporting.",
             "assets": [
                 {"name": "peterfan-v0.27.1-aarch64-apple-darwin.tar.gz",
                  "browser_download_url": "https://github.com/uulab-official/peterfan/releases/download/v0.27.1/peterfan-v0.27.1-aarch64-apple-darwin.tar.gz",
@@ -1724,6 +1731,7 @@ mod tests {
         let info = parse_release_response(body).unwrap();
         assert_eq!(info.version, "0.27.1");
         assert_eq!(info.tag, "v0.27.1");
+        assert_eq!(info.notes, "Signed update with native progress reporting.");
         assert!(info.asset_url.unwrap().contains("aarch64-apple-darwin"));
         assert!(info.asset_name.unwrap().contains("aarch64-apple-darwin"));
         assert_eq!(

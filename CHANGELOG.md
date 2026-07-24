@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.31] — 공개 설치본과 원클릭 OTA 경로 통합
+
+### Fixed
+- **업데이트 확인 뒤 설치가 이어지지 않던 흐름** — WebView의 GitHub API 요청과
+  별도 AppleScript 확인창을 제거하고 네이티브 업데이트 경로 하나로 통합함.
+  `확인 및 업데이트`를 한 번 누르면 최신 릴리스 확인, SHA-256 검증, Developer ID
+  서명·공증 확인, 앱 교체와 백그라운드 재실행까지 연속으로 처리함.
+- **Mac마다 달라지던 업데이트 화면** — WebView의 CORS·네트워크 정책에 의존하지
+  않고 Rust 네이티브 상태를 팝오버와 상세 창에 공통 전달함. 확인 중, 검증 및 설치,
+  재실행, 실패·롤백 결과가 같은 화면에 남음.
+- **공증된 DMG의 오래된 Gatekeeper 우회 안내** — 공식 DMG에서 앱의 격리 속성을
+  지우던 과거 스크립트를 제거함. 새 DMG는 공증된 `PeterFan.app`과 Applications
+  바로가기만 포함하며 macOS의 정상 Gatekeeper 검증을 그대로 사용함.
+
+### Quality
+- **공개 배포물 재현 검증** — GitHub에서 다시 내려받은 DMG의 체크섬, 범용
+  아키텍처, Developer ID, stapled 공증 티켓과 Gatekeeper 승인을 확인함.
+- **앱 전용 업데이트** — 팬 제어 프로토콜과 최소 데몬 버전은 `1.27.29`로 유지함.
+  기존 호환 데몬은 재설치하지 않으므로 관리자 비밀번호를 다시 요구하지 않음.
+
 ## [1.27.30] — 무암호 데몬 갱신 성공 판정 보강
 
 ### Fixed

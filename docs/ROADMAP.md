@@ -95,6 +95,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] DMG install smoke test against `/Applications/PeterFan.app`
 - [x] In-app update panel shows current/latest version and check result
 - [x] In-app release notes preview before install
+- [x] One-click native check, verification, install, rollback, and relaunch
 - [ ] Homebrew cask
 - [ ] Update channel preference: stable / pre-release
 - [x] Rollback path when an update fails after download

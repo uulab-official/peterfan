@@ -197,6 +197,17 @@ static OPEN_DETAIL: AtomicBool = AtomicBool::new(false);
 static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Last control result, shown in the popover.
 static STATUS: Mutex<String> = Mutex::new(String::new());
+/// One native update pipeline shared by the popover, detail window, and
+/// right-click menu. GitHub checks from inside the WebView were unreliable on
+/// some Macs and could race the native installer dialog.
+static APP_UPDATE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static APP_UPDATE_STATE: Mutex<AppUpdateState> = Mutex::new(AppUpdateState {
+    phase: "idle",
+    latest: None,
+    release_url: None,
+    notes: None,
+    message: None,
+});
 /// A completed fan command invalidates the cached daemon snapshot. The event
 /// loop consumes this on its next wake so confirmed UI state does not wait for
 /// the normal two-second daemon refresh interval.
@@ -217,6 +228,44 @@ static LOGIN_ITEM_TOGGLE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// leaves the UI reporting "Auto" on the very next tick even though the fan
 /// is genuinely still pinned in hardware.
 static LOCAL_FAN_OVERRIDES: Mutex<Option<std::collections::HashMap<String, u8>>> = Mutex::new(None);
+
+#[derive(Clone)]
+struct AppUpdateState {
+    phase: &'static str,
+    latest: Option<String>,
+    release_url: Option<String>,
+    notes: Option<String>,
+    message: Option<String>,
+}
+
+fn set_app_update_state(
+    phase: &'static str,
+    release: Option<&peterfan_platform::updater::ReleaseInfo>,
+    message: impl Into<Option<String>>,
+) {
+    let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+    state.phase = phase;
+    state.latest = release.map(|value| value.version.clone());
+    state.release_url = release.map(|value| value.html_url.clone());
+    state.notes = release
+        .filter(|value| !value.notes.trim().is_empty())
+        .map(|value| value.notes.clone());
+    state.message = message.into();
+}
+
+fn app_update_state_snapshot() -> serde_json::Value {
+    let state = APP_UPDATE_STATE
+        .lock()
+        .expect("app update state poisoned")
+        .clone();
+    serde_json::json!({
+        "phase": state.phase,
+        "latest": state.latest,
+        "url": state.release_url,
+        "notes": state.notes,
+        "message": state.message,
+    })
+}
 
 struct BackgroundRead<T> {
     in_flight: AtomicBool,
@@ -338,7 +387,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             profile_maximum: "Maximum",
             open_detail: "Open Detailed Window…",
             open_diagnostics: "Open Diagnostic Log…",
-            check_updates: "Check for Updates…",
+            check_updates: "Check & Update…",
             quit: "Quit PeterFan",
             menu_bar_style: "Menu Bar Style",
             temperature_source: "Dashboard Temperature",
@@ -359,7 +408,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             profile_maximum: "최대",
             open_detail: "상세 창 열기…",
             open_diagnostics: "진단 로그 열기…",
-            check_updates: "업데이트 확인…",
+            check_updates: "확인 및 업데이트…",
             quit: "PeterFan 종료",
             menu_bar_style: "메뉴 막대 스타일",
             temperature_source: "대시보드 온도",
@@ -3027,6 +3076,7 @@ fn update(app: &mut App) {
     };
     let chart_range = ChartRange::from_u8(CHART_RANGE.load(Ordering::Relaxed));
     let (daemon_binary_installed, daemon_path, launch_daemon_installed) = daemon_install_metadata();
+    let app_update_status = app_update_state_snapshot();
 
     let payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
@@ -3110,6 +3160,7 @@ fn update(app: &mut App) {
         "control_health": control_health,
         "fan_action_log": fan_action_log_snapshot(),
         "app_version": env!("CARGO_PKG_VERSION"),
+        "app_update_status": app_update_status,
         "update_install_result": &app.update_install_result,
         "setup_tone": setup_tone(!daemon_st.is_empty(), daemon_update_needed),
         "setup_title": setup_title(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed),
@@ -3872,16 +3923,29 @@ fn maybe_prompt_stale_daemon_update() {}
 
 /// Silent background check, run once after launch. It deliberately does not
 /// open a dialog; menu-bar apps launched at login should not steal focus.
-/// The manual "Check for Updates…" action still presents the installer flow.
+/// The manual update action runs the native check-and-install flow.
 #[cfg(target_os = "macos")]
 fn check_for_updates_on_launch() {
     std::thread::sleep(Duration::from_secs(20));
+    if APP_UPDATE_IN_FLIGHT.load(Ordering::Acquire) {
+        return;
+    }
     if let Ok(release) = peterfan_platform::updater::fetch_latest_release() {
+        if APP_UPDATE_IN_FLIGHT.load(Ordering::Acquire) {
+            return;
+        }
         if peterfan_platform::updater::is_newer(env!("CARGO_PKG_VERSION"), &release.version) {
+            set_app_update_state(
+                "available",
+                Some(&release),
+                Some(format!("PeterFan v{} is available.", release.version)),
+            );
             *STATUS.lock().expect("status poisoned") = format!(
-                "update available: {} (use Check for Updates)",
+                "update available: {} (use Updates to install)",
                 release.version
             );
+        } else {
+            set_app_update_state("current", Some(&release), None);
         }
     }
     // Network hiccup or GitHub rate limit: fail silently, try again next launch.
@@ -3889,88 +3953,86 @@ fn check_for_updates_on_launch() {
 #[cfg(not(target_os = "macos"))]
 fn check_for_updates_on_launch() {}
 
-/// "Check for Updates…" menu click — unlike the launch check, this always
-/// reports back (including "you're up to date"), since the user asked.
+/// User-initiated update action. One click checks, securely downloads, queues
+/// the replacement, and relaunches. Keeping this native avoids WebView CORS
+/// differences and avoids a second confirmation window that looked like the
+/// first click had done nothing.
 #[cfg(target_os = "macos")]
 fn check_for_updates_interactive() {
+    if APP_UPDATE_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
+    set_app_update_state("checking", None, None);
+    log_menubar_event("app update check started");
     match peterfan_platform::updater::fetch_latest_release() {
+        Ok(release)
+            if !peterfan_platform::updater::is_newer(
+                env!("CARGO_PKG_VERSION"),
+                &release.version,
+            ) =>
+        {
+            let message = format!("PeterFan v{} is current.", env!("CARGO_PKG_VERSION"));
+            set_app_update_state("current", Some(&release), Some(message.clone()));
+            *STATUS.lock().expect("status poisoned") = message.clone();
+            log_menubar_event(&message);
+        }
+        Ok(release) if release.asset_url.is_none() || release.checksum_url.is_none() => {
+            let message = format!(
+                "PeterFan v{} is available, but its verified macOS files are not ready.",
+                release.version
+            );
+            set_app_update_state("available", Some(&release), Some(message.clone()));
+            *STATUS.lock().expect("status poisoned") = message.clone();
+            log_menubar_event(&message);
+        }
         Ok(release) => {
-            if peterfan_platform::updater::is_newer(env!("CARGO_PKG_VERSION"), &release.version) {
-                prompt_update_available(&release);
-            } else {
-                notify_control_result(
-                    "Check for Updates",
-                    true,
-                    &format!("You're up to date (v{}).", env!("CARGO_PKG_VERSION")),
-                );
+            set_app_update_state(
+                "downloading",
+                Some(&release),
+                Some(format!(
+                    "Downloading and verifying PeterFan v{}.",
+                    release.version
+                )),
+            );
+            log_menubar_event(&format!(
+                "app update download started target=v{} asset={}",
+                release.version,
+                release.asset_name.as_deref().unwrap_or("unknown")
+            ));
+            match peterfan_platform::updater::download_and_install_release(&release) {
+                Ok(()) => {
+                    let message = format!(
+                        "PeterFan v{} is verified and ready to relaunch.",
+                        release.version
+                    );
+                    set_app_update_state("queued", Some(&release), Some(message.clone()));
+                    *STATUS.lock().expect("status poisoned") = message.clone();
+                    log_menubar_event(&message);
+                    QUIT.store(true, Ordering::Release);
+                }
+                Err(error) => {
+                    let message = format!("Update failed: {error}");
+                    set_app_update_state("failed", Some(&release), Some(message.clone()));
+                    *STATUS.lock().expect("status poisoned") = message.clone();
+                    log_menubar_event(&message);
+                }
             }
         }
-        Err(e) => {
-            notify_control_result("Check for Updates", false, &format!("Couldn't check: {e}"))
+        Err(error) => {
+            let message = format!("Couldn't check for updates: {error}");
+            set_app_update_state("failed", None, Some(message.clone()));
+            *STATUS.lock().expect("status poisoned") = message.clone();
+            log_menubar_event(&message);
         }
     }
+    APP_UPDATE_IN_FLIGHT.store(false, Ordering::Release);
 }
 #[cfg(not(target_os = "macos"))]
 fn check_for_updates_interactive() {}
-
-/// Ask whether to install `release` now. "Update Now" downloads, extracts,
-/// and queues a detached script that replaces the running `.app` bundle and
-/// relaunches once this process quits — see
-/// `peterfan_platform::updater::download_and_install`.
-#[cfg(target_os = "macos")]
-fn prompt_update_available(release: &peterfan_platform::updater::ReleaseInfo) {
-    if release.asset_url.is_none() {
-        // No macOS asset on this release — all we can offer is the page.
-        let script = format!(
-            r#"display dialog "PeterFan {} is available (you have {}), but this release has no macOS download yet." with title "PeterFan Update" buttons {{"OK", "View Release"}} default button "View Release""#,
-            applescript_quote(&release.tag),
-            applescript_quote(env!("CARGO_PKG_VERSION")),
-        );
-        if let Ok(out) = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
-            .output()
-        {
-            if String::from_utf8_lossy(&out.stdout).contains("View Release") {
-                let _ = std::process::Command::new("open")
-                    .arg(&release.html_url)
-                    .status();
-            }
-        }
-        return;
-    }
-
-    let script = format!(
-        r#"display dialog "PeterFan {} is available — you have {}.\n\nUpdate now? PeterFan will quit and relaunch." with title "PeterFan Update" buttons {{"View Release", "Not Now", "Update Now"}} default button "Update Now" cancel button "Not Now""#,
-        applescript_quote(&release.tag),
-        applescript_quote(env!("CARGO_PKG_VERSION")),
-    );
-    let Ok(out) = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-    else {
-        return;
-    };
-    let stdout = String::from_utf8_lossy(&out.stdout);
-
-    if stdout.contains("Update Now") {
-        match peterfan_platform::updater::download_and_install_release(release) {
-            Ok(()) => QUIT.store(true, Ordering::Relaxed),
-            Err(e) => {
-                notify_control_result("Update PeterFan", false, &format!("Update failed: {e}"))
-            }
-        }
-    } else if stdout.contains("View Release") {
-        let _ = std::process::Command::new("open")
-            .arg(&release.html_url)
-            .status();
-    }
-    // "Not Now" / Escape — no state to persist; the next launch (or manual
-    // "Check for Updates…") just asks again.
-}
-#[cfg(not(target_os = "macos"))]
-fn prompt_update_available(_release: &peterfan_platform::updater::ReleaseInfo) {}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -4447,6 +4509,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Current<", ">현재<")
             .replace(">Latest<", ">최신<")
             .replace(">Release Notes<", ">릴리즈 노트<")
+            .replace(">Check &amp; Update<", ">확인 및 업데이트<")
             .replace(">Auto<", ">자동<")
             .replace(">Silent<", ">저소음<")
             .replace(">Balanced<", ">균형<")
@@ -4483,6 +4546,10 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(
                 "Manage startup and fan-control safety.",
                 "시작 동작과 팬 제어 안전 상태를 관리합니다.",
+            )
+            .replace(
+                "One click checks, verifies, installs, and relaunches PeterFan.",
+                "한 번에 최신 버전을 확인하고 검증·설치한 뒤 PeterFan을 다시 실행합니다.",
             )
             .replace(">Startup<", ">시작 설정<")
             .replace("Start on login", "Run on startup")
@@ -4716,14 +4783,14 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 
 <div class="rail-panel" id="rail-update-panel">
 <div class="panel-title-row"><div class="panel-title">Updates</div><span class="panel-pill info" id="rail-update-pill">Ready</span></div>
-<div class="panel-copy" id="rail-update-copy">PeterFan is ready to check for updates.</div>
+<div class="panel-copy" id="rail-update-copy">One click checks, verifies, installs, and relaunches PeterFan.</div>
 <div class="health-grid" id="update-version-grid">
 <div class="health-row"><span class="health-label">Current</span><span class="health-value" id="update-current-version">—</span></div>
 <div class="health-row"><span class="health-label">Latest</span><span class="health-value" id="update-latest-version">—</span></div>
 <div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result">—</span></div>
 </div>
 <div class="release-notes-card" id="update-release-notes-card" style="display:none"><div class="release-notes-title">Release Notes</div><div class="release-notes-body" id="update-release-notes">—</div></div>
-<div class="panel-actions" style="margin-top:10px"><button class="panel-action" id="rail-update-check" onclick="checkAppUpdates(this)">Check Updates</button><button class="panel-action secondary" id="update-release-link" onclick="openLatestRelease()" style="display:none">View Release</button></div>
+<div class="panel-actions" style="margin-top:10px"><button class="panel-action" id="rail-update-check" onclick="checkAppUpdates(this)">Check &amp; Update</button><button class="panel-action secondary" id="update-release-link" onclick="openLatestRelease()" style="display:none">View Release</button></div>
 </div>
 
 <div class="rail-panel" id="rail-settings-panel">
@@ -4861,7 +4928,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <aside class="action-rail" aria-label="Quick actions">
 <button class="rail-btn active" id="railDetail" data-rail-action="detail" aria-pressed="true" onclick="runRailAction('detail',this)" title="Status overview"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Status</span></button>
 <button class="rail-btn" id="railFan" data-rail-action="fan" aria-pressed="false" onclick="runRailAction('fan',this)" title="Fan control"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fan</span></button>
-<button class="rail-btn" id="railUpdate" data-rail-action="update" aria-pressed="false" onclick="runRailAction('update',this)" title="Check for Updates…"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
+<button class="rail-btn" id="railUpdate" data-rail-action="update" aria-pressed="false" onclick="runRailAction('update',this)" title="Check &amp; Update"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
 <button class="rail-btn" id="railSettings" data-rail-action="settings" aria-pressed="false" onclick="runRailAction('settings',this)" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.2-.1a1.7 1.7 0 0 0-1.9-.1 8 8 0 0 1-1.4.8 1.7 1.7 0 0 0-1.1 1.5V23h-4v-.5A1.7 1.7 0 0 0 8.1 21a8 8 0 0 1-1.4-.8 1.7 1.7 0 0 0-1.9.1l-.2.1-2-3.4.1-.1A1.7 1.7 0 0 0 3 15a8.6 8.6 0 0 1 0-1.7 1.7 1.7 0 0 0-.3-1.9l-.1-.1 2-3.4.2.1a1.7 1.7 0 0 0 1.9.1A8 8 0 0 1 8.1 7a1.7 1.7 0 0 0 1.1-1.5V5h4v.5A1.7 1.7 0 0 0 14.3 7a8 8 0 0 1 1.4.8 1.7 1.7 0 0 0 1.9-.1l.2-.1 2 3.4-.1.1a1.7 1.7 0 0 0-.3 1.9 8.6 8.6 0 0 1 0 2z"/></svg><span>Settings</span></button>
 <button class="rail-btn" id="railMore" data-rail-action="more" aria-pressed="false" onclick="runRailAction('more',this)" title="System metrics"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg><span>System</span></button>
 </aside></div></div>
@@ -5024,6 +5091,7 @@ function formatReleaseNotes(body){
 function renderUpdateStatus(status){
   if(status)APP_UPDATE_STATUS=status;
   var s=APP_UPDATE_STATUS||{};
+  var phase=s.phase||'';
   var current=s.current||(window.__pf_pending&&window.__pf_pending.app_version)||'';
   setText('update-current-version',current?('v'+String(current).replace(/^v/,'')):'—');
   setText('update-latest-version',s.latest?('v'+String(s.latest).replace(/^v/,'')):'—');
@@ -5039,11 +5107,26 @@ function renderUpdateStatus(status){
     notesCard.style.display=s.notes?'':'none';
     if(notesBody)notesBody.textContent=s.notes||'';
   }
-  if(s.checking){
+  if(s.checking||phase==='checking'){
     msg=LANG==='ko'?'GitHub 최신 릴리즈를 확인 중입니다.':'Checking the latest GitHub release.';
     pillText=LANG==='ko'?'확인 중':'Checking';
     pillTone='info';
     setText('update-check-result',LANG==='ko'?'확인 중…':'checking…');
+  } else if(phase==='downloading'){
+    msg=s.message||(LANG==='ko'?'새 버전을 내려받아 서명과 공증을 확인하고 있습니다.':'Downloading the new version and verifying its signature and notarization.');
+    pillText=LANG==='ko'?'설치 중':'Installing';
+    pillTone='info';
+    setText('update-check-result',LANG==='ko'?'검증 및 설치 중':'verifying and installing');
+  } else if(phase==='queued'){
+    msg=s.message||(LANG==='ko'?'업데이트가 준비되었습니다. PeterFan이 자동으로 다시 열립니다.':'The update is ready. PeterFan will reopen automatically.');
+    pillText=LANG==='ko'?'재실행 중':'Relaunching';
+    pillTone='ok';
+    setText('update-check-result',LANG==='ko'?'업데이트 준비 완료':'update ready');
+  } else if(phase==='failed'){
+    msg=s.message||(LANG==='ko'?'업데이트를 완료하지 못했습니다. 기존 앱은 변경하지 않았습니다.':'The update could not be completed. The existing app was not changed.');
+    pillText=LANG==='ko'?'실패':'Failed';
+    pillTone='warn';
+    setText('update-check-result',LANG==='ko'?'업데이트 실패':'update failed');
   } else if(s.error){
     msg=(LANG==='ko'?'업데이트 확인 실패: ':'Update check failed: ')+s.error;
     pillText=LANG==='ko'?'실패':'Failed';
@@ -5071,9 +5154,9 @@ function renderUpdateStatus(status){
     setText('update-check-result',LANG==='ko'?'설치 실패':'installation failed');
   } else if(s.latest){
     var newer=compareVersions(current,s.latest)<0;
-    msg=newer
+    msg=s.message||(newer
       ?(LANG==='ko'?'새 버전을 사용할 수 있습니다.':'A newer PeterFan release is available.')
-      :(LANG==='ko'?'최신 버전을 사용 중입니다.':'You are up to date.');
+      :(LANG==='ko'?'최신 버전을 사용 중입니다.':'You are up to date.'));
     pillText=newer?(LANG==='ko'?'업데이트 있음':'Update'):(LANG==='ko'?'최신':'Current');
     pillTone=newer?'warn':'ok';
     setText('update-check-result',newer?(LANG==='ko'?'업데이트 가능':'update available'):(LANG==='ko'?'최신 상태':'up to date'));
@@ -5087,21 +5170,6 @@ function renderUpdateStatus(status){
     link.dataset.url=s.url||'';
     link.textContent=LANG==='ko'?'릴리즈 보기':'View Release';
   }
-}
-function fetchLatestReleaseStatus(){
-  var current=(window.__pf_pending&&window.__pf_pending.app_version)||'';
-  renderUpdateStatus({current:current,checking:true});
-  return fetch('https://api.github.com/repos/uulab-official/peterfan/releases/latest',{headers:{'Accept':'application/vnd.github+json'}})
-    .then(function(r){
-      if(!r.ok)throw new Error('HTTP '+r.status);
-      return r.json();
-    })
-    .then(function(j){
-      renderUpdateStatus({current:current,latest:String(j.tag_name||'').replace(/^v/,''),tag:j.tag_name||'',url:j.html_url||'',notes:formatReleaseNotes(j.body||'')});
-    })
-    .catch(function(e){
-      renderUpdateStatus({current:current,error:e&&e.message?e.message:String(e)});
-    });
 }
 function openLatestRelease(){
   var link=document.getElementById('update-release-link');
@@ -5520,15 +5588,20 @@ function checkAppUpdates(btn){
     btn.disabled=true;
     setButtonLabel(btn,LANG==='ko'?'확인 중…':'Checking…');
   }
-  fetchLatestReleaseStatus();
+  renderUpdateStatus({
+    current:(window.__pf_pending&&window.__pf_pending.app_version)||'',
+    phase:'checking'
+  });
   window.ipc.postMessage('checkupdates');
   setTimeout(function(){
-    APP_UPDATE_CHECK_PENDING=false;
-    if(btn){
-      btn.disabled=false;
-      setButtonLabel(btn,btn.dataset.defaultLabel||(LANG==='ko'?'업데이트':'Updates'));
+    if(APP_UPDATE_CHECK_PENDING){
+      APP_UPDATE_CHECK_PENDING=false;
+      if(btn){
+        btn.disabled=false;
+        setButtonLabel(btn,btn.dataset.defaultLabel||(LANG==='ko'?'확인 및 업데이트':'Check & Update'));
+      }
     }
-  },2500);
+  },120000);
 }
 function toggleStartupItem(btn){
   if(LOGIN_ITEM_TOGGLE_PENDING||!window.__pf_pending||!window.__pf_pending.login_item_supported)return;
@@ -5864,8 +5937,8 @@ function updateSetup(d){
   var update=document.getElementById('setup-update');
   if(update){
     update.disabled=APP_UPDATE_CHECK_PENDING;
-    update.textContent=APP_UPDATE_CHECK_PENDING?(LANG==='ko'?'확인 중…':'Checking…'):(LANG==='ko'?'업데이트 확인':'Check Updates');
-    update.title=LANG==='ko'?'앱 업데이트 확인':'Check for app updates';
+    update.textContent=APP_UPDATE_CHECK_PENDING?(LANG==='ko'?'업데이트 중…':'Updating…'):(LANG==='ko'?'확인 및 업데이트':'Check & Update');
+    update.title=LANG==='ko'?'최신 버전 확인 및 설치':'Check for and install app updates';
   }
   var startupMenu=document.getElementById('setup-startup');
   if(startupMenu){
@@ -5904,9 +5977,23 @@ function updateRail(d){
     RAIL_NAV_READY=true;
   }
   var view=railView();
+  var nativeUpdate=d.app_update_status||{};
+  var nativePhase=nativeUpdate.phase||'idle';
+  var nativePending=nativePhase==='checking'||nativePhase==='downloading'||nativePhase==='queued';
+  APP_UPDATE_CHECK_PENDING=nativePending;
   if(view==='update'){
     var persisted=d.update_install_result;
-    if(persisted&&(!APP_UPDATE_STATUS||APP_UPDATE_STATUS.persisted)){
+    if(nativePhase!=='idle'){
+      APP_UPDATE_STATUS={
+        current:d.app_version||'',
+        latest:nativeUpdate.latest||'',
+        url:nativeUpdate.url||'',
+        notes:formatReleaseNotes(nativeUpdate.notes||''),
+        message:nativeUpdate.message||'',
+        phase:nativePhase,
+        persisted:false
+      };
+    } else if(persisted&&(!APP_UPDATE_STATUS||APP_UPDATE_STATUS.persisted)){
       var persistedKey=[persisted.status||'',persisted.version||'',persisted.updated_at_unix||''].join(':');
       if(persistedKey!==APP_PERSISTED_UPDATE_KEY){
         APP_PERSISTED_UPDATE_KEY=persistedKey;
@@ -5922,7 +6009,12 @@ function updateRail(d){
     if(APP_UPDATE_STATUS){APP_UPDATE_STATUS.current=d.app_version||APP_UPDATE_STATUS.current;renderUpdateStatus();}
     else renderUpdateStatus({current:d.app_version||''});
     var updCheck=document.getElementById('rail-update-check');
-    if(updCheck&&!APP_UPDATE_CHECK_PENDING)updCheck.textContent=LANG==='ko'?'업데이트 확인':'Check Updates';
+    if(updCheck){
+      updCheck.disabled=nativePending;
+      updCheck.textContent=nativePending
+        ?(LANG==='ko'?'업데이트 중…':'Updating…')
+        :(LANG==='ko'?'확인 및 업데이트':'Check & Update');
+    }
   } else if(view==='settings'){
     updateHealthPanel(d);
   } else if(view==='more'){
@@ -6407,7 +6499,7 @@ mod tests {
             assert!(html.contains("daemon_update_needed"));
             assert!(html.contains("Reinstall fan control"));
             assert!(html.contains("Reinstall Fan Control"));
-            assert!(html.contains("Check for app updates"));
+            assert!(html.contains("Check for and install app updates"));
             assert!(html.contains("cmd:fanhold:"));
             assert!(html.contains("cmd:fanauto:"));
             assert!(html.contains("savecurve:"));
@@ -6801,11 +6893,12 @@ mod tests {
         assert!(en.contains(r#"id="update-release-notes""#));
         assert!(en.contains("function compareVersions(a,b)"));
         assert!(en.contains("function formatReleaseNotes(body)"));
-        assert!(en.contains("function fetchLatestReleaseStatus()"));
         assert!(en.contains("function renderUpdateStatus(status)"));
-        assert!(en.contains("https://api.github.com/repos/uulab-official/peterfan/releases/latest"));
-        assert!(en.contains("notes:formatReleaseNotes(j.body||'')"));
-        assert!(en.contains("fetchLatestReleaseStatus();"));
+        assert!(!en.contains("function fetchLatestReleaseStatus()"));
+        assert!(!en.contains("api.github.com/repos/uulab-official/peterfan/releases/latest"));
+        assert!(en.contains("d.app_update_status||{}"));
+        assert!(en.contains("phase:'checking'"));
+        assert!(en.contains("Check &amp; Update"));
         assert!(en.contains("APP_UPDATE_STATUS.current=d.app_version||APP_UPDATE_STATUS.current;"));
         assert!(en.contains("d.update_install_result"));
         assert!(en.contains("s.install_status==='installed'"));
