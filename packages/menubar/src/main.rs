@@ -444,6 +444,8 @@ struct App {
     tray_menu: Option<TrayMenu>,
     window: Option<Window>,
     webview: Option<WebView>,
+    webview_ready: bool,
+    dashboard_script: Option<String>,
     popover_visible: bool,
     popover_show_at: Option<Instant>,
     /// `tray-icon` normally sends both Down and Up. Open on Down for macOS
@@ -455,6 +457,7 @@ struct App {
     /// Created lazily on first request.
     detail_window: Option<Window>,
     detail_webview: Option<WebView>,
+    detail_webview_ready: bool,
     /// Short-term (2-minute) history for the menu-bar runner icon only — the
     /// icon always shows the recent trend, independent of the popover's
     /// chart range selector.
@@ -1362,11 +1365,14 @@ fn main() {
         tray_menu: None,
         window: None,
         webview: None,
+        webview_ready: false,
+        dashboard_script: None,
         popover_visible: false,
         popover_show_at: None,
         left_button_down_seen: false,
         detail_window: None,
         detail_webview: None,
+        detail_webview_ready: false,
         fan_hist: VecDeque::with_capacity(HIST_CAP),
         cpu_h: RangedHistory::new(),
         mem_h: RangedHistory::new(),
@@ -1572,10 +1578,27 @@ fn main() {
                         *STATUS.lock().expect("status poisoned") = status;
                     });
                     refresh_after_pending = true;
-                } else if c == "ready" {
-                    // The WebView may be built hidden during idle prewarm.
-                    // Let the normal tick deliver data so `ready` never
-                    // triggers a full sensor scan on the event-loop thread.
+                } else if c == "ready:popover" {
+                    app.webview_ready = true;
+                    log_menubar_event("popover webview ready");
+                    // A hidden prewarmed WebView can finish after the first
+                    // native payload was built. Re-send that payload now so
+                    // the first visible frame cannot remain at empty defaults.
+                    if let (Some(wv), Some(script)) =
+                        (app.webview.as_ref(), app.dashboard_script.as_deref())
+                    {
+                        evaluate_dashboard_script(wv, script, "popover");
+                    }
+                    next_metric_at = now;
+                } else if c == "ready:detail" {
+                    app.detail_webview_ready = true;
+                    log_menubar_event("detail webview ready");
+                    if let (Some(wv), Some(script)) =
+                        (app.detail_webview.as_ref(), app.dashboard_script.as_deref())
+                    {
+                        evaluate_dashboard_script(wv, script, "detail");
+                    }
+                    next_metric_at = now;
                 } else {
                     // Hardware I/O (SMC calls) can take hundreds of ms,
                     // especially while failing (no daemon, no root) — run it
@@ -1709,6 +1732,7 @@ fn main() {
                 if app.window.is_some() {
                     app.window = None;
                     app.webview = None;
+                    app.webview_ready = false;
                     let _ = build_popover(&mut app, target, &event_proxy);
                     if was_visible {
                         if let Some(w) = &app.window {
@@ -1722,6 +1746,7 @@ fn main() {
                         app.detail_window.as_ref().is_some_and(Window::is_visible);
                     app.detail_window = None;
                     app.detail_webview = None;
+                    app.detail_webview_ready = false;
                     if was_detail_visible {
                         open_detail_window(&mut app, target, &event_proxy);
                     }
@@ -2084,10 +2109,14 @@ fn build_popover(
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
             } else if let Some(url) = body.strip_prefix("open:") {
                 open_external_url(url);
-            } else if body == "ready"
-                || body == "checkupdates"
-                || body == "toggle-login-item"
-                || body == "togglelogin"
+            } else if let Some(error) = body.strip_prefix("js-error:") {
+                log_menubar_event(&format!("popover webview javascript error: {error}"));
+            } else if body == "ready" {
+                PENDING
+                    .lock()
+                    .expect("pending poisoned")
+                    .push("ready:popover".to_string());
+            } else if body == "checkupdates" || body == "toggle-login-item" || body == "togglelogin"
             {
                 PENDING
                     .lock()
@@ -2142,6 +2171,7 @@ fn build_popover(
         Ok(webview) => {
             app.window = Some(window);
             app.webview = Some(webview);
+            app.webview_ready = false;
             log_menubar_event("popover webview created");
             true
         }
@@ -2197,10 +2227,14 @@ fn open_detail_window(
                 OPEN_DETAIL.store(true, Ordering::Relaxed);
             } else if let Some(url) = body.strip_prefix("open:") {
                 open_external_url(url);
-            } else if body == "ready"
-                || body == "checkupdates"
-                || body == "toggle-login-item"
-                || body == "togglelogin"
+            } else if let Some(error) = body.strip_prefix("js-error:") {
+                log_menubar_event(&format!("detail webview javascript error: {error}"));
+            } else if body == "ready" {
+                PENDING
+                    .lock()
+                    .expect("pending poisoned")
+                    .push("ready:detail".to_string());
+            } else if body == "checkupdates" || body == "toggle-login-item" || body == "togglelogin"
             {
                 PENDING
                     .lock()
@@ -2250,6 +2284,7 @@ fn open_detail_window(
             window.set_visible(true);
             app.detail_window = Some(window);
             app.detail_webview = Some(webview);
+            app.detail_webview_ready = false;
             defer_dashboard_io_after_open(app);
         }
         Err(e) => eprintln!("failed to create detail webview: {e}"),
@@ -2750,6 +2785,14 @@ fn refresh_all_temperature_cache(app: &mut App, now: Instant, dashboard_visible:
     }
 }
 
+fn evaluate_dashboard_script(webview: &WebView, script: &str, target: &str) {
+    if let Err(error) = webview.evaluate_script(script) {
+        log_menubar_event(&format!(
+            "{target} dashboard payload evaluation failed: {error:?}"
+        ));
+    }
+}
+
 fn update(app: &mut App) {
     let now = Instant::now();
     app.monitor.refresh_quick();
@@ -3220,14 +3263,17 @@ fn update(app: &mut App) {
     let script = format!(
         "window.__pf_pending={payload};window.__pf&&window.__pf.update(window.__pf_pending)"
     );
-    if app.popover_visible {
-        if let Some(wv) = &app.webview {
-            let _ = wv.evaluate_script(&script);
+    app.dashboard_script = Some(script);
+    if app.popover_visible && app.webview_ready {
+        if let (Some(wv), Some(script)) = (app.webview.as_ref(), app.dashboard_script.as_deref()) {
+            evaluate_dashboard_script(wv, script, "popover");
         }
     }
-    if detail_visible {
-        if let Some(wv) = &app.detail_webview {
-            let _ = wv.evaluate_script(&script);
+    if detail_visible && app.detail_webview_ready {
+        if let (Some(wv), Some(script)) =
+            (app.detail_webview.as_ref(), app.dashboard_script.as_deref())
+        {
+            evaluate_dashboard_script(wv, script, "detail");
         }
     }
 }
@@ -5036,6 +5082,14 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 <script>
 var LANG='__LANG__';
 var SHOW_CURVE_EDITOR='__SHOWCURVE__';
+// Keep WebView failures visible to the native diagnostic log. A blank pane is
+// otherwise indistinguishable from a slow sensor read.
+window.onerror=function(message,source,line,column,error){
+  if(window.ipc)window.ipc.postMessage('js-error:'+String(message||error||'unknown').slice(0,240));
+};
+window.onunhandledrejection=function(event){
+  if(window.ipc)window.ipc.postMessage('js-error:'+String(event.reason||'unhandled rejection').slice(0,240));
+};
 var FAN_CONTROL_FIX_PENDING=false;
 var FAN_DIAGNOSTIC_PENDING=false;
 var FAN_DIAGNOSTIC_STARTED_AT=0;
@@ -5415,6 +5469,10 @@ window.__pf={
 }};
 applyPendingUpdate();
 if(window.ipc)window.ipc.postMessage('ready');
+// A prewarmed macOS WebView can expose its IPC bridge a frame after the page
+// script runs. One retry makes the ready handshake deterministic without
+// touching the sensor path or delaying the first render.
+setTimeout(function(){if(window.ipc)window.ipc.postMessage('ready');},250);
 // One card per controllable fan — independent Auto/Manual toggle + a slider
 // bounded to that fan's own min/max RPM (not a 0-100% abstraction), so you
 // can pin e.g. just the left fan while the right one keeps following the
@@ -7318,11 +7376,17 @@ mod tests {
     #[test]
     fn dashboard_requests_refresh_when_webview_becomes_ready() {
         let en = dashboard_html(ResolvedLanguage::En, false);
+        let source = include_str!("main.rs");
 
         assert!(en.contains("window.__pf_pending"));
         assert!(en.contains("function applyPendingUpdate()"));
         assert!(en.contains("window.ipc.postMessage('ready')"));
         assert!(en.contains("applyPendingUpdate();"));
+        assert!(source.contains("ready:popover"));
+        assert!(source.contains("ready:detail"));
+        assert!(source.contains("app.dashboard_script.as_deref()"));
+        assert!(source.contains("evaluate_dashboard_script(wv, script, \"popover\")"));
+        assert!(source.contains("evaluate_dashboard_script(wv, script, \"detail\")"));
     }
 
     #[test]

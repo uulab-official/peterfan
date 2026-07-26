@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.33] — WebView 초기 렌더 안정화
+
+### Fixed
+- **처음 열었을 때 CPU·메모리·온도가 비어 있던 문제** — WebView가 준비되기
+  전에 실행된 첫 데이터 전달을 버리지 않고, `ready` 신호가 오면 마지막 payload를
+  즉시 다시 전달함. 팝오버와 상세 창 모두 같은 준비 상태를 사용함.
+- **화면 JavaScript 오류가 조용히 사라지던 문제** — 초기화 오류와 payload 평가
+  실패를 메뉴바 진단 로그에 남기고, IPC 준비 신호를 짧게 한 번 재시도함.
+- **빌드 테스트가 디스크 부족으로 실패하던 환경 문제** — 재생성 가능한 로컬
+  `target/`과 `dist/` 산출물을 정리해 테스트 공간을 확보함.
+
 ## [1.27.32] — 팝오버 단순화와 팬 설치 안전성
 
 ### Changed
