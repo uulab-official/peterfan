@@ -82,6 +82,7 @@ const DASHBOARD_SLOW_REFRESH: Duration = Duration::from_secs(3);
 const DASHBOARD_SLOW_OPEN_GRACE: Duration = Duration::from_millis(450);
 const ALL_TEMP_REFRESH: Duration = Duration::from_secs(10);
 const DAEMON_REFRESH: Duration = Duration::from_secs(2);
+const DAEMON_STALE_AFTER: Duration = Duration::from_secs(8);
 const TEMPERATURE_STALE_AFTER: Duration = Duration::from_secs(6);
 const ALL_TEMPERATURE_STALE_AFTER: Duration = Duration::from_secs(30);
 const CONTROL_CONFIRM_REFRESH: Duration = Duration::from_millis(200);
@@ -102,6 +103,13 @@ static CHART_RANGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::n
 /// Top Processes sort column (0 = CPU, 1 = Memory) — same "session-only
 /// display preference" reasoning as `CHART_RANGE`.
 static PROC_SORT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// Active compact dashboard view (0 = overview, 1 = fan, 2 = settings).
+/// The WebView reports navigation changes so the native updater can avoid
+/// collecting and serializing metrics hidden behind another view.
+static ACTIVE_RAIL_VIEW: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// Raw SMC/IOHID sensors are expensive and normally collapsed. Poll them only
+/// while the user has explicitly opened the sensor disclosure.
+static RAW_TEMPS_OPEN: AtomicBool = AtomicBool::new(false);
 static DAEMON_VERSION_CACHE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
 static MENUBAR_LOG_LOCK: Mutex<()> = Mutex::new(());
 
@@ -484,6 +492,7 @@ struct App {
     next_all_temp_refresh: Instant,
     all_temp_read: Arc<BackgroundRead<TimedSample<Vec<TempSensor>>>>,
     daemon_json_cache: Option<serde_json::Value>,
+    daemon_json_sampled_at: Option<Instant>,
     next_daemon_refresh: Instant,
     update_install_result: Option<peterfan_platform::updater::UpdateInstallResult>,
     next_update_result_refresh: Instant,
@@ -1386,6 +1395,7 @@ fn main() {
         next_all_temp_refresh: Instant::now() + ALL_TEMP_REFRESH,
         all_temp_read: Arc::new(BackgroundRead::default()),
         daemon_json_cache: None,
+        daemon_json_sampled_at: None,
         next_daemon_refresh: Instant::now() + DAEMON_REFRESH,
         update_install_result: peterfan_platform::updater::read_update_install_result(),
         next_update_result_refresh: Instant::now() + Duration::from_secs(1),
@@ -2108,6 +2118,17 @@ fn build_popover(
                 CHART_RANGE.store(v, Ordering::Relaxed);
             } else if let Some(s) = body.strip_prefix("procsort:") {
                 PROC_SORT.store(if s == "mem" { 1 } else { 0 }, Ordering::Relaxed);
+            } else if let Some(view) = body.strip_prefix("view:") {
+                ACTIVE_RAIL_VIEW.store(
+                    match view {
+                        "fan" => 1,
+                        "settings" => 2,
+                        _ => 0,
+                    },
+                    Ordering::Relaxed,
+                );
+            } else if let Some(open) = body.strip_prefix("rawtemps:") {
+                RAW_TEMPS_OPEN.store(open == "1", Ordering::Relaxed);
             } else if let Some(pid) = body
                 .strip_prefix("killproc:")
                 .and_then(|s| s.parse::<u32>().ok())
@@ -2204,6 +2225,17 @@ fn open_detail_window(
                 CHART_RANGE.store(v, Ordering::Relaxed);
             } else if let Some(s) = body.strip_prefix("procsort:") {
                 PROC_SORT.store(if s == "mem" { 1 } else { 0 }, Ordering::Relaxed);
+            } else if let Some(view) = body.strip_prefix("view:") {
+                ACTIVE_RAIL_VIEW.store(
+                    match view {
+                        "fan" => 1,
+                        "settings" => 2,
+                        _ => 0,
+                    },
+                    Ordering::Relaxed,
+                );
+            } else if let Some(open) = body.strip_prefix("rawtemps:") {
+                RAW_TEMPS_OPEN.store(open == "1", Ordering::Relaxed);
             } else if let Some(pid) = body
                 .strip_prefix("killproc:")
                 .and_then(|s| s.parse::<u32>().ok())
@@ -2723,12 +2755,16 @@ fn update(app: &mut App) {
     app.monitor.refresh_quick();
     let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
     let dashboard_visible = app.popover_visible || detail_visible;
+    let active_view = ACTIVE_RAIL_VIEW.load(Ordering::Relaxed);
+    let overview_visible = dashboard_visible && active_view == 0;
+    let fan_visible = dashboard_visible && active_view == 1;
+    let settings_visible = dashboard_visible && active_view == 2;
     let proc_sort = if PROC_SORT.load(Ordering::Relaxed) == 1 {
         ProcSort::Memory
     } else {
         ProcSort::Cpu
     };
-    let refresh_slow_metrics = dashboard_visible
+    let refresh_slow_metrics = settings_visible
         && (now >= app.next_dashboard_slow_refresh
             || app.dashboard_slow_cache.proc_sort != proc_sort);
     if refresh_slow_metrics {
@@ -2745,14 +2781,14 @@ fn update(app: &mut App) {
     // thread: on unsupported or waking hardware they can take long enough to
     // make the menu-bar item appear unclickable.
     refresh_temperature_cache(app, now);
-    refresh_fan_cache(app, now, dashboard_visible);
+    refresh_fan_cache(app, now, fan_visible || settings_visible);
     let temperature_stale =
         sample_is_stale(app.temperature_sampled_at, now, TEMPERATURE_STALE_AFTER);
     let temperature_age_secs = sample_age(app.temperature_sampled_at, now)
         .map(|age| age.as_secs())
         .unwrap_or(0);
     let temps = app.temperature_cache.clone();
-    let fans = if dashboard_visible {
+    let fans = if fan_visible || settings_visible {
         app.fan_cache.clone()
     } else {
         Vec::new()
@@ -2908,28 +2944,41 @@ fn update(app: &mut App) {
             })
         })
         .collect();
-    refresh_all_temperature_cache(app, now, dashboard_visible);
+    let raw_temps_visible = overview_visible && RAW_TEMPS_OPEN.load(Ordering::Relaxed);
+    refresh_all_temperature_cache(app, now, raw_temps_visible);
     let all_temp_stale = sample_is_stale(app.all_temp_sampled_at, now, ALL_TEMPERATURE_STALE_AFTER);
     let all_temp_age_secs = sample_age(app.all_temp_sampled_at, now)
         .map(|age| age.as_secs())
         .unwrap_or(0);
-    let all_temp_rows: Vec<_> = app
-        .all_temp_rows_cache
-        .iter()
-        .cloned()
-        .map(|mut row| {
-            row["sampled_at_unix_ms"] = serde_json::json!(app.all_temp_sampled_at_unix_ms);
-            row["age_secs"] = serde_json::json!(all_temp_age_secs);
-            row["stale"] = serde_json::json!(all_temp_stale);
-            row
-        })
-        .collect();
+    let all_temp_rows: Vec<_> = if raw_temps_visible {
+        app.all_temp_rows_cache
+            .iter()
+            .cloned()
+            .map(|mut row| {
+                row["sampled_at_unix_ms"] = serde_json::json!(app.all_temp_sampled_at_unix_ms);
+                row["age_secs"] = serde_json::json!(all_temp_age_secs);
+                row["stale"] = serde_json::json!(all_temp_stale);
+                row
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // Fans: every fan listed with its own RPM and a speed bar (rpm / max).
     // Daemon status is useful, but a stale/missing socket can block for its
     // read timeout. Cache it briefly so opening the popover never waits on IPC.
-    if now >= app.next_daemon_refresh {
-        app.daemon_json_cache = daemon_temps_json();
+    if (fan_visible || settings_visible) && now >= app.next_daemon_refresh {
+        if let Some(snapshot) = daemon_temps_json() {
+            app.daemon_json_cache = Some(snapshot);
+            app.daemon_json_sampled_at = Some(now);
+        } else if app
+            .daemon_json_sampled_at
+            .is_some_and(|sampled_at| now.duration_since(sampled_at) > DAEMON_STALE_AFTER)
+        {
+            app.daemon_json_cache = None;
+            app.daemon_json_sampled_at = None;
+        }
         app.next_daemon_refresh = now + DAEMON_REFRESH;
     }
     let daemon_json = app.daemon_json_cache.clone();
@@ -3618,6 +3667,30 @@ fn is_enable_fan_control_id(_tm: &TrayMenu, _id: &tray_icon::menu::MenuId) -> bo
 /// Run the one-time privileged daemon install (macOS admin-password dialog)
 /// from the menu bar directly — a GUI-only user never has to open a
 /// terminal. Blocks on the dialog, so it must run off the event-loop thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FanControlInstallPlan {
+    AlreadyReady,
+    SelfReinstall,
+    PrivilegedInstall,
+    InstalledButUnavailable,
+}
+
+fn fan_control_install_plan(
+    installed_version: Option<&str>,
+    daemon_reachable: bool,
+) -> FanControlInstallPlan {
+    match (installed_version, daemon_reachable) {
+        (Some(version), true) if !peterfan_platform::daemon_update_required(version) => {
+            FanControlInstallPlan::AlreadyReady
+        }
+        (Some(version), true) if peterfan_platform::daemon_self_reinstall_supported(version) => {
+            FanControlInstallPlan::SelfReinstall
+        }
+        (Some(_), false) => FanControlInstallPlan::InstalledButUnavailable,
+        _ => FanControlInstallPlan::PrivilegedInstall,
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn install_fan_control() {
     use peterfan_platform::daemon_install::InstallOutcome;
@@ -3631,24 +3704,38 @@ fn install_fan_control() {
     {
         return;
     }
-    let old_version = cached_installed_daemon_version();
-    let updating_existing = old_version
-        .as_deref()
-        .is_some_and(peterfan_platform::daemon_update_required);
+    let old_version = peterfan_platform::installed_daemon_version();
+    let daemon_reachable = peterfan_platform::daemon_reachable();
+    let plan = fan_control_install_plan(old_version.as_deref(), daemon_reachable);
+    let updating_existing = old_version.is_some();
     clear_daemon_version_cache();
-    let install_result = if updating_existing {
-        peterfan_platform::daemon_install::reinstall_via_running_daemon(false)
-            .or_else(|_| peterfan_platform::daemon_install::install(false))
-    } else {
-        peterfan_platform::daemon_install::install(false)
+    let install_result = match plan {
+        FanControlInstallPlan::AlreadyReady => Ok(InstallOutcome::Installed),
+        FanControlInstallPlan::SelfReinstall => {
+            peterfan_platform::daemon_install::reinstall_via_running_daemon(false)
+        }
+        FanControlInstallPlan::PrivilegedInstall => {
+            peterfan_platform::daemon_install::install(false)
+        }
+        FanControlInstallPlan::InstalledButUnavailable => Err(
+            "Fan control is installed but the daemon is not responding. No administrator changes were made; run Diagnostics and retry."
+                .into(),
+        ),
     };
     let (ok, message) = match install_result {
+        Ok(InstallOutcome::Installed) if plan == FanControlInstallPlan::AlreadyReady => (
+            true,
+            format!(
+                "Fan control is already enabled — daemon v{} is ready.",
+                old_version.as_deref().unwrap_or("unknown")
+            ),
+        ),
         Ok(InstallOutcome::Installed) => {
             clear_daemon_version_cache();
             persist_clear_daemon_update_prompt_state();
             let installed_version = cached_installed_daemon_version()
                 .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
-            if updating_existing {
+            if plan == FanControlInstallPlan::SelfReinstall {
                 (
                     true,
                     format!("Fan control reinstalled — daemon is now v{installed_version}."),
@@ -3668,25 +3755,22 @@ fn install_fan_control() {
         Err(e) => (false, e),
     };
     INSTALL_FAN_CONTROL_IN_FLIGHT.store(false, Ordering::SeqCst);
-    record_fan_action(
-        if updating_existing {
-            "reinstall fan control"
-        } else {
-            "enable fan control"
-        },
-        &message,
-        ok,
-    );
+    log_menubar_event(&format!(
+        "fan control install plan={plan:?} ok={ok} result={message}"
+    ));
+    let (action_label, notification_title) = match plan {
+        FanControlInstallPlan::AlreadyReady | FanControlInstallPlan::InstalledButUnavailable => {
+            ("check fan control", "Fan Control")
+        }
+        FanControlInstallPlan::SelfReinstall => ("reinstall fan control", "Reinstall Fan Control"),
+        FanControlInstallPlan::PrivilegedInstall if updating_existing => {
+            ("reinstall fan control", "Reinstall Fan Control")
+        }
+        FanControlInstallPlan::PrivilegedInstall => ("enable fan control", "Enable Fan Control"),
+    };
+    record_fan_action(action_label, &message, ok);
     *STATUS.lock().expect("status poisoned") = message.clone();
-    notify_control_result(
-        if updating_existing {
-            "Reinstall Fan Control"
-        } else {
-            "Enable Fan Control"
-        },
-        ok,
-        &message,
-    );
+    notify_control_result(notification_title, ok, &message);
 }
 #[cfg(not(target_os = "macos"))]
 fn install_fan_control() {}
@@ -4512,9 +4596,13 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Check &amp; Update<", ">확인 및 업데이트<")
             .replace(">Auto<", ">자동<")
             .replace(">Silent<", ">저소음<")
+            .replace(">Quiet<", ">저소음<")
             .replace(">Balanced<", ">균형<")
+            .replace(">Balance<", ">균형<")
             .replace(">Gaming<", ">게임<")
+            .replace(">Game<", ">게임<")
             .replace(">Performance<", ">성능<")
+            .replace(">Fast<", ">성능<")
             .replace(">Max<", ">최대<")
             .replace("Open Detailed Window…", "상세 창 열기…")
             .replace(">Quit PeterFan<", ">PeterFan 종료<")
@@ -4571,25 +4659,26 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
 
 const DASHBOARD_HTML_EN: &str = r##"<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">
 <style>
-:root{--g:#30d158;--y:#ffd60a;--r:#ff453a;--accent:#5b9dff;--text:#f4f6fa;--dim:#7f8896;--line:rgba(255,255,255,.07);--panel-bg:#1b1b1d;--panel-border:rgba(255,255,255,.09);--chip-bg:rgba(255,255,255,.06);--chip-hover:rgba(91,157,255,.28);--track:rgba(255,255,255,.08);--track-hover:rgba(255,255,255,.06);--shadow:0 20px 50px rgba(0,0,0,.45),0 2px 10px rgba(0,0,0,.3);--content-x:15px;--section-y:11px;--panel-pad:14px;}
+:root{--g:#30d158;--y:#ffd60a;--r:#ff453a;--accent:#5b9dff;--text:#f4f6fa;--dim:#9299a5;--line:rgba(255,255,255,.075);--panel-bg:#1b1b1d;--panel-border:rgba(255,255,255,.09);--chip-bg:rgba(255,255,255,.055);--chip-hover:rgba(91,157,255,.2);--track:rgba(255,255,255,.08);--track-hover:rgba(255,255,255,.06);--shadow:0 20px 50px rgba(0,0,0,.45),0 2px 10px rgba(0,0,0,.3);--content-x:16px;--section-y:14px;--panel-pad:16px;}
 @media (prefers-color-scheme: light){
 :root{--text:#1c1e21;--dim:#6b7280;--line:rgba(0,0,0,.08);--panel-bg:#f7f8fa;--panel-border:rgba(0,0,0,.09);--chip-bg:rgba(0,0,0,.05);--chip-hover:rgba(59,130,246,.16);--track:rgba(0,0,0,.08);--track-hover:rgba(0,0,0,.05);--shadow:0 20px 46px rgba(0,0,0,.16),0 2px 8px rgba(0,0,0,.08);}
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:var(--panel-bg);font-family:-apple-system,system-ui,sans-serif;color:var(--text);-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased;overflow:hidden;}
-.panel{background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:13px;overflow:hidden;box-shadow:var(--shadow);max-height:100vh;}
-.dashboard-shell{display:grid;grid-template-columns:minmax(0,1fr) 78px;gap:8px;padding:7px;height:100vh;max-height:100vh;}
-.main-pane{min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:9px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:none;background:rgba(255,255,255,.015);contain:layout paint;}
+.panel{background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:10px;overflow:hidden;box-shadow:var(--shadow);max-height:100vh;}
+.dashboard-shell{display:grid;grid-template-columns:minmax(0,1fr) 54px;gap:7px;padding:7px;height:100vh;max-height:100vh;}
+.main-pane{min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:8px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:none;background:rgba(255,255,255,.012);contain:layout paint;}
 .main-pane::-webkit-scrollbar{display:none;}
 body.compact .compact-extra{display:none!important;}
-body.compact[data-rail-view="more"] .compact-extra{display:grid!important;}
-body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;}
+body.compact[data-rail-view="settings"] .compact-extra{display:grid!important;}
+body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!important;}
 .action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;contain:layout paint;}
-.rail-btn{height:56px;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;background:var(--chip-bg);border:1px solid var(--panel-border);border-radius:8px;color:var(--text);font:inherit;font-size:10px;font-weight:700;cursor:pointer;color-scheme:inherit;}
+.rail-btn{height:50px;width:100%;display:flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;border-radius:7px;color:var(--dim);font:inherit;cursor:pointer;color-scheme:inherit;}
 .rail-btn:hover{background:var(--chip-hover);border-color:rgba(91,157,255,.35);}
 .rail-btn:active{background:rgba(91,157,255,.24);}
-.rail-btn svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;color:var(--text);}
-.rail-btn.active{background:rgba(91,157,255,.16);border-color:rgba(91,157,255,.38);color:var(--accent);}
+.rail-btn svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
+.rail-btn span{display:none;}
+.rail-btn.active{background:rgba(91,157,255,.15);border-color:rgba(91,157,255,.35);color:var(--accent);}
 .setup{position:relative;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px var(--content-x);border-bottom:1px solid var(--line);}
 .setup-main{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;}
 .setup-dot{width:7px;height:7px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 3px transparent;flex:0 0 auto;}
@@ -4599,7 +4688,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .setup-copy{min-width:0;}
 .setup-sub{font-size:10px;color:var(--dim);margin-top:1px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:215px;}
 .setup-actions{display:flex;gap:4px;flex:0 0 auto;}
-.setup-actions button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:700;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s,border-color .15s;}
+.setup-actions button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:10px;font-weight:700;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s,border-color .15s;}
 .setup-actions button:hover{background:var(--chip-hover);color:var(--text);}
 .setup-actions button.primary{background:rgba(91,157,255,.22);border-color:rgba(91,157,255,.5);color:var(--accent);}
 .setup-actions button.active{color:var(--g);border-color:rgba(48,209,88,.35);}
@@ -4611,15 +4700,15 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .setup-actions .setup-menu-item:hover{background:var(--track-hover);}
 .setup-actions .setup-menu-item:focus-visible,.setup-actions .setup-more:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
 .setup-actions .setup-menu-item.active{color:var(--g);border-color:transparent;}
-.row{display:grid;grid-template-columns:24px 1fr;gap:12px;padding:var(--section-y) var(--content-x);align-items:center;}
+.row{display:grid;grid-template-columns:23px 1fr;gap:13px;padding:var(--section-y) var(--content-x);align-items:center;}
 #sec-mem,#sec-temp,#sec-batt,#sec-network,#sec-procs{border-top:1px solid var(--line);}
 .ic{width:21px;height:21px;color:var(--dim);}
 .ic svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
 .content{min-width:0;}
 .head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;}
-.name{font-size:9.5px;font-weight:600;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;}
-.val{font-size:14px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;font-variant-numeric:tabular-nums;}
-.sub{font-size:10px;color:var(--dim);margin-top:1px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;}
+.name{font-size:11.5px;font-weight:650;color:var(--text);}
+.val{font-size:15px;font-weight:650;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.sub{font-size:10.5px;color:var(--dim);margin-top:2px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;}
 .bar{height:3px;background:var(--track);border-radius:99px;margin-top:7px;overflow:hidden;}
 .bar-fill{height:100%;border-radius:99px;width:0;transition:width .35s ease;}
 .bar-fill.g{background:var(--g);}.bar-fill.y{background:var(--y);}.bar-fill.r{background:var(--r);}.bar-fill.b{background:var(--accent);}
@@ -4632,12 +4721,12 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .v.g{color:var(--g);}.v.y{color:var(--y);}.v.r{color:var(--r);}
 .trow.stale .l,.trow.stale .src,.trow.stale .v{color:var(--dim);opacity:.72;}
 .val.stale{color:var(--dim);}
-.all-temp-head{font-size:9px;font-weight:700;color:var(--dim);text-transform:uppercase;margin-top:8px;padding-top:7px;border-top:1px solid var(--line);letter-spacing:.08em;cursor:pointer;}
+.all-temp-head{font-size:10px;font-weight:700;color:var(--dim);margin-top:9px;padding-top:8px;border-top:1px solid var(--line);cursor:pointer;}
 .all-temp-head:hover{color:var(--accent);}
 .all-temp-list .trow{font-size:9.5px;margin-top:4px;gap:10px;}
 .all-temp-list .trow .l{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.all-temp-list .trow .src{flex:0 0 auto;color:var(--dim);font-size:8px;font-weight:700;letter-spacing:.04em;}
-.sensor-group-head{margin-top:8px;padding-top:6px;border-top:1px solid var(--line);color:var(--text);font-size:8.5px;font-weight:750;text-transform:uppercase;letter-spacing:.08em;}
+.all-temp-list .trow .src{flex:0 0 auto;color:var(--dim);font-size:9.5px;font-weight:700;}
+.sensor-group-head{margin-top:8px;padding-top:6px;border-top:1px solid var(--line);color:var(--text);font-size:10px;font-weight:750;}
 .sensor-group-head:first-child{margin-top:3px;padding-top:0;border-top:0;}
 .prow{display:grid;grid-template-columns:1fr auto auto auto;gap:9px;align-items:baseline;font-size:10.5px;margin-top:5px;}
 .pkill{opacity:0;background:none;border:0;color:var(--r);font:inherit;font-size:13px;font-weight:700;line-height:1;padding:0 1px;cursor:pointer;transition:opacity .15s;}
@@ -4648,14 +4737,14 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .ctl{padding:10px var(--content-x);border-top:1px solid var(--line);}
 .ctl.focus-pulse{background:rgba(91,157,255,.09);box-shadow:inset 0 0 0 1px rgba(91,157,255,.45);}
 .ctl-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;}
-.ctl-head .name{font-size:9.5px;font-weight:600;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;}
-.ctl-status{font-size:10px;color:var(--dim);font-variant-numeric:tabular-nums;}
-.fan-inputs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin:0 0 7px;}
+.ctl-head .name{font-size:11.5px;font-weight:650;color:var(--text);}
+.ctl-status{display:none;}
+.fan-inputs{display:none;}
 .fan-input{min-width:0;padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.018);}
 .fan-input span{display:block;font-size:8px;font-weight:700;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .fan-input b{display:block;margin-top:2px;font-size:10px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .profile-strip{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin:3px 0 7px;}
-.profile-strip button{min-width:0;background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:700;padding:4px 2px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s,border-color .15s,opacity .15s;}
+.profile-strip button{min-width:0;background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:10px;font-weight:700;padding:5px 2px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s,border-color .15s,opacity .15s;}
 .profile-strip button:hover{background:var(--chip-hover);color:var(--text);}
 .profile-strip button.active{background:rgba(91,157,255,.2);border-color:rgba(91,157,255,.48);color:var(--accent);}
 .profile-strip.disabled button{opacity:.42;pointer-events:none;}
@@ -4680,13 +4769,13 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .fan-bottom{display:flex;justify-content:space-between;align-items:center;gap:8px;}
 .fan-rpm-text{font-size:9.5px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .fan-seg{display:flex;gap:4px;flex:0 0 auto;}
-.fan-seg button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:600;padding:3px 8px;border-radius:5px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s;}
+.fan-seg button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:10px;font-weight:600;padding:4px 8px;border-radius:5px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s;}
 .fan-seg button.active{background:var(--panel-bg);color:var(--text);border-color:rgba(91,157,255,.4);}
 .fan-card.pending .fan-seg button{cursor:progress;}
 .fan-card.pending .fan-seg button:not(.active){opacity:.48;}
 .fan-rpm-row{display:grid;grid-template-columns:auto 1fr auto auto;gap:6px;align-items:center;margin-top:5px;transition:opacity .15s;}
 .fan-rpm-row.inactive{opacity:.35;pointer-events:none;}
-.fan-rpm-row span{font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.fan-rpm-row span{font-size:10px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .fan-rpm-row input[type=range]{-webkit-appearance:none;height:3px;border-radius:99px;background:var(--track);outline:none;cursor:pointer;}
 .fan-rpm-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;}
 .fan-rpm-row input[type=number]{width:44px;background:var(--track);border:1px solid transparent;border-radius:4px;color:var(--text);font:inherit;font-size:9px;font-variant-numeric:tabular-nums;text-align:center;padding:3px 0;-moz-appearance:textfield;}
@@ -4706,29 +4795,40 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .curve-actions button{flex:1;background:var(--chip-bg);border:1px solid transparent;color:var(--text);font:inherit;font-size:10px;font-weight:600;padding:6px 4px;border-radius:7px;cursor:pointer;transition:background .15s;}
 .curve-actions button:hover{background:var(--chip-hover);}
 .curve-actions button.primary{background:rgba(91,157,255,.22);border-color:rgba(91,157,255,.5);color:var(--accent);}
-.chart{width:100%;height:28px;display:block;margin-top:8px;border-radius:4px;cursor:crosshair;}
+.chart{width:100%;height:32px;display:block;margin-top:9px;border-radius:4px;cursor:crosshair;}
 .chart-tip{position:fixed;pointer-events:none;background:rgba(20,20,22,.92);color:#fff;font-size:9.5px;font-weight:600;padding:3px 7px;border-radius:5px;display:none;z-index:999;white-space:nowrap;font-variant-numeric:tabular-nums;}
-.chart-stats{font-size:9px;color:var(--dim);text-align:right;margin-top:3px;font-variant-numeric:tabular-nums;}
+.chart-stats{font-size:9.5px;color:var(--dim);text-align:right;margin-top:3px;font-variant-numeric:tabular-nums;}
 .rail-panel{display:none;padding:var(--panel-pad) var(--content-x);border-bottom:1px solid var(--line);}
-.panel-title-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;}
-.rail-panel .panel-title{font-size:14px;font-weight:700;min-width:0;}
-.panel-pill{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:99px;background:var(--chip-bg);color:var(--dim);font-size:9px;font-weight:800;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.panel-title-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;}
+.rail-panel .panel-title{font-size:15px;font-weight:700;min-width:0;}
+.panel-pill{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:99px;background:var(--chip-bg);color:var(--dim);font-size:9.5px;font-weight:800;white-space:nowrap;font-variant-numeric:tabular-nums;}
 .panel-pill.ok{background:rgba(48,209,88,.14);color:var(--g);}
 .panel-pill.warn{background:rgba(255,214,10,.16);color:var(--y);}
 .panel-pill.info{background:rgba(91,157,255,.16);color:var(--accent);}
-.rail-panel .panel-copy{font-size:10.5px;color:var(--dim);line-height:1.5;margin-bottom:12px;}
-.rail-panel .panel-action{min-height:28px;background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:10px;font-weight:700;padding:6px 10px;border-radius:7px;cursor:pointer;}
+.rail-panel .panel-copy{display:none;}
+#rail-settings-pill,#rail-more-pill{display:none;}
+.rail-panel .panel-action{min-height:30px;background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:11px;font-weight:700;padding:6px 10px;border-radius:7px;cursor:pointer;}
 .rail-panel .panel-action.secondary{background:var(--chip-bg);border-color:transparent;color:var(--text);}
 .rail-panel .panel-action.danger{background:rgba(255,69,58,.16);border-color:rgba(255,69,58,.36);color:var(--r);}
 .rail-panel .panel-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .release-notes-card{margin-top:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
 .release-notes-title{font-size:10px;font-weight:800;color:var(--text);margin-bottom:5px;}
 .release-notes-body{font-size:9.5px;line-height:1.45;color:var(--dim);white-space:pre-wrap;max-height:118px;overflow:hidden;}
-.settings-list{display:flex;flex-direction:column;gap:10px;}
-.settings-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
-.settings-item-title{font-size:11px;font-weight:700;color:var(--text);}
-.settings-item-copy{font-size:9.5px;color:var(--dim);line-height:1.35;margin-top:2px;}
-.health-card{padding:10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
+.settings-list{display:flex;flex-direction:column;gap:0;}
+.settings-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line);}
+.settings-item:first-child{border-top:0;}
+.settings-item-title{font-size:11.5px;font-weight:700;color:var(--text);}
+.settings-item-copy{display:none;}
+.health-card{padding:10px 0;border-top:1px solid var(--line);}
+.settings-details{border-top:1px solid var(--line);padding:10px 0;}
+.settings-details>summary{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--text);font-size:11.5px;font-weight:700;cursor:pointer;list-style:none;}
+.settings-details>summary::-webkit-details-marker{display:none;}
+.settings-details>summary:after{content:"›";color:var(--dim);font-size:16px;line-height:1;transform:rotate(0deg);transition:transform .12s ease;}
+.settings-details[open]>summary:after{transform:rotate(90deg);}
+.settings-details[open]>summary{margin-bottom:10px;}
+.settings-details>summary .panel-pill{margin-left:auto;}
+#fan-action-log-card{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);}
+.sensor-loading{padding:8px 0;color:var(--dim);font-size:10px;}
 .health-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
 .health-title{font-size:11px;font-weight:800;color:var(--text);}
 .health-grid{display:grid;grid-template-columns:1fr;gap:6px;}
@@ -4737,7 +4837,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .health-label{color:var(--dim);font-weight:650;}
 .health-value{font-weight:650;text-align:right;font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere;}
 .health-value.ok{color:var(--g);}.health-value.warn{color:var(--y);}.health-value.info{color:var(--accent);}
-.health-action{background:var(--chip-bg);border:1px solid transparent;color:var(--accent);font:inherit;font-size:9px;font-weight:750;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;}
+.health-action{background:var(--chip-bg);border:1px solid transparent;color:var(--accent);font:inherit;font-size:10px;font-weight:750;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;}
 .health-action:disabled{opacity:.5;cursor:default;}
 .health-details{margin-top:8px;padding-top:7px;border-top:1px solid var(--line);}
 .health-details summary{color:var(--accent);font-size:10px;font-weight:700;cursor:pointer;list-style-position:inside;}
@@ -4752,9 +4852,10 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 .action-log-result{margin-top:2px;color:var(--dim);line-height:1.35;overflow-wrap:anywhere;}
 .action-log-row.ok .action-log-action{color:var(--g);}.action-log-row.warn .action-log-action{color:var(--y);}
 .foot{border-top:1px solid var(--line);padding:3px;}
-.quit{display:block;width:100%;background:transparent;border:0;color:var(--dim);font:inherit;font-size:10.5px;letter-spacing:.02em;padding:8px;border-radius:8px;cursor:pointer;transition:background .15s,color .15s;}
+.quit{display:block;width:100%;background:transparent;border:0;color:var(--dim);font:inherit;font-size:10.5px;padding:8px;border-radius:8px;cursor:pointer;transition:background .15s,color .15s;}
 .quit:hover{background:var(--track-hover);color:var(--text);}
-.range-tabs{display:flex;gap:4px;padding:10px var(--content-x);justify-content:flex-end;}
+.range-tabs{display:flex;gap:4px;padding:12px var(--content-x) 8px;justify-content:flex-end;align-items:center;min-height:40px;}
+.view-title{margin-right:auto;font-size:15px;font-weight:700;color:var(--text);}
 .sort-tabs{display:flex;gap:4px;}
 .range-tab{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:600;padding:3px 9px;border-radius:99px;cursor:pointer;transition:background .15s,color .15s;}
 .range-tab:hover{background:var(--chip-hover);}
@@ -4762,6 +4863,7 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 </style></head><body class="compact" data-rail-view="overview"><div class="panel"><div class="dashboard-shell"><main class="main-pane">
 
 <div class="range-tabs" id="range-tabs">
+<div class="view-title">Status</div>
 <button class="range-tab active" data-range="2m" onclick="setChartRange('2m')">2m</button>
 <button class="range-tab" data-range="1h" onclick="setChartRange('1h')">1h</button>
 <button class="range-tab" data-range="1d" onclick="setChartRange('1d')">1d</button>
@@ -4781,24 +4883,16 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 </div>
 </div>
 
-<div class="rail-panel" id="rail-update-panel">
-<div class="panel-title-row"><div class="panel-title">Updates</div><span class="panel-pill info" id="rail-update-pill">Ready</span></div>
-<div class="panel-copy" id="rail-update-copy">One click checks, verifies, installs, and relaunches PeterFan.</div>
-<div class="health-grid" id="update-version-grid">
-<div class="health-row"><span class="health-label">Current</span><span class="health-value" id="update-current-version">—</span></div>
-<div class="health-row"><span class="health-label">Latest</span><span class="health-value" id="update-latest-version">—</span></div>
-<div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result">—</span></div>
-</div>
-<div class="release-notes-card" id="update-release-notes-card" style="display:none"><div class="release-notes-title">Release Notes</div><div class="release-notes-body" id="update-release-notes">—</div></div>
-<div class="panel-actions" style="margin-top:10px"><button class="panel-action" id="rail-update-check" onclick="checkAppUpdates(this)">Check &amp; Update</button><button class="panel-action secondary" id="update-release-link" onclick="openLatestRelease()" style="display:none">View Release</button></div>
-</div>
-
 <div class="rail-panel" id="rail-settings-panel">
-<div class="panel-title-row"><div class="panel-title">General Settings</div><span class="panel-pill info" id="rail-settings-pill">App Preferences</span></div>
+<div class="panel-title-row"><div class="panel-title">Settings</div><span class="panel-pill info" id="rail-settings-pill">PeterFan</span></div>
 <div class="panel-copy">Manage startup and fan-control safety.</div>
 <div class="settings-list">
-<div class="health-card" id="fan-health-card">
-<div class="health-head"><div class="health-title">Fan Control Health</div><span class="panel-pill info" id="health-pill">Ready</span></div>
+<div class="settings-item" id="startup-setting">
+<div><div class="settings-item-title">Start on login</div><div class="settings-item-copy">Run PeterFan automatically on startup.</div></div>
+<button id="startup-toggle" class="panel-action secondary" onclick="toggleStartupItem(this)">Enable</button>
+</div>
+<details class="settings-details" id="fan-health-card">
+<summary><span>Fan Control Health</span><span class="panel-pill info" id="health-pill">Ready</span></summary>
 <div class="health-grid">
 <div class="health-row"><span class="health-label">Daemon</span><span class="health-value" id="health-daemon">—</span></div>
 <div class="health-row"><span class="health-label">Control Path</span><span class="health-value" id="health-control-path">—</span></div>
@@ -4822,22 +4916,30 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="health-row"><span class="health-label">Control Retry</span><span class="health-value" id="health-control-retry">—</span></div>
 <div class="health-row"><span class="health-label">Last Control Error</span><span class="health-value" id="health-control-error">—</span></div>
 </div></details>
-</div>
-<div class="health-card" id="fan-action-log-card">
+<div id="fan-action-log-card">
 <div class="health-head"><div class="health-title">Recent Fan Actions</div><button class="health-action" id="fan-diagnostic-button" onclick="runFanDiagnostics(this)">Run Diagnostics</button></div>
 <div class="action-log" id="fan-action-log"><div class="action-log-empty">No fan actions yet</div></div>
 </div>
-<div class="settings-item" id="startup-setting">
-<div><div class="settings-item-title">Start on login</div><div class="settings-item-copy">Run PeterFan automatically on startup.</div></div>
-<button id="startup-toggle" class="panel-action secondary" onclick="toggleStartupItem(this)">Enable</button>
-</div>
+</details>
 </div>
 </div>
 
+<div class="rail-panel" id="rail-update-panel">
+<div class="panel-title-row"><div class="panel-title">Updates</div><span class="panel-pill info" id="rail-update-pill">Ready</span></div>
+<div class="panel-copy" id="rail-update-copy">One click checks, verifies, installs, and relaunches PeterFan.</div>
+<div class="health-grid" id="update-version-grid">
+<div class="health-row"><span class="health-label">Current</span><span class="health-value" id="update-current-version">—</span></div>
+<div class="health-row"><span class="health-label">Latest</span><span class="health-value" id="update-latest-version">—</span></div>
+<div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result">—</span></div>
+</div>
+<div class="release-notes-card" id="update-release-notes-card" style="display:none"><div class="release-notes-title">Release Notes</div><div class="release-notes-body" id="update-release-notes">—</div></div>
+<div class="panel-actions" style="margin-top:10px"><button class="panel-action" id="rail-update-check" onclick="checkAppUpdates(this)">Check &amp; Update</button><button class="panel-action secondary" id="update-release-link" onclick="openLatestRelease()" style="display:none">View Release</button></div>
+</div>
+
 <div class="rail-panel" id="rail-more-panel">
-<div class="panel-title-row"><div class="panel-title">System Metrics</div><span class="panel-pill info" id="rail-more-pill">Live</span></div>
+<div class="panel-title-row"><div class="panel-title">System</div><span class="panel-pill info" id="rail-more-pill">Live</span></div>
 <div class="panel-copy">Storage, battery, network, and active processes.</div>
-<div class="health-card" id="hardware-availability-card">
+<div class="health-card" id="hardware-availability-card" style="display:none">
 <div class="health-head"><div class="health-title">Hardware Availability</div><span class="panel-pill info" id="hardware-pill">Ready</span></div>
 <div class="health-grid">
 <div class="health-row"><span class="health-label">Fans Detected</span><span class="health-value" id="hardware-fans">—</span></div>
@@ -4857,10 +4959,10 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 </div>
 <div class="profile-strip" id="profile-strip">
 <button class="active" data-mode="auto" title="Auto" onclick="setAuto()">Auto</button>
-<button data-mode="profile" data-profile="silent" title="Silent" onclick="setProfile('silent')">Silent</button>
-<button data-mode="profile" data-profile="balanced" title="Balanced" onclick="setProfile('balanced')">Balanced</button>
-<button data-mode="profile" data-profile="gaming" title="Gaming" onclick="setProfile('gaming')">Gaming</button>
-<button data-mode="profile" data-profile="performance" title="Performance" onclick="setProfile('performance')">Performance</button>
+<button data-mode="profile" data-profile="silent" title="Silent" onclick="setProfile('silent')">Quiet</button>
+<button data-mode="profile" data-profile="balanced" title="Balanced" onclick="setProfile('balanced')">Balance</button>
+<button data-mode="profile" data-profile="gaming" title="Gaming" onclick="setProfile('gaming')">Game</button>
+<button data-mode="profile" data-profile="performance" title="Performance" onclick="setProfile('performance')">Fast</button>
 <button data-mode="profile" data-profile="maximum" title="Maximum" onclick="setProfile('maximum')">Max</button>
 </div>
 <div class="fan-apply-status" id="fan-apply-status"></div>
@@ -4926,11 +5028,9 @@ body.compact[data-rail-view="more"] .foot.compact-extra{display:block!important;
 <div class="foot compact-extra" data-compact-extra="quit"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
 </main>
 <aside class="action-rail" aria-label="Quick actions">
-<button class="rail-btn active" id="railDetail" data-rail-action="detail" aria-pressed="true" onclick="runRailAction('detail',this)" title="Status overview"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Status</span></button>
-<button class="rail-btn" id="railFan" data-rail-action="fan" aria-pressed="false" onclick="runRailAction('fan',this)" title="Fan control"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fan</span></button>
-<button class="rail-btn" id="railUpdate" data-rail-action="update" aria-pressed="false" onclick="runRailAction('update',this)" title="Check &amp; Update"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M6 21v-5h5"/></svg><span>Updates</span></button>
-<button class="rail-btn" id="railSettings" data-rail-action="settings" aria-pressed="false" onclick="runRailAction('settings',this)" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.2-.1a1.7 1.7 0 0 0-1.9-.1 8 8 0 0 1-1.4.8 1.7 1.7 0 0 0-1.1 1.5V23h-4v-.5A1.7 1.7 0 0 0 8.1 21a8 8 0 0 1-1.4-.8 1.7 1.7 0 0 0-1.9.1l-.2.1-2-3.4.1-.1A1.7 1.7 0 0 0 3 15a8.6 8.6 0 0 1 0-1.7 1.7 1.7 0 0 0-.3-1.9l-.1-.1 2-3.4.2.1a1.7 1.7 0 0 0 1.9.1A8 8 0 0 1 8.1 7a1.7 1.7 0 0 0 1.1-1.5V5h4v.5A1.7 1.7 0 0 0 14.3 7a8 8 0 0 1 1.4.8 1.7 1.7 0 0 0 1.9-.1l.2-.1 2 3.4-.1.1a1.7 1.7 0 0 0-.3 1.9 8.6 8.6 0 0 1 0 2z"/></svg><span>Settings</span></button>
-<button class="rail-btn" id="railMore" data-rail-action="more" aria-pressed="false" onclick="runRailAction('more',this)" title="System metrics"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg><span>System</span></button>
+<button class="rail-btn active" id="railDetail" data-rail-action="detail" aria-label="Status" aria-pressed="true" onclick="runRailAction('detail',this)" title="Status"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Status</span></button>
+<button class="rail-btn" id="railFan" data-rail-action="fan" aria-label="Fans" aria-pressed="false" onclick="runRailAction('fan',this)" title="Fans"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fans</span></button>
+<button class="rail-btn" id="railSettings" data-rail-action="settings" aria-label="Settings" aria-pressed="false" onclick="runRailAction('settings',this)" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.2-.1a1.7 1.7 0 0 0-1.9-.1 8 8 0 0 1-1.4.8 1.7 1.7 0 0 0-1.1 1.5V23h-4v-.5A1.7 1.7 0 0 0 8.1 21a8 8 0 0 1-1.4-.8 1.7 1.7 0 0 0-1.9.1l-.2.1-2-3.4.1-.1A1.7 1.7 0 0 0 3 15a8.6 8.6 0 0 1 0-1.7 1.7 1.7 0 0 0-.3-1.9l-.1-.1 2-3.4.2.1a1.7 1.7 0 0 0 1.9.1A8 8 0 0 1 8.1 7a1.7 1.7 0 0 0 1.1-1.5V5h4v.5A1.7 1.7 0 0 0 14.3 7a8 8 0 0 1 1.4.8 1.7 1.7 0 0 0 1.9-.1l.2-.1 2 3.4-.1.1a1.7 1.7 0 0 0-.3 1.9 8.6 8.6 0 0 1 0 2z"/></svg><span>Settings</span></button>
 </aside></div></div>
 <div class="chart-tip" id="chart-tip"></div>
 <script>
@@ -4966,15 +5066,20 @@ function togglePopoverExpanded(){
   setPopoverExpanded(popoverCompact());
 }
 var RAIL_VIEW=storageGet('pf.rail.view')||'overview';
+if(RAIL_VIEW==='update'||RAIL_VIEW==='more')RAIL_VIEW='settings';
 function railView(){
   return RAIL_VIEW||'overview';
 }
 function setRailView(view){
+  if(view==='update'||view==='more')view='settings';
   RAIL_VIEW=view;
   storageSet('pf.rail.view',view);
   document.body.setAttribute('data-rail-view',view);
   applyRailView(true);
-  if(window.__pf&&window.__pf.update&&window.__pf_pending)window.__pf.update(window.__pf_pending);
+  if(window.ipc)window.ipc.postMessage('view:'+view);
+  requestAnimationFrame(function(){
+    if(window.__pf&&window.__pf.update&&window.__pf_pending)window.__pf.update(window.__pf_pending);
+  });
 }
 function setVisible(id,on){
   var el=document.getElementById(id);
@@ -5003,36 +5108,26 @@ function applyRailView(resetScroll){
   var all=['range-tabs','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','foot','rail-update-panel','rail-settings-panel','rail-more-panel'];
   all.forEach(function(id){setVisible(id,false);});
   if(view==='fan'){
-    ['setup-row','fan-control-section'].forEach(function(id){setVisible(id,true);});
+    setVisible('fan-control-section',true);
     if(SHOW_CURVE_EDITOR==='1')setVisible('curve-editor-section',true);
-  } else if(view==='update'){
-    setVisible('rail-update-panel',true);
   } else if(view==='settings'){
-    setVisible('rail-settings-panel',true);
-  } else if(view==='more'){
-    ['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach(function(id){setVisible(id,true);});
+    ['rail-settings-panel','rail-update-panel','rail-more-panel','sec-storage','sec-batt','sec-network','foot'].forEach(function(id){setVisible(id,true);});
   } else {
     ['range-tabs','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
   }
-  ['Detail','Fan','Update','Settings','More'].forEach(function(name){
+  ['Detail','Fan','Settings'].forEach(function(name){
     var key=name.toLowerCase();
     if(key==='detail')key='overview';
     setRailButtonActive('rail'+name,view===key);
   });
+  var title=document.querySelector('.view-title');
+  if(title)title.textContent=LANG==='ko'?'상태':'Status';
   if(resetScroll)resetRailPaneScroll();
-  reportHeight();
 }
 function applyPopoverMode(){
   var compact=true;
   document.body.classList.toggle('compact',compact);
   document.body.classList.toggle('expanded',!compact);
-  var more=document.getElementById('railMore');
-  if(more){
-    more.title=LANG==='ko'?'시스템 지표':'System metrics';
-    var label=more.querySelector('span');
-    if(label)label.textContent=LANG==='ko'?'시스템':'System';
-  }
-  reportHeight();
 }
 applyPopoverMode();
 setRailView(railView());
@@ -5180,26 +5275,32 @@ function runRailAction(action,btn){
   switch(action){
     case 'detail':setRailView('overview');break;
     case 'fan':setRailView('fan');break;
-    case 'update':setRailView('update');break;
     case 'settings':setRailView('settings');break;
-    case 'more':setRailView('more');break;
+    case 'update':case 'more':setRailView('settings');break;
   }
 }
 var RAW_TEMP_OPEN=false;
 function toggleRawTemps(){
   RAW_TEMP_OPEN=!RAW_TEMP_OPEN;
+  if(window.ipc)window.ipc.postMessage('rawtemps:'+(RAW_TEMP_OPEN?'1':'0'));
   renderRawTempList(window.__pf_pending||{});
 }
 function renderRawTempList(d){
   var ah=document.getElementById('all-temp-head'),al=document.getElementById('all-temp-list'),all=d.all_temps||[];
   if(ah){
     ah.textContent=(RAW_TEMP_OPEN?'▾ ':'▸ ')+(LANG==='ko'?'전체 센서':'All sensors')+(all.length?' · '+all.length:'');
-    ah.style.display=all.length?'':'none';
+    ah.style.display='';
   }
   if(al){
     al.style.display=RAW_TEMP_OPEN?'':'none';
     al.innerHTML='';
     if(RAW_TEMP_OPEN){
+      if(!all.length){
+        al.textContent=LANG==='ko'?'센서 읽는 중…':'Reading sensors…';
+        al.className='all-temp-list sensor-loading';
+        return;
+      }
+      al.className='all-temp-list';
       var groups=[];
       all.forEach(function(t){var name=t.group||'Other',g=groups.find(function(x){return x.name===name;});if(!g){g={name:name,items:[]};groups.push(g);}g.items.push(t);});
       groups.forEach(function(g){
@@ -5230,7 +5331,9 @@ window.__pf={
    drawChart('mem-chart', d.mem_hist, '#5b9dff', 100, function(v){return v.toFixed(1)+'%';});
    if(d.temp_present)drawChart('temp-chart', d.temp_stale?[]:d.temp_hist, '#ff9f0a', null, function(v){return v.toFixed(0)+'°C';});
    document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){b.classList.toggle('active',b.dataset.range===d.chart_range);});
- } else if(view==='more'){
+ } else if(view==='settings'){
+   updateSetup(d);
+   updateHardwareAvailability(d);
    set('disk-val',d.disk_text);set('disk-sub',d.disk_sub);bar('disk-bar',d.disk_pct);
    show('disk-io-sub',d.disk_io_present);if(d.disk_io_present)set('disk-io-sub',d.disk_io_sub);
    show('disk-io-chart',d.disk_io_present);show('disk-io-chart-stats',d.disk_io_present);
@@ -5244,9 +5347,6 @@ window.__pf={
    var pl=document.getElementById('procs-list');
    if(pl){pl.innerHTML='';(d.procs||[]).forEach(function(p){var r=document.createElement('div');r.className='prow';r.innerHTML='<span class="n"></span><span class="c"></span><span class="m"></span><button class="pkill" title="Quit process">×</button>';r.children[0].textContent=p.name;r.children[1].textContent=p.cpu;r.children[2].textContent=p.mem;r.children[3].onclick=function(){quitProcess(p.pid,p.name);};pl.appendChild(r);});}
    drawChart('net-chart', d.net_hist, '#30d158', null, fmtBytesPerSec);
- } else if(view==='settings'){
-   updateSetup(d);
-   updateHardwareAvailability(d);
  } else if(view==='fan'){
    updateSetup(d);
    var note=document.getElementById('ctl-note');
@@ -5883,17 +5983,19 @@ function updateFanApplyStatus(d){
   if(!el)return;
   var mode=d.active_control_mode||'',profile=d.active_profile||'';
   var tone='';
+  var recentResult=FAN_CONTROL_RESULT&&Date.now()-FAN_CONTROL_RESULT.at<12000;
   if(FAN_CONTROL_PENDING){
     mode=FAN_CONTROL_PENDING.mode;profile=FAN_CONTROL_PENDING.profile;tone='pending';
-  } else if(FAN_CONTROL_RESULT&&Date.now()-FAN_CONTROL_RESULT.at<12000){
+  } else if(recentResult){
     mode=FAN_CONTROL_RESULT.mode;profile=FAN_CONTROL_RESULT.profile;tone=FAN_CONTROL_RESULT.ok?'ok':'error';
   }
+  el.style.display=FAN_CONTROL_PENDING||recentResult?'':'none';
   var parts=[fanModeLabel(mode,profile)];
   if(FAN_CONTROL_PENDING)parts.push(LANG==='ko'?'적용 확인 중…':'confirming…');
-  else if(FAN_CONTROL_RESULT&&Date.now()-FAN_CONTROL_RESULT.at<12000){
+  else if(recentResult){
     parts.push(FAN_CONTROL_RESULT.ok?(LANG==='ko'?'적용 완료':'applied'):(LANG==='ko'?'적용 실패':'failed'));
     if(!FAN_CONTROL_RESULT.ok&&FAN_CONTROL_RESULT.message)parts.push(FAN_CONTROL_RESULT.message);
-  } else if(mode)parts.push(LANG==='ko'?'현재 모드':'current');
+  }
   if(mode!=='auto'&&typeof d.fan_curve_input_temp_c==='number')parts.push((LANG==='ko'?'입력 ':'input ')+Math.round(d.fan_curve_input_temp_c)+'°C');
   var targets=(d.fans||[]).filter(function(f){return typeof f.target_pct==='number';}).map(function(f){return Number(f.target_pct);}).filter(function(v){return isFinite(v);});
   if(mode!=='auto'&&targets.length)parts.push((LANG==='ko'?'목표 ':'target ')+Math.max.apply(null,targets)+'%');
@@ -5912,6 +6014,8 @@ function quitProcess(pid,name){
   window.ipc.postMessage('killproc:'+pid);
 }
 function updateSetup(d){
+  var setup=document.getElementById('setup-row');
+  if(setup)setup.style.display=railView()==='fan'&&(d.fan_setup_needed||d.daemon_update_needed)?'flex':'none';
   var title=document.getElementById('setup-title');
   if(title)title.textContent=d.setup_title||'Ready';
   var detail=document.getElementById('setup-detail');
@@ -5970,8 +6074,6 @@ function updateRail(d){
     if(detail){setButtonLabel(detail,LANG==='ko'?'상태':'Status');detail.title=LANG==='ko'?'상태 요약':'Status overview';}
     var fan=document.getElementById('railFan');
     if(fan){setButtonLabel(fan,LANG==='ko'?'팬 제어':'Fans');fan.title=LANG==='ko'?'팬 제어로 이동':'Jump to fan control';}
-    var upd=document.getElementById('railUpdate');
-    if(upd){setButtonLabel(upd,LANG==='ko'?'업데이트':'Update');upd.title=LANG==='ko'?'업데이트 확인':'Check for updates';}
     var settings=document.getElementById('railSettings');
     if(settings){setButtonLabel(settings,LANG==='ko'?'설정':'Settings');settings.title=LANG==='ko'?'설정 열기':'Open settings';}
     RAIL_NAV_READY=true;
@@ -5981,7 +6083,7 @@ function updateRail(d){
   var nativePhase=nativeUpdate.phase||'idle';
   var nativePending=nativePhase==='checking'||nativePhase==='downloading'||nativePhase==='queued';
   APP_UPDATE_CHECK_PENDING=nativePending;
-  if(view==='update'){
+  if(view==='settings'){
     var persisted=d.update_install_result;
     if(nativePhase!=='idle'){
       APP_UPDATE_STATUS={
@@ -6507,7 +6609,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_html_has_runcat_style_action_rail() {
+    fn dashboard_html_has_simple_three_action_rail() {
         let en = dashboard_html(ResolvedLanguage::En, false);
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
 
@@ -6516,9 +6618,9 @@ mod tests {
             assert!(html.contains(r#"class="action-rail""#));
             assert!(html.contains("railDetail"));
             assert!(html.contains("railFan"));
-            assert!(html.contains("railUpdate"));
             assert!(html.contains("railSettings"));
-            assert!(html.contains("railMore"));
+            assert!(!html.contains(r#"id="railUpdate""#));
+            assert!(!html.contains(r#"id="railMore""#));
             assert!(html.contains("focusFanControl"));
             assert!(html.contains("rail-settings-panel"));
             assert!(html.contains("rail-more-panel"));
@@ -6533,7 +6635,7 @@ mod tests {
         }
 
         assert!(en.contains(">Status<"));
-        assert!(en.contains(">Fan<"));
+        assert!(en.contains(">Fans<"));
         assert!(en.contains(">Updates<"));
         assert!(en.contains(">Settings<"));
         assert!(en.contains(">System<"));
@@ -6665,9 +6767,7 @@ mod tests {
         for (id, action) in [
             ("railDetail", "detail"),
             ("railFan", "fan"),
-            ("railUpdate", "update"),
             ("railSettings", "settings"),
-            ("railMore", "more"),
         ] {
             assert!(en.contains(&format!(r#"id="{id}""#)));
             assert!(en.contains(&format!(r#"data-rail-action="{action}""#)));
@@ -6677,13 +6777,12 @@ mod tests {
         assert!(!en.contains("flashRailButton(btn)"));
         assert!(en.contains("case 'detail':setRailView('overview');break;"));
         assert!(en.contains("case 'fan':setRailView('fan');break;"));
-        assert!(en.contains("case 'update':setRailView('update');break;"));
         assert!(en.contains("case 'settings':setRailView('settings');break;"));
         assert!(!en.contains(
             "case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;"
         ));
         assert!(!en.contains("case 'license':setRailView('license');break;"));
-        assert!(en.contains("case 'more':setRailView('more');break;"));
+        assert!(en.contains("case 'update':case 'more':setRailView('settings');break;"));
         assert!(en.contains("function setButtonLabel(btn,label)"));
         assert!(en.contains("btn.querySelector('span')"));
         assert!(en.contains("btn.dataset.defaultLabel"));
@@ -6695,7 +6794,7 @@ mod tests {
         let en = dashboard_html(ResolvedLanguage::En, false);
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
 
-        assert!(en.contains(r#"title="Status overview""#));
+        assert!(en.contains(r#"title="Status""#));
         assert!(en.contains("setButtonLabel(detail,LANG==='ko'?'상태':'Status');"));
         assert!(en.contains("detail.title=LANG==='ko'?'상태 요약':'Status overview';"));
         assert!(ko.contains(">상태<"));
@@ -6916,6 +7015,10 @@ mod tests {
         assert!(en.contains("function toggleRawTemps()"));
         assert!(en.contains("function renderRawTempList(d)"));
         assert!(en.contains("d.all_temps||[]"));
+        assert!(en.contains("window.ipc.postMessage('rawtemps:'+(RAW_TEMP_OPEN?'1':'0'))"));
+        assert!(include_str!("main.rs").contains(
+            "let raw_temps_visible = overview_visible && RAW_TEMPS_OPEN.load(Ordering::Relaxed);"
+        ));
         assert!(en.contains("All sensors"));
         assert!(en.contains("className='sensor-group-head'"));
         assert!(en.contains("t.source||''"));
@@ -6942,8 +7045,12 @@ mod tests {
     fn rail_view_switch_resets_scroll_and_marks_pressed_state() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
-        assert!(en.contains(r#"id="railDetail" data-rail-action="detail" aria-pressed="true""#));
-        assert!(en.contains(r#"id="railFan" data-rail-action="fan" aria-pressed="false""#));
+        assert!(en.contains(
+            r#"id="railDetail" data-rail-action="detail" aria-label="Status" aria-pressed="true""#
+        ));
+        assert!(en.contains(
+            r#"id="railFan" data-rail-action="fan" aria-label="Fans" aria-pressed="false""#
+        ));
         assert!(en.contains("function resetRailPaneScroll()"));
         assert!(en.contains("pane.scrollTop=0;"));
         assert!(en.contains("function setRailView(view)"));
@@ -6991,58 +7098,64 @@ mod tests {
         assert!(en.contains(r#"id="sec-storage""#));
         assert!(en.contains(r#"id="sec-network""#));
         assert!(en.contains("case 'fan':setRailView('fan');break;"));
-        assert!(en.contains("case 'update':setRailView('update');break;"));
         assert!(en.contains("case 'settings':setRailView('settings');break;"));
         assert!(!en.contains(
             "case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;"
         ));
         assert!(!en.contains("case 'license':setRailView('license');break;"));
-        assert!(en.contains("case 'more':setRailView('more');break;"));
+        assert!(en.contains("case 'update':case 'more':setRailView('settings');break;"));
         assert!(!en.contains("case 'license':toggleLicForm();break;"));
     }
 
     #[test]
     fn fan_setup_prompt_is_scoped_to_fan_and_settings_views() {
         let en = dashboard_html(ResolvedLanguage::En, false);
+        let source = include_str!("main.rs");
 
-        assert!(en.contains("if(view==='fan'){\n    ['setup-row','fan-control-section'].forEach"));
+        assert!(en.contains("if(view==='fan'){\n    setVisible('fan-control-section',true);"));
+        assert!(en.contains(
+            "if(setup)setup.style.display=railView()==='fan'&&(d.fan_setup_needed||d.daemon_update_needed)?'flex':'none';"
+        ));
         assert!(en.contains("} else {\n    ['range-tabs','sec-cpu','sec-mem','sec-temp'].forEach"));
         assert!(!en.contains("['range-tabs','setup-row','sec-cpu','sec-mem','sec-temp'].forEach"));
         assert!(en.contains("setButtonLabel(fan,LANG==='ko'?'팬 제어':'Fans');"));
         assert!(!en.contains("setButtonLabel(fan,d.fan_setup_needed"));
         assert!(!en.contains("fan.classList.toggle('active',!!d.can_control);"));
+        assert!(source.contains("const DAEMON_STALE_AFTER: Duration = Duration::from_secs(8);"));
+        assert!(source.contains("app.daemon_json_sampled_at = Some(now);"));
+        assert!(source.contains("now.duration_since(sampled_at) > DAEMON_STALE_AFTER"));
     }
 
     #[test]
-    fn system_view_keeps_metrics_and_detail_action_together() {
+    fn settings_view_keeps_system_metrics_and_detail_action_together() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
         assert!(en.contains(r#"id="rail-more-panel""#));
         assert!(en.contains("case 'detail':setRailView('overview');break;"));
-        assert!(en.contains("case 'more':setRailView('more');break;"));
+        assert!(en.contains("case 'update':case 'more':setRailView('settings');break;"));
         assert!(en.contains(r#"onclick="window.ipc.postMessage('open_detail')""#));
         assert!(en.contains(r#"onclick="window.ipc.postMessage('quit')""#));
         assert_eq!(en.matches(">Open Detail Window<").count(), 1);
         assert!(en.contains(
-            "['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach"
+            "['rail-settings-panel','rail-update-panel','rail-more-panel','sec-storage','sec-batt','sec-network','foot'].forEach"
         ));
         assert!(!en.contains("case 'detail':window.ipc.postMessage('open_detail');break;"));
         assert!(!en.contains("if(view==='more')setPopoverExpanded(true);"));
     }
 
     #[test]
-    fn more_view_reveals_low_priority_metric_sections() {
+    fn settings_view_reveals_low_priority_metric_sections() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
-        assert!(en.contains(r#"body.compact[data-rail-view="more"] .compact-extra"#));
+        assert!(en.contains(r#"body.compact[data-rail-view="settings"] .compact-extra"#));
         assert!(en.contains(
-            "['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach"
+            "['rail-settings-panel','rail-update-panel','rail-more-panel','sec-storage','sec-batt','sec-network','foot'].forEach"
         ));
         assert!(en.contains(r#"data-compact-extra="storage""#));
         assert!(en.contains(r#"data-compact-extra="battery""#));
         assert!(en.contains(r#"data-compact-extra="network""#));
         assert!(en.contains(r#"data-compact-extra="processes""#));
-        assert!(en.contains("System Metrics"));
+        assert!(en.contains(">System<"));
         assert!(en.contains("Storage, battery, network, and active processes."));
     }
 
@@ -7079,6 +7192,7 @@ mod tests {
         assert!(source.contains("const DASHBOARD_SLOW_REFRESH: Duration = Duration::from_secs(3);"));
         assert!(source.contains("struct DashboardSlowCache"));
         assert!(source.contains("fn refresh_dashboard_slow_cache("));
+        assert!(source.contains("let refresh_slow_metrics = settings_visible"));
         assert!(source.contains("now >= app.next_dashboard_slow_refresh"));
         assert!(source.contains("app.dashboard_slow_cache.proc_sort != proc_sort"));
         assert!(source.contains("app.next_dashboard_slow_refresh = now + DASHBOARD_SLOW_REFRESH;"));
@@ -7097,10 +7211,10 @@ mod tests {
     fn dashboard_sections_share_spacing_without_forced_empty_height() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
-        assert!(en.contains("--content-x:15px;--section-y:11px;--panel-pad:14px;"));
+        assert!(en.contains("--content-x:16px;--section-y:14px;--panel-pad:16px;"));
         assert!(en.contains("padding:var(--section-y) var(--content-x)"));
         assert!(en.contains("padding:var(--panel-pad) var(--content-x)"));
-        assert!(en.contains(".range-tabs{display:flex;gap:4px;padding:10px var(--content-x);"));
+        assert!(en.contains(".range-tabs{display:flex;gap:4px;padding:12px var(--content-x) 8px;"));
         assert!(en.contains(
             "#sec-mem,#sec-temp,#sec-batt,#sec-network,#sec-procs{border-top:1px solid var(--line);}"
         ));
@@ -7123,7 +7237,6 @@ mod tests {
 
         for guard in [
             "if(view==='overview')",
-            "else if(view==='more')",
             "else if(view==='settings')",
             "else if(view==='fan')",
         ] {
@@ -7146,7 +7259,7 @@ mod tests {
         );
 
         let en = dashboard_html(ResolvedLanguage::En, false);
-        assert!(en.contains("grid-template-columns:minmax(0,1fr) 78px"));
+        assert!(en.contains("grid-template-columns:minmax(0,1fr) 54px"));
         assert!(en.contains("function updateRail(d)"));
         assert!(en.contains("railSettings"));
         assert!(en.contains("setTimeout(function(){"));
@@ -7752,6 +7865,29 @@ mod tests {
     #[test]
     fn launch_policy_keeps_first_run_setup_user_initiated() {
         assert!(!should_auto_prompt_first_run_setup_on_launch());
+    }
+
+    #[test]
+    fn fan_control_install_avoids_reapproval_for_existing_daemons() {
+        assert_eq!(
+            fan_control_install_plan(Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION), true),
+            FanControlInstallPlan::AlreadyReady
+        );
+        assert_eq!(
+            fan_control_install_plan(
+                Some(peterfan_platform::MIN_SELF_REINSTALL_DAEMON_VERSION),
+                true
+            ),
+            FanControlInstallPlan::SelfReinstall
+        );
+        assert_eq!(
+            fan_control_install_plan(Some("1.27.29"), false),
+            FanControlInstallPlan::InstalledButUnavailable
+        );
+        assert_eq!(
+            fan_control_install_plan(None, false),
+            FanControlInstallPlan::PrivilegedInstall
+        );
     }
 
     #[test]

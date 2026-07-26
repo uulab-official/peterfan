@@ -63,7 +63,8 @@ pub fn find_peterfand() -> Result<PathBuf, String> {
 
 /// Run a privileged shell script via one macOS admin-password GUI prompt.
 fn run_privileged(script: &str, dry_run: bool) -> Result<String, String> {
-    let path = std::env::temp_dir().join("peterfan-daemon-install.sh");
+    let path =
+        std::env::temp_dir().join(format!("peterfan-daemon-install-{}.sh", std::process::id()));
     if path.to_string_lossy().contains('\'') {
         return Err("temp path contains a quote; aborting".into());
     }
@@ -79,16 +80,42 @@ fn run_privileged(script: &str, dry_run: bool) -> Result<String, String> {
         );
         return Ok(out);
     }
-    let status = std::process::Command::new("osascript")
+    let output = std::process::Command::new("/usr/bin/osascript")
         .arg("-e")
         .arg(&apple)
-        .status()
+        .output()
         .map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&path);
-    if !status.success() {
-        return Err("privileged step was cancelled or failed".into());
+    if !output.status.success() {
+        return Err(privileged_error_message(
+            output.status.code(),
+            &String::from_utf8_lossy(&output.stderr),
+        ));
     }
     Ok(String::new())
+}
+
+fn privileged_error_message(status_code: Option<i32>, stderr: &str) -> String {
+    let detail = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .last()
+        .unwrap_or_default();
+    let lower = detail.to_ascii_lowercase();
+    if status_code == Some(1)
+        && (lower.contains("user canceled")
+            || lower.contains("user cancelled")
+            || lower.contains("(-128)"))
+    {
+        return "Administrator approval was cancelled. Fan control was not changed.".into();
+    }
+    if detail.is_empty() {
+        "Administrator approval failed before the installer could run. Fan control was not changed."
+            .into()
+    } else {
+        format!("Fan control installation failed: {detail}")
+    }
 }
 
 /// Distinct from `Err`: the privileged script ran successfully, but the
@@ -128,6 +155,12 @@ fn wait_for_required_daemon(timeout: std::time::Duration) -> bool {
 /// `Err` means the user cancelled the prompt, the script failed, or
 /// `peterfand` wasn't found next to this binary — genuine failures.
 pub fn install(dry_run: bool) -> Result<InstallOutcome, String> {
+    if !dry_run {
+        let installed_version = crate::installed_daemon_version();
+        if required_daemon_is_healthy(installed_version.as_deref(), crate::daemon_reachable()) {
+            return Ok(InstallOutcome::Installed);
+        }
+    }
     let bin = find_peterfand()?;
     let staged_bin = std::env::temp_dir().join(format!("peterfand-install-{}", std::process::id()));
     if !dry_run {
@@ -146,21 +179,25 @@ pub fn install(dry_run: bool) -> Result<InstallOutcome, String> {
     let legacy_plist_dst = format!("/Library/LaunchDaemons/{LEGACY_DAEMON_LABEL}.plist");
     let script = format!(
         "set -e\n\
-         launchctl bootout system '{legacy_plist_dst}' 2>/dev/null || true\n\
-         rm -f '{legacy_plist_dst}'\n\
-         install -m 755 '{staged_bin}' {DAEMON_BIN}\n\
-         rm -f '{staged_bin}'\n\
+         /bin/launchctl bootout 'system/{legacy_label}' 2>/dev/null || true\n\
+         /bin/launchctl bootout 'system/{daemon_label}' 2>/dev/null || true\n\
+         /bin/rm -f '{legacy_plist_dst}'\n\
+         /bin/mkdir -p /usr/local/bin\n\
+         /usr/bin/install -m 755 '{staged_bin}' {DAEMON_BIN}\n\
+         /bin/rm -f '{staged_bin}'\n\
          cat > '{plist_dst}' <<'PLIST'\n{plist}PLIST\n\
-         chown root:wheel '{plist_dst}'\n\
-         chmod 644 '{plist_dst}'\n\
-         launchctl bootout system '{plist_dst}' 2>/dev/null || true\n\
-         launchctl bootstrap system '{plist_dst}'\n\
-         mkdir -p /etc/newsyslog.d\n\
-         printf '%s' '{newsyslog}' > {newsyslog_conf}\n\
-         chmod 644 {newsyslog_conf}\n",
+         /usr/sbin/chown root:wheel '{plist_dst}'\n\
+         /bin/chmod 644 '{plist_dst}'\n\
+         /usr/bin/plutil -lint '{plist_dst}' >/dev/null\n\
+         /bin/launchctl bootstrap system '{plist_dst}'\n\
+         /bin/mkdir -p /etc/newsyslog.d\n\
+         /usr/bin/printf '%s' '{newsyslog}' > {newsyslog_conf}\n\
+         /bin/chmod 644 {newsyslog_conf}\n",
         staged_bin = staged_bin.display(),
         plist = daemon_plist(),
         legacy_plist_dst = legacy_plist_dst,
+        legacy_label = LEGACY_DAEMON_LABEL,
+        daemon_label = DAEMON_LABEL,
         newsyslog = NEWSYSLOG_BODY,
         newsyslog_conf = NEWSYSLOG_CONF,
     );
@@ -245,6 +282,25 @@ pub fn reinstall_via_running_daemon(_dry_run: bool) -> Result<InstallOutcome, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn privileged_errors_distinguish_cancellation_from_script_failure() {
+        assert_eq!(
+            privileged_error_message(Some(1), "execution error: User canceled. (-128)\n"),
+            "Administrator approval was cancelled. Fan control was not changed."
+        );
+        assert_eq!(
+            privileged_error_message(
+                Some(1),
+                "execution error: launchctl bootstrap failed: 5 (1)\n"
+            ),
+            "Fan control installation failed: execution error: launchctl bootstrap failed: 5 (1)"
+        );
+        assert_eq!(
+            privileged_error_message(Some(1), ""),
+            "Administrator approval failed before the installer could run. Fan control was not changed."
+        );
+    }
 
     #[test]
     fn launch_daemon_restarts_after_crash_and_boot() {

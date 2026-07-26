@@ -573,14 +573,37 @@ fn cmd_login_item(action: LoginItemAction) -> Result<()> {
 #[cfg(target_os = "macos")]
 fn cmd_install_daemon(dry_run: bool) -> Result<()> {
     use peterfan_platform::daemon_install::InstallOutcome;
-    println!(
-        "Installing the PeterFan fan-control daemon as root.\n\
-         macOS will ask for your password once — after that the menu-bar app and \
-         `peterfan fan …` work without sudo (just like Macs Fan Control)."
-    );
+    let installed_version = peterfan_platform::installed_daemon_version();
+    let already_ready = !dry_run
+        && peterfan_platform::daemon_reachable()
+        && installed_version
+            .as_deref()
+            .is_some_and(|version| !peterfan_platform::daemon_update_required(version));
+    if already_ready {
+        println!("Checking the existing PeterFan fan-control daemon.");
+    } else if dry_run {
+        println!("Previewing the PeterFan fan-control daemon installation.");
+    } else {
+        println!(
+            "Installing the PeterFan fan-control daemon as root.\n\
+             macOS will ask for your password once — after that the menu-bar app and \
+             `peterfan fan …` work without sudo (just like Macs Fan Control)."
+        );
+    }
     match peterfan_platform::daemon_install::install(dry_run) {
         Ok(InstallOutcome::DryRun(script)) => {
             println!("{script}");
+            Ok(())
+        }
+        Ok(InstallOutcome::Installed) if already_ready => {
+            println!(
+                "{}",
+                format!(
+                    "✓ fan control is already ready (daemon v{})",
+                    installed_version.as_deref().unwrap_or("unknown")
+                )
+                .green()
+            );
             Ok(())
         }
         Ok(InstallOutcome::Installed) => {
