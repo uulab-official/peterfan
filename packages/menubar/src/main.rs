@@ -550,6 +550,7 @@ struct App {
 }
 
 struct DashboardSlowCache {
+    sampled_at: Option<Instant>,
     proc_sort: ProcSort,
     procs: Vec<serde_json::Value>,
     disk_pct: f32,
@@ -569,6 +570,7 @@ struct DashboardSlowCache {
 impl Default for DashboardSlowCache {
     fn default() -> Self {
         Self {
+            sampled_at: None,
             proc_sort: ProcSort::Cpu,
             procs: Vec::new(),
             disk_pct: 0.0,
@@ -2777,6 +2779,7 @@ fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
         .unwrap_or_else(default_curve_points);
 
     app.dashboard_slow_cache = DashboardSlowCache {
+        sampled_at: Some(Instant::now()),
         proc_sort,
         procs,
         disk_pct: disk.map(|d| d.used_percent).unwrap_or(0.0),
@@ -3281,6 +3284,7 @@ fn update(app: &mut App) {
             bytes(mem.used), bytes(mem.total), bytes(mem.swap_used), bytes(mem.swap_total)
         ),
         "disk_pct": app.dashboard_slow_cache.disk_pct,
+        "slow_data_ready": app.dashboard_slow_cache.sampled_at.is_some(),
         "disk_text": &app.dashboard_slow_cache.disk_text,
         "disk_sub": &app.dashboard_slow_cache.disk_sub,
         "disk_io_present": app.dashboard_slow_cache.disk_io_present,
@@ -4775,6 +4779,10 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
                 "시스템 센서를 읽는 중…",
             )
             .replace(
+                "Reading system metrics…",
+                "시스템 지표를 읽는 중…",
+            )
+            .replace(
                 "CPU temperature sensors are unavailable.",
                 "CPU 온도 센서를 읽을 수 없습니다.",
             )
@@ -4973,6 +4981,8 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .panel-pill.warn{background:rgba(255,214,10,.16);color:var(--y);}
 .panel-pill.info{background:rgba(91,157,255,.16);color:var(--accent);}
 .rail-panel .panel-copy{display:none;}
+.view-loading{display:flex;align-items:center;gap:7px;margin:-2px 0 10px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;color:var(--dim);font-size:10px;line-height:1.35;background:rgba(255,255,255,.018);}
+.view-loading .data-loading-dot{width:6px;height:6px;}
 #rail-settings-pill,#rail-more-pill{display:none;}
 .rail-panel .panel-action{min-height:30px;background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:11px;font-weight:700;padding:6px 10px;border-radius:7px;cursor:pointer;}
 .rail-panel .panel-action.secondary{background:var(--chip-bg);border-color:transparent;color:var(--text);}
@@ -5108,6 +5118,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 <div class="rail-panel" id="rail-more-panel">
 <div class="panel-title-row"><div class="panel-title">System</div><span class="panel-pill info" id="rail-more-pill">Live</span></div>
 <div class="panel-copy">Storage, battery, network, and active processes.</div>
+<div class="view-loading" id="system-loading" role="status" aria-live="polite" style="display:none"><span class="data-loading-dot"></span><span>Reading system metrics…</span></div>
 <div class="health-card" id="hardware-availability-card" style="display:none">
 <div class="health-head"><div class="health-title">Hardware Availability</div><span class="panel-pill info" id="hardware-pill">Ready</span></div>
 <div class="health-grid">
@@ -5546,6 +5557,8 @@ window.__pf={
  } else if(view==='settings'||view==='system'){
    if(view==='settings')updateSetup(d);
    else updateHardwareAvailability(d);
+   var systemLoading=document.getElementById('system-loading');
+   if(systemLoading)systemLoading.style.display=view==='system'&&!d.slow_data_ready?'':'none';
    set('disk-val',d.disk_text);set('disk-sub',d.disk_sub);bar('disk-bar',d.disk_pct);
    show('disk-io-sub',d.disk_io_present);if(d.disk_io_present)set('disk-io-sub',d.disk_io_sub);
    show('disk-io-chart',d.disk_io_present);show('disk-io-chart-stats',d.disk_io_present);
@@ -7471,6 +7484,9 @@ mod tests {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
         assert!(en.contains(r#"id="rail-more-panel""#));
+        assert!(en.contains(r#"id="system-loading""#));
+        assert!(en.contains("Reading system metrics…"));
+        assert!(en.contains("d.slow_data_ready"));
         assert!(en.contains(r#"id="railSystem""#));
         assert!(en.contains("case 'detail':setRailView('overview');break;"));
         assert!(en.contains("case 'system':case 'more':setRailView('system');break;"));
@@ -7534,6 +7550,10 @@ mod tests {
 
         assert!(source.contains("const DASHBOARD_SLOW_REFRESH: Duration = Duration::from_secs(3);"));
         assert!(source.contains("struct DashboardSlowCache"));
+        assert!(source.contains("sampled_at: Option<Instant>"));
+        assert!(
+            source.contains("\"slow_data_ready\": app.dashboard_slow_cache.sampled_at.is_some()")
+        );
         assert!(source.contains("fn refresh_dashboard_slow_cache("));
         assert!(source.contains("let refresh_slow_metrics = (settings_visible || system_visible)"));
         assert!(source.contains("now >= app.next_dashboard_slow_refresh"));

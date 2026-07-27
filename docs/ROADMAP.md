@@ -93,6 +93,8 @@ These are the highest-leverage improvements before adding large new surfaces.
       running hardware reads on the WebView/UI path
 - [x] Separate Settings actions from System metrics so each rail button has one
       clear job and slow storage/process reads run only on the System view
+- [x] Show a view-specific loading state while slow System metrics are being
+      collected, instead of presenting blank values on first entry
 
 ### v1.28 — Sensor Accuracy
 
