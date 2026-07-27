@@ -83,6 +83,8 @@ These are the highest-leverage improvements before adding large new surfaces.
       the single-instance lock cannot reject the relaunched app
 - [x] Keep the fan screen header stable while daemon state is loading and align
       fan control summaries and profile actions for compact popovers
+- [x] Keep fan status truthful when hardware is absent or read-only; disable
+      profile actions until at least one controllable fan is confirmed
 
 ### v1.28 — Sensor Accuracy
 

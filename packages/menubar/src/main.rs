@@ -4763,8 +4763,12 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
                 "저장공간, 배터리, 네트워크와 실행 중인 프로세스를 확인합니다.",
             )
             .replace(
-                "No controllable fans detected. PeterFan can still monitor CPU, memory, temperature, and network activity.",
-                "제어 가능한 팬을 찾지 못했습니다. PeterFan은 CPU, 메모리, 온도, 네트워크 상태는 계속 모니터링합니다.",
+                ">No fan sensors<",
+                ">팬 센서 없음<",
+            )
+            .replace(
+                "No fan sensors were reported by this Mac. CPU, memory, temperature, and network monitoring continue normally.",
+                "이 Mac에서는 팬 센서를 찾지 못했습니다. CPU, 메모리, 온도, 네트워크 모니터링은 계속됩니다.",
             )
             .replace(
                 "Manage startup and fan-control safety.",
@@ -4916,7 +4920,9 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 .fan-rpm-row input[type=number]{width:44px;background:var(--track);border:1px solid transparent;border-radius:4px;color:var(--text);font:inherit;font-size:9px;font-variant-numeric:tabular-nums;text-align:center;padding:3px 0;-moz-appearance:textfield;}
 .fan-rpm-row input[type=number]::-webkit-inner-spin-button,.fan-rpm-row input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}
 .fan-rpm-row input[type=number]:focus{border-color:var(--accent);outline:none;}
-.empty-state{padding:9px 10px;border:1px dashed var(--line);border-radius:8px;color:var(--dim);font-size:10.5px;line-height:1.45;background:rgba(255,255,255,.018);}
+.empty-state{display:flex;flex-direction:column;gap:3px;padding:10px;border:1px dashed var(--line);border-radius:8px;color:var(--dim);font-size:10.5px;line-height:1.45;background:rgba(255,255,255,.018);}
+.empty-state-title{font-size:10.5px;color:var(--text);font-weight:700;}
+.empty-state-copy{font-size:9.5px;color:var(--dim);line-height:1.5;}
 .ctl-note{font-size:10.5px;color:var(--dim);line-height:1.5;margin-top:6px;}
 .note-fix-btn{margin-top:5px;background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:10px;font-weight:600;padding:5px 10px;border-radius:6px;cursor:pointer;}
 .note-fix-btn:hover{background:rgba(91,157,255,.32);}
@@ -5102,7 +5108,7 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 </div>
 <div class="fan-apply-status" id="fan-apply-status"></div>
 <div class="fan-cards" id="fan-cards"></div>
-<div class="empty-state" id="fan-empty-state" style="display:none">No controllable fans detected. PeterFan can still monitor CPU, memory, temperature, and network activity.</div>
+<div class="empty-state" id="fan-empty-state" style="display:none"><strong class="empty-state-title">No fan sensors</strong><span class="empty-state-copy">No fan sensors were reported by this Mac. CPU, memory, temperature, and network monitoring continue normally.</span></div>
 <div class="ctl-note" id="ctl-note" style="display:none"></div>
 </div>
 
@@ -5495,7 +5501,10 @@ window.__pf={
    updateSetup(d);
    var note=document.getElementById('ctl-note');
    if(d.fan_control_supported){
-     set('ctl-status', d.ctl_status||'');
+     var fanCount=Number(d.fan_count||0),controllableCount=Number(d.controllable_fan_count||0);
+     set('ctl-status',controllableCount>0
+       ?(d.ctl_status||'')
+       :(fanCount>0?(LANG==='ko'?'RPM 모니터링만 가능':'RPM monitoring only'):(LANG==='ko'?'팬 센서 없음':'No fan sensors')));
      updateProfileStrip(d);
      updateFanApplyStatus(d);
      if(note){
@@ -6087,7 +6096,9 @@ function fanControlStatusFailed(status){
 function updateProfileStrip(d){
   var strip=document.getElementById('profile-strip');
   if(!strip)return;
-  var enabled=!!d.can_control;
+  // A generic control path is not enough to enable profile actions: the
+  // current machine must expose at least one fan that accepts writes.
+  var enabled=!!d.can_control&&Number(d.controllable_fan_count||0)>0;
   var activeMode=d.active_control_mode||'';
   var activeProfile=d.active_profile||'';
   if(FAN_CONTROL_PENDING){
@@ -6166,28 +6177,42 @@ function updateSetup(d){
   var fanView=railView()==='fan';
   var stateReady=d.fan_control_state_ready!==false;
   var supported=!!d.fan_control_supported;
+  var fanCount=Number(d.fan_count||0);
+  var controllableCount=Number(d.controllable_fan_count||0);
+  var noFans=stateReady&&fanCount===0;
+  var readOnly=stateReady&&fanCount>0&&controllableCount===0;
+  var statusTitle=noFans
+    ?(LANG==='ko'?'팬 감지 안 됨':'No fans detected')
+    :(readOnly
+      ?(LANG==='ko'?'읽기 전용 팬':'Read-only fans')
+      :(LANG==='ko'?'팬 모니터링':'Fan monitoring'));
+  var statusDetail=noFans
+    ?(LANG==='ko'?'이 Mac에서 팬 센서를 찾지 못했습니다':'No fan sensors were reported by this Mac')
+    :(readOnly
+      ?(LANG==='ko'?'RPM 모니터링만 가능':'RPM monitoring only')
+      :(LANG==='ko'?'이 Mac에서는 RPM 읽기만 지원':'This Mac exposes RPM monitoring only'));
   if(setup)setup.style.display=fanView?'flex':'none';
   var title=document.getElementById('setup-title');
   if(title){
     title.textContent=!stateReady
       ?(LANG==='ko'?'팬 제어 확인 중…':'Checking fan control…')
-      :(!supported
-        ?(LANG==='ko'?'팬 모니터링':'Fan monitoring')
+      :(!supported||noFans||readOnly
+        ?statusTitle
         :(d.setup_title||'Ready'));
   }
   var detail=document.getElementById('setup-detail');
   if(detail){
     detail.textContent=!stateReady
       ?(LANG==='ko'?'데몬과 팬 상태를 확인하는 중':'Reading daemon and fan state')
-      :(!supported
-        ?(LANG==='ko'?'이 Mac에서는 RPM 읽기만 지원':'This Mac exposes RPM monitoring only')
+      :(!supported||noFans||readOnly
+        ?statusDetail
         :(d.setup_detail||('v'+(d.app_version||''))));
   }
   var dot=document.getElementById('setup-dot');
-  if(dot)dot.className='setup-dot '+(!stateReady||!supported?'info':(d.setup_tone||'info'));
+  if(dot)dot.className='setup-dot '+(!stateReady?'info':(noFans||readOnly||!supported?'warn':(d.setup_tone||'info')));
   var fan=document.getElementById('setup-fan');
   if(fan){
-    var showSetup=stateReady&&supported&&(d.fan_setup_needed||d.daemon_update_needed);
+    var showSetup=stateReady&&supported&&controllableCount>0&&(d.fan_setup_needed||d.daemon_update_needed);
     fan.style.display=showSetup?'':'none';
     fan.disabled=FAN_CONTROL_FIX_PENDING||!showSetup;
     fan.title=d.daemon_update_needed
@@ -6375,9 +6400,15 @@ function updateFanEmptyState(d){
   var show=controllable===0;
   empty.style.display=show?'':'none';
   if(show){
-    empty.textContent=fans.length>0
-      ?(LANG==='ko'?'이 Mac의 팬은 감지됐지만 앱에서 직접 제어할 수 없습니다. 실시간 RPM은 계속 확인할 수 있습니다.':'Fans are detected, but this Mac does not expose controllable fan writes. Live RPM is still monitored.')
-      :(LANG==='ko'?'제어 가능한 팬을 찾지 못했습니다. PeterFan은 CPU, 메모리, 온도, 네트워크 상태는 계속 모니터링합니다.':'No controllable fans detected. PeterFan can still monitor CPU, memory, temperature, and network activity.');
+    var title=empty.querySelector('.empty-state-title');
+    var copy=empty.querySelector('.empty-state-copy');
+    var noFans=fans.length===0;
+    if(title)title.textContent=noFans
+      ?(LANG==='ko'?'팬 센서가 없습니다':'No fan sensors')
+      :(LANG==='ko'?'읽기 전용 팬':'Read-only fans');
+    if(copy)copy.textContent=noFans
+      ?(LANG==='ko'?'이 Mac에서는 팬 센서를 찾지 못했습니다. CPU, 메모리, 온도, 네트워크 모니터링은 계속됩니다.':'No fan sensors were reported by this Mac. CPU, memory, temperature, and network monitoring continue normally.')
+      :(LANG==='ko'?'팬은 감지됐지만 앱에서 직접 제어할 수 없습니다. 실시간 RPM은 계속 표시됩니다.':'Fans are detected, but this Mac does not expose controllable writes. Live RPM continues to be monitored.');
   }
 }
 // Draws a filled area + line sparkline of `data` into the <canvas id=id>.
@@ -7144,12 +7175,17 @@ mod tests {
         assert!(en.contains("updateHardwareAvailability(d);"));
         assert!(en.contains("d.network_count"));
         assert!(en.contains("d.network_active"));
-        assert!(en.contains("No controllable fans detected"));
+        assert!(en.contains(">No fan sensors<"));
+        assert!(en.contains("No fan sensors were reported by this Mac"));
+        assert!(en.contains("Read-only fans"));
+        assert!(en.contains("controllableCount>0"));
 
         assert!(ko.contains(">하드웨어 감지 상태<"));
         assert!(ko.contains(">배터리<"));
         assert!(ko.contains(">네트워크<"));
-        assert!(ko.contains("제어 가능한 팬을 찾지 못했습니다"));
+        assert!(ko.contains(">팬 센서 없음<"));
+        assert!(ko.contains("이 Mac에서는 팬 센서를 찾지 못했습니다"));
+        assert!(ko.contains("읽기 전용 팬"));
     }
 
     #[test]
@@ -7302,8 +7338,12 @@ mod tests {
         ));
         assert!(en.contains("if(setup)setup.style.display=fanView?'flex':'none';"));
         assert!(en.contains("var stateReady=d.fan_control_state_ready!==false;"));
+        assert!(en.contains("var fanCount=Number(d.fan_count||0);"));
+        assert!(en.contains("var controllableCount=Number(d.controllable_fan_count||0);"));
+        assert!(en.contains("var noFans=stateReady&&fanCount===0;"));
+        assert!(en.contains("var readOnly=stateReady&&fanCount>0&&controllableCount===0;"));
         assert!(en.contains(
-            "var showSetup=stateReady&&supported&&(d.fan_setup_needed||d.daemon_update_needed);"
+            "var showSetup=stateReady&&supported&&controllableCount>0&&(d.fan_setup_needed||d.daemon_update_needed);"
         ));
         assert!(en.contains("setVisible('setup-row',true);"));
         assert!(en.contains("} else {\n    ['range-tabs','sec-cpu','sec-mem','sec-temp'].forEach"));
