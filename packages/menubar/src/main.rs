@@ -4767,6 +4767,10 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
                 "시스템 센서를 읽는 중…",
             )
             .replace(
+                "CPU temperature sensors are unavailable.",
+                "CPU 온도 센서를 읽을 수 없습니다.",
+            )
+            .replace(
                 ">No fan sensors<",
                 ">팬 센서 없음<",
             )
@@ -4837,6 +4841,7 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 .setup-actions{display:flex;gap:4px;flex:0 0 auto;}
 .setup-actions button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:10px;font-weight:700;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s,border-color .15s;}
 .setup-actions button:hover{background:var(--chip-hover);color:var(--text);}
+.setup-actions button:disabled{opacity:.45;cursor:default;pointer-events:none;}
 .setup-actions button.primary{background:rgba(91,157,255,.22);border-color:rgba(91,157,255,.5);color:var(--accent);}
 .setup-actions button.active{color:var(--g);border-color:rgba(48,209,88,.35);}
 .setup-menu-wrap{position:relative;}
@@ -4892,6 +4897,7 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 .fan-input b{display:block;margin-top:2px;font-size:10px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .profile-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin:2px 0 9px;}
 .profile-strip button{min-width:0;background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:10px;font-weight:700;padding:7px 3px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s,border-color .15s,opacity .15s;}
+.profile-strip button:disabled{opacity:.42;cursor:default;pointer-events:none;}
 .profile-strip button:hover{background:var(--chip-hover);color:var(--text);}
 .profile-strip button.active{background:rgba(91,157,255,.2);border-color:rgba(91,157,255,.48);color:var(--accent);}
 .profile-strip.disabled button{opacity:.42;pointer-events:none;}
@@ -4931,6 +4937,7 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 .empty-state{display:flex;flex-direction:column;gap:3px;padding:10px;border:1px dashed var(--line);border-radius:8px;color:var(--dim);font-size:10.5px;line-height:1.45;background:rgba(255,255,255,.018);}
 .empty-state-title{font-size:10.5px;color:var(--text);font-weight:700;}
 .empty-state-copy{font-size:9.5px;color:var(--dim);line-height:1.5;}
+.metric-empty{margin-top:6px;color:var(--dim);font-size:10px;line-height:1.45;}
 .ctl-note{font-size:10.5px;color:var(--dim);line-height:1.5;margin-top:6px;}
 .note-fix-btn{margin-top:5px;background:rgba(91,157,255,.22);border:1px solid rgba(91,157,255,.5);color:var(--accent);font:inherit;font-size:10px;font-weight:600;padding:5px 10px;border-radius:6px;cursor:pointer;}
 .note-fix-btn:hover{background:rgba(91,157,255,.32);}
@@ -5023,12 +5030,12 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 <div class="setup" id="setup-row">
 <div class="setup-copy"><div class="setup-main"><span class="setup-dot" id="setup-dot"></span><span id="setup-title">Ready</span></div><div class="setup-sub" id="setup-detail"></div></div>
 <div class="setup-actions">
-<button id="setup-fan" class="primary" onclick="startFanControlSetup(this)">Set Up</button>
+<button id="setup-fan" class="primary" disabled onclick="startFanControlSetup(this)">Set Up</button>
 <div class="setup-menu-wrap">
-<button id="setup-more" class="setup-more" onclick="toggleSetupMenu(event)" onkeydown="handleSetupMoreKey(event)" aria-label="Setup actions" aria-haspopup="menu" aria-expanded="false" title="Setup actions">…</button>
+<button id="setup-more" class="setup-more" disabled onclick="toggleSetupMenu(event)" onkeydown="handleSetupMoreKey(event)" aria-label="Setup actions" aria-haspopup="menu" aria-expanded="false" title="Setup actions">…</button>
 <div class="setup-menu" id="setup-menu" role="menu" onkeydown="handleSetupMenuKey(event)">
-<button class="setup-menu-item" role="menuitem" id="setup-startup" onclick="closeSetupMenu();toggleStartupItem(this)">Start on login</button>
-<button class="setup-menu-item" role="menuitem" id="setup-update" onclick="closeSetupMenu();checkAppUpdates(this)">Update</button>
+<button class="setup-menu-item" role="menuitem" id="setup-startup" disabled onclick="closeSetupMenu();toggleStartupItem(this)">Start on login</button>
+<button class="setup-menu-item" role="menuitem" id="setup-update" disabled onclick="closeSetupMenu();checkAppUpdates(this)">Update</button>
 </div>
 </div>
 </div>
@@ -5040,7 +5047,7 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 <div class="settings-list">
 <div class="settings-item" id="startup-setting">
 <div><div class="settings-item-title">Start on login</div><div class="settings-item-copy">Run PeterFan automatically on startup.</div></div>
-<button id="startup-toggle" class="panel-action secondary" onclick="toggleStartupItem(this)">Enable</button>
+<button id="startup-toggle" class="panel-action secondary" disabled onclick="toggleStartupItem(this)">Enable</button>
 </div>
 <details class="settings-details" id="fan-health-card">
 <summary><span>Fan Control Health</span><span class="panel-pill info" id="health-pill">Ready</span></summary>
@@ -5068,7 +5075,7 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 <div class="health-row"><span class="health-label">Last Control Error</span><span class="health-value" id="health-control-error">—</span></div>
 </div></details>
 <div id="fan-action-log-card">
-<div class="health-head"><div class="health-title">Recent Fan Actions</div><button class="health-action" id="fan-diagnostic-button" onclick="runFanDiagnostics(this)">Run Diagnostics</button></div>
+<div class="health-head"><div class="health-title">Recent Fan Actions</div><button class="health-action" id="fan-diagnostic-button" disabled onclick="runFanDiagnostics(this)">Run Diagnostics</button></div>
 <div class="action-log" id="fan-action-log"><div class="action-log-empty">No fan actions yet</div></div>
 </div>
 </details>
@@ -5084,7 +5091,7 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 <div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result">—</span></div>
 </div>
 <div class="release-notes-card" id="update-release-notes-card" style="display:none"><div class="release-notes-title">Release Notes</div><div class="release-notes-body" id="update-release-notes">—</div></div>
-<div class="panel-actions" style="margin-top:10px"><button class="panel-action" id="rail-update-check" onclick="checkAppUpdates(this)">Check &amp; Update</button><button class="panel-action secondary" id="update-release-link" onclick="openLatestRelease()" style="display:none">View Release</button></div>
+<div class="panel-actions" style="margin-top:10px"><button class="panel-action" id="rail-update-check" disabled onclick="checkAppUpdates(this)">Check &amp; Update</button><button class="panel-action secondary" id="update-release-link" onclick="openLatestRelease()" style="display:none">View Release</button></div>
 </div>
 
 <div class="rail-panel" id="rail-more-panel">
@@ -5109,12 +5116,12 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 <div class="fan-input"><span>Critical Limit</span><b id="fan-critical-limit">—</b></div>
 </div>
 <div class="profile-strip" id="profile-strip">
-<button class="active" data-mode="auto" title="Auto" onclick="setAuto()">Auto</button>
-<button data-mode="profile" data-profile="silent" title="Silent" onclick="setProfile('silent')">Quiet</button>
-<button data-mode="profile" data-profile="balanced" title="Balanced" onclick="setProfile('balanced')">Balance</button>
-<button data-mode="profile" data-profile="gaming" title="Gaming" onclick="setProfile('gaming')">Game</button>
-<button data-mode="profile" data-profile="performance" title="Performance" onclick="setProfile('performance')">Fast</button>
-<button data-mode="profile" data-profile="maximum" title="Maximum" onclick="setProfile('maximum')">Max</button>
+<button class="active" disabled data-mode="auto" title="Auto" onclick="setAuto()">Auto</button>
+<button disabled data-mode="profile" data-profile="silent" title="Silent" onclick="setProfile('silent')">Quiet</button>
+<button disabled data-mode="profile" data-profile="balanced" title="Balanced" onclick="setProfile('balanced')">Balance</button>
+<button disabled data-mode="profile" data-profile="gaming" title="Gaming" onclick="setProfile('gaming')">Game</button>
+<button disabled data-mode="profile" data-profile="performance" title="Performance" onclick="setProfile('performance')">Fast</button>
+<button disabled data-mode="profile" data-profile="maximum" title="Maximum" onclick="setProfile('maximum')">Max</button>
 </div>
 <div class="fan-apply-status" id="fan-apply-status"></div>
 <div class="fan-cards" id="fan-cards"></div>
@@ -5158,7 +5165,7 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 
 <div class="row" id="sec-temp"><span class="ic"><svg viewBox="0 0 24 24"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg></span>
 <div class="content"><div class="head"><span class="name" id="temp-name">Temperature</span><span class="val" id="temp-val">—</span></div>
-<div class="bar"><div class="bar-fill" id="temp-bar"></div></div><div id="temp-list"></div>
+<div class="bar"><div class="bar-fill" id="temp-bar"></div></div><div id="temp-list"></div><div class="metric-empty" id="temp-empty" style="display:none">CPU temperature sensors are unavailable.</div>
 <div class="all-temp-head" id="all-temp-head" onclick="toggleRawTemps()">All sensors</div><div class="all-temp-list" id="all-temp-list"></div>
 <canvas class="chart" id="temp-chart"></canvas><div class="chart-stats" id="temp-chart-stats"></div></div></div>
 
@@ -5487,9 +5494,12 @@ window.__pf={
    set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
    var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span');s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title='Core '+(i+1)+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
    set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
-   show('sec-temp',d.temp_present);if(d.temp_present){set('temp-name',(LANG==='ko'?'온도':'Temperature')+(d.temp_source?' · '+d.temp_source:'')+(d.temp_stale?' · '+(LANG==='ko'?'오래됨 ':'stale ')+Number(d.temp_age_secs||0)+'s':''));set('temp-val',d.temp_text);var tv=document.getElementById('temp-val');if(tv)tv.classList.toggle('stale',!!d.temp_stale);bar('temp-bar',d.temp_stale?0:d.temp_pct,d.temp_cls);
+   show('sec-temp',true);if(d.temp_present){show('temp-empty',false);set('temp-name',(LANG==='ko'?'온도':'Temperature')+(d.temp_source?' · '+d.temp_source:'')+(d.temp_stale?' · '+(LANG==='ko'?'오래됨 ':'stale ')+Number(d.temp_age_secs||0)+'s':''));set('temp-val',d.temp_text);var tv=document.getElementById('temp-val');if(tv)tv.classList.toggle('stale',!!d.temp_stale);bar('temp-bar',d.temp_stale?0:d.temp_pct,d.temp_cls);
      var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow'+(t.stale?' stale':'');r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c+(t.stale?' · '+Number(t.age_secs||0)+'s':'');r.children[1].className='v '+t.cls;tl.appendChild(r);});}
-     renderRawTempList(d);}
+     renderRawTempList(d);} else {
+     show('temp-empty',true);set('temp-name',LANG==='ko'?'온도':'Temperature');set('temp-val','—');bar('temp-bar',0,'info');
+     var tlEmpty=document.getElementById('temp-list');if(tlEmpty)tlEmpty.innerHTML='';var tvEmpty=document.getElementById('temp-val');if(tvEmpty)tvEmpty.classList.remove('stale');clearChart('temp-chart');set('temp-chart-stats','');renderRawTempList(d);
+   }
    drawChart('cpu-chart', d.cpu_hist, '#5b9dff', 100, function(v){return v.toFixed(1)+'%';});
    drawChart('mem-chart', d.mem_hist, '#5b9dff', 100, function(v){return v.toFixed(1)+'%';});
    if(d.temp_present)drawChart('temp-chart', d.temp_stale?[]:d.temp_hist, '#ff9f0a', null, function(v){return v.toFixed(0)+'°C';});
@@ -6237,6 +6247,7 @@ function updateSetup(d){
   }
   var more=document.getElementById('setup-more');
   if(more){
+    more.disabled=!stateReady||APP_UPDATE_CHECK_PENDING;
     more.title=LANG==='ko'?'설정 작업':'Setup actions';
     more.setAttribute('aria-label',more.title);
   }
@@ -6425,6 +6436,13 @@ function updateFanEmptyState(d){
       ?(LANG==='ko'?'이 Mac에서는 팬 센서를 찾지 못했습니다. CPU, 메모리, 온도, 네트워크 모니터링은 계속됩니다.':'No fan sensors were reported by this Mac. CPU, memory, temperature, and network monitoring continue normally.')
       :(LANG==='ko'?'팬은 감지됐지만 앱에서 직접 제어할 수 없습니다. 실시간 RPM은 계속 표시됩니다.':'Fans are detected, but this Mac does not expose controllable writes. Live RPM continues to be monitored.');
   }
+}
+function clearChart(id){
+  var cv=document.getElementById(id);
+  if(!cv)return;
+  var ctx=cv.getContext('2d');
+  if(ctx)ctx.clearRect(0,0,cv.width||0,cv.height||0);
+  cv._data=[];
 }
 // Draws a filled area + line sparkline of `data` into the <canvas id=id>.
 // `fixedMax` pins the y-axis (e.g. 100 for percentages); null auto-scales to the data's own peak.
@@ -7078,6 +7096,7 @@ mod tests {
         assert!(en.contains(r#"id="health-approval""#));
         assert!(en.contains(r#"id="fan-action-log-card""#));
         assert!(en.contains(r#"id="fan-diagnostic-button""#));
+        assert!(en.contains(r#"id="fan-diagnostic-button" disabled"#));
         assert!(en.contains(r#"id="fan-action-log""#));
         assert!(en.contains("function updateHealthPanel(d)"));
         assert!(en.contains("function runFanDiagnostics(btn)"));
@@ -7190,6 +7209,9 @@ mod tests {
         assert!(en.contains(r#"id="fan-empty-state""#));
         assert!(en.contains(r#"id="data-loading""#));
         assert!(en.contains("document.body.classList.add('data-ready');"));
+        assert!(en.contains(r#"id="temp-empty""#));
+        assert!(en.contains("show('sec-temp',true);"));
+        assert!(en.contains("clearChart('temp-chart');"));
         assert!(en.contains("function updateHardwareAvailability(d)"));
         assert!(en.contains("updateHardwareAvailability(d);"));
         assert!(en.contains("d.network_count"));
@@ -7198,6 +7220,8 @@ mod tests {
         assert!(en.contains("No fan sensors were reported by this Mac"));
         assert!(en.contains("Read-only fans"));
         assert!(en.contains("controllableCount>0"));
+        assert!(en.contains(r#"id="profile-strip""#));
+        assert!(en.contains(r#"disabled data-mode="auto" title="Auto" onclick="setAuto()">"#));
 
         assert!(ko.contains(">하드웨어 감지 상태<"));
         assert!(ko.contains(">배터리<"));
@@ -7216,6 +7240,7 @@ mod tests {
             assert!(html.contains(r#"id="startup-setting"#));
             assert!(html.contains(">Run on startup<") || html.contains("부팅 시 자동 실행"));
             assert!(html.contains(r#"id="startup-toggle"#));
+            assert!(html.contains(r#"id="startup-toggle" class="panel-action secondary" disabled"#));
             assert!(html.contains("toggleStartupItem(this)"));
         }
     }

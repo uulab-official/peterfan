@@ -87,6 +87,8 @@ These are the highest-leverage improvements before adding large new surfaces.
       profile actions until at least one controllable fan is confirmed
 - [x] Show hardware availability in Settings and provide a non-blocking initial
       sensor-loading state before the first dashboard payload arrives
+- [x] Guard control and maintenance actions until the first payload arrives;
+      keep the temperature section visible when CPU sensors are unavailable
 
 ### v1.28 — Sensor Accuracy
 
