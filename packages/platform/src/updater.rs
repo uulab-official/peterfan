@@ -1291,6 +1291,19 @@ fn build_apply_update_script(
          \tdone\n\
          \treturn 1\n\
          }}\n\
+         wait_for_previous_exit() {{\n\
+         \t# The old process holds the single-instance lock. Do not replace\n\
+         \t# the bundle until it has really exited, or the new launch can\n\
+         \t# be rejected as a duplicate and the health check can see the old\n\
+         \t# process instead of the replacement.\n\
+         \tfor _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40; do\n\
+         \t\tif ! /usr/bin/pgrep -fx {executable} >/dev/null 2>&1; then\n\
+         \t\t\treturn 0\n\
+         \t\tfi\n\
+         \t\tsleep 0.25\n\
+         \tdone\n\
+         \treturn 1\n\
+         }}\n\
          fail_before_replace() {{\n\
          \twrite_result {failed}\n\
          \tlaunch_until_healthy || true\n\
@@ -1307,7 +1320,8 @@ fn build_apply_update_script(
          \tfi\n\
          \texit 1\n\
          }}\n\
-         sleep 1\n\
+         sleep 0.5\n\
+         wait_for_previous_exit || fail_before_replace\n\
          /bin/rm -rf {backup}\n\
          /bin/mv {app} {backup} || fail_before_replace\n\
          /usr/bin/ditto {new_app} {app} || rollback\n\
@@ -1976,6 +1990,8 @@ TeamIdentifier=N99FMBQ662
         assert!(script.contains("open -g -j"));
         assert!(script.contains("open -g -j -n"));
         assert!(script.contains("pgrep -fx"));
+        assert!(script.contains("wait_for_previous_exit"));
+        assert!(script.contains("wait_for_previous_exit || fail_before_replace"));
         assert!(script.contains("launch_until_healthy || rollback"));
         assert!(script.contains("write_result"));
         assert!(script.contains("update-result.json"));

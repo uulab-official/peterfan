@@ -79,6 +79,8 @@ These are the highest-leverage improvements before adding large new surfaces.
       and log rail navigation requests for support diagnostics
 - [x] Focus the popover only on explicit user open so WebView controls receive
       input without stealing focus during app startup
+- [x] Wait for the previous menu-bar process to exit before OTA replacement so
+      the single-instance lock cannot reject the relaunched app
 
 ### v1.28 — Sensor Accuracy
 
