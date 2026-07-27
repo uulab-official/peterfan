@@ -104,7 +104,8 @@ static CHART_RANGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::n
 /// Top Processes sort column (0 = CPU, 1 = Memory) — same "session-only
 /// display preference" reasoning as `CHART_RANGE`.
 static PROC_SORT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-/// Active compact dashboard view (0 = overview, 1 = fan, 2 = settings).
+/// Active compact dashboard view (0 = overview, 1 = fan, 2 = settings,
+/// 3 = system metrics).
 /// The WebView reports navigation changes so the native updater can avoid
 /// collecting and serializing metrics hidden behind another view.
 static ACTIVE_RAIL_VIEW: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -2242,6 +2243,7 @@ fn build_popover(
                     match view {
                         "fan" => 1,
                         "settings" => 2,
+                        "system" | "more" => 3,
                         _ => 0,
                     },
                     Ordering::Relaxed,
@@ -2345,6 +2347,7 @@ fn open_detail_window(
                     match view {
                         "fan" => 1,
                         "settings" => 2,
+                        "system" | "more" => 3,
                         _ => 0,
                     },
                     Ordering::Relaxed,
@@ -2883,12 +2886,13 @@ fn update(app: &mut App) {
     let overview_visible = dashboard_visible && active_view == 0;
     let fan_visible = dashboard_visible && active_view == 1;
     let settings_visible = dashboard_visible && active_view == 2;
+    let system_visible = dashboard_visible && active_view == 3;
     let proc_sort = if PROC_SORT.load(Ordering::Relaxed) == 1 {
         ProcSort::Memory
     } else {
         ProcSort::Cpu
     };
-    let refresh_slow_metrics = settings_visible
+    let refresh_slow_metrics = (settings_visible || system_visible)
         && (now >= app.next_dashboard_slow_refresh
             || app.dashboard_slow_cache.proc_sort != proc_sort);
     if refresh_slow_metrics {
@@ -2905,14 +2909,14 @@ fn update(app: &mut App) {
     // thread: on unsupported or waking hardware they can take long enough to
     // make the menu-bar item appear unclickable.
     refresh_temperature_cache(app, now);
-    refresh_fan_cache(app, now, fan_visible || settings_visible);
+    refresh_fan_cache(app, now, fan_visible || settings_visible || system_visible);
     let temperature_stale =
         sample_is_stale(app.temperature_sampled_at, now, TEMPERATURE_STALE_AFTER);
     let temperature_age_secs = sample_age(app.temperature_sampled_at, now)
         .map(|age| age.as_secs())
         .unwrap_or(0);
     let temps = app.temperature_cache.clone();
-    let fans = if fan_visible || settings_visible {
+    let fans = if fan_visible || settings_visible || system_visible {
         app.fan_cache.clone()
     } else {
         Vec::new()
@@ -4828,8 +4832,8 @@ html,body{background:var(--panel-bg);font-family:-apple-system,system-ui,sans-se
 @keyframes data-loading-pulse{0%,100%{opacity:.45}50%{opacity:1}}
 body.data-ready .data-loading{display:none;}
 body.compact .compact-extra{display:none!important;}
-body.compact[data-rail-view="settings"] .compact-extra{display:grid!important;}
-body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!important;}
+body.compact[data-rail-view="system"] .compact-extra{display:grid!important;}
+body.compact[data-rail-view="system"] .foot.compact-extra{display:block!important;}
 .action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;contain:layout paint;}
 .rail-btn{height:50px;width:100%;display:flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;border-radius:7px;color:var(--dim);font:inherit;cursor:pointer;color-scheme:inherit;}
 .rail-btn:hover{background:var(--chip-hover);border-color:rgba(91,157,255,.35);}
@@ -5196,6 +5200,7 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 <button class="rail-btn active" id="railDetail" data-rail-action="detail" aria-label="Status" aria-pressed="true" onclick="runRailAction('detail',this)" title="Status"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span>Status</span></button>
 <button class="rail-btn" id="railFan" data-rail-action="fan" aria-label="Fans" aria-pressed="false" onclick="runRailAction('fan',this)" title="Fans"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 4c3 0 4.5 2 3 4.5L12 12M20 12c0 3-2 4.5-4.5 3L12 12M12 20c-3 0-4.5-2-3-4.5L12 12M4 12c0-3 2-4.5 4.5-3L12 12"/></svg><span>Fans</span></button>
 <button class="rail-btn" id="railSettings" data-rail-action="settings" aria-label="Settings" aria-pressed="false" onclick="runRailAction('settings',this)" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.2-.1a1.7 1.7 0 0 0-1.9-.1 8 8 0 0 1-1.4.8 1.7 1.7 0 0 0-1.1 1.5V23h-4v-.5A1.7 1.7 0 0 0 8.1 21a8 8 0 0 1-1.4-.8 1.7 1.7 0 0 0-1.9.1l-.2.1-2-3.4.1-.1A1.7 1.7 0 0 0 3 15a8.6 8.6 0 0 1 0-1.7 1.7 1.7 0 0 0-.3-1.9l-.1-.1 2-3.4.2.1a1.7 1.7 0 0 0 1.9.1A8 8 0 0 1 8.1 7a1.7 1.7 0 0 0 1.1-1.5V5h4v.5A1.7 1.7 0 0 0 14.3 7a8 8 0 0 1 1.4.8 1.7 1.7 0 0 0 1.9-.1l.2-.1 2 3.4-.1.1a1.7 1.7 0 0 0-.3 1.9 8.6 8.6 0 0 1 0 2z"/></svg><span>Settings</span></button>
+<button class="rail-btn" id="railSystem" data-rail-action="system" aria-label="System" aria-pressed="false" onclick="runRailAction('system',this)" title="System"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="7" ry="2.5"/><path d="M5 5v7c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V5M5 12v7c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-7"/></svg><span>System</span></button>
 </aside></div></div>
 <div class="chart-tip" id="chart-tip"></div>
 <script>
@@ -5246,12 +5251,14 @@ function togglePopoverExpanded(){
   setPopoverExpanded(popoverCompact());
 }
 var RAIL_VIEW=storageGet('pf.rail.view')||'overview';
-if(RAIL_VIEW==='update'||RAIL_VIEW==='more')RAIL_VIEW='settings';
+if(RAIL_VIEW==='update'||RAIL_VIEW==='more')RAIL_VIEW='system';
+if(!/^(overview|fan|settings|system)$/.test(RAIL_VIEW))RAIL_VIEW='overview';
 function railView(){
   return RAIL_VIEW||'overview';
 }
 function setRailView(view){
-  if(view==='update'||view==='more')view='settings';
+  if(view==='update'||view==='more')view='system';
+  if(!/^(overview|fan|settings|system)$/.test(view))view='overview';
   RAIL_VIEW=view;
   storageSet('pf.rail.view',view);
   document.body.setAttribute('data-rail-view',view);
@@ -5292,17 +5299,23 @@ function applyRailView(resetScroll){
     setVisible('fan-control-section',true);
     if(SHOW_CURVE_EDITOR==='1')setVisible('curve-editor-section',true);
   } else if(view==='settings'){
-    ['rail-settings-panel','rail-update-panel','rail-more-panel','sec-storage','sec-batt','sec-network','foot'].forEach(function(id){setVisible(id,true);});
+    ['rail-settings-panel','rail-update-panel'].forEach(function(id){setVisible(id,true);});
+  } else if(view==='system'){
+    ['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach(function(id){setVisible(id,true);});
   } else {
     ['range-tabs','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
   }
-  ['Detail','Fan','Settings'].forEach(function(name){
+  ['Detail','Fan','Settings','System'].forEach(function(name){
     var key=name.toLowerCase();
     if(key==='detail')key='overview';
     setRailButtonActive('rail'+name,view===key);
   });
   var title=document.querySelector('.view-title');
-  if(title)title.textContent=LANG==='ko'?'상태':'Status';
+  if(title)title.textContent=view==='fan'
+    ?(LANG==='ko'?'팬 제어':'Fans')
+    :(view==='settings'
+      ?(LANG==='ko'?'설정':'Settings')
+      :(view==='system'?(LANG==='ko'?'시스템':'System'):(LANG==='ko'?'상태':'Status')));
   if(resetScroll)resetRailPaneScroll();
 }
 function applyPopoverMode(){
@@ -5465,7 +5478,8 @@ function runRailAction(action,btn){
     case 'detail':setRailView('overview');break;
     case 'fan':setRailView('fan');break;
     case 'settings':setRailView('settings');break;
-    case 'update':case 'more':setRailView('settings');break;
+    case 'system':case 'more':setRailView('system');break;
+    case 'update':setRailView('settings');break;
   }
 }
 var RAW_TEMP_OPEN=false;
@@ -5529,9 +5543,9 @@ window.__pf={
    drawChart('mem-chart', d.mem_hist, '#5b9dff', 100, function(v){return v.toFixed(1)+'%';});
    if(d.temp_present)drawChart('temp-chart', d.temp_stale?[]:d.temp_hist, '#ff9f0a', null, function(v){return v.toFixed(0)+'°C';});
    document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){b.classList.toggle('active',b.dataset.range===d.chart_range);});
- } else if(view==='settings'){
-   updateSetup(d);
-   updateHardwareAvailability(d);
+ } else if(view==='settings'||view==='system'){
+   if(view==='settings')updateSetup(d);
+   else updateHardwareAvailability(d);
    set('disk-val',d.disk_text);set('disk-sub',d.disk_sub);bar('disk-bar',d.disk_pct);
    show('disk-io-sub',d.disk_io_present);if(d.disk_io_present)set('disk-io-sub',d.disk_io_sub);
    show('disk-io-chart',d.disk_io_present);show('disk-io-chart-stats',d.disk_io_present);
@@ -6314,6 +6328,8 @@ function updateRail(d){
     if(fan){setButtonLabel(fan,LANG==='ko'?'팬 제어':'Fans');fan.title=LANG==='ko'?'팬 제어로 이동':'Jump to fan control';}
     var settings=document.getElementById('railSettings');
     if(settings){setButtonLabel(settings,LANG==='ko'?'설정':'Settings');settings.title=LANG==='ko'?'설정 열기':'Open settings';}
+    var system=document.getElementById('railSystem');
+    if(system){setButtonLabel(system,LANG==='ko'?'시스템':'System');system.title=LANG==='ko'?'시스템 지표 열기':'Open system metrics';}
     RAIL_NAV_READY=true;
   }
   var view=railView();
@@ -6356,7 +6372,7 @@ function updateRail(d){
         :(LANG==='ko'?'확인 및 업데이트':'Check & Update');
     }
     updateHealthPanel(d);
-  } else if(view==='more'){
+  } else if(view==='system'){
     setPanelPill('rail-more-pill',LANG==='ko'?'실시간':'Live','info');
   }
 }
@@ -6893,6 +6909,7 @@ mod tests {
             assert!(html.contains("railDetail"));
             assert!(html.contains("railFan"));
             assert!(html.contains("railSettings"));
+            assert!(html.contains("railSystem"));
             assert!(!html.contains(r#"id="railUpdate""#));
             assert!(!html.contains(r#"id="railMore""#));
             assert!(html.contains("focusFanControl"));
@@ -7042,6 +7059,7 @@ mod tests {
             ("railDetail", "detail"),
             ("railFan", "fan"),
             ("railSettings", "settings"),
+            ("railSystem", "system"),
         ] {
             assert!(en.contains(&format!(r#"id="{id}""#)));
             assert!(en.contains(&format!(r#"data-rail-action="{action}""#)));
@@ -7056,7 +7074,8 @@ mod tests {
             "case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;"
         ));
         assert!(!en.contains("case 'license':setRailView('license');break;"));
-        assert!(en.contains("case 'update':case 'more':setRailView('settings');break;"));
+        assert!(en.contains("case 'system':case 'more':setRailView('system');break;"));
+        assert!(en.contains("case 'update':setRailView('settings');break;"));
         assert!(en.contains("function setButtonLabel(btn,label)"));
         assert!(en.contains("btn.querySelector('span')"));
         assert!(en.contains("btn.dataset.defaultLabel"));
@@ -7399,7 +7418,8 @@ mod tests {
             "case 'login':setRailView('login');window.ipc.postMessage('togglelogin');break;"
         ));
         assert!(!en.contains("case 'license':setRailView('license');break;"));
-        assert!(en.contains("case 'update':case 'more':setRailView('settings');break;"));
+        assert!(en.contains("case 'system':case 'more':setRailView('system');break;"));
+        assert!(en.contains("case 'update':setRailView('settings');break;"));
         assert!(!en.contains("case 'license':toggleLicForm();break;"));
     }
 
@@ -7447,29 +7467,32 @@ mod tests {
     }
 
     #[test]
-    fn settings_view_keeps_system_metrics_and_detail_action_together() {
+    fn settings_and_system_views_have_distinct_responsibilities() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
         assert!(en.contains(r#"id="rail-more-panel""#));
+        assert!(en.contains(r#"id="railSystem""#));
         assert!(en.contains("case 'detail':setRailView('overview');break;"));
-        assert!(en.contains("case 'update':case 'more':setRailView('settings');break;"));
+        assert!(en.contains("case 'system':case 'more':setRailView('system');break;"));
+        assert!(en.contains("case 'update':setRailView('settings');break;"));
         assert!(en.contains(r#"onclick="window.ipc.postMessage('open_detail')""#));
         assert!(en.contains(r#"onclick="window.ipc.postMessage('quit')""#));
         assert_eq!(en.matches(">Open Detail Window<").count(), 1);
+        assert!(en.contains("['rail-settings-panel','rail-update-panel'].forEach"));
         assert!(en.contains(
-            "['rail-settings-panel','rail-update-panel','rail-more-panel','sec-storage','sec-batt','sec-network','foot'].forEach"
+            "['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach"
         ));
         assert!(!en.contains("case 'detail':window.ipc.postMessage('open_detail');break;"));
         assert!(!en.contains("if(view==='more')setPopoverExpanded(true);"));
     }
 
     #[test]
-    fn settings_view_reveals_low_priority_metric_sections() {
+    fn system_view_reveals_low_priority_metric_sections() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
-        assert!(en.contains(r#"body.compact[data-rail-view="settings"] .compact-extra"#));
+        assert!(en.contains(r#"body.compact[data-rail-view="system"] .compact-extra"#));
         assert!(en.contains(
-            "['rail-settings-panel','rail-update-panel','rail-more-panel','sec-storage','sec-batt','sec-network','foot'].forEach"
+            "['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach"
         ));
         assert!(en.contains(r#"data-compact-extra="storage""#));
         assert!(en.contains(r#"data-compact-extra="battery""#));
@@ -7512,7 +7535,7 @@ mod tests {
         assert!(source.contains("const DASHBOARD_SLOW_REFRESH: Duration = Duration::from_secs(3);"));
         assert!(source.contains("struct DashboardSlowCache"));
         assert!(source.contains("fn refresh_dashboard_slow_cache("));
-        assert!(source.contains("let refresh_slow_metrics = settings_visible"));
+        assert!(source.contains("let refresh_slow_metrics = (settings_visible || system_visible)"));
         assert!(source.contains("now >= app.next_dashboard_slow_refresh"));
         assert!(source.contains("app.dashboard_slow_cache.proc_sort != proc_sort"));
         assert!(source.contains("app.next_dashboard_slow_refresh = now + DASHBOARD_SLOW_REFRESH;"));
@@ -7557,12 +7580,17 @@ mod tests {
 
         for guard in [
             "if(view==='overview')",
-            "else if(view==='settings')",
+            "else if(view==='settings'||view==='system')",
             "else if(view==='fan')",
         ] {
             assert!(update.contains(guard));
         }
-        assert_eq!(update.matches("else if(view==='settings')").count(), 1);
+        assert_eq!(
+            update
+                .matches("else if(view==='settings'||view==='system')")
+                .count(),
+            1
+        );
         assert!(en.contains("updateHealthPanel(d);"));
         assert!(!update.contains("applyRailView("));
         assert!(!update.contains("reportHeight("));

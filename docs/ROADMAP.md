@@ -91,6 +91,8 @@ These are the highest-leverage improvements before adding large new surfaces.
       keep the temperature section visible when CPU sensors are unavailable
 - [x] Surface a retry action when the first sensor payload is delayed without
       running hardware reads on the WebView/UI path
+- [x] Separate Settings actions from System metrics so each rail button has one
+      clear job and slow storage/process reads run only on the System view
 
 ### v1.28 — Sensor Accuracy
 
