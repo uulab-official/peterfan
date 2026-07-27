@@ -56,6 +56,8 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Sign and notarize both the app and DMG.
 - [x] Run workspace tests, Clippy, JavaScript parsing, docs, and DMG smoke checks.
 - [x] Install the release DMG and verify the app and daemon versions locally.
+- [x] Build arm64/x86_64 release intermediates sequentially and clean them after
+      copying, so Universal packaging does not depend on excess local disk space.
 - [x] Enforce RustSec policy in CI and remove or isolate allowed warnings.
 - [ ] Test release signing and notarization from a second authorized Mac.
 

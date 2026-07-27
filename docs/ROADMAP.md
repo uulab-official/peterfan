@@ -94,6 +94,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 ### v1.29 — Distribution & Updates
 
 - [x] Local signed/notarized release workflow
+- [x] Disk-safe sequential arm64/x86_64 release builds with disposable intermediates
 - [x] DMG install smoke test against `/Applications/PeterFan.app`
 - [x] In-app update panel shows current/latest version and check result
 - [x] In-app release notes preview before install

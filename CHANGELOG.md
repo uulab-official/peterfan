@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Universal 릴리즈 빌드의 디스크 고갈 위험** — arm64와 x86_64 Rust 중간
+  산출물을 별도 임시 작업공간에서 순차 생성하고 바이너리 복사 후 즉시 정리함.
+
 ## [1.27.34] — 팬 명령 큐 안정화
 
 ### Fixed

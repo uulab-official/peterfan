@@ -142,15 +142,39 @@ PKG_DIR="$OUT_ROOT/$NAME"
 rm -rf "$OUT_ROOT"
 mkdir -p "$PKG_DIR" "$OUT_ROOT/bins/universal"
 
+# Keep architecture-specific Rust intermediates out of the repository and
+# remove each set as soon as its four binaries have been copied. A universal
+# release can otherwise retain arm64 + x86_64 + native target trees at once,
+# which is enough to make hdiutil fail later with a misleading disk-full error.
+BUILD_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/peterfan-release-build.XXXXXX")
+cleanup_build_root() {
+  rm -rf "$BUILD_ROOT"
+}
+trap cleanup_build_root EXIT
+ARM_BIN_DIR="$OUT_ROOT/bins/arm64"
+X86_BIN_DIR="$OUT_ROOT/bins/x86_64"
+mkdir -p "$ARM_BIN_DIR" "$X86_BIN_DIR"
+
 echo "Building arm64..."
-cargo build --release --target aarch64-apple-darwin --bins
+ARM_TARGET_DIR="$BUILD_ROOT/arm64"
+CARGO_TARGET_DIR="$ARM_TARGET_DIR" cargo build --release --target aarch64-apple-darwin --bins
+for bin in peterfan peterfan-tui peterfan-menubar peterfand; do
+  cp "$ARM_TARGET_DIR/aarch64-apple-darwin/release/$bin" "$ARM_BIN_DIR/$bin"
+done
+rm -rf "$ARM_TARGET_DIR"
+
 echo "Building x86_64..."
-cargo build --release --target x86_64-apple-darwin --bins
+X86_TARGET_DIR="$BUILD_ROOT/x86_64"
+CARGO_TARGET_DIR="$X86_TARGET_DIR" cargo build --release --target x86_64-apple-darwin --bins
+for bin in peterfan peterfan-tui peterfan-menubar peterfand; do
+  cp "$X86_TARGET_DIR/x86_64-apple-darwin/release/$bin" "$X86_BIN_DIR/$bin"
+done
+rm -rf "$X86_TARGET_DIR"
 
 for bin in peterfan peterfan-tui peterfan-menubar peterfand; do
   lipo -create \
-    "target/aarch64-apple-darwin/release/$bin" \
-    "target/x86_64-apple-darwin/release/$bin" \
+    "$ARM_BIN_DIR/$bin" \
+    "$X86_BIN_DIR/$bin" \
     -output "$OUT_ROOT/bins/universal/$bin"
   chmod +x "$OUT_ROOT/bins/universal/$bin"
   cp "$OUT_ROOT/bins/universal/$bin" "$PKG_DIR/$bin"
