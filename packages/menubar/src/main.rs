@@ -203,6 +203,10 @@ static QUIT: AtomicBool = AtomicBool::new(false);
 static OPEN_DETAIL: AtomicBool = AtomicBool::new(false);
 /// Control commands queued by popover buttons (`auto`, `profile:gaming`).
 static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Keep hardware writes serialized even when the popover and context menu are
+/// used at nearly the same time. The event loop stays responsive while the
+/// background workers take turns talking to the daemon/SMC.
+static FAN_COMMAND_LOCK: Mutex<()> = Mutex::new(());
 /// Last control result, shown in the popover.
 static STATUS: Mutex<String> = Mutex::new(String::new());
 /// One native update pipeline shared by the popover, detail window, and
@@ -236,6 +240,39 @@ static LOGIN_ITEM_TOGGLE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// leaves the UI reporting "Auto" on the very next tick even though the fan
 /// is genuinely still pinned in hardware.
 static LOCAL_FAN_OVERRIDES: Mutex<Option<std::collections::HashMap<String, u8>>> = Mutex::new(None);
+
+fn pending_command_key(cmd: &str) -> Option<String> {
+    if matches!(cmd, "ready:popover" | "ready:detail") {
+        return Some(cmd.to_string());
+    }
+    if matches!(cmd, "auto") || cmd.starts_with("profile:") {
+        return Some("global-fan-control".to_string());
+    }
+    if let Some(rest) = cmd.strip_prefix("fanhold:") {
+        return rest
+            .rsplit_once(':')
+            .map(|(fan_id, _)| format!("fan:{fan_id}"));
+    }
+    cmd.strip_prefix("fanauto:")
+        .map(|fan_id| format!("fan:{fan_id}"))
+}
+
+/// Collapse commands that cannot usefully be applied twice. In particular,
+/// rapid slider updates keep only the latest target for that fan, while
+/// commands for different fans remain independent.
+fn queue_pending_command(queue: &mut Vec<String>, cmd: String) {
+    if let Some(key) = pending_command_key(&cmd) {
+        queue.retain(|queued| pending_command_key(queued).as_deref() != Some(key.as_str()));
+    } else if queue.iter().any(|queued| queued == &cmd) {
+        return;
+    }
+    queue.push(cmd);
+}
+
+fn enqueue_pending(cmd: impl Into<String>) {
+    let mut queue = PENDING.lock().expect("pending poisoned");
+    queue_pending_command(&mut queue, cmd.into());
+}
 
 #[derive(Clone)]
 struct AppUpdateState {
@@ -1611,7 +1648,7 @@ fn main() {
                     let proxy = event_proxy.clone();
                     log_menubar_event(&format!("fan command received cmd={cmd}"));
                     std::thread::spawn(move || {
-                        let status = execute_control_logged(provider.as_ref(), &cmd);
+                        let status = execute_control_serial(provider.as_ref(), &cmd);
                         log_menubar_event(&format!(
                             "fan command completed cmd={cmd} ok={} result={status}",
                             control_result_is_ok(&status)
@@ -1761,7 +1798,7 @@ fn main() {
                 let cmd = c.clone();
                 let proxy = event_proxy.clone();
                 std::thread::spawn(move || {
-                    let status = execute_control_logged(provider.as_ref(), &cmd);
+                    let status = execute_control_serial(provider.as_ref(), &cmd);
                     // The right-click menu has no visible status line (unlike
                     // the popover), so surface the result as a notification —
                     // otherwise a failed command (no daemon, needs root)
@@ -2112,32 +2149,20 @@ fn build_popover(
             } else if let Some(error) = body.strip_prefix("js-error:") {
                 log_menubar_event(&format!("popover webview javascript error: {error}"));
             } else if body == "ready" {
-                PENDING
-                    .lock()
-                    .expect("pending poisoned")
-                    .push("ready:popover".to_string());
+                enqueue_pending("ready:popover");
             } else if body == "checkupdates" || body == "toggle-login-item" || body == "togglelogin"
             {
-                PENDING
-                    .lock()
-                    .expect("pending poisoned")
-                    .push(body.to_string());
+                enqueue_pending(body);
             } else if body.starts_with("h:") {
                 // Kept for compatibility with older dashboard HTML. The
                 // popover is intentionally fixed-height now; content scrolls
                 // inside `.main-pane` instead of resizing the native window.
             } else if let Some(cmd) = body.strip_prefix("cmd:") {
-                PENDING
-                    .lock()
-                    .expect("pending poisoned")
-                    .push(cmd.to_string());
+                enqueue_pending(cmd);
             } else if body.starts_with("savecurve:") {
                 // Keep the prefix so the drain loop can tell these apart
                 // from a daemon control command.
-                PENDING
-                    .lock()
-                    .expect("pending poisoned")
-                    .push(body.to_string());
+                enqueue_pending(body);
             } else if let Some(r) = body.strip_prefix("range:") {
                 let v = match r {
                     "1h" => 1,
@@ -2230,26 +2255,14 @@ fn open_detail_window(
             } else if let Some(error) = body.strip_prefix("js-error:") {
                 log_menubar_event(&format!("detail webview javascript error: {error}"));
             } else if body == "ready" {
-                PENDING
-                    .lock()
-                    .expect("pending poisoned")
-                    .push("ready:detail".to_string());
+                enqueue_pending("ready:detail");
             } else if body == "checkupdates" || body == "toggle-login-item" || body == "togglelogin"
             {
-                PENDING
-                    .lock()
-                    .expect("pending poisoned")
-                    .push(body.to_string());
+                enqueue_pending(body);
             } else if let Some(cmd) = body.strip_prefix("cmd:") {
-                PENDING
-                    .lock()
-                    .expect("pending poisoned")
-                    .push(cmd.to_string());
+                enqueue_pending(cmd);
             } else if body.starts_with("savecurve:") {
-                PENDING
-                    .lock()
-                    .expect("pending poisoned")
-                    .push(body.to_string());
+                enqueue_pending(body);
             } else if let Some(r) = body.strip_prefix("range:") {
                 let v = match r {
                     "1h" => 1,
@@ -3348,6 +3361,11 @@ fn execute_control_logged(provider: &dyn HardwareProvider, cmd: &str) -> String 
         control_result_is_ok(&result),
     );
     result
+}
+
+fn execute_control_serial(provider: &dyn HardwareProvider, cmd: &str) -> String {
+    let _guard = FAN_COMMAND_LOCK.lock().expect("fan command lock poisoned");
+    execute_control_logged(provider, cmd)
 }
 
 struct FanDiagnosticInput<'a> {
@@ -6400,6 +6418,28 @@ mod tests {
 
         // Preserve compatibility if a platform ever emits only mouse-up.
         assert!(route_left_click(MouseButtonState::Up, &mut down_seen));
+    }
+
+    #[test]
+    fn pending_commands_coalesce_ready_and_fan_targets_without_crossing_fans() {
+        let mut queue = Vec::new();
+        queue_pending_command(&mut queue, "ready:popover".into());
+        queue_pending_command(&mut queue, "ready:popover".into());
+        queue_pending_command(&mut queue, "profile:balanced".into());
+        queue_pending_command(&mut queue, "profile:performance".into());
+        queue_pending_command(&mut queue, "fanhold:fan.left:40".into());
+        queue_pending_command(&mut queue, "fanhold:fan.left:65".into());
+        queue_pending_command(&mut queue, "fanhold:fan.right:55".into());
+
+        assert_eq!(
+            queue,
+            vec![
+                "ready:popover",
+                "profile:performance",
+                "fanhold:fan.left:65",
+                "fanhold:fan.right:55",
+            ]
+        );
     }
 
     #[test]

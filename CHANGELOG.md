@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.34] — 팬 명령 큐 안정화
+
+### Fixed
+- **빠른 팬 조작이 서로 덮어쓰던 문제** — 팝오버와 메뉴바 메뉴에서 들어온
+  팬 명령을 직렬화해 오래 걸린 SMC/데몬 작업이 최신 상태를 뒤늦게 덮어쓰지
+  않도록 함.
+- **슬라이더·ready 요청 중복** — 같은 팬의 연속 목표값은 최신값만 유지하고,
+  같은 WebView 준비 신호와 반복 요청은 큐에서 합쳐 메뉴바가 버벅이지 않도록 함.
+
+### Quality
+- 팬 명령 큐 coalescing 회귀 테스트 추가.
+- menubar 전체 테스트 95개 통과 및 workspace 타입 검사 통과.
+
 ## [1.27.33] — WebView 초기 렌더 안정화
 
 ### Fixed
