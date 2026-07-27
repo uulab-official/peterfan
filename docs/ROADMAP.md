@@ -81,6 +81,8 @@ These are the highest-leverage improvements before adding large new surfaces.
       input without stealing focus during app startup
 - [x] Wait for the previous menu-bar process to exit before OTA replacement so
       the single-instance lock cannot reject the relaunched app
+- [x] Keep the fan screen header stable while daemon state is loading and align
+      fan control summaries and profile actions for compact popovers
 
 ### v1.28 — Sensor Accuracy
 

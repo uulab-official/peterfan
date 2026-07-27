@@ -3099,6 +3099,12 @@ fn update(app: &mut App) {
             app.daemon_json_cache = None;
             app.daemon_json_sampled_at = None;
         }
+        // A failed first probe is still a completed probe. Mark it as checked
+        // so the fan view can show a stable "setup needed" state instead of
+        // briefly rendering a setup banner and removing it on the next tick.
+        if app.daemon_json_sampled_at.is_none() {
+            app.daemon_json_sampled_at = Some(now);
+        }
         app.next_daemon_refresh = now + DAEMON_REFRESH;
     }
     let daemon_json = app.daemon_json_cache.clone();
@@ -3320,6 +3326,7 @@ fn update(app: &mut App) {
         "control_revision": control_revision,
         "applied_control_revision": applied_control_revision,
         "fan_setup_needed": fan_control_supported && !can_control,
+        "fan_control_state_ready": !fan_control_supported || app.daemon_json_sampled_at.is_some(),
         "fan_count": fans.len(),
         "controllable_fan_count": fans.iter().filter(|f| f.controllable).count(),
         "fan_curve_input_temp_c": display_temp,
@@ -4862,17 +4869,17 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 .prow .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .prow .c{color:var(--accent);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .prow .m{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
-.ctl{padding:10px var(--content-x);border-top:1px solid var(--line);}
+.ctl{padding:0 var(--content-x) 13px;border-top:1px solid var(--line);}
 .ctl.focus-pulse{background:rgba(91,157,255,.09);box-shadow:inset 0 0 0 1px rgba(91,157,255,.45);}
-.ctl-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;}
-.ctl-head .name{font-size:11.5px;font-weight:650;color:var(--text);}
-.ctl-status{display:none;}
-.fan-inputs{display:none;}
+.ctl-head{display:flex;justify-content:space-between;align-items:baseline;padding:11px 0 8px;margin:0;border-bottom:1px solid var(--line);}
+.ctl-head .name{font-size:11.5px;font-weight:700;color:var(--text);}
+.ctl-status{display:block;max-width:58%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim);font-size:9.5px;font-weight:650;font-variant-numeric:tabular-nums;}
+.fan-inputs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:10px 0 8px;}
 .fan-input{min-width:0;padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.018);}
 .fan-input span{display:block;font-size:8px;font-weight:700;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .fan-input b{display:block;margin-top:2px;font-size:10px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap;}
-.profile-strip{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin:3px 0 7px;}
-.profile-strip button{min-width:0;background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:10px;font-weight:700;padding:5px 2px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s,border-color .15s,opacity .15s;}
+.profile-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin:2px 0 9px;}
+.profile-strip button{min-width:0;background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:10px;font-weight:700;padding:7px 3px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s,border-color .15s,opacity .15s;}
 .profile-strip button:hover{background:var(--chip-hover);color:var(--text);}
 .profile-strip button.active{background:rgba(91,157,255,.2);border-color:rgba(91,157,255,.48);color:var(--accent);}
 .profile-strip.disabled button{opacity:.42;pointer-events:none;}
@@ -4884,7 +4891,7 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 .fan-apply-status.ok{color:var(--g);}
 .fan-apply-status.error{color:var(--r);}
 .fan-cards{display:flex;flex-direction:column;}
-.fan-card{padding:5px 0;}
+.fan-card{padding:9px 0;}
 .fan-card+.fan-card{border-top:1px solid var(--line);}
 .fan-card-head{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;margin-bottom:3px;}
 .fan-card-head .fn{font-weight:600;}
@@ -5244,6 +5251,7 @@ function applyRailView(resetScroll){
   var all=['range-tabs','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','foot','rail-update-panel','rail-settings-panel','rail-more-panel'];
   all.forEach(function(id){setVisible(id,false);});
   if(view==='fan'){
+    setVisible('setup-row',true);
     setVisible('fan-control-section',true);
     if(SHOW_CURVE_EDITOR==='1')setVisible('curve-editor-section',true);
   } else if(view==='settings'){
@@ -6155,17 +6163,33 @@ function quitProcess(pid,name){
 }
 function updateSetup(d){
   var setup=document.getElementById('setup-row');
-  if(setup)setup.style.display=railView()==='fan'&&(d.fan_setup_needed||d.daemon_update_needed)?'flex':'none';
+  var fanView=railView()==='fan';
+  var stateReady=d.fan_control_state_ready!==false;
+  var supported=!!d.fan_control_supported;
+  if(setup)setup.style.display=fanView?'flex':'none';
   var title=document.getElementById('setup-title');
-  if(title)title.textContent=d.setup_title||'Ready';
+  if(title){
+    title.textContent=!stateReady
+      ?(LANG==='ko'?'팬 제어 확인 중…':'Checking fan control…')
+      :(!supported
+        ?(LANG==='ko'?'팬 모니터링':'Fan monitoring')
+        :(d.setup_title||'Ready'));
+  }
   var detail=document.getElementById('setup-detail');
-  if(detail)detail.textContent=d.setup_detail||('v'+(d.app_version||''));
+  if(detail){
+    detail.textContent=!stateReady
+      ?(LANG==='ko'?'데몬과 팬 상태를 확인하는 중':'Reading daemon and fan state')
+      :(!supported
+        ?(LANG==='ko'?'이 Mac에서는 RPM 읽기만 지원':'This Mac exposes RPM monitoring only')
+        :(d.setup_detail||('v'+(d.app_version||''))));
+  }
   var dot=document.getElementById('setup-dot');
-  if(dot)dot.className='setup-dot '+(d.setup_tone||'info');
+  if(dot)dot.className='setup-dot '+(!stateReady||!supported?'info':(d.setup_tone||'info'));
   var fan=document.getElementById('setup-fan');
   if(fan){
-    fan.style.display=d.fan_setup_needed?'':'none';
-    fan.disabled=FAN_CONTROL_FIX_PENDING;
+    var showSetup=stateReady&&supported&&(d.fan_setup_needed||d.daemon_update_needed);
+    fan.style.display=showSetup?'':'none';
+    fan.disabled=FAN_CONTROL_FIX_PENDING||!showSetup;
     fan.title=d.daemon_update_needed
       ?(LANG==='ko'?'팬 제어 재설치':'Reinstall fan control')
       :(LANG==='ko'?'팬 제어 설정':'Set up fan control');
@@ -7273,10 +7297,15 @@ mod tests {
         let en = dashboard_html(ResolvedLanguage::En, false);
         let source = include_str!("main.rs");
 
-        assert!(en.contains("if(view==='fan'){\n    setVisible('fan-control-section',true);"));
         assert!(en.contains(
-            "if(setup)setup.style.display=railView()==='fan'&&(d.fan_setup_needed||d.daemon_update_needed)?'flex':'none';"
+            "if(view==='fan'){\n    setVisible('setup-row',true);\n    setVisible('fan-control-section',true);"
         ));
+        assert!(en.contains("if(setup)setup.style.display=fanView?'flex':'none';"));
+        assert!(en.contains("var stateReady=d.fan_control_state_ready!==false;"));
+        assert!(en.contains(
+            "var showSetup=stateReady&&supported&&(d.fan_setup_needed||d.daemon_update_needed);"
+        ));
+        assert!(en.contains("setVisible('setup-row',true);"));
         assert!(en.contains("} else {\n    ['range-tabs','sec-cpu','sec-mem','sec-temp'].forEach"));
         assert!(!en.contains("['range-tabs','setup-row','sec-cpu','sec-mem','sec-temp'].forEach"));
         assert!(en.contains("setButtonLabel(fan,LANG==='ko'?'팬 제어':'Fans');"));
@@ -7284,7 +7313,22 @@ mod tests {
         assert!(!en.contains("fan.classList.toggle('active',!!d.can_control);"));
         assert!(source.contains("const DAEMON_STALE_AFTER: Duration = Duration::from_secs(8);"));
         assert!(source.contains("app.daemon_json_sampled_at = Some(now);"));
+        assert!(source.contains("fan_control_state_ready"));
         assert!(source.contains("now.duration_since(sampled_at) > DAEMON_STALE_AFTER"));
+    }
+
+    #[test]
+    fn fan_view_keeps_a_stable_header_and_control_summary() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(en.contains(r#"id="setup-row"#));
+        assert!(en.contains(r#"id="setup-title"#));
+        assert!(en.contains(r#"id="fan-inputs"#));
+        assert!(en.contains(r#"id="fan-curve-input"#));
+        assert!(en.contains(r#"id="fan-safety-hottest"#));
+        assert!(en.contains(r#"id="fan-critical-limit"#));
+        assert!(en.contains("grid-template-columns:repeat(3,minmax(0,1fr))"));
+        assert!(en.contains("fan_control_state_ready"));
     }
 
     #[test]
