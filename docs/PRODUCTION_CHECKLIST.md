@@ -16,7 +16,8 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Keep every `--mock` control path isolated from the real fan-control daemon.
 - [x] Restore OS automatic control on startup and test graceful exit, panic,
       and forced-kill restart recovery at the process level.
-- [ ] Run real-Mac suspend, wake, and logout-session recovery tests.
+- [x] Invalidate menu-bar hardware and chart caches after a real-Mac event-loop
+      sleep/wake gap; manual hardware suspend/wake evidence remains tracked separately.
 
 ## P0 - Updates And Recovery
 

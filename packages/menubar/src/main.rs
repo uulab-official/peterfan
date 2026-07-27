@@ -83,6 +83,7 @@ const DASHBOARD_SLOW_OPEN_GRACE: Duration = Duration::from_millis(450);
 const ALL_TEMP_REFRESH: Duration = Duration::from_secs(10);
 const DAEMON_REFRESH: Duration = Duration::from_secs(2);
 const DAEMON_STALE_AFTER: Duration = Duration::from_secs(8);
+const RESUME_RECOVERY_GAP: Duration = Duration::from_secs(8);
 const TEMPERATURE_STALE_AFTER: Duration = Duration::from_secs(6);
 const ALL_TEMPERATURE_STALE_AFTER: Duration = Duration::from_secs(30);
 const CONTROL_CONFIRM_REFRESH: Duration = Duration::from_millis(200);
@@ -186,6 +187,14 @@ impl RangedHistory {
             ChartRange::OneHour => &self.hour,
             ChartRange::OneDay => &self.day,
         }
+    }
+
+    fn clear(&mut self) {
+        self.minute.clear();
+        self.hour.clear();
+        self.day.clear();
+        self.minute_acc.clear();
+        self.hour_acc.clear();
     }
 }
 
@@ -1183,6 +1192,46 @@ fn sample_is_stale(sampled_at: Option<Instant>, now: Instant, limit: Duration) -
         .unwrap_or(true)
 }
 
+fn should_recover_after_pause(last_event_at: Option<Instant>, now: Instant) -> bool {
+    last_event_at
+        .map(|last| now.saturating_duration_since(last) >= RESUME_RECOVERY_GAP)
+        .unwrap_or(false)
+}
+
+fn recover_after_pause(app: &mut App, now: Instant) {
+    log_menubar_event("resume recovery: invalidating hardware and dashboard caches");
+    hide_popover(app);
+    app.temperature_cache.clear();
+    app.temperature_sampled_at = None;
+    app.temperature_sampled_at_unix_ms = None;
+    app.fan_cache.clear();
+    app.all_temp_rows_cache.clear();
+    app.all_temp_sampled_at = None;
+    app.all_temp_sampled_at_unix_ms = None;
+    app.daemon_json_cache = None;
+    app.daemon_json_sampled_at = None;
+    app.dashboard_slow_cache = DashboardSlowCache::default();
+    app.fan_hist.clear();
+    app.cpu_h.clear();
+    app.mem_h.clear();
+    app.temp_h.clear();
+    app.net_h.clear();
+    app.disk_io_h.clear();
+    // A completed read from before sleep must not be mistaken for the first
+    // post-resume sample. An in-flight hardware call is left alone; its
+    // result is still valid if it finishes after wake.
+    let _ = app.temperature_read.take();
+    let _ = app.fan_read.take();
+    let _ = app.all_temp_read.take();
+    app.next_temperature_refresh = now;
+    app.next_fan_refresh = now;
+    app.next_all_temp_refresh = now;
+    app.next_daemon_refresh = now;
+    app.next_dashboard_slow_refresh = now;
+    app.next_update_result_refresh = now;
+    app.control_confirm_until = None;
+}
+
 fn fan_action_log_path() -> Option<PathBuf> {
     peterfan_platform::config::path()?
         .parent()
@@ -1448,11 +1497,21 @@ fn main() {
     let mut next_metric_at = Instant::now();
     let mut next_runner_at = Instant::now();
     let mut prewarm_popover_at = Some(Instant::now() + POPOVER_PREWARM_DELAY);
+    let mut last_event_at: Option<Instant> = None;
     event_loop.run(move |event, target, control_flow| {
         if QUIT.load(Ordering::Relaxed) {
             *control_flow = ControlFlow::Exit;
             return;
         }
+
+        let now = Instant::now();
+        if should_recover_after_pause(last_event_at, now) {
+            recover_after_pause(&mut app, now);
+            next_metric_at = now;
+            next_runner_at = now;
+            prewarm_popover_at = None;
+        }
+        last_event_at = Some(now);
 
         if OPEN_DETAIL.swap(false, Ordering::Relaxed) {
             hide_popover(&mut app);
@@ -1515,7 +1574,6 @@ fn main() {
             _ => {}
         }
 
-        let now = Instant::now();
         if app.popover_show_at.is_some_and(|at| now >= at) {
             if let Some(w) = &app.window {
                 w.set_visible(true);
@@ -8108,6 +8166,21 @@ mod tests {
         assert_eq!(*h.minute.back().unwrap(), (RANGE_2M_CAP * 3 - 1) as f32);
     }
 
+    #[test]
+    fn ranged_history_clear_removes_pre_sleep_samples() {
+        let mut h = RangedHistory::new();
+        for value in 0..120 {
+            h.push(value as f32);
+        }
+        assert!(!h.minute.is_empty());
+        h.clear();
+        assert!(h.minute.is_empty());
+        assert!(h.hour.is_empty());
+        assert!(h.day.is_empty());
+        assert!(h.minute_acc.is_empty());
+        assert!(h.hour_acc.is_empty());
+    }
+
     // `apply_local` mutates the process-wide `LOCAL_FAN_OVERRIDES` static as
     // a side effect for global-mode commands (auto/profile/hold clear it).
     // Cargo runs tests in this file concurrently on multiple threads, so any
@@ -8190,6 +8263,20 @@ mod tests {
             TEMPERATURE_STALE_AFTER
         ));
         assert!(sample_is_stale(None, now, TEMPERATURE_STALE_AFTER));
+    }
+
+    #[test]
+    fn pause_recovery_requires_a_real_event_loop_gap() {
+        let now = Instant::now();
+        assert!(!should_recover_after_pause(None, now));
+        assert!(!should_recover_after_pause(
+            Some(now - RESUME_RECOVERY_GAP + Duration::from_millis(1)),
+            now
+        ));
+        assert!(should_recover_after_pause(
+            Some(now - RESUME_RECOVERY_GAP),
+            now
+        ));
     }
 
     #[test]

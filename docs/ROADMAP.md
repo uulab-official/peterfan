@@ -59,6 +59,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 
 - [x] Serialize fan commands and coalesce repeated WebView control requests so
       rapid UI input cannot apply stale targets out of order
+- [x] Invalidate sensor, fan, daemon, and chart caches after a long sleep/wake gap
 - [x] Detail-window "Fan Control Health" panel: daemon version, install state,
       helper path, Team ID, LaunchDaemon state, last command result
 - [x] Make "first approval vs no prompt" state impossible to miss
