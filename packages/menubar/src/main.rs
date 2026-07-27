@@ -2231,6 +2231,7 @@ fn build_popover(
             } else if let Some(s) = body.strip_prefix("procsort:") {
                 PROC_SORT.store(if s == "mem" { 1 } else { 0 }, Ordering::Relaxed);
             } else if let Some(view) = body.strip_prefix("view:") {
+                log_menubar_event(&format!("popover view requested view={view}"));
                 ACTIVE_RAIL_VIEW.store(
                     match view {
                         "fan" => 1,
@@ -2331,6 +2332,7 @@ fn open_detail_window(
             } else if let Some(s) = body.strip_prefix("procsort:") {
                 PROC_SORT.store(if s == "mem" { 1 } else { 0 }, Ordering::Relaxed);
             } else if let Some(view) = body.strip_prefix("view:") {
+                log_menubar_event(&format!("detail view requested view={view}"));
                 ACTIVE_RAIL_VIEW.store(
                     match view {
                         "fan" => 1,
@@ -6251,7 +6253,6 @@ function updateRail(d){
         ?(LANG==='ko'?'업데이트 중…':'Updating…')
         :(LANG==='ko'?'확인 및 업데이트':'Check & Update');
     }
-  } else if(view==='settings'){
     updateHealthPanel(d);
   } else if(view==='more'){
     setPanelPill('rail-more-pill',LANG==='ko'?'실시간':'Live','info');
@@ -7398,6 +7399,8 @@ mod tests {
         ] {
             assert!(update.contains(guard));
         }
+        assert_eq!(update.matches("else if(view==='settings')").count(), 1);
+        assert!(en.contains("updateHealthPanel(d);"));
         assert!(!update.contains("applyRailView("));
         assert!(!update.contains("reportHeight("));
         assert!(en.contains(
@@ -7485,6 +7488,8 @@ mod tests {
         assert!(source.contains("app.dashboard_script.as_deref()"));
         assert!(source.contains("evaluate_dashboard_script(wv, script, \"popover\")"));
         assert!(source.contains("evaluate_dashboard_script(wv, script, \"detail\")"));
+        assert!(source.contains("popover view requested view={view}"));
+        assert!(source.contains("detail view requested view={view}"));
     }
 
     #[test]

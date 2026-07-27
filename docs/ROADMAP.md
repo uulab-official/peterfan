@@ -75,6 +75,8 @@ These are the highest-leverage improvements before adding large new surfaces.
       return every fan to macOS automatic control
 - [x] Watch fan writes, expose failure counters in the UI/CLI, and fall back to
       macOS automatic control when a write fails
+- [x] Refresh the Fan Control Health panel from the live settings update path
+      and log rail navigation requests for support diagnostics
 
 ### v1.28 — Sensor Accuracy
 
