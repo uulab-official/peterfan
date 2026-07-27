@@ -4763,6 +4763,10 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
                 "저장공간, 배터리, 네트워크와 실행 중인 프로세스를 확인합니다.",
             )
             .replace(
+                "Reading system sensors…",
+                "시스템 센서를 읽는 중…",
+            )
+            .replace(
                 ">No fan sensors<",
                 ">팬 센서 없음<",
             )
@@ -4808,6 +4812,10 @@ html,body{background:var(--panel-bg);font-family:-apple-system,system-ui,sans-se
 .dashboard-shell{display:grid;grid-template-columns:minmax(0,1fr) 54px;gap:7px;padding:7px;height:100vh;max-height:100vh;}
 .main-pane{min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:8px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:none;background:rgba(255,255,255,.012);contain:layout paint;}
 .main-pane::-webkit-scrollbar{display:none;}
+.data-loading{display:flex;align-items:center;gap:7px;padding:9px var(--content-x);border-bottom:1px solid var(--line);color:var(--dim);font-size:10px;line-height:1.35;}
+.data-loading-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px rgba(91,157,255,.12);animation:data-loading-pulse 1.2s ease-in-out infinite;flex:0 0 auto;}
+@keyframes data-loading-pulse{0%,100%{opacity:.45}50%{opacity:1}}
+body.data-ready .data-loading{display:none;}
 body.compact .compact-extra{display:none!important;}
 body.compact[data-rail-view="settings"] .compact-extra{display:grid!important;}
 body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!important;}
@@ -5009,6 +5017,8 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 <button class="range-tab" data-range="1h" onclick="setChartRange('1h')">1h</button>
 <button class="range-tab" data-range="1d" onclick="setChartRange('1d')">1d</button>
 </div>
+
+<div class="data-loading" id="data-loading" role="status" aria-live="polite"><span class="data-loading-dot"></span><span>Reading system sensors…</span></div>
 
 <div class="setup" id="setup-row">
 <div class="setup-copy"><div class="setup-main"><span class="setup-dot" id="setup-dot"></span><span id="setup-title">Ready</span></div><div class="setup-sub" id="setup-detail"></div></div>
@@ -5467,6 +5477,9 @@ window.__pf={
  function set(id,t){var e=document.getElementById(id);if(e)e.textContent=t;}
  function show(id,on){var e=document.getElementById(id);if(e)e.style.display=on?'':'none';}
  window.__pf_pending=d;
+ document.body.classList.add('data-ready');
+ var loading=document.getElementById('data-loading');
+ if(loading)loading.setAttribute('aria-hidden','true');
  var view=railView();
  CHART_RANGE_LABEL=d.chart_range;
   updateRail(d);
@@ -6378,6 +6391,8 @@ function updateHardwareAvailability(d){
   var fanCount=d.fan_count||0, controllable=d.controllable_fan_count||0;
   var battery=!!d.batt_present;
   var networkCount=d.network_count||0, networkActive=!!d.network_active;
+  var card=document.getElementById('hardware-availability-card');
+  if(card)card.style.display='';
   var allGood=(controllable>0)&&battery&&networkActive;
   setPanelPill('hardware-pill',allGood?(LANG==='ko'?'감지됨':'Detected'):(LANG==='ko'?'확인 필요':'Check'),allGood?'ok':'info');
   setHealthValue('hardware-fans',
@@ -7166,11 +7181,15 @@ mod tests {
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
 
         assert!(en.contains(r#"id="hardware-availability-card""#));
+        assert!(en.contains("var card=document.getElementById('hardware-availability-card');"));
+        assert!(en.contains("if(card)card.style.display='';"));
         assert!(en.contains(">Hardware Availability<"));
         assert!(en.contains(r#"id="hardware-fans""#));
         assert!(en.contains(r#"id="hardware-battery""#));
         assert!(en.contains(r#"id="hardware-network""#));
         assert!(en.contains(r#"id="fan-empty-state""#));
+        assert!(en.contains(r#"id="data-loading""#));
+        assert!(en.contains("document.body.classList.add('data-ready');"));
         assert!(en.contains("function updateHardwareAvailability(d)"));
         assert!(en.contains("updateHardwareAvailability(d);"));
         assert!(en.contains("d.network_count"));

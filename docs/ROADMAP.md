@@ -85,6 +85,8 @@ These are the highest-leverage improvements before adding large new surfaces.
       fan control summaries and profile actions for compact popovers
 - [x] Keep fan status truthful when hardware is absent or read-only; disable
       profile actions until at least one controllable fan is confirmed
+- [x] Show hardware availability in Settings and provide a non-blocking initial
+      sensor-loading state before the first dashboard payload arrives
 
 ### v1.28 — Sensor Accuracy
 
