@@ -77,6 +77,8 @@ These are the highest-leverage improvements before adding large new surfaces.
       macOS automatic control when a write fails
 - [x] Refresh the Fan Control Health panel from the live settings update path
       and log rail navigation requests for support diagnostics
+- [x] Focus the popover only on explicit user open so WebView controls receive
+      input without stealing focus during app startup
 
 ### v1.28 — Sensor Accuracy
 

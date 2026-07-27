@@ -1577,6 +1577,10 @@ fn main() {
         if app.popover_show_at.is_some_and(|at| now >= at) {
             if let Some(w) = &app.window {
                 w.set_visible(true);
+                // Keep the prewarmed window unfocused during startup, but
+                // focus it when the user explicitly opens the popover so
+                // WebView buttons and scrolling receive mouse events.
+                w.set_focus();
                 app.popover_visible = true;
                 log_menubar_event("popover shown");
                 defer_dashboard_io_after_open(&mut app);
@@ -7500,6 +7504,7 @@ mod tests {
         assert!(source.contains(".with_focused(false)"));
         assert!(source.contains(".with_accept_first_mouse(true)"));
         assert!(source.contains("defer_dashboard_io_after_open(app);"));
+        assert!(source.contains("w.set_focus();"));
         assert!(source.contains("configure_native_popover_window(w, position, POPOVER_W, height)"));
         assert!(source.contains("native_window.setFrameTopLeftPoint"));
         assert!(source.contains("#[cfg(not(target_os = \"macos\"))]"));
