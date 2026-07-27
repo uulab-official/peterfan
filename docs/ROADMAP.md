@@ -89,6 +89,8 @@ These are the highest-leverage improvements before adding large new surfaces.
       sensor-loading state before the first dashboard payload arrives
 - [x] Guard control and maintenance actions until the first payload arrives;
       keep the temperature section visible when CPU sensors are unavailable
+- [x] Surface a retry action when the first sensor payload is delayed without
+      running hardware reads on the WebView/UI path
 
 ### v1.28 — Sensor Accuracy
 

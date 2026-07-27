@@ -2212,6 +2212,8 @@ fn build_popover(
                 log_menubar_event(&format!("popover webview javascript error: {error}"));
             } else if body == "ready" {
                 enqueue_pending("ready:popover");
+            } else if body == "refresh" {
+                CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
             } else if body == "checkupdates" || body == "toggle-login-item" || body == "togglelogin"
             {
                 enqueue_pending(body);
@@ -2319,6 +2321,8 @@ fn open_detail_window(
                 log_menubar_event(&format!("detail webview javascript error: {error}"));
             } else if body == "ready" {
                 enqueue_pending("ready:detail");
+            } else if body == "refresh" {
+                CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
             } else if body == "checkupdates" || body == "toggle-login-item" || body == "togglelogin"
             {
                 enqueue_pending(body);
@@ -4818,6 +4822,9 @@ html,body{background:var(--panel-bg);font-family:-apple-system,system-ui,sans-se
 .main-pane::-webkit-scrollbar{display:none;}
 .data-loading{display:flex;align-items:center;gap:7px;padding:9px var(--content-x);border-bottom:1px solid var(--line);color:var(--dim);font-size:10px;line-height:1.35;}
 .data-loading-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px rgba(91,157,255,.12);animation:data-loading-pulse 1.2s ease-in-out infinite;flex:0 0 auto;}
+.loading-retry{margin-left:auto;background:var(--chip-bg);border:1px solid rgba(91,157,255,.35);border-radius:5px;color:var(--accent);font:inherit;font-size:9.5px;font-weight:700;padding:3px 7px;cursor:pointer;}
+.loading-retry:hover{background:var(--chip-hover);}
+.loading-retry:disabled{opacity:.5;cursor:default;}
 @keyframes data-loading-pulse{0%,100%{opacity:.45}50%{opacity:1}}
 body.data-ready .data-loading{display:none;}
 body.compact .compact-extra{display:none!important;}
@@ -5025,7 +5032,7 @@ body.compact[data-rail-view="settings"] .foot.compact-extra{display:block!import
 <button class="range-tab" data-range="1d" onclick="setChartRange('1d')">1d</button>
 </div>
 
-<div class="data-loading" id="data-loading" role="status" aria-live="polite"><span class="data-loading-dot"></span><span>Reading system sensors…</span></div>
+<div class="data-loading" id="data-loading" role="status" aria-live="polite"><span class="data-loading-dot"></span><span id="data-loading-text">Reading system sensors…</span><button class="loading-retry" id="data-loading-retry" style="display:none" onclick="retryDashboard()">Retry</button></div>
 
 <div class="setup" id="setup-row">
 <div class="setup-copy"><div class="setup-main"><span class="setup-dot" id="setup-dot"></span><span id="setup-title">Ready</span></div><div class="setup-sub" id="setup-detail"></div></div>
@@ -5211,6 +5218,13 @@ var APP_UPDATE_STATUS=null;
 var APP_PERSISTED_UPDATE_KEY='';
 var FAN_CONTROL_PENDING=null;
 var FAN_CONTROL_RESULT=null;
+var DATA_LOADING_TIMER=setTimeout(function(){
+  if(document.body.classList.contains('data-ready'))return;
+  var text=document.getElementById('data-loading-text');
+  var retry=document.getElementById('data-loading-retry');
+  if(text)text.textContent=LANG==='ko'?'센서 조회가 지연되고 있습니다':'Sensor reading is taking longer than expected';
+  if(retry){retry.style.display='';retry.disabled=false;}
+},4000);
 if(!('__pf_pending' in window))window.__pf_pending=null;
 function applyPendingUpdate(){
   if(window.__pf&&window.__pf.update&&window.__pf_pending)window.__pf.update(window.__pf_pending);
@@ -5309,6 +5323,14 @@ function setPanelPill(id,text,tone){
   if(!el)return;
   el.textContent=text;
   el.className='panel-pill '+(tone||'');
+}
+function retryDashboard(){
+  var retry=document.getElementById('data-loading-retry');
+  var text=document.getElementById('data-loading-text');
+  if(retry)retry.disabled=true;
+  if(text)text.textContent=LANG==='ko'?'다시 확인하는 중…':'Retrying sensor read…';
+  if(window.ipc)window.ipc.postMessage('refresh');
+  setTimeout(function(){if(retry&&!document.body.classList.contains('data-ready'))retry.disabled=false;},1500);
 }
 function setText(id,text){
   var el=document.getElementById(id);
@@ -5485,8 +5507,11 @@ window.__pf={
  function show(id,on){var e=document.getElementById(id);if(e)e.style.display=on?'':'none';}
  window.__pf_pending=d;
  document.body.classList.add('data-ready');
+ clearTimeout(DATA_LOADING_TIMER);
  var loading=document.getElementById('data-loading');
  if(loading)loading.setAttribute('aria-hidden','true');
+ var loadingRetry=document.getElementById('data-loading-retry');
+ if(loadingRetry){loadingRetry.style.display='none';loadingRetry.disabled=false;}
  var view=railView();
  CHART_RANGE_LABEL=d.chart_range;
   updateRail(d);
@@ -7198,6 +7223,7 @@ mod tests {
     fn system_panel_contains_hardware_empty_states() {
         let en = dashboard_html(ResolvedLanguage::En, false);
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
+        let source = include_str!("main.rs");
 
         assert!(en.contains(r#"id="hardware-availability-card""#));
         assert!(en.contains("var card=document.getElementById('hardware-availability-card');"));
@@ -7208,6 +7234,8 @@ mod tests {
         assert!(en.contains(r#"id="hardware-network""#));
         assert!(en.contains(r#"id="fan-empty-state""#));
         assert!(en.contains(r#"id="data-loading""#));
+        assert!(en.contains("function retryDashboard()"));
+        assert!(en.contains("window.ipc.postMessage('refresh')"));
         assert!(en.contains("document.body.classList.add('data-ready');"));
         assert!(en.contains(r#"id="temp-empty""#));
         assert!(en.contains("show('sec-temp',true);"));
@@ -7216,6 +7244,9 @@ mod tests {
         assert!(en.contains("updateHardwareAvailability(d);"));
         assert!(en.contains("d.network_count"));
         assert!(en.contains("d.network_active"));
+        assert!(en.contains("Sensor reading is taking longer than expected"));
+        assert!(source.contains(r#"body == "refresh""#));
+        assert!(source.contains("CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);"));
         assert!(en.contains(">No fan sensors<"));
         assert!(en.contains("No fan sensors were reported by this Mac"));
         assert!(en.contains("Read-only fans"));
