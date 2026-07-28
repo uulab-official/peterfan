@@ -177,23 +177,25 @@ func drawCase(_ spec: CaseSpec, origin: CGPoint) {
     }
 
     let notes = label(
-        "Update panel: current, latest, status and release notes fit inside the compact pane.",
-        "업데이트 화면: 현재, 최신, 상태, 릴리즈 노트가 작은 패널 안에서 잘려 보이지 않아야 합니다.",
+        "Settings: fan health and update status stay together in one compact pane.",
+        "설정 화면: 팬 상태와 업데이트 상태를 한 패널에서 확인할 수 있어야 합니다.",
         spec
     )
     text(notes, NSRect(x: panel.minX + 18, y: panel.minY + 20, width: 226, height: 44), 9.5, p.dim)
 
     let railLabels = [
         label("Status", "상태", spec),
-        label("Fan", "팬", spec),
-        label("Update", "업데이트", spec),
+        label("Fans", "팬 제어", spec),
         label("Settings", "설정", spec),
         label("System", "시스템", spec),
     ]
+    let railItemHeight: CGFloat = 58
+    let railGap: CGFloat = 10
+    let railBottomInset: CGFloat = 18
     for (index, item) in railLabels.enumerated() {
-        let y = rail.maxY - 66 - CGFloat(index) * 82
+        let y = rail.minY + railBottomInset + CGFloat(railLabels.count - 1 - index) * (railItemHeight + railGap)
         let fill = index == 0 ? p.accent.withAlphaComponent(spec.isDark ? 0.24 : 0.15) : p.section
-        rounded(NSRect(x: rail.minX + 6, y: y, width: 42, height: 58), radius: 8, fill: fill, stroke: p.line)
+        rounded(NSRect(x: rail.minX + 6, y: y, width: 42, height: railItemHeight), radius: 8, fill: fill, stroke: p.line)
         text(item, NSRect(x: rail.minX + 8, y: y + 11, width: 38, height: 15), 7.4, index == 0 ? p.accent : p.text, weight: .bold, align: .center)
     }
 }
@@ -202,7 +204,7 @@ image.lockFocus()
 c(18, 20, 24).setFill()
 NSRect(origin: .zero, size: size).fill()
 text("PeterFan Popover Visual QA", NSRect(x: margin, y: size.height - 30, width: 320, height: 18), 14, c(234, 238, 246), weight: .bold)
-text("dark/light · English/Korean · compact rail text-fit check", NSRect(x: margin + 230, y: size.height - 30, width: 420, height: 18), 11, c(151, 161, 176))
+text("dark/light · English/Korean · current four-item rail check", NSRect(x: margin + 230, y: size.height - 30, width: 420, height: 18), 11, c(151, 161, 176))
 
 let cases = [
     CaseSpec(title: "Dark / English", language: "en", palette: dark, isKorean: false, isDark: true),
