@@ -99,8 +99,7 @@ fn privileged_error_message(status_code: Option<i32>, stderr: &str) -> String {
     let detail = stderr
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .last()
+        .rfind(|line| !line.is_empty())
         .unwrap_or_default();
     let lower = detail.to_ascii_lowercase();
     if status_code == Some(1)

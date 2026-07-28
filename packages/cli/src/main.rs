@@ -3758,15 +3758,72 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
     };
 
     let update_available = peterfan_platform::updater::is_newer(current, &release.version);
+    // Resolve install/open requests before the JSON return path. Previously
+    // `--json update --install` reported the release and returned early, so
+    // automation could appear successful while never queueing the update.
+    let mut install_status = if install {
+        Some(if update_available {
+            "pending"
+        } else {
+            "not_needed"
+        })
+    } else {
+        None
+    };
+    let mut install_error: Option<String> = None;
+
+    if install && update_available {
+        if release.asset_url.is_none() {
+            let message = format!(
+                "release {} has no macOS app update asset; open {}",
+                release.tag, release.html_url
+            );
+            if json {
+                install_status = Some("failed");
+                install_error = Some(message);
+            } else {
+                anyhow::bail!(message);
+            }
+        } else {
+            match install_update(&release) {
+                Ok(()) => install_status = Some("queued"),
+                Err(error) => {
+                    if json {
+                        install_status = Some("failed");
+                        install_error = Some(error.to_string());
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut open_error: Option<String> = None;
+    if open {
+        if let Err(error) = open_release_page(&release.html_url) {
+            if json {
+                open_error = Some(error.to_string());
+            } else {
+                return Err(error);
+            }
+        }
+    }
+
     if json {
         println!(
             "{}",
             serde_json::json!({
-                "ok": true,
+                "ok": install_error.is_none() && open_error.is_none(),
                 "current": current,
                 "latest": release.version,
                 "tag": release.tag,
                 "update_available": update_available,
+                "install_requested": install,
+                "install_status": install_status,
+                "install_error": install_error,
+                "open_requested": open,
+                "open_error": open_error,
                 "release_url": release.html_url,
                 "asset_name": release.asset_name,
                 "asset_url": release.asset_url,
@@ -3807,24 +3864,11 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
         println!("  {} already up to date", "✓".green());
     }
 
-    if open {
-        open_release_page(&release.html_url)?;
-    }
-
     if install {
         if !update_available {
             println!("  {} nothing to install", "✓".green());
             return Ok(());
         }
-        if release.asset_url.is_none() {
-            anyhow::bail!(
-                "release {} has no macOS app update asset; open {}",
-                release.tag,
-                release.html_url
-            );
-        }
-        println!("  {} downloading and installing update…", "→".cyan());
-        install_update(&release)?;
         println!(
             "  {} update queued; PeterFan will relaunch after the current app quits",
             "✓".green()

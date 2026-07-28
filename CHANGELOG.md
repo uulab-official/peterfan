@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.46] — OTA CLI 설치 상태 수정
+
+### Fixed
+
+- JSON 모드의 `peterfan update --install`이 업데이트를 확인만 하고 설치를 건너뛰던 문제를 수정했습니다.
+- 자동화 환경에서 설치 요청, 대기열 등록, 불필요한 설치, 실패 상태를 명확한 JSON 필드로 확인할 수 있습니다.
+
 ## [1.27.45] — 시스템 지표 로딩 상태 개선
 
 ### Fixed
