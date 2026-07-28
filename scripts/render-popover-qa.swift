@@ -156,7 +156,21 @@ func drawCase(_ spec: CaseSpec, origin: CGPoint) {
     text(label("CPU 57%", "CPU 57%", spec), NSRect(x: panel.maxX - 90, y: panel.maxY - 42, width: 70, height: 18), 12, p.accent, weight: .bold, align: .right)
     text(label("app v\(version) · daemon ok", "앱 v\(version) · 데몬 정상", spec), NSRect(x: panel.minX + 18, y: panel.maxY - 62, width: 214, height: 16), 8.5, p.dim)
 
-    let barsY = panel.maxY - 106
+    let summary: [(String, String, NSColor)] = [
+        (label("CPU", "CPU", spec), "57%", p.green),
+        (label("CPU temperature", "CPU 온도", spec), "61°C", p.yellow),
+        (label("Fan average", "팬 평균", spec), "3865 RPM", p.accent),
+    ]
+    let summaryGap: CGFloat = 5
+    let summaryWidth = (226 - summaryGap * 2) / 3
+    for (index, item) in summary.enumerated() {
+        let x = panel.minX + 18 + CGFloat(index) * (summaryWidth + summaryGap)
+        rounded(NSRect(x: x, y: panel.maxY - 96, width: summaryWidth, height: 26), radius: 5, fill: p.section, stroke: p.line)
+        text(item.0, NSRect(x: x + 5, y: panel.maxY - 82, width: summaryWidth - 10, height: 10), 6.7, p.dim, weight: .semibold)
+        text(item.1, NSRect(x: x + 5, y: panel.maxY - 92, width: summaryWidth - 10, height: 10), 8.4, item.2, weight: .bold)
+    }
+
+    let barsY = panel.maxY - 134
     for i in 0..<16 {
         let color = i < 4 ? p.red : (i < 12 ? p.green : p.yellow)
         rounded(NSRect(x: panel.minX + 18 + CGFloat(i) * 14, y: barsY, width: 10, height: 22), radius: 2, fill: color)
@@ -170,7 +184,7 @@ func drawCase(_ spec: CaseSpec, origin: CGPoint) {
         (label("Fan 2", "Fan 2", spec), "3865 RPM", 0.52, p.accent),
     ]
     for (index, row) in rows.enumerated() {
-        let y = panel.maxY - 198 - CGFloat(index) * 70
+        let y = panel.maxY - 206 - CGFloat(index) * 70
         text(row.0, NSRect(x: panel.minX + 18, y: y + 28, width: 128, height: 17), 10.5, p.dim, weight: .semibold)
         text(row.1, NSRect(x: panel.maxX - 92, y: y + 28, width: 72, height: 17), 12, p.text, weight: .bold, align: .right)
         meter(NSRect(x: panel.minX + 18, y: y + 13, width: 226, height: 5), value: row.2, color: row.3, palette: p)

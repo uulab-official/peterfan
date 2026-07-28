@@ -3263,6 +3263,29 @@ fn update(app: &mut App) {
     let chart_range = ChartRange::from_u8(CHART_RANGE.load(Ordering::Relaxed));
     let (daemon_binary_installed, daemon_path, launch_daemon_installed) = daemon_install_metadata();
     let app_update_status = app_update_state_snapshot();
+    let fan_rpm_values: Vec<u32> = fans
+        .iter()
+        .map(|fan| fan.rpm)
+        .filter(|rpm| *rpm > 0)
+        .collect();
+    let fan_avg_rpm = if fan_rpm_values.is_empty() {
+        0
+    } else {
+        fan_rpm_values.iter().sum::<u32>() / fan_rpm_values.len() as u32
+    };
+    let fan_avg_rpm_text = if fan_avg_rpm > 0 {
+        format!("{fan_avg_rpm} RPM")
+    } else if fans.is_empty() {
+        match app.language.resolve() {
+            ResolvedLanguage::Ko => "팬 없음".to_string(),
+            ResolvedLanguage::En => "No fans".to_string(),
+        }
+    } else {
+        match app.language.resolve() {
+            ResolvedLanguage::Ko => "읽는 중…".to_string(),
+            ResolvedLanguage::En => "Reading…".to_string(),
+        }
+    };
 
     let payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
@@ -3306,6 +3329,8 @@ fn update(app: &mut App) {
         "temps": temp_rows,
         "all_temps": &all_temp_rows,
         "fans": fan_rows,
+        "fan_avg_rpm": fan_avg_rpm,
+        "fan_avg_rpm_text": fan_avg_rpm_text,
         "batt_present": app.dashboard_slow_cache.batt_present,
         "batt_pct": app.dashboard_slow_cache.batt_pct,
         "batt_text": &app.dashboard_slow_cache.batt_text,
@@ -4710,6 +4735,8 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Memory<", ">메모리<")
             .replace(">Storage<", ">저장공간<")
             .replace(">Temperature<", ">온도<")
+            .replace(">CPU temperature<", ">CPU 온도<")
+            .replace(">Fan average<", ">팬 평균 RPM<")
             .replace(">Fan<", ">팬<")
             .replace(">Fans<", ">팬<")
             .replace(">Battery<", ">배터리<")
@@ -4842,6 +4869,11 @@ body.data-ready .data-loading{display:none;}
 body.compact .compact-extra{display:none!important;}
 body.compact[data-rail-view="system"] .compact-extra{display:grid!important;}
 body.compact[data-rail-view="system"] .foot.compact-extra{display:block!important;}
+.summary-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:0 var(--content-x) 10px;}
+.summary-cell{min-width:0;padding:8px 9px;border:1px solid var(--line);border-radius:7px;background:var(--chip-bg);}
+.summary-label{display:block;color:var(--dim);font-size:8.5px;font-weight:750;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.summary-value{display:block;margin-top:3px;color:var(--text);font-size:13px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.summary-value.g{color:var(--g);}.summary-value.y{color:var(--y);}.summary-value.r{color:var(--r);}.summary-value.info{color:var(--accent);}
 .action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;contain:layout paint;}
 .rail-btn{height:50px;width:100%;display:flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;border-radius:7px;color:var(--dim);font:inherit;cursor:pointer;color-scheme:inherit;}
 .rail-btn:hover{background:var(--chip-hover);border-color:rgba(91,157,255,.35);}
@@ -5044,6 +5076,12 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 <button class="range-tab active" data-range="2m" onclick="setChartRange('2m')">2m</button>
 <button class="range-tab" data-range="1h" onclick="setChartRange('1h')">1h</button>
 <button class="range-tab" data-range="1d" onclick="setChartRange('1d')">1d</button>
+</div>
+
+<div class="summary-strip" id="summary-strip" aria-label="Live summary">
+<div class="summary-cell"><span class="summary-label" id="summary-cpu-label">CPU</span><span class="summary-value" id="summary-cpu">—</span></div>
+<div class="summary-cell"><span class="summary-label" id="summary-temp-label">CPU temperature</span><span class="summary-value" id="summary-temp">—</span></div>
+<div class="summary-cell"><span class="summary-label" id="summary-fan-label">Fan average</span><span class="summary-value" id="summary-fan">—</span></div>
 </div>
 
 <div class="data-loading" id="data-loading" role="status" aria-live="polite"><span class="data-loading-dot"></span><span id="data-loading-text">Reading system sensors…</span><button class="loading-retry" id="data-loading-retry" style="display:none" onclick="retryDashboard()">Retry</button></div>
@@ -5303,7 +5341,7 @@ function resetRailPaneScroll(){
 function applyRailView(resetScroll){
   var view=railView();
   document.body.setAttribute('data-rail-view',view);
-  var all=['range-tabs','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','foot','rail-update-panel','rail-settings-panel','rail-more-panel'];
+  var all=['range-tabs','summary-strip','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','foot','rail-update-panel','rail-settings-panel','rail-more-panel'];
   all.forEach(function(id){setVisible(id,false);});
   if(view==='fan'){
     setVisible('setup-row',true);
@@ -5314,7 +5352,7 @@ function applyRailView(resetScroll){
   } else if(view==='system'){
     ['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach(function(id){setVisible(id,true);});
   } else {
-    ['range-tabs','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
+    ['range-tabs','summary-strip','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
   }
   ['Detail','Fan','Settings','System'].forEach(function(name){
     var key=name.toLowerCase();
@@ -5539,8 +5577,17 @@ window.__pf={
  if(loadingRetry){loadingRetry.style.display='none';loadingRetry.disabled=false;}
  var view=railView();
  CHART_RANGE_LABEL=d.chart_range;
-  updateRail(d);
+ updateRail(d);
  if(view==='overview'){
+   set('summary-cpu',d.cpu_text||'—');
+   set('summary-temp',d.temp_present?(d.temp_stale?'--°C':(d.temp_text||'—')):'—');
+   set('summary-fan',d.fan_avg_rpm_text||'—');
+   var summaryCpu=document.getElementById('summary-cpu');
+   if(summaryCpu)summaryCpu.className='summary-value '+cls(d.cpu_pct||0);
+   var summaryTemp=document.getElementById('summary-temp');
+   if(summaryTemp)summaryTemp.className='summary-value '+(d.temp_stale?'info':(d.temp_cls||''));
+   var summaryFan=document.getElementById('summary-fan');
+   if(summaryFan)summaryFan.className='summary-value '+(d.fan_avg_rpm>0?'info':'');
    set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
    var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span');s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title='Core '+(i+1)+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
    set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
@@ -7038,6 +7085,27 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_overview_has_product_summary_metrics() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let source = include_str!("main.rs");
+
+        for id in [
+            "summary-strip",
+            "summary-cpu",
+            "summary-temp",
+            "summary-fan",
+        ] {
+            assert!(en.contains(&format!(r##"id="{id}""##)));
+        }
+        assert!(en.contains("CPU temperature"));
+        assert!(en.contains("Fan average"));
+        assert!(en.contains("d.fan_avg_rpm_text"));
+        assert!(en.contains("fan_avg_rpm"));
+        assert!(source.contains("\"fan_avg_rpm_text\": fan_avg_rpm_text"));
+        assert!(en.contains("['range-tabs','summary-strip','sec-cpu','sec-mem','sec-temp']"));
+    }
+
+    #[test]
     fn dashboard_html_supports_compact_popover_mode() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
@@ -7459,8 +7527,12 @@ mod tests {
             "var showSetup=stateReady&&supported&&controllableCount>0&&(d.fan_setup_needed||d.daemon_update_needed);"
         ));
         assert!(en.contains("setVisible('setup-row',true);"));
-        assert!(en.contains("} else {\n    ['range-tabs','sec-cpu','sec-mem','sec-temp'].forEach"));
-        assert!(!en.contains("['range-tabs','setup-row','sec-cpu','sec-mem','sec-temp'].forEach"));
+        assert!(en.contains(
+            "} else {\n    ['range-tabs','summary-strip','sec-cpu','sec-mem','sec-temp'].forEach"
+        ));
+        assert!(!en.contains(
+            "['range-tabs','setup-row','summary-strip','sec-cpu','sec-mem','sec-temp'].forEach"
+        ));
         assert!(en.contains("setButtonLabel(fan,LANG==='ko'?'팬 제어':'Fans');"));
         assert!(!en.contains("setButtonLabel(fan,d.fan_setup_needed"));
         assert!(!en.contains("fan.classList.toggle('active',!!d.can_control);"));
