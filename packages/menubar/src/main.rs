@@ -5910,6 +5910,10 @@ function renderFanActionLog(d){
   });
 }
 function checkAppUpdates(btn){
+  // The compact setup menu is available from the fan view, but update
+  // progress and the final result live in Settings. Navigate first so a
+  // successful click always has visible feedback instead of looking inert.
+  if(RAIL_VIEW!=='settings')setRailView('settings');
   if(APP_UPDATE_CHECK_PENDING)return;
   APP_UPDATE_CHECK_PENDING=true;
   if(btn){
@@ -7321,6 +7325,7 @@ mod tests {
         assert!(en.contains("function compareVersions(a,b)"));
         assert!(en.contains("function formatReleaseNotes(body)"));
         assert!(en.contains("function renderUpdateStatus(status)"));
+        assert!(en.contains("if(RAIL_VIEW!=='settings')setRailView('settings');"));
         assert!(!en.contains("function fetchLatestReleaseStatus()"));
         assert!(!en.contains("api.github.com/repos/uulab-official/peterfan/releases/latest"));
         assert!(en.contains("d.app_update_status||{}"));

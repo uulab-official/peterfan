@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.47] — 업데이트 화면 피드백 개선
+
+### Fixed
+
+- 팬 화면의 설정 메뉴에서 업데이트를 눌러도 결과가 보이지 않던 동선을 수정했습니다.
+- 업데이트 확인·설치 요청 시 항상 설정 화면으로 이동해 진행 상태와 실패 원인을 즉시 확인할 수 있습니다.
+
 ## [1.27.46] — OTA CLI 설치 상태 수정
 
 ### Fixed
