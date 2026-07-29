@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.50] — Windows 앱 및 릴리스 자동화
+
+### Added
+
+- Windows x64용 트레이 앱, CLI, TUI와 사용자별 설치·제거 PowerShell 스크립트를 포함한 ZIP 배포판을 추가했습니다.
+- GitHub Actions에서 Windows 네이티브 테스트, 릴리스 빌드, 시스템 지표 확인, 트레이 단일 실행·재시작, ZIP 무결성을 자동 검증합니다.
+- Windows 시작 시 자동 실행을 관리자 권한 없이 현재 사용자 레지스트리에 등록할 수 있습니다.
+
+### Changed
+
+- Windows에서는 실제 `sysinfo` CPU·메모리·디스크·네트워크 지표만 표시하며, 지원되지 않는 온도·팬 값을 모의 데이터로 대체하지 않습니다.
+- Windows 업데이트 확인은 최신 GitHub Release를 확인하고 검증된 다운로드 페이지로 연결합니다.
+- GitHub Actions의 공식 checkout, cache, artifact 작업을 Node.js 24 기반 버전으로 갱신했습니다.
+
+### Fixed
+
+- Windows에서 앱 종료 후 남은 잠금 파일 때문에 다시 실행할 수 없던 단일 실행 처리를 파일 핸들 기반 잠금으로 교체했습니다.
+
 ## [1.27.49] — 상태 화면 제품 디자인 개선
 
 ### Changed

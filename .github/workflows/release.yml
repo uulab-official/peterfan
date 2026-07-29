@@ -31,7 +31,7 @@ jobs:
       notes: ${{ steps.extract.outputs.notes }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.inputs.tag }}
 
@@ -64,13 +64,13 @@ jobs:
     name: Build macOS arm64
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.inputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -81,7 +81,7 @@ jobs:
       - name: Build
         run: cargo build --release --target aarch64-apple-darwin --bins
       - name: Upload arm64 artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: bins-arm64
           path: |
@@ -101,13 +101,13 @@ jobs:
     name: Build macOS x86_64
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.inputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -118,7 +118,7 @@ jobs:
       - name: Build
         run: cargo build --release --target x86_64-apple-darwin --bins
       - name: Upload x86_64 artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: bins-x86_64
           path: |
@@ -133,18 +133,18 @@ jobs:
     needs: [release-notes, build-macos-arm, build-macos-x86]
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.inputs.tag }}
 
       - name: Download arm64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: bins-arm64
           path: bins/arm64
 
       - name: Download x86_64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: bins-x86_64
           path: bins/x86_64
@@ -261,13 +261,13 @@ jobs:
           fi
 
       - name: Upload macOS universal archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-macos-universal
           path: ${{ env.ASSET }}
 
       - name: Upload macOS .dmg
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-macos-dmg
           path: dist/PeterFan-*.dmg
@@ -279,12 +279,12 @@ jobs:
     needs: [release-notes, package-macos]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.inputs.tag }}
 
       - name: Download all release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: dist
