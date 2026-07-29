@@ -5069,6 +5069,38 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .range-tab{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:600;padding:3px 9px;border-radius:99px;cursor:pointer;transition:background .15s,color .15s;}
 .range-tab:hover{background:var(--chip-hover);}
 .range-tab.active{background:rgba(91,157,255,.22);color:var(--accent);}
+/* Product hierarchy: strong live summary, quiet detail surfaces, and a compact tool rail. */
+.range-tabs{margin:8px 8px 10px;padding:10px 10px;min-height:44px;border:1px solid var(--line);border-radius:8px;background:var(--chip-bg);}
+.view-title{font-size:16px;font-weight:760;letter-spacing:0;}
+.range-tab{padding:4px 9px;font-size:9px;font-weight:720;}
+.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;padding:0 14px 14px;}
+.summary-cell{position:relative;min-height:67px;padding:10px 11px 9px;border-radius:8px;background:rgba(255,255,255,.035);overflow:hidden;}
+.summary-cell::after{content:"";position:absolute;inset:auto 0 0;height:1px;background:var(--summary-accent,var(--line));opacity:.7;}
+.summary-cell.cpu{--summary-accent:var(--g);}
+.summary-cell.memory{--summary-accent:var(--accent);}
+.summary-cell.temperature{--summary-accent:var(--y);}
+.summary-cell.fan{--summary-accent:var(--accent);}
+.summary-label{font-size:9.5px;font-weight:680;letter-spacing:0;}
+.summary-value{margin-top:4px;font-size:20px;line-height:1.05;font-weight:760;letter-spacing:0;}
+.summary-meter{display:block;height:3px;margin-top:8px;border-radius:99px;background:var(--track);overflow:hidden;}
+.summary-meter .bar-fill{display:block;}
+.main-pane{background:rgba(255,255,255,.018);}
+.row{grid-template-columns:22px minmax(0,1fr);gap:12px;padding:15px var(--content-x);}
+.ic{opacity:.88;}
+.name{font-size:11px;font-weight:720;}
+.val{font-size:14px;font-weight:720;}
+.sub{margin-top:3px;}
+.cores{height:24px;margin-top:9px;background:rgba(255,255,255,.045);}
+.chart{height:34px;margin-top:10px;}
+.action-rail{gap:5px;padding-top:8px;}
+.rail-btn{height:48px;border-radius:8px;transition:background .15s,color .15s,border-color .15s,box-shadow .15s;}
+.rail-btn svg{width:20px;height:20px;}
+.rail-btn.active{background:rgba(91,157,255,.14);border-color:rgba(91,157,255,.3);box-shadow:inset 2px 0 0 var(--accent);}
+@media (prefers-color-scheme: light){
+.summary-cell{background:rgba(255,255,255,.78);}
+.main-pane{background:rgba(255,255,255,.42);}
+.cores{background:rgba(0,0,0,.055);}
+}
 </style></head><body class="compact" data-rail-view="overview"><div class="panel"><div class="dashboard-shell"><main class="main-pane">
 
 <div class="range-tabs" id="range-tabs">
@@ -5079,9 +5111,10 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 </div>
 
 <div class="summary-strip" id="summary-strip" aria-label="Live summary">
-<div class="summary-cell"><span class="summary-label" id="summary-cpu-label">CPU</span><span class="summary-value" id="summary-cpu">—</span></div>
-<div class="summary-cell"><span class="summary-label" id="summary-temp-label">CPU temperature</span><span class="summary-value" id="summary-temp">—</span></div>
-<div class="summary-cell"><span class="summary-label" id="summary-fan-label">Fan average</span><span class="summary-value" id="summary-fan">—</span></div>
+<div class="summary-cell cpu"><span class="summary-label" id="summary-cpu-label">CPU</span><span class="summary-value" id="summary-cpu">—</span><span class="summary-meter"><span class="bar-fill" id="summary-cpu-bar"></span></span></div>
+<div class="summary-cell memory"><span class="summary-label" id="summary-mem-label">Memory</span><span class="summary-value" id="summary-mem">—</span><span class="summary-meter"><span class="bar-fill" id="summary-mem-bar"></span></span></div>
+<div class="summary-cell temperature"><span class="summary-label" id="summary-temp-label">CPU temperature</span><span class="summary-value" id="summary-temp">—</span><span class="summary-meter"><span class="bar-fill" id="summary-temp-bar"></span></span></div>
+<div class="summary-cell fan"><span class="summary-label" id="summary-fan-label">Fan average</span><span class="summary-value" id="summary-fan">—</span><span class="summary-meter"><span class="bar-fill info" id="summary-fan-bar"></span></span></div>
 </div>
 
 <div class="data-loading" id="data-loading" role="status" aria-live="polite"><span class="data-loading-dot"></span><span id="data-loading-text">Reading system sensors…</span><button class="loading-retry" id="data-loading-retry" style="display:none" onclick="retryDashboard()">Retry</button></div>
@@ -5364,7 +5397,7 @@ function applyRailView(resetScroll){
     ?(LANG==='ko'?'팬 제어':'Fans')
     :(view==='settings'
       ?(LANG==='ko'?'설정':'Settings')
-      :(view==='system'?(LANG==='ko'?'시스템':'System'):(LANG==='ko'?'상태':'Status')));
+      :(view==='system'?(LANG==='ko'?'시스템':'System'):'PeterFan'));
   if(resetScroll)resetRailPaneScroll();
 }
 function applyPopoverMode(){
@@ -5580,10 +5613,19 @@ window.__pf={
  updateRail(d);
  if(view==='overview'){
    set('summary-cpu',d.cpu_text||'—');
+   set('summary-mem',d.mem_text||'—');
    set('summary-temp',d.temp_present?(d.temp_stale?'--°C':(d.temp_text||'—')):'—');
    set('summary-fan',d.fan_avg_rpm_text||'—');
+   bar('summary-cpu-bar',d.cpu_pct||0);
+   bar('summary-mem-bar',d.mem_pct||0,'info');
+   bar('summary-temp-bar',d.temp_stale?0:(d.temp_pct||0),d.temp_stale?'info':(d.temp_cls||''));
+   var fanPcts=(d.fans||[]).map(function(f){return Number(f.pct)||0;});
+   var fanPct=fanPcts.length?fanPcts.reduce(function(sum,p){return sum+p;},0)/fanPcts.length:0;
+   bar('summary-fan-bar',fanPct,'info');
    var summaryCpu=document.getElementById('summary-cpu');
    if(summaryCpu)summaryCpu.className='summary-value '+cls(d.cpu_pct||0);
+   var summaryMem=document.getElementById('summary-mem');
+   if(summaryMem)summaryMem.className='summary-value '+cls(d.mem_pct||0);
    var summaryTemp=document.getElementById('summary-temp');
    if(summaryTemp)summaryTemp.className='summary-value '+(d.temp_stale?'info':(d.temp_cls||''));
    var summaryFan=document.getElementById('summary-fan');

@@ -152,50 +152,60 @@ func drawCase(_ spec: CaseSpec, origin: CGPoint) {
     rounded(panel, radius: 12, fill: p.panel, stroke: p.line)
     rounded(rail, radius: 12, fill: p.panel, stroke: p.line)
 
-    text(label("Ready", "준비 완료", spec), NSRect(x: panel.minX + 18, y: panel.maxY - 42, width: 132, height: 18), 13, p.text, weight: .bold)
-    text(label("CPU 57%", "CPU 57%", spec), NSRect(x: panel.maxX - 90, y: panel.maxY - 42, width: 70, height: 18), 12, p.accent, weight: .bold, align: .right)
-    text(label("app v\(version) · daemon ok", "앱 v\(version) · 데몬 정상", spec), NSRect(x: panel.minX + 18, y: panel.maxY - 62, width: 214, height: 16), 8.5, p.dim)
-
-    let summary: [(String, String, NSColor)] = [
-        (label("CPU", "CPU", spec), "57%", p.green),
-        (label("CPU temperature", "CPU 온도", spec), "61°C", p.yellow),
-        (label("Fan average", "팬 평균", spec), "3865 RPM", p.accent),
-    ]
-    let summaryGap: CGFloat = 5
-    let summaryWidth = (226 - summaryGap * 2) / 3
-    for (index, item) in summary.enumerated() {
-        let x = panel.minX + 18 + CGFloat(index) * (summaryWidth + summaryGap)
-        rounded(NSRect(x: x, y: panel.maxY - 96, width: summaryWidth, height: 26), radius: 5, fill: p.section, stroke: p.line)
-        text(item.0, NSRect(x: x + 5, y: panel.maxY - 82, width: summaryWidth - 10, height: 10), 6.7, p.dim, weight: .semibold)
-        text(item.1, NSRect(x: x + 5, y: panel.maxY - 92, width: summaryWidth - 10, height: 10), 8.4, item.2, weight: .bold)
+    text("PeterFan", NSRect(x: panel.minX + 18, y: panel.maxY - 42, width: 110, height: 18), 14, p.text, weight: .bold)
+    let ranges = ["2m", "1h", "1d"]
+    for (index, range) in ranges.enumerated() {
+        let x = panel.maxX - 90 + CGFloat(index) * 25
+        let selected = index == 0
+        rounded(
+            NSRect(x: x, y: panel.maxY - 42, width: 22, height: 17),
+            radius: 8.5,
+            fill: selected ? p.accent.withAlphaComponent(spec.isDark ? 0.24 : 0.15) : p.section
+        )
+        text(range, NSRect(x: x, y: panel.maxY - 39, width: 22, height: 10), 7.2, selected ? p.accent : p.dim, weight: .bold, align: .center)
     }
 
-    let barsY = panel.maxY - 134
+    let summary: [(String, String, CGFloat, NSColor)] = [
+        (label("CPU", "CPU", spec), "57%", 0.57, p.green),
+        (label("Memory", "메모리", spec), "73%", 0.73, p.accent),
+        (label("CPU temperature", "CPU 온도", spec), "61°C", 0.61, p.yellow),
+        (label("Fan average", "팬 평균 RPM", spec), "3865", 0.52, p.accent),
+    ]
+    let summaryGap: CGFloat = 7
+    let summaryWidth = (226 - summaryGap) / 2
+    let summaryHeight: CGFloat = 56
+    for (index, item) in summary.enumerated() {
+        let column = index % 2
+        let row = index / 2
+        let x = panel.minX + 18 + CGFloat(column) * (summaryWidth + summaryGap)
+        let y = panel.maxY - 111 - CGFloat(row) * (summaryHeight + summaryGap)
+        rounded(NSRect(x: x, y: y, width: summaryWidth, height: summaryHeight), radius: 7, fill: p.section, stroke: p.line)
+        text(item.0, NSRect(x: x + 10, y: y + 35, width: summaryWidth - 20, height: 12), 8.2, p.dim, weight: .semibold)
+        text(item.1, NSRect(x: x + 10, y: y + 16, width: summaryWidth - 20, height: 19), 15, item.3, weight: .bold)
+        meter(NSRect(x: x + 10, y: y + 9, width: summaryWidth - 20, height: 3), value: item.2, color: item.3, palette: p)
+    }
+
+    text(label("CPU activity", "CPU 사용량", spec), NSRect(x: panel.minX + 18, y: panel.maxY - 204, width: 120, height: 14), 9.5, p.dim, weight: .semibold)
+    let barsY = panel.maxY - 229
     for i in 0..<16 {
         let color = i < 4 ? p.red : (i < 12 ? p.green : p.yellow)
-        rounded(NSRect(x: panel.minX + 18 + CGFloat(i) * 14, y: barsY, width: 10, height: 22), radius: 2, fill: color)
+        let height: CGFloat = 8 + CGFloat((i * 7) % 16)
+        rounded(NSRect(x: panel.minX + 18 + CGFloat(i) * 14, y: barsY, width: 10, height: height), radius: 2, fill: color)
     }
-    sparkline(NSRect(x: panel.minX + 18, y: panel.maxY - 148, width: 226, height: 34), values: [0.2, 0.18, 0.22, 0.19, 0.28, 0.26, 0.34, 0.33, 0.50, 0.54, 0.51, 0.56], palette: p)
+    sparkline(NSRect(x: panel.minX + 18, y: panel.maxY - 266, width: 226, height: 34), values: [0.2, 0.18, 0.22, 0.19, 0.28, 0.26, 0.34, 0.33, 0.50, 0.54, 0.51, 0.56], palette: p)
 
     let rows: [(String, String, CGFloat, NSColor)] = [
         (label("Memory", "메모리", spec), "73.3%", 0.73, p.yellow),
         (label("CPU avg temp", "CPU 평균 온도", spec), "61°C", 0.61, p.yellow),
-        (label("Fan 1", "Fan 1", spec), "3596 RPM", 0.52, p.accent),
-        (label("Fan 2", "Fan 2", spec), "3865 RPM", 0.52, p.accent),
     ]
     for (index, row) in rows.enumerated() {
-        let y = panel.maxY - 206 - CGFloat(index) * 70
+        let y = panel.maxY - 328 - CGFloat(index) * 62
         text(row.0, NSRect(x: panel.minX + 18, y: y + 28, width: 128, height: 17), 10.5, p.dim, weight: .semibold)
         text(row.1, NSRect(x: panel.maxX - 92, y: y + 28, width: 72, height: 17), 12, p.text, weight: .bold, align: .right)
         meter(NSRect(x: panel.minX + 18, y: y + 13, width: 226, height: 5), value: row.2, color: row.3, palette: p)
     }
 
-    let notes = label(
-        "Settings: fan health and update status stay together in one compact pane.",
-        "설정 화면: 팬 상태와 업데이트 상태를 한 패널에서 확인할 수 있어야 합니다.",
-        spec
-    )
-    text(notes, NSRect(x: panel.minX + 18, y: panel.minY + 20, width: 226, height: 44), 9.5, p.dim)
+    text(label("All sensors · 18", "전체 센서 · 18", spec), NSRect(x: panel.minX + 18, y: panel.minY + 24, width: 226, height: 16), 9.5, p.dim, weight: .semibold)
 
     let railLabels = [
         label("Status", "상태", spec),
