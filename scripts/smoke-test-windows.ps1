@@ -20,7 +20,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "peterfan.exe --version failed."
 }
 $Status = (& $Cli --json status) | ConvertFrom-Json
-if ($null -eq $Status.cpu_pct -or $null -eq $Status.mem_pct) {
+if (
+    $null -eq $Status.cpu.usage_percent -or
+    $null -eq $Status.memory.used_percent -or
+    $Status.metrics_backend -ne "sysinfo"
+) {
     throw "Windows status JSON is incomplete."
 }
 
