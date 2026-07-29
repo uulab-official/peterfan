@@ -145,7 +145,8 @@ These are the highest-leverage improvements before adding large new surfaces.
 
 ### v1.32 — Platform Reach
 
-- [ ] Windows read-only metrics packaging
+- [x] Windows read-only metrics packaging with a native tray app, per-user
+      installer scripts, checksum validation, and GitHub Actions release upload
 - [ ] Windows temperature/fan research spike
 - [ ] Linux `hwmon` research spike
 - [ ] Separate platform capability matrix in docs

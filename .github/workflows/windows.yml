@@ -1,0 +1,116 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and attach (for example v1.27.50)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test-package:
+    name: Build, test, and package Windows x64
+    runs-on: windows-latest
+    steps:
+      - name: Resolve source ref
+        id: source
+        shell: pwsh
+        run: |
+          $Ref = "${{ github.event.release.tag_name || inputs.tag || github.sha }}"
+          "ref=$Ref" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x64-v3-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-x64-v3-
+
+      - name: Resolve package version
+        id: version
+        shell: pwsh
+        run: |
+          $Metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $Version = ($Metadata.packages | Where-Object name -eq "peterfan-menubar").version
+          if (-not $Version) {
+            throw "Could not resolve peterfan-menubar version."
+          }
+          $RequestedTag = "${{ github.event.release.tag_name || inputs.tag }}"
+          if ($RequestedTag -and $RequestedTag -ne "v$Version") {
+            throw "Requested tag $RequestedTag does not match Cargo version v$Version."
+          }
+          "version=$Version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Test workspace
+        run: cargo test --workspace --all-features --target x86_64-pc-windows-msvc
+
+      - name: Build release binaries
+        run: cargo build --workspace --release --target x86_64-pc-windows-msvc
+
+      - name: Smoke test Windows binaries
+        shell: pwsh
+        run: scripts/smoke-test-windows.ps1 -BinDir "target\x86_64-pc-windows-msvc\release"
+
+      - name: Package Windows release
+        id: package
+        shell: pwsh
+        run: scripts/package-windows.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - name: Verify Windows release archive
+        shell: pwsh
+        run: scripts/check-windows-release.ps1 -Archive "${{ steps.package.outputs.archive }}" -ExpectedVersion "${{ steps.version.outputs.version }}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: peterfan-windows-x64-v${{ steps.version.outputs.version }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $Tag = "${{ github.event.release.tag_name || inputs.tag }}"
+          $Archive = "${{ steps.package.outputs.archive }}"
+          $AssetName = "${{ steps.package.outputs.asset_name }}"
+          $Hash = "${{ steps.package.outputs.sha256 }}"
+          $ChecksumDir = Join-Path $env:RUNNER_TEMP "peterfan-release-checksums"
+          New-Item -ItemType Directory -Force -Path $ChecksumDir | Out-Null
+          $Checksums = Join-Path $ChecksumDir "checksums.txt"
+
+          gh release download $Tag --pattern "checksums.txt" --dir $ChecksumDir 2>$null
+          if (-not (Test-Path $Checksums)) {
+            New-Item -ItemType File -Path $Checksums | Out-Null
+          }
+          $Existing = @(Get-Content $Checksums | Where-Object { $_ -and $_ -notmatch [regex]::Escape($AssetName) })
+          $Combined = @($Existing + "$Hash  $AssetName") | Sort-Object
+          Set-Content -Path $Checksums -Value $Combined -Encoding utf8NoBOM
+
+          gh release upload $Tag $Archive $Checksums --clobber
+          Write-Host "Attached $AssetName and refreshed checksums.txt on $Tag."

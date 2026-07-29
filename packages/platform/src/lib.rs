@@ -4,10 +4,9 @@
 //!
 //! - [`mock`] — a fully simulated machine. Always available, used for the demo
 //!   experience, for `--mock`, and as the substrate for tests.
-//! - `macos` — a **real, read-only** backend that reports genuine hardware info
-//!   via `sysctl`. Temperature/fan reading (SMC) and fan control are not yet
-//!   implemented; see `docs/ROADMAP.md`.
-//! - `windows` — placeholder; not yet implemented.
+//! - `macos` — real SMC/IOHID temperatures, fan RPM, and guarded fan control.
+//! - `windows` — real system information with explicit unsupported thermal and
+//!   fan capabilities until a hardware-specific EC/WMI backend is available.
 //!
 //! Use [`detect`] to get the best backend for the current OS, or [`mock`] to
 //! force the simulated one.
@@ -23,6 +22,8 @@ pub mod mock;
 pub mod mock_monitor;
 pub mod system;
 pub mod updater;
+#[cfg(target_os = "windows")]
+pub mod windows_login_item;
 
 /// Oldest installed root daemon this app version can safely keep using.
 ///
@@ -43,6 +44,8 @@ mod macos_gpu;
 mod macos_hid;
 #[cfg(target_os = "macos")]
 mod smc_write;
+#[cfg(target_os = "windows")]
+mod windows;
 
 /// Apple Silicon GPU active-residency (%), behind the off-by-default
 /// `experimental-gpu` feature. Not exposed in the default build because the
@@ -145,9 +148,18 @@ pub fn detect() -> Box<dyn HardwareProvider> {
         if let Ok(p) = macos::MacosProvider::new() {
             return Box::new(p);
         }
+        Box::new(mock::MockProvider::new())
     }
 
-    Box::new(mock::MockProvider::new())
+    #[cfg(target_os = "windows")]
+    {
+        Box::new(windows::WindowsProvider::new())
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Box::new(mock::MockProvider::new())
+    }
 }
 
 /// Return the simulated backend, regardless of OS (`peterfan --mock`).

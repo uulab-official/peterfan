@@ -13,6 +13,7 @@
 // many feature additions. Bumping this is the standard fix (recommended by
 // rustc's own error message), not a workaround for a real problem.
 #![recursion_limit = "256"]
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
@@ -242,7 +243,7 @@ static FAN_ACTION_LOG: Mutex<VecDeque<serde_json::Value>> = Mutex::new(VecDeque:
 /// the install thread within the same tick and stacking two macOS
 /// admin-password dialogs.
 static INSTALL_FAN_CONTROL_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LOGIN_ITEM_TOGGLE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// Shadow of `apply_local`'s per-fan pins, consulted only when no daemon is
 /// reachable (`daemon_temps_json()` returns `None` in that case, since it's
@@ -1348,7 +1349,21 @@ fn acquire_single_instance_lock_at(path: &Path) -> Result<File, String> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(target_os = "windows")]
+fn acquire_single_instance_lock_at(path: &Path) -> Result<File, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .open(path)
+        .map_err(|e| format!("could not lock {}: {e}", path.display()))
+}
+
+#[cfg(all(not(unix), not(target_os = "windows")))]
 fn acquire_single_instance_lock_at(path: &Path) -> Result<File, String> {
     OpenOptions::new()
         .create_new(true)
@@ -3428,6 +3443,7 @@ fn daemon_temps_json() -> Option<serde_json::Value> {
 /// back to controlling fans directly if this process happens to have access.
 /// Returns a short human-readable status for the popover.
 fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
+    #[cfg(unix)]
     let line = if let Some(name) = cmd.strip_prefix("profile:") {
         format!("profile {name}\n")
     } else if let Some(pct) = cmd.strip_prefix("hold:") {
@@ -3721,7 +3737,12 @@ fn login_item_installed() -> bool {
     peterfan_platform::login_item::is_installed()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn login_item_installed() -> bool {
+    peterfan_platform::windows_login_item::is_installed()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn login_item_installed() -> bool {
     false
 }
@@ -3731,7 +3752,12 @@ fn login_item_supported() -> bool {
     true
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn login_item_supported() -> bool {
+    true
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn login_item_supported() -> bool {
     false
 }
@@ -3779,7 +3805,33 @@ fn toggle_login_item() -> String {
         result
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        if LOGIN_ITEM_TOGGLE_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return "login item already updating".into();
+        }
+
+        let result = if peterfan_platform::windows_login_item::is_installed() {
+            match peterfan_platform::windows_login_item::remove() {
+                Ok(true) => "startup disabled".to_string(),
+                Ok(false) => "startup already disabled".to_string(),
+                Err(error) => format!("startup disable failed: {error}"),
+            }
+        } else {
+            match peterfan_platform::windows_login_item::install(None) {
+                Ok(_) => "startup enabled".to_string(),
+                Err(error) => format!("startup enable failed: {error}"),
+            }
+        };
+
+        LOGIN_ITEM_TOGGLE_IN_FLIGHT.store(false, Ordering::SeqCst);
+        result
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         "startup toggle is not available on this platform".to_string()
     }
@@ -4287,7 +4339,49 @@ fn check_for_updates_interactive() {
     }
     APP_UPDATE_IN_FLIGHT.store(false, Ordering::Release);
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn check_for_updates_interactive() {
+    if APP_UPDATE_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
+    set_app_update_state("checking", None, None);
+    log_menubar_event("Windows app update check started");
+    match peterfan_platform::updater::fetch_latest_release() {
+        Ok(release)
+            if !peterfan_platform::updater::is_newer(
+                env!("CARGO_PKG_VERSION"),
+                &release.version,
+            ) =>
+        {
+            let message = format!("PeterFan v{} is current.", env!("CARGO_PKG_VERSION"));
+            set_app_update_state("current", Some(&release), Some(message.clone()));
+            *STATUS.lock().expect("status poisoned") = message;
+        }
+        Ok(release) => {
+            let message = format!(
+                "PeterFan v{} is available. Opening the verified Windows download.",
+                release.version
+            );
+            set_app_update_state("available", Some(&release), Some(message.clone()));
+            *STATUS.lock().expect("status poisoned") = message;
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", "", &release.html_url])
+                .spawn();
+        }
+        Err(error) => {
+            let message = format!("Couldn't check for updates: {error}");
+            set_app_update_state("failed", None, Some(message.clone()));
+            *STATUS.lock().expect("status poisoned") = message;
+        }
+    }
+    APP_UPDATE_IN_FLIGHT.store(false, Ordering::Release);
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn check_for_updates_interactive() {}
 
 // ---------------------------------------------------------------------------
@@ -4818,8 +4912,8 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
                 ">팬 센서 없음<",
             )
             .replace(
-                "No fan sensors were reported by this Mac. CPU, memory, temperature, and network monitoring continue normally.",
-                "이 Mac에서는 팬 센서를 찾지 못했습니다. CPU, 메모리, 온도, 네트워크 모니터링은 계속됩니다.",
+                "No fan sensors were reported by this system. CPU, memory, temperature, and network monitoring continue normally.",
+                "이 시스템에서는 팬 센서를 찾지 못했습니다. CPU, 메모리, 온도, 네트워크 모니터링은 계속됩니다.",
             )
             .replace(
                 "Manage startup and fan-control safety.",
@@ -5218,7 +5312,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 </div>
 <div class="fan-apply-status" id="fan-apply-status"></div>
 <div class="fan-cards" id="fan-cards"></div>
-<div class="empty-state" id="fan-empty-state" style="display:none"><strong class="empty-state-title">No fan sensors</strong><span class="empty-state-copy">No fan sensors were reported by this Mac. CPU, memory, temperature, and network monitoring continue normally.</span></div>
+<div class="empty-state" id="fan-empty-state" style="display:none"><strong class="empty-state-title">No fan sensors</strong><span class="empty-state-copy">No fan sensors were reported by this system. CPU, memory, temperature, and network monitoring continue normally.</span></div>
 <div class="ctl-note" id="ctl-note" style="display:none"></div>
 </div>
 
@@ -5713,7 +5807,7 @@ window.__pf={
      set('ctl-status',LANG==='ko'?'사용 불가':'unavailable');
      updateProfileStrip(d);
      updateFanApplyStatus(d);
-     if(note){note.style.display='';note.textContent=LANG==='ko'?'이 Mac에서는 팬 제어를 사용할 수 없습니다. 실시간 RPM만 표시합니다.':'Fan control unavailable on this Mac — showing live RPM only.';}
+     if(note){note.style.display='';note.textContent=LANG==='ko'?'이 시스템에서는 팬 제어를 사용할 수 없습니다. 감지 가능한 RPM만 표시합니다.':'Fan control is unavailable on this system; only detected RPM is shown.';}
      var fc=document.getElementById('fan-cards');if(fc)fc.innerHTML='';
      updateFanEmptyState(d);
    }
@@ -6355,10 +6449,10 @@ function updateSetup(d){
       ?(LANG==='ko'?'읽기 전용 팬':'Read-only fans')
       :(LANG==='ko'?'팬 모니터링':'Fan monitoring'));
   var statusDetail=noFans
-    ?(LANG==='ko'?'이 Mac에서 팬 센서를 찾지 못했습니다':'No fan sensors were reported by this Mac')
+    ?(LANG==='ko'?'이 시스템에서 팬 센서를 찾지 못했습니다':'No fan sensors were reported by this system')
     :(readOnly
       ?(LANG==='ko'?'RPM 모니터링만 가능':'RPM monitoring only')
-      :(LANG==='ko'?'이 Mac에서는 RPM 읽기만 지원':'This Mac exposes RPM monitoring only'));
+      :(LANG==='ko'?'이 시스템에서는 RPM 읽기만 지원':'This system exposes RPM monitoring only'));
   if(setup)setup.style.display=fanView?'flex':'none';
   var title=document.getElementById('setup-title');
   if(title){
@@ -6580,8 +6674,8 @@ function updateFanEmptyState(d){
       ?(LANG==='ko'?'팬 센서가 없습니다':'No fan sensors')
       :(LANG==='ko'?'읽기 전용 팬':'Read-only fans');
     if(copy)copy.textContent=noFans
-      ?(LANG==='ko'?'이 Mac에서는 팬 센서를 찾지 못했습니다. CPU, 메모리, 온도, 네트워크 모니터링은 계속됩니다.':'No fan sensors were reported by this Mac. CPU, memory, temperature, and network monitoring continue normally.')
-      :(LANG==='ko'?'팬은 감지됐지만 앱에서 직접 제어할 수 없습니다. 실시간 RPM은 계속 표시됩니다.':'Fans are detected, but this Mac does not expose controllable writes. Live RPM continues to be monitored.');
+      ?(LANG==='ko'?'이 시스템에서는 팬 센서를 찾지 못했습니다. CPU, 메모리, 온도, 네트워크 모니터링은 계속됩니다.':'No fan sensors were reported by this system. CPU, memory, temperature, and network monitoring continue normally.')
+      :(LANG==='ko'?'팬은 감지됐지만 앱에서 직접 제어할 수 없습니다. 실시간 RPM은 계속 표시됩니다.':'Fans are detected, but this system does not expose controllable writes. Live RPM continues to be monitored.');
   }
 }
 function clearChart(id){
@@ -7394,7 +7488,7 @@ mod tests {
         assert!(source.contains(r#"body == "refresh""#));
         assert!(source.contains("CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);"));
         assert!(en.contains(">No fan sensors<"));
-        assert!(en.contains("No fan sensors were reported by this Mac"));
+        assert!(en.contains("No fan sensors were reported by this system"));
         assert!(en.contains("Read-only fans"));
         assert!(en.contains("controllableCount>0"));
         assert!(en.contains(r#"id="profile-strip""#));
@@ -7404,7 +7498,7 @@ mod tests {
         assert!(ko.contains(">배터리<"));
         assert!(ko.contains(">네트워크<"));
         assert!(ko.contains(">팬 센서 없음<"));
-        assert!(ko.contains("이 Mac에서는 팬 센서를 찾지 못했습니다"));
+        assert!(ko.contains("이 시스템에서는 팬 센서를 찾지 못했습니다"));
         assert!(ko.contains("읽기 전용 팬"));
     }
 

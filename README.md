@@ -38,7 +38,7 @@ It combines:
 | Automation | JSON output, local HTTP API, shell completions |
 | Updates | GitHub Release checks from CLI and menu-bar app |
 | Integrity | Installed-app, GitHub release, offline local DMG, and complete release-directory verification for SHA-256, bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |
-| Windows | Basic system metrics; fan/sensor control is planned |
+| Windows | Native tray app plus real CPU, memory, disk, network, process, and battery metrics; hardware temperature/fan access is reported unavailable until a real EC/WMI backend exists |
 
 ## Repository Map
 
@@ -88,7 +88,7 @@ Prebuilt release artifacts live on
 | --- | --- | --- |
 | `PeterFan-vX.Y.Z.dmg` | macOS | `PeterFan.app` and an Applications shortcut |
 | `peterfan-vX.Y.Z-universal-apple-darwin.tar.gz` | macOS | CLI, TUI, daemon, menu-bar binary, and app bundle |
-| `peterfan-vX.Y.Z-x86_64-pc-windows-msvc.zip` | Windows | CLI/TUI/tray binaries where available |
+| `peterfan-vX.Y.Z-x86_64-pc-windows-msvc.zip` | Windows | `PeterFan.exe`, CLI/TUI, per-user installer/uninstaller, and Windows notes |
 
 For macOS, a properly published DMG should be Developer ID signed, notarized,
 and stapled. You can verify a downloaded DMG before installing:
@@ -107,6 +107,25 @@ source=Notarized Developer ID
 If a release asset is rejected by Gatekeeper, prefer building from source or use
 a newer signed release. Maintainers can verify release artifacts with
 [scripts/check-macos-release.sh](./scripts/check-macos-release.sh).
+
+### Windows install
+
+Extract the Windows ZIP, then run the included per-user installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+PeterFan installs to `%LOCALAPPDATA%\Programs\PeterFan`, adds a Start menu
+shortcut, and launches the tray app without administrator approval. The
+Settings screen can enable or disable Start on login. Run `uninstall.ps1` from
+the installed directory to remove the app.
+
+Windows release assets are built by
+[`.github/workflows/windows.yml`](./.github/workflows/windows.yml). The workflow
+runs workspace tests, a real system-metrics JSON smoke test, tray single-instance
+and restart checks, ZIP validation, and then attaches the archive to an existing
+GitHub Release while refreshing `checksums.txt`.
 
 ### One-line install (from source)
 
@@ -311,6 +330,8 @@ scripts/check-macos-release.sh /path/to/PeterFan-vX.Y.Z.dmg
 See [docs/MACOS_DISTRIBUTION.md](./docs/MACOS_DISTRIBUTION.md) for the full
 release-machine model, including which files are public and which stay local in
 Keychain, `.env`, and `private/`.
+See [docs/WINDOWS_DISTRIBUTION.md](./docs/WINDOWS_DISTRIBUTION.md) for Windows
+packaging, installation, CI smoke checks, and release attachment behavior.
 
 Maintainer reminder before every version bump:
 
@@ -323,6 +344,8 @@ Maintainer reminder before every version bump:
   `cargo clippy --workspace --all-targets -- -D warnings`
 - run `scripts/release-local-macos.sh vX.Y.Z` and install-test the DMG from
   `/Applications`
+- confirm the Windows workflow attached
+  `peterfan-vX.Y.Z-x86_64-pc-windows-msvc.zip` and updated `checksums.txt`
 
 ## Project Layout
 
@@ -330,7 +353,7 @@ Maintainer reminder before every version bump:
 peterfan/
 ├── packages/
 │   ├── core/        OS-agnostic types, curves, profiles, licensing
-│   ├── platform/    mock and platform hardware backends
+│   ├── platform/    mock, macOS hardware, Windows read-only, and system-metric backends
 │   ├── cli/         peterfan command-line app
 │   ├── tui/         terminal dashboard
 │   ├── menubar/     macOS menu-bar / Windows tray app

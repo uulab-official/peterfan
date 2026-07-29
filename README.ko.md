@@ -63,7 +63,8 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 | Mock 백엔드(완전히 시뮬레이션된 머신 + 지표) | ✅ 구현 완료 |
 | macOS 하드웨어 정보(`sysctl` 기반 CPU/RAM/OS) | ✅ 실측치, 읽기 전용 |
 | **macOS 온도 & 팬 RPM** | ✅ 실측치 — M3 Pro/Max 메뉴바 상단 온도는 CPU core 평균을 기본값으로 사용합니다. `CPU Hottest`는 hot-core SMC 키(`Tf06`/`Tf16`/`Tf26`/`Tf36`/`Tf46`)도 포함해 상세 목록에 표시합니다. 임계 팬 제어는 mapped core 최고를 우선하며, 고정된 진단용 hotspot 값이 팬을 100%로 오작동시키지 않습니다. 각 후보는 별도 행/진단값으로 노출해서 iStat/Macs Fan Control과 비교할 때 어떤 센서 계열이 다른지 바로 확인 가능. 메뉴바 `전체 센서`와 `peterfan temps --all`은 원시 SMC/IOHID 온도 센서를 `CPU hotspot`, `CPU core hot sensor`, `GPU sensor` 같은 일반 그룹명과 함께 표시 |
-| Windows 온도/팬 정보 읽기(EC) | 🚧 계획 중 |
+| Windows 트레이 앱과 시스템 지표 | ✅ CPU, 메모리, 디스크, 네트워크, 프로세스, 배터리 실측 |
+| Windows 온도/팬 정보 읽기와 제어(EC/WMI) | 🚧 지원 장치가 없으면 사용 불가로 표시하며 가상값을 사용하지 않음 |
 | GPU 사용률 | 🔬 조사 완료 — IOReport 연동 자체는 동작하지만, 노출되는 residency 값이 Activity Monitor의 GPU % 값과 일치하지 않아 부정확한 값을 내보내느니 보류함 ([`docs/RESEARCH.md`](./docs/RESEARCH.md)) |
 | 팬 **제어** | ⚙️ SMC 쓰기, **root 권한 필요** (`sudo peterfan fan set N` 또는 데몬 사용). `fan set`은 **RPM을 다시 읽어들여 검증**하므로 가짜 "성공" 메시지가 아니라 진짜 ✓/✗를 확인할 수 있습니다. Intel에서는 검증 완료, Apple Silicon에서는 시도 및 검증되지만(일부 모델은 펌웨어가 이를 무시할 수 있음) |
 | CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`temps --all`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`integrity`/`config`/`serve`/`benchmark`/`log`/`alert`/`completions`, 전역 `--watch` & `--json` | ✅ 실행 가능 — `doctor`는 CPU 대표/최고/summary/aggregate/hotspot/P-core 온도 후보까지 진단, `integrity`는 설치된 앱의 서명/공증/Gatekeeper 상태를 진단 |
@@ -92,6 +93,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 | --- | --- | --- |
 | `PeterFan-vX.Y.Z.dmg` | `PeterFan.app`과 Applications 바로가기만 포함 | 메뉴바 앱만 필요한 분 — 더블클릭, 드래그, 끝 |
 | `peterfan-vX.Y.Z-universal-apple-darwin.tar.gz` | `peterfan`(CLI), `peterfan-tui`, `peterfan-menubar`, `peterfand`, **그리고** `PeterFan.app` | 개발자 / 스크립팅 목적 / CLI나 TUI도 함께 쓰고 싶은 분 |
+| `peterfan-vX.Y.Z-x86_64-pc-windows-msvc.zip` | `PeterFan.exe`, CLI/TUI, 사용자별 설치·제거 스크립트 | Windows 트레이 앱과 시스템 지표가 필요한 분 |
 
 ```sh
 # .dmg (메뉴바 앱만, 터미널 불필요)
@@ -107,8 +109,17 @@ open PeterFan.app          # 메뉴바 앱
 
 두 형태 모두 같은 방식으로 빌드됩니다 — `.dmg`는 사실 `.tar.gz` 안에 있는 `.app`을
 터미널을 쓰고 싶지 않은 사람들을 위해 일반 디스크 이미지로 다시 포장한 것뿐입니다.
-Windows는 `.zip`으로 제공됩니다(CLI/TUI/메뉴바 바이너리만 포함 — 아직 `.exe`
-설치 프로그램은 없습니다).
+Windows는 `.zip`으로 제공됩니다(CLI/TUI/트레이 앱과 사용자별 설치 스크립트 포함).
+ZIP을 푼 뒤 PowerShell에서 아래 명령을 실행하면 관리자 승인 없이
+`%LOCALAPPDATA%\Programs\PeterFan`에 설치되고 시작 메뉴에 등록됩니다:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+설정 화면의 시작 프로그램 옵션은 현재 사용자 레지스트리만 사용하므로 관리자
+암호가 필요 없습니다. Windows ZIP은 GitHub Actions가 테스트, 실측 JSON 스모크
+검사, 트레이 단일 실행·재시작 검사, 압축 파일 검증을 마친 뒤 릴리스에 첨부합니다.
 
 공식 `.dmg`는 Developer ID로 서명하고 Apple 공증(notarization)과 stapling까지
 마친 뒤 배포합니다. Gatekeeper가 거부한다면 먼저 최신 릴리즈를 다시 받아보고,
