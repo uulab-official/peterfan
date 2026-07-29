@@ -28,6 +28,7 @@ struct Palette {
 
 struct CaseSpec {
     let title: String
+    let view: String
     let language: String
     let palette: Palette
     let isKorean: Bool
@@ -190,6 +191,132 @@ func drawRailIcon(_ index: Int, in rect: NSRect, color: NSColor) {
     path.stroke()
 }
 
+func drawRail(_ spec: CaseSpec, rail: NSRect) {
+    let activeIndex = ["status", "fans", "settings", "system"].firstIndex(of: spec.view) ?? 0
+    for index in 0..<4 {
+        let y = rail.maxY - 50 - CGFloat(index) * 44
+        let fill = index == activeIndex ? spec.palette.accent.withAlphaComponent(spec.isDark ? 0.15 : 0.11) : NSColor.clear
+        rounded(NSRect(x: rail.minX + 5, y: y, width: 40, height: 40), radius: 8, fill: fill)
+        drawRailIcon(
+            index,
+            in: NSRect(x: rail.minX + 15, y: y + 10, width: 20, height: 20),
+            color: index == activeIndex ? spec.palette.accent : spec.palette.dim
+        )
+    }
+}
+
+func drawSectionTitle(_ title: String, pill: String?, y: CGFloat, main: NSRect, palette: Palette) {
+    text(title, NSRect(x: main.minX + 18, y: y, width: 180, height: 17), 11, palette.text, weight: .bold)
+    if let pill {
+        let pillRect = NSRect(x: main.maxX - 77, y: y - 1, width: 59, height: 20)
+        rounded(pillRect, radius: 7, fill: palette.accent.withAlphaComponent(0.12))
+        text(pill, NSRect(x: pillRect.minX, y: pillRect.minY + 5, width: pillRect.width, height: 11), 7.5, palette.accent, weight: .bold, align: .center)
+    }
+}
+
+func drawAuxiliaryView(_ spec: CaseSpec, main: NSRect) {
+    let p = spec.palette
+    let left = main.minX + 18
+    let width = main.width - 36
+    let top = main.maxY - 78
+
+    if spec.view == "fans" {
+        drawSectionTitle(label("Ready", "준비 완료", spec), pill: label("Connected", "연결됨", spec), y: top, main: main, palette: p)
+        text(label("Automatic control is active", "자동 팬 제어가 활성화됨", spec), NSRect(x: left, y: top - 19, width: width, height: 14), 8.5, p.dim)
+        line(from: CGPoint(x: main.minX, y: top - 34), to: CGPoint(x: main.maxX, y: top - 34), color: p.line)
+
+        drawSectionTitle(label("Control mode", "제어 모드", spec), pill: nil, y: top - 62, main: main, palette: p)
+        let profiles = spec.isKorean
+            ? ["자동", "저소음", "균형", "게임", "성능", "최대"]
+            : ["Auto", "Quiet", "Balance", "Game", "Fast", "Max"]
+        let segmentY = top - 132
+        rounded(NSRect(x: left, y: segmentY, width: width, height: 61), radius: 9, fill: p.panel)
+        let segmentWidth = (width - 10) / 3
+        for (index, profile) in profiles.enumerated() {
+            let column = index % 3
+            let row = index / 3
+            let x = left + 4 + CGFloat(column) * (segmentWidth + 1)
+            let y = segmentY + 31 - CGFloat(row) * 28
+            if index == 0 {
+                rounded(NSRect(x: x, y: y, width: segmentWidth - 1, height: 25), radius: 6, fill: p.section)
+            }
+            text(profile, NSRect(x: x, y: y + 7, width: segmentWidth - 1, height: 12), 8, index == 0 ? p.text : p.dim, weight: .semibold, align: .center)
+        }
+
+        let diagnostics = [
+            (label("Curve input", "커브 입력", spec), "61°C"),
+            (label("Safety hottest", "안전 최고", spec), "64°C"),
+            (label("Critical limit", "임계값", spec), "95°C"),
+        ]
+        let diagY = segmentY - 50
+        let diagWidth = width / 3
+        for (index, item) in diagnostics.enumerated() {
+            let x = left + CGFloat(index) * diagWidth
+            if index > 0 {
+                line(from: CGPoint(x: x, y: diagY), to: CGPoint(x: x, y: diagY + 37), color: p.line)
+            }
+            text(item.0, NSRect(x: x + 8, y: diagY + 23, width: diagWidth - 16, height: 11), 7.5, p.dim, weight: .medium)
+            text(item.1, NSRect(x: x + 8, y: diagY + 6, width: diagWidth - 16, height: 14), 10.5, p.text, weight: .bold)
+        }
+        line(from: CGPoint(x: main.minX, y: diagY - 10), to: CGPoint(x: main.maxX, y: diagY - 10), color: p.line)
+
+        let fans = [
+            (label("Left fan", "왼쪽 팬", spec), "2,440 RPM", 0.34),
+            (label("Right fan", "오른쪽 팬", spec), "2,388 RPM", 0.32),
+        ]
+        for (index, fan) in fans.enumerated() {
+            let y = diagY - 69 - CGFloat(index) * 66
+            text(fan.0, NSRect(x: left, y: y + 28, width: 130, height: 14), 9.5, p.text, weight: .semibold)
+            text(fan.1, NSRect(x: main.maxX - 112, y: y + 28, width: 94, height: 14), 9, p.dim, weight: .semibold, align: .right)
+            meter(NSRect(x: left, y: y + 15, width: width, height: 4), value: fan.2, color: p.accent, palette: p)
+            text(label("OS automatic", "시스템 자동", spec), NSRect(x: left, y: y - 2, width: width, height: 12), 8, p.dim)
+        }
+    } else if spec.view == "settings" {
+        drawSectionTitle(label("General", "일반", spec), pill: "PeterFan", y: top, main: main, palette: p)
+        let loginY = top - 54
+        text(label("Start on login", "로그인 시 시작", spec), NSRect(x: left, y: loginY + 14, width: 180, height: 15), 10, p.text, weight: .semibold)
+        rounded(NSRect(x: main.maxX - 73, y: loginY + 8, width: 55, height: 25), radius: 7, fill: p.accent.withAlphaComponent(0.13))
+        text(label("Enabled", "켜짐", spec), NSRect(x: main.maxX - 73, y: loginY + 15, width: 55, height: 12), 8, p.accent, weight: .bold, align: .center)
+        line(from: CGPoint(x: left, y: loginY - 4), to: CGPoint(x: main.maxX - 18, y: loginY - 4), color: p.line)
+        text(label("Fan control health", "팬 제어 상태", spec), NSRect(x: left, y: loginY - 35, width: 190, height: 15), 10, p.text, weight: .semibold)
+        text(label("Ready", "정상", spec), NSRect(x: main.maxX - 80, y: loginY - 35, width: 62, height: 15), 9, p.green, weight: .bold, align: .right)
+
+        line(from: CGPoint(x: main.minX, y: loginY - 58), to: CGPoint(x: main.maxX, y: loginY - 58), color: p.line)
+        drawSectionTitle(label("Updates", "업데이트", spec), pill: label("Current", "최신", spec), y: loginY - 87, main: main, palette: p)
+        let updateRows = [
+            (label("Current version", "현재 버전", spec), "v\(version)"),
+            (label("Latest version", "최신 버전", spec), "v\(version)"),
+            (label("Status", "상태", spec), label("Up to date", "최신 상태", spec)),
+        ]
+        for (index, item) in updateRows.enumerated() {
+            let y = loginY - 124 - CGFloat(index) * 31
+            text(item.0, NSRect(x: left, y: y, width: 160, height: 14), 8.5, p.dim)
+            text(item.1, NSRect(x: main.maxX - 150, y: y, width: 132, height: 14), 8.5, index == 2 ? p.green : p.text, weight: .semibold, align: .right)
+            line(from: CGPoint(x: left, y: y - 8), to: CGPoint(x: main.maxX - 18, y: y - 8), color: p.line)
+        }
+        let buttonY = loginY - 241
+        rounded(NSRect(x: left, y: buttonY, width: 118, height: 30), radius: 7, fill: p.accent.withAlphaComponent(0.15))
+        text(label("Check for updates", "업데이트 확인", spec), NSRect(x: left, y: buttonY + 9, width: 118, height: 13), 8.5, p.accent, weight: .bold, align: .center)
+    } else {
+        drawSectionTitle(label("Hardware", "하드웨어", spec), pill: label("Live", "실시간", spec), y: top, main: main, palette: p)
+        let items: [(String, String, CGFloat, NSColor)] = [
+            (label("Storage", "저장공간", spec), "87.2%", 0.87, p.red),
+            (label("Battery", "배터리", spec), "98%", 0.98, p.green),
+            (label("Network", "네트워크", spec), "1.4 MB/s", 0.42, p.accent),
+            (label("Top process", "상위 프로세스", spec), "PeterFan 4.2%", 0.18, p.yellow),
+        ]
+        for (index, item) in items.enumerated() {
+            let y = top - 70 - CGFloat(index) * 82
+            text(item.0, NSRect(x: left, y: y + 38, width: 150, height: 15), 10, p.text, weight: .semibold)
+            text(item.1, NSRect(x: main.maxX - 140, y: y + 38, width: 122, height: 15), 10, p.text, weight: .bold, align: .right)
+            meter(NSRect(x: left, y: y + 22, width: width, height: 4), value: item.2, color: item.3, palette: p)
+            if index < items.count - 1 {
+                line(from: CGPoint(x: main.minX, y: y - 6), to: CGPoint(x: main.maxX, y: y - 6), color: p.line)
+            }
+        }
+    }
+}
+
 func drawCase(_ spec: CaseSpec, origin: CGPoint) {
     let p = spec.palette
     rounded(NSRect(origin: origin, size: cellSize), radius: 16, fill: p.background, stroke: p.line)
@@ -209,19 +336,32 @@ func drawCase(_ spec: CaseSpec, origin: CGPoint) {
     p.line.setFill()
     NSRect(x: rail.minX, y: rail.minY, width: 1, height: rail.height).fill()
 
-    text("PeterFan", NSRect(x: main.minX + 18, y: main.maxY - 34, width: 110, height: 18), 15, p.text, weight: .bold)
+    let viewTitle = spec.view == "status"
+        ? "PeterFan"
+        : (spec.view == "fans"
+            ? label("Fans", "팬", spec)
+            : (spec.view == "settings" ? label("Settings", "설정", spec) : label("System", "시스템", spec)))
+    text(viewTitle, NSRect(x: main.minX + 18, y: main.maxY - 34, width: 140, height: 18), 15, p.text, weight: .bold)
     let ranges = ["2m", "1h", "1d"]
-    for (index, range) in ranges.enumerated() {
-        let x = main.maxX - 104 + CGFloat(index) * 29
-        let selected = index == 0
-        rounded(
-            NSRect(x: x, y: main.maxY - 36, width: 26, height: 21),
-            radius: 6,
-            fill: selected ? p.accent.withAlphaComponent(spec.isDark ? 0.13 : 0.10) : p.panel
-        )
-        text(range, NSRect(x: x, y: main.maxY - 31, width: 26, height: 11), 8, selected ? p.accent : p.dim, weight: .bold, align: .center)
+    if spec.view == "status" {
+        for (index, range) in ranges.enumerated() {
+            let x = main.maxX - 104 + CGFloat(index) * 29
+            let selected = index == 0
+            rounded(
+                NSRect(x: x, y: main.maxY - 36, width: 26, height: 21),
+                radius: 6,
+                fill: selected ? p.accent.withAlphaComponent(spec.isDark ? 0.13 : 0.10) : p.panel
+            )
+            text(range, NSRect(x: x, y: main.maxY - 31, width: 26, height: 11), 8, selected ? p.accent : p.dim, weight: .bold, align: .center)
+        }
     }
     line(from: CGPoint(x: main.minX, y: main.maxY - 50), to: CGPoint(x: main.maxX, y: main.maxY - 50), color: p.line)
+
+    if spec.view != "status" {
+        drawAuxiliaryView(spec, main: main)
+        drawRail(spec, rail: rail)
+        return
+    }
 
     let summary: [(String, String, CGFloat, NSColor)] = [
         (label("CPU", "CPU", spec), "57%", 0.57, p.green),
@@ -283,25 +423,20 @@ func drawCase(_ spec: CaseSpec, origin: CGPoint) {
         text(sensor.1, NSRect(x: main.maxX - 70, y: y, width: 52, height: 13), 8.5, p.text, weight: .semibold, align: .right)
     }
 
-    for index in 0..<4 {
-        let y = rail.maxY - 50 - CGFloat(index) * 44
-        let fill = index == 0 ? p.accent.withAlphaComponent(spec.isDark ? 0.15 : 0.11) : NSColor.clear
-        rounded(NSRect(x: rail.minX + 5, y: y, width: 40, height: 40), radius: 8, fill: fill)
-        drawRailIcon(index, in: NSRect(x: rail.minX + 15, y: y + 10, width: 20, height: 20), color: index == 0 ? p.accent : p.dim)
-    }
+    drawRail(spec, rail: rail)
 }
 
 image.lockFocus()
 c(18, 20, 24).setFill()
 NSRect(origin: .zero, size: size).fill()
 text("PeterFan Popover Visual QA", NSRect(x: margin, y: size.height - 30, width: 320, height: 18), 14, c(234, 238, 246), weight: .bold)
-text("dark/light · English/Korean · compact product hierarchy", NSRect(x: margin + 230, y: size.height - 30, width: 460, height: 18), 11, c(151, 161, 176))
+text("status · fans · settings · system · dark/light · English/Korean", NSRect(x: margin + 230, y: size.height - 30, width: 520, height: 18), 11, c(151, 161, 176))
 
 let cases = [
-    CaseSpec(title: "Dark / English", language: "en", palette: dark, isKorean: false, isDark: true),
-    CaseSpec(title: "Dark / Korean", language: "ko", palette: dark, isKorean: true, isDark: true),
-    CaseSpec(title: "Light / English", language: "en", palette: light, isKorean: false, isDark: false),
-    CaseSpec(title: "Light / Korean", language: "ko", palette: light, isKorean: true, isDark: false),
+    CaseSpec(title: "Dark / Status / English", view: "status", language: "en", palette: dark, isKorean: false, isDark: true),
+    CaseSpec(title: "Dark / Fans / Korean", view: "fans", language: "ko", palette: dark, isKorean: true, isDark: true),
+    CaseSpec(title: "Light / Settings / English", view: "settings", language: "en", palette: light, isKorean: false, isDark: false),
+    CaseSpec(title: "Light / System / Korean", view: "system", language: "ko", palette: light, isKorean: true, isDark: false),
 ]
 
 for (index, spec) in cases.enumerated() {

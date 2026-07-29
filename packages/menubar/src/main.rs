@@ -4841,10 +4841,12 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Set Up<", ">설정<")
             .replace(">Settings<", ">설정<")
             .replace(">General Settings<", ">일반 설정<")
+            .replace(">General<", ">일반<")
             .replace(">App Preferences<", ">앱 설정<")
             .replace(">Fan Control Health<", ">팬 제어 상태<")
             .replace(">Technical details<", ">기술 정보<")
             .replace(">Hardware Availability<", ">하드웨어 감지 상태<")
+            .replace(">Hardware<", ">하드웨어<")
             .replace(">Daemon<", ">데몬<")
             .replace(">Control Path<", ">제어 경로<")
             .replace(">Last Command<", ">마지막 명령<")
@@ -4941,7 +4943,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
     }
 }
 
-const DASHBOARD_HTML_EN: &str = r##"<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">
+const DASHBOARD_HTML_EN: &str = r##"<!doctype html><html lang="__LANG__"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">
 <style>
 :root{--g:#5dd879;--y:#f4c95d;--r:#ff6b63;--accent:#6ea8ff;--bg:#141517;--text:#f3f4f6;--dim:#969da8;--line:rgba(255,255,255,.085);--panel-bg:#181a1d;--surface:#1e2024;--surface-raised:#25282d;--panel-border:rgba(255,255,255,.11);--chip-bg:rgba(255,255,255,.06);--chip-hover:rgba(110,168,255,.16);--track:rgba(255,255,255,.09);--track-hover:rgba(255,255,255,.075);--shadow:0 18px 46px rgba(0,0,0,.42),0 2px 10px rgba(0,0,0,.26);--content-x:18px;--section-y:16px;--panel-pad:18px;}
 @media (prefers-color-scheme: light){
@@ -5199,6 +5201,32 @@ body:not([data-rail-view="overview"]) .range-tabs .range-tab{display:none;}
 .profile-strip button{min-height:31px;border-radius:7px;}
 .fan-input{padding:7px 8px;border-radius:7px;background:var(--chip-bg);}
 .fan-card{padding:11px 0;}
+.fan-inputs{gap:0;padding:11px 0 12px;border-bottom:1px solid var(--line);}
+.fan-input{padding:0 10px;border:0;border-left:1px solid var(--line);border-radius:0;background:transparent;}
+.fan-input:first-child{padding-left:0;border-left:0;}
+.fan-input:last-child{padding-right:0;}
+.fan-input span{font-size:8.5px;font-weight:650;letter-spacing:0;}
+.fan-input b{margin-top:4px;font-size:11px;}
+.profile-strip{padding:4px;gap:3px;border-radius:9px;background:var(--chip-bg);}
+.profile-strip button{min-height:30px;padding:6px 3px;border:0;border-radius:6px;background:transparent;}
+.profile-strip button:hover{background:var(--track-hover);}
+.profile-strip button.active{border-color:transparent;background:var(--surface-raised);box-shadow:0 1px 4px rgba(0,0,0,.15);color:var(--text);}
+.profile-strip button.active:disabled{opacity:.8;}
+.fan-bar{height:4px;margin-bottom:6px;}
+.fan-seg{padding:2px;border-radius:7px;background:var(--chip-bg);}
+.fan-seg button{padding:3px 7px;border:0;border-radius:5px;background:transparent;}
+.fan-seg button.active{border-color:transparent;background:var(--surface-raised);box-shadow:0 1px 3px rgba(0,0,0,.14);}
+.panel-pill{height:22px;padding:0 8px;border-radius:7px;font-size:9px;}
+.rail-panel .panel-title{font-size:12.5px;font-weight:700;}
+.rail-panel .panel-action{min-height:31px;border-radius:7px;}
+#rail-settings-panel{padding-bottom:6px;}
+#rail-update-panel{border-bottom:0;}
+#rail-more-panel{padding-bottom:14px;}
+.settings-item{min-height:48px;}
+.settings-details{padding:12px 0;}
+.settings-details>summary{min-height:24px;}
+.health-row{min-height:22px;align-items:center;}
+.release-notes-card{border-radius:7px;background:var(--chip-bg);}
 .action-rail{align-self:stretch;gap:4px;padding:10px 5px;border-left:1px solid var(--line);background:var(--panel-bg);}
 .rail-btn{height:40px;border:0;border-radius:8px;transition:background .15s,color .15s,transform .1s;}
 .rail-btn:hover{border-color:transparent;background:var(--chip-hover);}
@@ -5246,7 +5274,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 </div>
 
 <div class="rail-panel" id="rail-settings-panel">
-<div class="panel-title-row"><div class="panel-title">Settings</div><span class="panel-pill info" id="rail-settings-pill">PeterFan</span></div>
+<div class="panel-title-row"><div class="panel-title">General</div><span class="panel-pill info" id="rail-settings-pill">PeterFan</span></div>
 <div class="panel-copy">Manage startup and fan-control safety.</div>
 <div class="settings-list">
 <div class="settings-item" id="startup-setting">
@@ -5299,7 +5327,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 </div>
 
 <div class="rail-panel" id="rail-more-panel">
-<div class="panel-title-row"><div class="panel-title">System</div><span class="panel-pill info" id="rail-more-pill">Live</span></div>
+<div class="panel-title-row"><div class="panel-title">Hardware</div><span class="panel-pill info" id="rail-more-pill">Live</span></div>
 <div class="panel-copy">Storage, battery, network, and active processes.</div>
 <div class="view-loading" id="system-loading" role="status" aria-live="polite" style="display:none"><span class="data-loading-dot"></span><span>Reading system metrics…</span></div>
 <div class="health-card" id="hardware-availability-card" style="display:none">
@@ -7042,6 +7070,9 @@ mod tests {
         let en = dashboard_html(ResolvedLanguage::En, true);
         assert!(en.contains(">Fan control<"));
         assert!(en.contains(">Quit PeterFan<"));
+        assert!(en.contains(r#"<html lang="en">"#));
+        assert!(en.contains(">General<"));
+        assert!(en.contains(">Hardware<"));
         assert!(en.contains("var LANG='en';"));
         assert!(!en.contains("__LANG__"));
         assert!(!en.contains("__SHOWCURVE__"));
@@ -7049,6 +7080,9 @@ mod tests {
         let ko = dashboard_html(ResolvedLanguage::Ko, false);
         assert!(ko.contains(">팬 제어<"));
         assert!(ko.contains(">PeterFan 종료<"));
+        assert!(ko.contains(r#"<html lang="ko">"#));
+        assert!(ko.contains(">일반<"));
+        assert!(ko.contains(">하드웨어<"));
         assert!(ko.contains(">시스템<"));
         assert!(ko.contains(">상세 창 열기<"));
         assert!(ko.contains("저장공간, 배터리, 네트워크"));
