@@ -123,11 +123,10 @@ fi
 
 qa_renderer="$ROOT/scripts/render-popover-qa.swift"
 if [[ -f "$qa_renderer" ]]; then
-  if grep -q 'label("Fans", "팬 제어", spec)' "$qa_renderer" && \
-     grep -q 'label("Settings", "설정", spec)' "$qa_renderer" && \
-     grep -q 'label("System", "시스템", spec)' "$qa_renderer" && \
-     ! grep -q 'label("Update", "업데이트", spec)' "$qa_renderer"; then
-    ok "popover QA renderer matches the current four-item rail"
+  if grep -q 'func drawRailIcon' "$qa_renderer" && \
+     grep -q 'for index in 0..<4' "$qa_renderer" && \
+     grep -q 'railWidth: CGFloat = 50' "$qa_renderer"; then
+    ok "popover QA renderer matches the current four-icon rail"
   else
     fail "popover QA renderer has stale rail actions"
   fi
