@@ -25,7 +25,7 @@ if (Test-Path $Archive) {
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 
 $Binaries = @{
-    "peterfan.exe" = "peterfan.exe"
+    "peterfan.exe" = "peterfan-cli.exe"
     "peterfan-tui.exe" = "peterfan-tui.exe"
     "peterfan-menubar.exe" = "PeterFan.exe"
 }

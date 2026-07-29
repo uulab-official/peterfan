@@ -18,11 +18,11 @@ enable or disable "Start on login" using the current user's registry Run key.
 Included programs
 -----------------
 
-  PeterFan.exe       Windows tray app
-  peterfan.exe       Command-line interface
-  peterfan-tui.exe   Terminal dashboard
-  install.ps1        Per-user installer
-  uninstall.ps1      Per-user uninstaller
+  PeterFan.exe        Windows tray app
+  peterfan-cli.exe    Command-line interface
+  peterfan-tui.exe    Terminal dashboard
+  install.ps1         Per-user installer
+  uninstall.ps1       Per-user uninstaller
 
 Current Windows support
 -----------------------

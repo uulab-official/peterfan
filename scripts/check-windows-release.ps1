@@ -26,7 +26,7 @@ if ($Roots.Count -ne 1) {
 $Root = $Roots[0].FullName
 $Required = @(
     "PeterFan.exe",
-    "peterfan.exe",
+    "peterfan-cli.exe",
     "peterfan-tui.exe",
     "install.ps1",
     "uninstall.ps1",
@@ -40,12 +40,12 @@ foreach ($Name in $Required) {
     }
 }
 
-$CliVersion = & (Join-Path $Root "peterfan.exe") --version
+$CliVersion = & (Join-Path $Root "peterfan-cli.exe") --version
 if ($LASTEXITCODE -ne 0 -or $CliVersion -notmatch [regex]::Escape($ExpectedVersion)) {
     throw "CLI version mismatch: $CliVersion"
 }
 
-$StatusJson = & (Join-Path $Root "peterfan.exe") --json status
+$StatusJson = & (Join-Path $Root "peterfan-cli.exe") --json status
 if ($LASTEXITCODE -ne 0) {
     throw "peterfan --json status failed."
 }

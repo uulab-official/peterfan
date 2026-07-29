@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.51] — Windows 실행 파일 이름 충돌 수정
+
+### Fixed
+
+- 대소문자를 구분하지 않는 Windows 파일시스템에서 트레이 앱 `PeterFan.exe`와 CLI `peterfan.exe`가 서로 덮어쓰던 패키징 오류를 수정했습니다.
+- Windows 배포판의 CLI 이름을 `peterfan-cli.exe`로 고정하고 설치·압축파일 검증도 같은 계약을 확인하도록 보강했습니다.
+
 ## [1.27.50] — Windows 앱 및 릴리스 자동화
 
 ### Added

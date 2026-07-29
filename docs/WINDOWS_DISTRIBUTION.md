@@ -6,7 +6,7 @@ PeterFan ships one x64 Windows archive:
 peterfan-vX.Y.Z-x86_64-pc-windows-msvc.zip
 ```
 
-The archive contains the tray app as `PeterFan.exe`, the `peterfan.exe` CLI,
+The archive contains the tray app as `PeterFan.exe`, the `peterfan-cli.exe` CLI,
 the `peterfan-tui.exe` terminal dashboard, per-user install/uninstall scripts,
 license and changelog files, and Windows-specific support notes.
 

@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $SourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RequiredFiles = @("PeterFan.exe", "peterfan.exe", "peterfan-tui.exe", "uninstall.ps1")
+$RequiredFiles = @("PeterFan.exe", "peterfan-cli.exe", "peterfan-tui.exe", "uninstall.ps1")
 
 foreach ($Name in $RequiredFiles) {
     if (-not (Test-Path (Join-Path $SourceDir $Name) -PathType Leaf)) {
