@@ -46,8 +46,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: windows-x64-v3-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: windows-x64-v3-
+          key: windows-x64-v4-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-x64-v4-
 
       - name: Resolve package version
         id: version

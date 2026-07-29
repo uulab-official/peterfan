@@ -1868,6 +1868,7 @@ mod tests {
         assert_eq!(sensor_sample_freshness(None, 7_001, 2), (None, true));
     }
 
+    #[cfg(unix)]
     #[test]
     fn temps_ipc_exposes_control_health() {
         let shared = test_state();
@@ -2024,6 +2025,7 @@ mod tests {
         assert!(state.fan_readbacks.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn control_revision_is_applied_only_after_hardware_loop_succeeds() {
         STOP.store(false, Ordering::Relaxed);
@@ -2054,6 +2056,7 @@ mod tests {
         assert_eq!(state.applied_control_revision, 2);
     }
 
+    #[cfg(unix)]
     #[test]
     fn cached_control_request_confirms_hardware_write_immediately() {
         let provider = FaultProvider::new(false, false);
@@ -2076,6 +2079,7 @@ mod tests {
         assert!(state.last_control_apply_unix_ms.is_some());
     }
 
+    #[cfg(unix)]
     #[test]
     fn stale_rule_snapshot_cannot_replace_new_manual_profile() {
         let shared = test_state();
@@ -2091,6 +2095,7 @@ mod tests {
         assert_eq!(state.profile, Profile::Performance);
     }
 
+    #[cfg(unix)]
     #[test]
     fn fanhold_succeeds_without_entitlement_gate() {
         let shared = test_state();
@@ -2102,6 +2107,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn fanhold_succeeds_normally() {
         let shared = test_state();
