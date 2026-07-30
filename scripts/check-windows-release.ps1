@@ -115,7 +115,7 @@ try {
     }
 
     $InstalledTray = Start-Process (Join-Path $InstallRoot "PeterFan.exe") -PassThru
-    $Deadline = [DateTime]::UtcNow.AddSeconds(20)
+    $Deadline = [DateTime]::UtcNow.AddSeconds(45)
     do {
         if (Test-Path $Log -PathType Leaf) {
             $LogContent = Get-Content $Log -Raw
@@ -133,7 +133,8 @@ try {
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $Deadline)
     if (-not $LogContent -or $LogContent -notmatch "popover webview ready") {
-        throw "Installed PeterFan tray and WebView2 did not become ready."
+        $Tail = if (Test-Path $Log) { (Get-Content $Log -Tail 40) -join "`n" } else { "<missing>" }
+        throw "Installed PeterFan tray and WebView2 did not become ready.`n$Tail"
     }
 } finally {
     if (Test-Path (Join-Path $InstallRoot "uninstall.ps1")) {

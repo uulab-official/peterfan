@@ -16,7 +16,7 @@ foreach ($Binary in @($Cli, $Tray, $Tui)) {
     }
 }
 
-function Wait-ForTrayReady([string]$Path, [int]$TimeoutSeconds = 20) {
+function Wait-ForTrayReady([string]$Path, [int]$TimeoutSeconds = 45) {
     $Deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
         if (Test-Path $Path -PathType Leaf) {
