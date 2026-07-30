@@ -80,6 +80,8 @@ jobs:
 
       - name: Smoke test unpackaged Windows binaries
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: scripts/smoke-test-windows.ps1 -BinDir "target\x86_64-pc-windows-msvc\release"
 
       - name: Upload workflow artifact

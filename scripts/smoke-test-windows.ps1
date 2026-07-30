@@ -80,7 +80,8 @@ if (
     -not $Update.asset_url -or
     -not $Update.checksum_url
 ) {
-    throw "Windows update metadata did not select the native verified ZIP."
+    $UpdateDetail = $Update | ConvertTo-Json -Depth 5 -Compress
+    throw "Windows update metadata did not select the native verified ZIP: $UpdateDetail"
 }
 
 Remove-Item $Log -Force -ErrorAction SilentlyContinue

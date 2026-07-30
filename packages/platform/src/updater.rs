@@ -277,15 +277,22 @@ pub fn fetch_release_by_tag(tag: &str) -> Result<ReleaseInfo, String> {
 }
 
 fn fetch_release_api(url: &str) -> Result<ReleaseInfo, String> {
-    let out = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "--max-time",
-            "8",
-            "-H",
-            "User-Agent: peterfan-updater",
-            url,
-        ])
+    let mut command = std::process::Command::new("curl");
+    command.args([
+        "-sS",
+        "--fail-with-body",
+        "--max-time",
+        "8",
+        "-H",
+        "Accept: application/vnd.github+json",
+        "-H",
+        "User-Agent: peterfan-updater",
+    ]);
+    if let Some(token) = github_api_token() {
+        command.args(["-H", &format!("Authorization: Bearer {token}")]);
+    }
+    let out = command
+        .arg(url)
         .output()
         .map_err(|e| format!("curl not available: {e}"))?;
     if !out.status.success() {
@@ -296,6 +303,15 @@ fn fetch_release_api(url: &str) -> Result<ReleaseInfo, String> {
         ));
     }
     parse_release_response(&out.stdout)
+}
+
+fn github_api_token() -> Option<String> {
+    ["GITHUB_TOKEN", "GH_TOKEN"].iter().find_map(|name| {
+        std::env::var(name)
+            .ok()
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty())
+    })
 }
 
 fn parse_release_response(body: &[u8]) -> Result<ReleaseInfo, String> {
