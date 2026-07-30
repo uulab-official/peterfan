@@ -92,6 +92,39 @@ impl AlertConfig {
     }
 }
 
+/// Native menu-bar notification preferences.
+///
+/// The daemon's critical-temperature safety notification is intentionally
+/// separate and always enabled. These preferences control earlier,
+/// user-facing warnings from the unprivileged app.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationConfig {
+    /// CPU Core Average threshold. `None` keeps the optional early warning off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature_c: Option<f32>,
+    /// Notify when fan write/readback failure counters increase.
+    pub fan_failures: bool,
+    /// Notify when the silent launch check discovers a newer signed release.
+    pub updates: bool,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            temperature_c: None,
+            fan_failures: true,
+            updates: true,
+        }
+    }
+}
+
+impl NotificationConfig {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Which live metric the menu-bar item shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -313,6 +346,9 @@ pub struct Config {
     /// Alert thresholds for `peterfan alert`.
     #[serde(default, skip_serializing_if = "AlertConfig::is_empty")]
     pub alert: AlertConfig,
+    /// Native menu-bar notifications.
+    #[serde(default, skip_serializing_if = "NotificationConfig::is_default")]
+    pub notifications: NotificationConfig,
     /// Menu-bar item appearance (metric shown + number/cat/both style).
     #[serde(default, skip_serializing_if = "MenubarConfig::is_default")]
     pub menubar: MenubarConfig,
@@ -328,6 +364,7 @@ impl Default for Config {
             custom_curve: None,
             named_curves: BTreeMap::new(),
             alert: AlertConfig::default(),
+            notifications: NotificationConfig::default(),
             menubar: MenubarConfig::default(),
         }
     }
@@ -517,6 +554,25 @@ mod tests {
         assert!(toml.contains("[alert]"));
         let back = Config::from_toml(&toml).unwrap();
         assert_eq!(back.alert.cooldown_secs, 600);
+    }
+
+    #[test]
+    fn notification_config_roundtrips_and_defaults_to_safety_signals() {
+        let cfg = Config::default();
+        assert!(!cfg.to_toml().contains("[notifications]"));
+        assert!(cfg.notifications.fan_failures);
+        assert!(cfg.notifications.updates);
+        assert_eq!(cfg.notifications.temperature_c, None);
+
+        let mut configured = cfg;
+        configured.notifications.temperature_c = Some(82.0);
+        configured.notifications.updates = false;
+        let toml = configured.to_toml();
+        assert!(toml.contains("[notifications]"));
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(back.notifications.temperature_c, Some(82.0));
+        assert!(back.notifications.fan_failures);
+        assert!(!back.notifications.updates);
     }
 
     #[test]

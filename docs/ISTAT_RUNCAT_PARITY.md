@@ -28,7 +28,7 @@ Reference points:
 | Top CPU and memory processes | Sortable list with guarded quit action | Ready |
 | Uptime and system identity | Live uptime; CLI exposes full identity | Ready |
 | GPU utilization history | Temperature only today | Research |
-| User notification rules | CLI alerts exist; native UI rules are pending | Planned |
+| User notification rules | Native CPU-average threshold, fan failure, and signed update alerts; critical daemon safety remains independent | Ready |
 | Weather, clocks, and calendar | Outside PeterFan's hardware-monitor focus | Out of scope |
 
 ## CPU Runner Contract
@@ -45,7 +45,7 @@ Reference points:
 
 ## Next Product Priorities
 
-1. Add native notification rules for temperature, fan failure, and updates.
-2. Add an exportable comparison snapshot for sensor-source troubleshooting.
-3. Research stable GPU utilization sources separately for macOS and Windows.
-4. Validate animation CPU overhead and fan-control stability in the six-hour soak.
+1. Add an exportable comparison snapshot for sensor-source troubleshooting.
+2. Validate animation CPU overhead and fan-control stability in the six-hour soak.
+3. Add a native Reduce Motion policy for the CPU runner.
+4. Research stable GPU utilization sources separately for macOS and Windows.

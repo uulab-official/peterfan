@@ -51,7 +51,8 @@ use tray_icon::{
 use wry::{WebView, WebViewBuilder, RGBA};
 
 use peterfan_core::config::{
-    CustomCurveConfig, Language, MenubarDisplay, ResolvedLanguage, TemperatureSource,
+    CustomCurveConfig, Language, MenubarDisplay, NotificationConfig, ResolvedLanguage,
+    TemperatureSource,
 };
 use peterfan_core::error::CoreError;
 use peterfan_core::metrics::{DiskInfo, ProcSort};
@@ -398,6 +399,12 @@ fn pending_command_key(cmd: &str) -> Option<String> {
     if cmd.starts_with("display:") {
         return Some("menubar-display".to_string());
     }
+    if let Some(setting) = cmd
+        .strip_prefix("notifications:")
+        .and_then(|value| value.split(':').next())
+    {
+        return Some(format!("notifications:{setting}"));
+    }
     if let Some(rest) = cmd.strip_prefix("fanhold:") {
         return rest
             .rsplit_once(':')
@@ -628,6 +635,8 @@ struct App {
     display: MenubarDisplay,
     temperature_source: TemperatureSource,
     critical_temp_c: f32,
+    notifications: NotificationConfig,
+    notification_runtime: NotificationRuntime,
     language: Language,
     tray: Option<TrayIcon>,
     tray_menu: Option<TrayMenu>,
@@ -696,6 +705,74 @@ struct App {
     control_confirm_until: Option<Instant>,
 }
 
+#[derive(Default)]
+struct NotificationRuntime {
+    temperature_warning_active: bool,
+    fan_failure_baseline: Option<u64>,
+}
+
+#[derive(Debug, PartialEq)]
+struct NotificationNotice {
+    title: String,
+    body: String,
+}
+
+fn evaluate_notification_rules(
+    settings: &NotificationConfig,
+    runtime: &mut NotificationRuntime,
+    cpu_average_c: Option<f32>,
+    control_health: &serde_json::Value,
+) -> Vec<NotificationNotice> {
+    let mut notices = Vec::new();
+
+    match (settings.temperature_c, cpu_average_c) {
+        (Some(threshold), Some(value)) if value >= threshold => {
+            if !runtime.temperature_warning_active {
+                notices.push(NotificationNotice {
+                    title: "PeterFan — CPU temperature".to_string(),
+                    body: format!(
+                        "CPU Core Average is {value:.0}°C (warning at {threshold:.0}°C)."
+                    ),
+                });
+            }
+            runtime.temperature_warning_active = true;
+        }
+        (Some(threshold), Some(value)) if value < threshold - 3.0 => {
+            runtime.temperature_warning_active = false;
+        }
+        (None, _) => runtime.temperature_warning_active = false,
+        _ => {}
+    }
+
+    let write_failures = control_health
+        .get("fan_write_failure_count")
+        .and_then(serde_json::Value::as_u64);
+    let readback_failures = control_health
+        .get("fan_readback_failure_count")
+        .and_then(serde_json::Value::as_u64);
+    if write_failures.is_some() || readback_failures.is_some() {
+        let failures = write_failures
+            .unwrap_or(0)
+            .saturating_add(readback_failures.unwrap_or(0));
+        if let Some(previous) = runtime.fan_failure_baseline {
+            if settings.fan_failures && failures > previous {
+                let detail = control_health
+                    .get("last_error")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("Fan control verification failed; check Fan Control Health.");
+                notices.push(NotificationNotice {
+                    title: "PeterFan — fan control needs attention".to_string(),
+                    body: detail.chars().take(180).collect(),
+                });
+            }
+        }
+        runtime.fan_failure_baseline = Some(failures);
+    }
+
+    notices
+}
+
 struct DashboardSlowCache {
     sampled_at: Option<Instant>,
     proc_sort: ProcSort,
@@ -755,6 +832,48 @@ fn save_language(language: Language) {
     let mut cfg = peterfan_platform::config::load();
     cfg.menubar.language = language;
     let _ = peterfan_platform::config::save(&cfg);
+}
+
+fn apply_notification_command(
+    settings: &mut NotificationConfig,
+    command: &str,
+) -> Result<(), String> {
+    if let Some(value) = command.strip_prefix("notifications:temperature:") {
+        settings.temperature_c = if value == "off" {
+            None
+        } else {
+            let threshold = value
+                .parse::<f32>()
+                .map_err(|_| "temperature warning must be a number".to_string())?;
+            if !(50.0..=110.0).contains(&threshold) {
+                return Err("temperature warning must be between 50°C and 110°C".to_string());
+            }
+            Some(threshold)
+        };
+    } else if let Some(value) = command.strip_prefix("notifications:fan-failures:") {
+        settings.fan_failures = match value {
+            "1" => true,
+            "0" => false,
+            _ => return Err("fan failure notification must be on or off".to_string()),
+        };
+    } else if let Some(value) = command.strip_prefix("notifications:updates:") {
+        settings.updates = match value {
+            "1" => true,
+            "0" => false,
+            _ => return Err("update notification must be on or off".to_string()),
+        };
+    } else {
+        return Err("unknown notification setting".to_string());
+    }
+    Ok(())
+}
+
+fn save_notification_settings(settings: &NotificationConfig) -> Result<(), String> {
+    let mut cfg = peterfan_platform::config::load();
+    cfg.notifications = settings.clone();
+    peterfan_platform::config::save(&cfg)
+        .map(|_| ())
+        .map_err(|error| format!("could not save notifications: {error}"))
 }
 
 fn hottest_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
@@ -1590,6 +1709,7 @@ fn main() {
 
     let saved_config = peterfan_platform::config::load();
     let critical_temp_c = saved_config.critical_temp_c;
+    let notifications = saved_config.notifications.clone();
     let saved = saved_config.menubar;
     let display = args
         .iter()
@@ -1624,6 +1744,8 @@ fn main() {
         display,
         temperature_source,
         critical_temp_c,
+        notifications,
+        notification_runtime: NotificationRuntime::default(),
         language,
         tray: None,
         tray_menu: None,
@@ -1871,6 +1993,18 @@ fn main() {
                         save_menubar_display(display);
                         refresh_after_pending = true;
                     }
+                } else if c.starts_with("notifications:") {
+                    match apply_notification_command(&mut app.notifications, c) {
+                        Ok(()) => {
+                            if let Err(error) = save_notification_settings(&app.notifications) {
+                                *STATUS.lock().expect("status poisoned") = error;
+                            }
+                        }
+                        Err(error) => {
+                            *STATUS.lock().expect("status poisoned") = error;
+                        }
+                    }
+                    refresh_after_pending = true;
                 } else if c == "diagnosefan" {
                     *STATUS.lock().expect("status poisoned") = "running fan diagnostics…".into();
                     let provider = std::sync::Arc::clone(&app.provider);
@@ -2422,6 +2556,7 @@ fn build_popover(
                 || body == "toggle-login-item"
                 || body == "togglelogin"
                 || body.starts_with("display:")
+                || body.starts_with("notifications:")
             {
                 enqueue_pending(body);
             } else if body.starts_with("h:") {
@@ -2536,6 +2671,7 @@ fn open_detail_window(
                 || body == "toggle-login-item"
                 || body == "togglelogin"
                 || body.starts_with("display:")
+                || body.starts_with("notifications:")
             {
                 enqueue_pending(body);
             } else if let Some(cmd) = body.strip_prefix("cmd:") {
@@ -3259,6 +3395,21 @@ fn update(app: &mut App) {
         let _ = tray.set_tooltip(Some(tip_parts.join("   ·   ")));
     }
 
+    let notification_health = app
+        .daemon_json_cache
+        .as_ref()
+        .and_then(|value| value.get("control_health").cloned())
+        .unwrap_or_else(|| serde_json::json!({}));
+    for notice in evaluate_notification_rules(
+        &app.notifications,
+        &mut app.notification_runtime,
+        display_temp,
+        &notification_health,
+    ) {
+        log_menubar_event(&format!("native notification: {}", notice.title));
+        post_native_notification(notice.title, notice.body);
+    }
+
     if !app.popover_visible && !detail_visible {
         return;
     }
@@ -3610,6 +3761,11 @@ fn update(app: &mut App) {
         "fan_critical_temp_c": app.critical_temp_c,
         "control_health": control_health,
         "fan_action_log": fan_action_log_snapshot(),
+        "notifications": {
+            "temperature_c": app.notifications.temperature_c,
+            "fan_failures": app.notifications.fan_failures,
+            "updates": app.notifications.updates,
+        },
         "app_version": env!("CARGO_PKG_VERSION"),
         "app_update_status": app_update_status,
         "update_install_result": &app.update_install_result,
@@ -4092,29 +4248,55 @@ fn kill_process(pid: u32) {
 #[cfg(not(any(unix, target_os = "windows")))]
 fn kill_process(_pid: u32) {}
 
-/// Show a desktop notification for a control action triggered from the
-/// right-click menu — those aren't visible in the popover unless it's open,
-/// so without this a failed fan command (e.g. no daemon, needs root) looks
-/// like it silently did nothing.
 #[cfg(target_os = "macos")]
+fn send_native_notification(title: &str, body: &str) {
+    let script = format!(
+        "display notification {} with title {}",
+        applescript_quote(body),
+        applescript_quote(title)
+    );
+    let _ = std::process::Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(script)
+        .status();
+}
+
+#[cfg(target_os = "windows")]
+fn send_native_notification(title: &str, body: &str) {
+    let quote = |value: &str| value.replace('\'', "''");
+    let script = format!(
+        "[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime];\
+         $t=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);\
+         $t.SelectSingleNode('//text[@id=\"1\"]').InnerText='{}';\
+         $t.SelectSingleNode('//text[@id=\"2\"]').InnerText='{}';\
+         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('PeterFan').Show([Windows.UI.Notifications.ToastNotification]::new($t))",
+        quote(title),
+        quote(body)
+    );
+    let _ = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .status();
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn send_native_notification(_title: &str, _body: &str) {}
+
+fn post_native_notification(title: impl Into<String>, body: impl Into<String>) {
+    let title = title.into();
+    let body = body.into();
+    std::thread::spawn(move || send_native_notification(&title, &body));
+}
+
+/// Show a desktop notification for a control action triggered from the
+/// right-click menu — those aren't visible in the popover unless it's open.
 fn notify_control_result(action: &str, ok: bool, result: &str) {
     let title = if ok {
         "PeterFan"
     } else {
         "PeterFan — action needed"
     };
-    let script = format!(
-        "display notification {} with title {}",
-        applescript_quote(result),
-        applescript_quote(&format!("{title} · {action}"))
-    );
-    let _ = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .status();
+    post_native_notification(format!("{title} · {action}"), result.to_string());
 }
-#[cfg(not(target_os = "macos"))]
-fn notify_control_result(_action: &str, _ok: bool, _result: &str) {}
 
 #[cfg(target_os = "macos")]
 fn applescript_quote(s: &str) -> String {
@@ -4494,6 +4676,15 @@ fn check_for_updates_on_launch() {
                 "update available: {} (use Updates to install)",
                 release.version
             );
+            if peterfan_platform::config::load().notifications.updates {
+                post_native_notification(
+                    "PeterFan — update available",
+                    format!(
+                        "PeterFan v{} is ready. Open Settings to install it.",
+                        release.version
+                    ),
+                );
+            }
         } else {
             set_app_update_state("current", Some(&release), None);
         }
@@ -5195,6 +5386,22 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Cat<", ">고양이<")
             .replace(">Both<", ">둘 다<")
             .replace("CPU runner · waiting", "CPU 러너 · 대기 중")
+            .replace(">Notifications<", ">알림<")
+            .replace(">CPU temperature warning<", ">CPU 온도 경고<")
+            .replace(
+                "CPU Core Average · separate from the 90°C safety alert",
+                "CPU 코어 평균 · 90°C 안전 알림과 별도",
+            )
+            .replace(">Fan control failures<", ">팬 제어 실패<")
+            .replace(
+                "Notify when write or RPM verification fails",
+                "쓰기 또는 RPM 검증 실패 시 알림",
+            )
+            .replace(">App updates<", ">앱 업데이트<")
+            .replace(
+                "Notify after the silent launch check finds a release",
+                "백그라운드 확인에서 새 버전 발견 시 알림",
+            )
             .replace(">Load average<", ">로드 평균<")
             .replace(">Power<", ">소비 전력<")
             .replace(">Network rate<", ">네트워크 속도<")
@@ -5535,6 +5742,21 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .settings-details[open]>summary:after{transform:rotate(90deg);}
 .settings-details[open]>summary{margin-bottom:10px;}
 .settings-details>summary .panel-pill{margin-left:auto;}
+.notification-list{display:flex;flex-direction:column;}
+.notification-row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:38px;padding:7px 0;border-top:1px solid var(--line);}
+.notification-row:first-child{border-top:0;}
+.notification-title{color:var(--text);font-size:10.5px;font-weight:700;}
+.notification-copy{margin-top:2px;color:var(--dim);font-size:9px;line-height:1.35;}
+.notification-control{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex:0 0 auto;}
+.notification-threshold{width:50px;height:25px;padding:3px 4px;border:1px solid var(--line);border-radius:5px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;}
+.notification-threshold:disabled{opacity:.45;}
+.notification-threshold:focus{outline:2px solid var(--accent);outline-offset:1px;}
+.notification-unit{color:var(--dim);font-size:9.5px;}
+.notification-toggle{-webkit-appearance:none;appearance:none;position:relative;width:32px;height:18px;border:1px solid var(--line);border-radius:99px;background:var(--track);cursor:pointer;transition:background .15s,border-color .15s;}
+.notification-toggle:after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--dim);transition:transform .15s,background .15s;}
+.notification-toggle:checked{background:var(--accent-medium);border-color:var(--accent-border);}
+.notification-toggle:checked:after{transform:translateX(14px);background:var(--accent);}
+.notification-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
 #fan-action-log-card{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);}
 .sensor-loading{padding:8px 0;color:var(--dim);font-size:10.5px;}
 .health-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
@@ -5730,6 +5952,23 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="runner-pace" id="runner-pace">CPU runner · waiting</div>
 </div>
 </div>
+<details class="settings-details" id="notification-settings">
+<summary><span>Notifications</span><span class="panel-pill info" id="notification-pill">2 on</span></summary>
+<div class="notification-list">
+<div class="notification-row">
+<div><div class="notification-title">CPU temperature warning</div><div class="notification-copy">CPU Core Average · separate from the 90°C safety alert</div></div>
+<div class="notification-control"><input class="notification-threshold" id="notification-temp-threshold" type="number" min="50" max="110" step="1" value="85" disabled onchange="changeTemperatureNotification()"><span class="notification-unit">°C</span><input class="notification-toggle" id="notification-temp-toggle" type="checkbox" aria-label="CPU temperature warning" onchange="toggleTemperatureNotification(this.checked)"></div>
+</div>
+<div class="notification-row">
+<div><div class="notification-title">Fan control failures</div><div class="notification-copy">Notify when write or RPM verification fails</div></div>
+<input class="notification-toggle" id="notification-fan-toggle" type="checkbox" aria-label="Fan control failures" checked onchange="setNotificationBoolean('fan-failures',this.checked)">
+</div>
+<div class="notification-row">
+<div><div class="notification-title">App updates</div><div class="notification-copy">Notify after the silent launch check finds a release</div></div>
+<input class="notification-toggle" id="notification-update-toggle" type="checkbox" aria-label="App updates" checked onchange="setNotificationBoolean('updates',this.checked)">
+</div>
+</div>
+</details>
 <details class="settings-details" id="fan-health-card">
 <summary><span>Fan Control Health</span><span class="panel-pill info" id="health-pill">Ready</span></summary>
 <div class="health-grid">
@@ -6330,6 +6569,7 @@ window.__pf={
  var view=railView();
  CHART_RANGE_LABEL=d.chart_range;
  updateRail(d);
+ updateNotificationSettings(d);
  if(view==='overview'){
    updateHealthVerdict(d);
    set('summary-cpu',d.cpu_text||'—');
@@ -6785,6 +7025,44 @@ function toggleStartupItem(btn){
       if(window.__pf&&window.__pf_pending)updateSetup(window.__pf_pending);
     }
   },2500);
+}
+function notificationThreshold(){
+  var input=document.getElementById('notification-temp-threshold');
+  var value=input?Math.round(Number(input.value||85)):85;
+  return Math.max(50,Math.min(110,isFinite(value)?value:85));
+}
+function toggleTemperatureNotification(enabled){
+  var input=document.getElementById('notification-temp-threshold');
+  if(input)input.disabled=!enabled;
+  window.ipc.postMessage('notifications:temperature:'+(enabled?notificationThreshold():'off'));
+}
+function changeTemperatureNotification(){
+  var toggle=document.getElementById('notification-temp-toggle');
+  var input=document.getElementById('notification-temp-threshold');
+  var value=notificationThreshold();
+  if(input)input.value=String(value);
+  if(toggle&&toggle.checked)window.ipc.postMessage('notifications:temperature:'+value);
+}
+function setNotificationBoolean(kind,enabled){
+  window.ipc.postMessage('notifications:'+kind+':'+(enabled?'1':'0'));
+}
+function updateNotificationSettings(d){
+  var settings=d.notifications||{};
+  var threshold=Number(settings.temperature_c);
+  var temperatureEnabled=isFinite(threshold)&&threshold>=50&&threshold<=110;
+  var temperatureToggle=document.getElementById('notification-temp-toggle');
+  var temperatureInput=document.getElementById('notification-temp-threshold');
+  if(temperatureToggle)temperatureToggle.checked=temperatureEnabled;
+  if(temperatureInput){
+    temperatureInput.disabled=!temperatureEnabled;
+    if(temperatureEnabled)temperatureInput.value=String(Math.round(threshold));
+  }
+  var fanToggle=document.getElementById('notification-fan-toggle');
+  var updateToggle=document.getElementById('notification-update-toggle');
+  if(fanToggle)fanToggle.checked=settings.fan_failures!==false;
+  if(updateToggle)updateToggle.checked=settings.updates!==false;
+  var enabled=(temperatureEnabled?1:0)+(settings.fan_failures!==false?1:0)+(settings.updates!==false?1:0);
+  setPanelPill('notification-pill',LANG==='ko'?(enabled+'개 켬'):(enabled+' on'),enabled?'info':'');
 }
 function setSetupMenuOpen(open){
   var menu=document.getElementById('setup-menu');
@@ -7589,6 +7867,75 @@ mod tests {
     }
 
     #[test]
+    fn notification_temperature_rule_uses_hysteresis_and_does_not_repeat() {
+        let settings = NotificationConfig {
+            temperature_c: Some(80.0),
+            ..NotificationConfig::default()
+        };
+        let mut runtime = NotificationRuntime::default();
+        let health = serde_json::json!({});
+
+        let first = evaluate_notification_rules(&settings, &mut runtime, Some(82.0), &health);
+        assert_eq!(first.len(), 1);
+        assert!(first[0].body.contains("82°C"));
+        assert!(
+            evaluate_notification_rules(&settings, &mut runtime, Some(84.0), &health).is_empty()
+        );
+        assert!(
+            evaluate_notification_rules(&settings, &mut runtime, Some(78.0), &health).is_empty()
+        );
+        assert!(
+            evaluate_notification_rules(&settings, &mut runtime, Some(76.0), &health).is_empty()
+        );
+
+        let retriggered = evaluate_notification_rules(&settings, &mut runtime, Some(81.0), &health);
+        assert_eq!(retriggered.len(), 1);
+    }
+
+    #[test]
+    fn notification_fan_rule_baselines_then_reports_new_failures() {
+        let settings = NotificationConfig::default();
+        let mut runtime = NotificationRuntime::default();
+        assert!(
+            evaluate_notification_rules(&settings, &mut runtime, None, &serde_json::json!({}))
+                .is_empty()
+        );
+        assert_eq!(runtime.fan_failure_baseline, None);
+
+        let initial = serde_json::json!({
+            "fan_write_failure_count": 2,
+            "fan_readback_failure_count": 1,
+        });
+        assert!(evaluate_notification_rules(&settings, &mut runtime, None, &initial).is_empty());
+
+        let failed = serde_json::json!({
+            "fan_write_failure_count": 3,
+            "fan_readback_failure_count": 1,
+            "last_error": "RPM verification timed out",
+        });
+        let notices = evaluate_notification_rules(&settings, &mut runtime, None, &failed);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].body.contains("RPM verification timed out"));
+        assert!(evaluate_notification_rules(&settings, &mut runtime, None, &failed).is_empty());
+    }
+
+    #[test]
+    fn notification_commands_validate_and_update_preferences() {
+        let mut settings = NotificationConfig::default();
+        apply_notification_command(&mut settings, "notifications:temperature:82").unwrap();
+        apply_notification_command(&mut settings, "notifications:fan-failures:0").unwrap();
+        apply_notification_command(&mut settings, "notifications:updates:0").unwrap();
+        assert_eq!(settings.temperature_c, Some(82.0));
+        assert!(!settings.fan_failures);
+        assert!(!settings.updates);
+
+        apply_notification_command(&mut settings, "notifications:temperature:off").unwrap();
+        assert_eq!(settings.temperature_c, None);
+        assert!(apply_notification_command(&mut settings, "notifications:temperature:49").is_err());
+        assert!(apply_notification_command(&mut settings, "notifications:updates:maybe").is_err());
+    }
+
+    #[test]
     fn background_read_never_starts_duplicate_hardware_calls() {
         let state = Arc::new(BackgroundRead::<u8>::default());
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
@@ -8219,6 +8566,30 @@ mod tests {
         assert!(en.contains("setPanelPill('rail-settings-pill'"));
         assert!(en.contains("setPanelPill('rail-more-pill'"));
         assert!(en.contains("function setPanelPill(id,text,tone)"));
+    }
+
+    #[test]
+    fn settings_panel_exposes_persistent_native_notification_rules() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+
+        for id in [
+            "notification-settings",
+            "notification-temp-toggle",
+            "notification-temp-threshold",
+            "notification-fan-toggle",
+            "notification-update-toggle",
+        ] {
+            assert!(en.contains(&format!(r#"id="{id}""#)));
+        }
+        assert!(en.contains("function updateNotificationSettings(d)"));
+        assert!(en.contains("updateNotificationSettings(d);"));
+        assert!(en.contains("notifications:temperature:"));
+        assert!(en.contains("notifications:'+kind+':"));
+        assert!(ko.contains(">알림<"));
+        assert!(ko.contains(">CPU 온도 경고<"));
+        assert!(ko.contains(">팬 제어 실패<"));
+        assert!(ko.contains(">앱 업데이트<"));
     }
 
     #[test]

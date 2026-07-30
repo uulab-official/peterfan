@@ -127,7 +127,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] System quick facts for load average, power, network rate, and uptime
 - [x] Per-core CPU detail with Apple Silicon efficiency/performance grouping
 - [ ] GPU utilization backend where public platform APIs provide a stable value
-- [ ] User-configurable temperature and fan-failure notifications
+- [x] User-configurable CPU-average, fan-failure, and update notifications
 - [ ] Exportable diagnostics snapshot for comparing readings across monitors
 
 ### v1.29 — Distribution & Updates
@@ -150,7 +150,8 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [ ] Rule editor in the detail window: battery, AC power, time, CPU temp
 - [x] Per-profile curve previews in the popover
 - [ ] Import/export config from the UI
-- [ ] Notifications for critical temperature, fan command failures, and updates
+- [x] Native notifications for optional CPU-average warnings, fan command
+      failures, and updates; the critical daemon safety alert remains mandatory
 - [ ] "Quiet on battery, performance on AC" preset
 
 ### v1.32 — Power-User Surfaces

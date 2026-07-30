@@ -35,6 +35,7 @@ It combines:
 | macOS sensors | The menu-bar headline temperature defaults to CPU Core Average, while CPU Hottest, SMC summary/aggregate diagnostics, IOHID tdie, SSD and battery temperature, fan RPM, and the full SMC/IOHID inventory remain visible in the detailed lists |
 | Fan control | Manual fan setting, profiles, editable curves, daemon-driven persistent control |
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
+| Notifications | Optional CPU Core Average threshold, fan write/readback failure alerts, and signed update availability; the daemon's 90°C safety alert remains independent |
 | Automation | JSON output, local HTTP API, shell completions |
 | Updates | Explicit update check and install actions in the menu-bar app, plus CLI updates; signed release assets are verified before replacement and relaunch |
 | Integrity | Installed-app, GitHub release, offline local DMG, and complete release-directory verification for SHA-256, bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |

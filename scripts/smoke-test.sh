@@ -334,9 +334,12 @@ if [[ "$(uname)" == "Darwin" ]]; then
     "$PETERFAN_MENUBAR" --mock >/dev/null 2>&1 &
     mb_pid=$!
     sleep 2
-    if pgrep -f osascript >/dev/null; then
+    # Other running apps, including the real PeterFan instance, may post an
+    # unrelated native notification through osascript while this check runs.
+    # Only a child of the mock process can be a mock-mode setup regression.
+    if pgrep -P "$mb_pid" -x osascript >/dev/null; then
         fail "peterfan-menubar --mock spawned osascript (would pop a real dialog / trigger a real privileged install)"
-        pkill -f osascript 2>/dev/null
+        pkill -P "$mb_pid" -x osascript 2>/dev/null
     else
         pass "peterfan-menubar --mock (no osascript spawned)"
     fi
