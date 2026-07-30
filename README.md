@@ -36,7 +36,7 @@ It combines:
 | Fan control | Manual fan setting, profiles, editable curves, daemon-driven persistent control |
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
 | Automation | JSON output, local HTTP API, shell completions |
-| Updates | GitHub Release checks from CLI and menu-bar app |
+| Updates | Explicit update check and install actions in the menu-bar app, plus CLI updates; signed release assets are verified before replacement and relaunch |
 | Integrity | Installed-app, GitHub release, offline local DMG, and complete release-directory verification for SHA-256, bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |
 | Windows | Native tray app plus real CPU, memory, disk, network, process, and battery metrics; firmware ACPI thermal zones are shown as system temperatures when available, while CPU-core temperature and fan access remain explicitly unsupported |
 

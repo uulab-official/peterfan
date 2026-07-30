@@ -256,6 +256,30 @@ pub struct ReleaseInfo {
     pub checksum_digest: Option<String>,
 }
 
+/// Return true only when the release exposes every artifact needed by the
+/// verified in-app updater. Keeping this check beside the installer prevents
+/// callers from presenting an install action that is guaranteed to fail.
+pub fn is_installable_release(release: &ReleaseInfo) -> bool {
+    let common_ready = release.asset_url.is_some()
+        && release.asset_name.is_some()
+        && release.asset_digest.is_some()
+        && release.checksum_url.is_some()
+        && release.checksum_digest.is_some();
+
+    #[cfg(target_os = "windows")]
+    {
+        common_ready
+            && release
+                .asset_name
+                .as_deref()
+                .is_some_and(is_windows_archive)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        common_ready
+    }
+}
+
 /// Query the GitHub API for the latest release. `Err` covers network
 /// failure, missing `curl`, and unexpected response shapes alike — callers
 /// treat "couldn't check" and "nothing to report" the same way.
@@ -1978,6 +2002,39 @@ mod tests {
     fn is_newer_treats_missing_components_as_zero() {
         assert!(!is_newer("1.13", "1.13.0"));
         assert!(is_newer("1.13", "1.13.1"));
+    }
+
+    #[test]
+    fn installable_release_requires_the_complete_verified_asset_set() {
+        let mut release = ReleaseInfo {
+            version: "1.27.60".into(),
+            tag: "v1.27.60".into(),
+            html_url: "https://example.com/release".into(),
+            notes: String::new(),
+            asset_url: Some("https://example.com/PeterFan-v1.27.60.dmg".into()),
+            asset_name: Some(
+                if cfg!(target_os = "windows") {
+                    "peterfan-v1.27.60-x86_64-pc-windows-msvc.zip"
+                } else {
+                    "PeterFan-v1.27.60.dmg"
+                }
+                .into(),
+            ),
+            asset_digest: Some("a".repeat(64)),
+            archive_url: None,
+            dmg_url: None,
+            windows_url: None,
+            checksum_url: Some("https://example.com/checksums.txt".into()),
+            checksum_name: Some("checksums.txt".into()),
+            checksum_digest: Some("b".repeat(64)),
+        };
+
+        assert!(is_installable_release(&release));
+        release.checksum_digest = None;
+        assert!(!is_installable_release(&release));
+        release.checksum_digest = Some("b".repeat(64));
+        release.asset_digest = None;
+        assert!(!is_installable_release(&release));
     }
 
     #[test]
