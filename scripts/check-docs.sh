@@ -132,6 +132,16 @@ if [[ -f "$qa_renderer" ]]; then
   fi
 fi
 
+if grep -q 'needs: \[release-notes, package-macos, build-windows\]' \
+     "$ROOT/.github/workflows/release.yml" && \
+   grep -q 'MicrosoftEdgeWebview2Setup.exe' "$ROOT/scripts/package-windows.ps1" && \
+   grep -q 'popover webview ready' "$ROOT/scripts/smoke-test-windows.ps1" && \
+   grep -q 'wait_for_windows_asset' "$ROOT/scripts/release-local-macos.sh"; then
+  ok "Windows install and release gates are wired into both release paths"
+else
+  fail "Windows install or release gate is incomplete"
+fi
+
 echo
 if [[ "$FAILED" -eq 0 ]]; then
   ok "docs are ready"

@@ -4,8 +4,9 @@ name: Release
 # 공식 macOS 릴리스는 로컬 Developer ID와 Keychain 공증 프로필을 사용하는
 # scripts/release-local-macos.sh가 게시한다. 이 워크플로는 CI signing secrets를
 # 별도로 구성한 경우에만 사용하는 명시적 대체 경로다.
-# Windows 빌드와 기존 릴리스 첨부는 windows.yml이 독립적으로 담당한다.
-# Universal macOS 바이너리(arm64+x86_64 lipo), SHA256 체크섬, CHANGELOG 자동 추출 포함.
+# Windows x64도 같은 실행에서 실제 설치/트레이/WebView2 검증을 통과해야
+# 공개 릴리스가 생성된다. Universal macOS 바이너리(arm64+x86_64 lipo),
+# Windows ZIP, SHA256 체크섬, CHANGELOG 자동 추출 포함.
 #
 # Actions 탭 → Release → Run workflow에서 이미 존재하는 태그를 입력한다.
 
@@ -59,7 +60,67 @@ jobs:
             echo "EOF_NOTES"
           } >> "$GITHUB_OUTPUT"
 
-  # ── 2. macOS Apple Silicon ─────────────────────────────────────────────────
+  # ── 2. Windows x64: test, install, launch, package ─────────────────────────
+  build-windows:
+    name: Build and verify Windows x64
+    needs: release-notes
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-windows-x64-v5-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: release-windows-x64-v5-
+
+      - name: Test workspace
+        run: cargo test --workspace --all-features --target x86_64-pc-windows-msvc
+
+      - name: Build release binaries
+        run: cargo build --workspace --release --target x86_64-pc-windows-msvc
+
+      - name: Resolve package version
+        id: version
+        shell: pwsh
+        run: |
+          $Metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $Version = ($Metadata.packages | Where-Object name -eq "peterfan-menubar").version
+          if ("v$Version" -ne "${{ needs.release-notes.outputs.version }}") {
+            throw "Cargo version v$Version does not match release tag ${{ needs.release-notes.outputs.version }}."
+          }
+          "version=$Version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Package Windows release
+        id: package
+        shell: pwsh
+        run: scripts/package-windows.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - name: Verify packaged install lifecycle
+        shell: pwsh
+        run: scripts/check-windows-release.ps1 -Archive "${{ steps.package.outputs.archive }}" -ExpectedVersion "${{ steps.version.outputs.version }}"
+
+      - name: Smoke test unpackaged Windows binaries
+        shell: pwsh
+        run: scripts/smoke-test-windows.ps1 -BinDir "target\x86_64-pc-windows-msvc\release"
+
+      - name: Upload verified Windows archive
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-windows-x64
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+  # ── 3. macOS Apple Silicon ─────────────────────────────────────────────────
   build-macos-arm:
     name: Build macOS arm64
     runs-on: macos-14
@@ -90,7 +151,7 @@ jobs:
             target/aarch64-apple-darwin/release/peterfan-menubar
             target/aarch64-apple-darwin/release/peterfand
 
-  # ── 3. macOS Intel ─────────────────────────────────────────────────────────
+  # ── 4. macOS Intel ─────────────────────────────────────────────────────────
   # Cross-compiled from an Apple Silicon runner — macos-13 (Intel-hosted)
   # sat queued with no runner ever picking it up (macos-14 jobs in the same
   # run started within seconds), which silently blocked every release from
@@ -127,7 +188,7 @@ jobs:
             target/x86_64-apple-darwin/release/peterfan-menubar
             target/x86_64-apple-darwin/release/peterfand
 
-  # ── 4. Universal macOS 바이너리 + .app 번들 ───────────────────────────────
+  # ── 5. Universal macOS 바이너리 + .app 번들 ───────────────────────────────
   package-macos:
     name: Package macOS Universal
     needs: [release-notes, build-macos-arm, build-macos-x86]
@@ -249,7 +310,7 @@ jobs:
       - name: Keep only verified macOS .dmg
         shell: bash
         run: |
-          DMG=$(ls dist/PeterFan-*.dmg 2>/dev/null | head -n 1 || true)
+          DMG=$(find dist -maxdepth 1 -name 'PeterFan-*.dmg' -print -quit)
           if [[ -z "$DMG" ]]; then
             exit 0
           fi
@@ -273,10 +334,10 @@ jobs:
           path: dist/PeterFan-*.dmg
           if-no-files-found: ignore
 
-  # ── 5. GitHub Release 생성 + 체크섬 첨부 ─────────────────────────────────
+  # ── 6. 검증된 macOS + Windows 자산으로 GitHub Release 생성 ────────────────
   publish:
     name: Publish GitHub Release
-    needs: [release-notes, package-macos]
+    needs: [release-notes, package-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

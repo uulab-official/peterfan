@@ -1,16 +1,15 @@
 name: Windows
+run-name: Windows ${{ inputs.tag || github.ref_name }}
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to build and attach (for example v1.27.50)"
+        description: "Existing draft or published release tag to build and attach"
         required: false
         type: string
 
@@ -23,7 +22,7 @@ env:
 jobs:
   build-test-package:
     name: Build, test, and package Windows x64
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Resolve source ref
         id: source
@@ -70,10 +69,6 @@ jobs:
       - name: Build release binaries
         run: cargo build --workspace --release --target x86_64-pc-windows-msvc
 
-      - name: Smoke test Windows binaries
-        shell: pwsh
-        run: scripts/smoke-test-windows.ps1 -BinDir "target\x86_64-pc-windows-msvc\release"
-
       - name: Package Windows release
         id: package
         shell: pwsh
@@ -83,6 +78,10 @@ jobs:
         shell: pwsh
         run: scripts/check-windows-release.ps1 -Archive "${{ steps.package.outputs.archive }}" -ExpectedVersion "${{ steps.version.outputs.version }}"
 
+      - name: Smoke test unpackaged Windows binaries
+        shell: pwsh
+        run: scripts/smoke-test-windows.ps1 -BinDir "target\x86_64-pc-windows-msvc\release"
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v6
         with:
@@ -91,7 +90,7 @@ jobs:
           if-no-files-found: error
 
       - name: Attach to GitHub Release
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

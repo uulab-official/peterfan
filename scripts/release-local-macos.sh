@@ -7,7 +7,7 @@
 # uploaded to GitHub Releases via `gh`.
 #
 # Usage:
-#   scripts/release-local-macos.sh v1.26.9 [--draft] [--no-notarize] [--no-upload]
+#   scripts/release-local-macos.sh v1.26.9 [--draft] [--no-notarize] [--no-upload] [--skip-windows]
 #
 # Recommended one-time notary setup:
 #   xcrun notarytool store-credentials peterfan-notary \
@@ -23,6 +23,7 @@ TAG=""
 DRAFT=0
 NOTARIZE=1
 UPLOAD=1
+WINDOWS=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -38,19 +39,23 @@ while [[ $# -gt 0 ]]; do
       UPLOAD=0
       shift
       ;;
+    --skip-windows)
+      WINDOWS=0
+      shift
+      ;;
     v*)
       TAG="$1"
       shift
       ;;
     *)
-      echo "usage: scripts/release-local-macos.sh vX.Y.Z [--draft] [--no-notarize] [--no-upload]" >&2
+      echo "usage: scripts/release-local-macos.sh vX.Y.Z [--draft] [--no-notarize] [--no-upload] [--skip-windows]" >&2
       exit 2
       ;;
   esac
 done
 
 if [[ -z "$TAG" ]]; then
-  echo "usage: scripts/release-local-macos.sh vX.Y.Z [--draft] [--no-notarize] [--no-upload]" >&2
+  echo "usage: scripts/release-local-macos.sh vX.Y.Z [--draft] [--no-notarize] [--no-upload] [--skip-windows]" >&2
   exit 2
 fi
 
@@ -212,6 +217,11 @@ if ! gh auth status >/dev/null 2>&1; then
   echo "error: gh is not authenticated. Run: gh auth login" >&2
   exit 1
 fi
+if [[ "$WINDOWS" == "1" ]] && ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+  echo "error: tag $TAG is not available on origin; Windows Actions cannot check it out." >&2
+  echo "       Push the release commit and tag before running this script." >&2
+  exit 1
+fi
 
 NOTES=$(awk "/^## \\[$VER\\]/{found=1; next} found && /^## \\[/{exit} found{print}" CHANGELOG.md)
 if [[ -z "$NOTES" ]]; then
@@ -220,29 +230,84 @@ fi
 NOTES_FILE="$OUT_ROOT/release-notes.md"
 printf '%s\n' "$NOTES" > "$NOTES_FILE"
 
+RELEASE_EXISTED=0
+RELEASE_WAS_DRAFT=0
 if gh release view "$TAG" >/dev/null 2>&1; then
+  RELEASE_EXISTED=1
+  if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" == "true" ]]; then
+    RELEASE_WAS_DRAFT=1
+  fi
   gh release upload "$TAG" \
     "$OUT_ROOT/${NAME}.tar.gz" \
     "$DMG" \
     "$OUT_ROOT/checksums.txt" \
     --clobber
 else
-  if [[ "$DRAFT" == "1" ]]; then
-    gh release create "$TAG" \
-      "$OUT_ROOT/${NAME}.tar.gz" \
-      "$DMG" \
-      "$OUT_ROOT/checksums.txt" \
-      --title "PeterFan $TAG" \
-      --notes-file "$NOTES_FILE" \
-      --draft
-  else
-    gh release create "$TAG" \
-      "$OUT_ROOT/${NAME}.tar.gz" \
-      "$DMG" \
-      "$OUT_ROOT/checksums.txt" \
-      --title "PeterFan $TAG" \
-      --notes-file "$NOTES_FILE"
-  fi
+  # Keep a new release private until Windows has built, installed, launched,
+  # and attached its verified archive. This prevents a public release from
+  # briefly offering only the macOS files.
+  gh release create "$TAG" \
+    "$OUT_ROOT/${NAME}.tar.gz" \
+    "$DMG" \
+    "$OUT_ROOT/checksums.txt" \
+    --title "PeterFan $TAG" \
+    --notes-file "$NOTES_FILE" \
+    --verify-tag \
+    --draft
+  RELEASE_WAS_DRAFT=1
 fi
 
-echo "Uploaded GitHub Release assets for $TAG"
+wait_for_windows_asset() {
+  local asset="peterfan-${TAG}-x86_64-pc-windows-msvc.zip"
+  local run_id=""
+  local deadline=$((SECONDS + 2700))
+
+  while (( SECONDS < deadline )); do
+    if gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fxq "$asset"; then
+      echo "Windows release asset verified and attached: $asset"
+      return 0
+    fi
+
+    run_id=$(gh run list \
+      --workflow windows.yml \
+      --event workflow_dispatch \
+      --limit 20 \
+      --json databaseId,displayTitle \
+      --jq ".[] | select(.displayTitle == \"Windows $TAG\") | .databaseId" \
+      | head -n 1)
+    if [[ -n "$run_id" ]]; then
+      local run_json
+      run_json=$(gh run view "$run_id" --json status,conclusion,url)
+      local status conclusion url
+      status=$(jq -r .status <<<"$run_json")
+      conclusion=$(jq -r '.conclusion // ""' <<<"$run_json")
+      url=$(jq -r .url <<<"$run_json")
+      echo "Windows workflow: ${status}${conclusion:+/$conclusion} $url"
+      if [[ "$status" == "completed" && "$conclusion" != "success" ]]; then
+        echo "error: Windows release workflow failed for $TAG" >&2
+        return 1
+      fi
+    else
+      echo "Waiting for Windows workflow to start for $TAG..."
+    fi
+    sleep 10
+  done
+
+  echo "error: timed out waiting for the Windows release asset for $TAG" >&2
+  return 1
+}
+
+if [[ "$WINDOWS" == "1" ]]; then
+  echo "Dispatching native Windows build and install verification..."
+  gh workflow run windows.yml --ref main -f "tag=$TAG"
+  wait_for_windows_asset
+fi
+
+if [[ "$DRAFT" == "1" ]]; then
+  echo "Uploaded and verified release assets for draft $TAG"
+elif [[ "$RELEASE_EXISTED" == "0" || "$RELEASE_WAS_DRAFT" == "1" ]]; then
+  gh release edit "$TAG" --draft=false --latest
+  echo "Published complete macOS + Windows GitHub Release $TAG"
+else
+  echo "Updated complete macOS + Windows GitHub Release $TAG"
+fi

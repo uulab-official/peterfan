@@ -8,25 +8,28 @@ peterfan-vX.Y.Z-x86_64-pc-windows-msvc.zip
 
 The archive contains the tray app as `PeterFan.exe`, the `peterfan-cli.exe` CLI,
 the `peterfan-tui.exe` terminal dashboard, per-user install/uninstall scripts,
-license and changelog files, and Windows-specific support notes.
+the Microsoft-signed WebView2 Evergreen bootstrapper, license and changelog
+files, and Windows-specific support notes.
 
 ## Build and test
 
 The [Windows workflow](../.github/workflows/windows.yml) runs on
-`windows-latest` for pushes, pull requests, published releases, and manual
-dispatches. It performs:
+`windows-2022` for pushes, pull requests, and manual release dispatches. It
+performs:
 
 1. Workspace tests against `x86_64-pc-windows-msvc`.
 2. Release compilation for the full workspace.
 3. Real CPU and memory JSON smoke checks.
-4. Tray startup, duplicate-launch rejection, exit, and restart checks.
-5. ZIP packaging and extraction-based validation.
-6. Workflow artifact upload.
-7. GitHub Release attachment and shared checksum refresh for release runs.
+4. Native tray and WebView2 creation, duplicate-launch rejection, exit, and restart checks.
+5. ZIP packaging and Microsoft Authenticode validation of the WebView2 bootstrapper.
+6. Per-user install, Start menu, start-on-login, installed-app launch, and uninstall checks.
+7. Workflow artifact upload or draft GitHub Release attachment and shared checksum refresh.
 
-The macOS release remains locally signed and notarized. Publishing a macOS
-release triggers the Windows workflow through the GitHub `release.published`
-event, so Windows does not need access to Apple signing material.
+The macOS release remains locally signed and notarized. The local release
+script creates a draft, dispatches this Windows workflow, waits for the verified
+ZIP, and only then publishes. The CI release workflow similarly requires both
+platform jobs before it creates the GitHub Release, so Windows never needs
+access to Apple signing material.
 
 ## Install model
 
@@ -40,6 +43,11 @@ It creates a Start menu shortcut and can optionally enable Start on login. The
 app's Settings screen controls the same current-user Run registry value. No
 administrator approval is required.
 
+PeterFan's popover uses Microsoft Edge WebView2. Windows 11 includes the
+Evergreen Runtime and most Windows 10 systems already have it. The installer
+checks Microsoft's documented registry locations and runs the bundled,
+Microsoft-signed bootstrapper only when the runtime is absent.
+
 ## Hardware scope
 
 The Windows build uses real cross-platform system metrics for CPU, memory,
@@ -50,6 +58,6 @@ back to simulated sensors.
 
 ## Manual release recovery
 
-If the `release.published` event did not attach the Windows ZIP, run the
-Windows workflow manually with the existing tag. The workflow verifies that
-the tag and Cargo version match before uploading or changing checksums.
+To rebuild or repair an existing release asset, run the Windows workflow
+manually with the existing tag. The workflow verifies that the tag and Cargo
+version match before uploading or changing checksums.

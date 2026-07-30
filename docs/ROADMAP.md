@@ -30,7 +30,8 @@ working product map we use to decide what to polish next.
       hottest, aggregate, summary, and raw sensors remain separate diagnostics
 - [x] SMC fan RPM, fan control, per-fan manual pins, and auto restore
 - [x] RunCat-style compact popover with a right-side action rail
-- [x] Menu-bar metric selection, animated cat/number/both styles, and hover tooltip
+- [x] Menu-bar metric selection, natural eight-frame CPU cat/number/both styles,
+      and hover tooltip
 - [x] 2m / 1h / 1d charts with range averages and peaks
 - [x] Mixed-DPI multi-monitor popover placement pinned to the clicked display
 - [x] GitHub Releases OTA update path and local release scripts
@@ -38,6 +39,10 @@ working product map we use to decide what to polish next.
 - [x] README screenshot generation and release readiness checks
 - [x] Production release gate checklist in
       [`PRODUCTION_CHECKLIST.md`](./PRODUCTION_CHECKLIST.md)
+- [x] Gstack 10-point product and design gate in
+      [`GSTACK_PRODUCT_CHECKLIST.md`](./GSTACK_PRODUCT_CHECKLIST.md)
+- [x] iStat/RunCat capability matrix in
+      [`ISTAT_RUNCAT_PARITY.md`](./ISTAT_RUNCAT_PARITY.md)
 
 ## Now
 
@@ -95,6 +100,9 @@ These are the highest-leverage improvements before adding large new surfaces.
       clear job and slow storage/process reads run only on the System view
 - [x] Show a view-specific loading state while slow System metrics are being
       collected, instead of presenting blank values on first entry
+- [x] Prefetch fan and daemon state before the first popover open, preserve the
+      last valid fan identity across transient reads, and keep loading feedback
+      out of document flow so values never reflow the screen
 
 ### v1.28 — Sensor Accuracy
 
@@ -112,6 +120,16 @@ These are the highest-leverage improvements before adding large new surfaces.
       session without focus or authorization prompts
 - [x] Add tests for representative temperature selection across mixed sensors
 
+### v1.30 — Glanceable System Monitor
+
+- [x] Eight-frame menu-bar cat whose pace follows smoothed CPU usage
+- [x] Menu-bar number / cat / number + cat selector in Settings
+- [x] System quick facts for load average, power, network rate, and uptime
+- [ ] Per-core CPU detail window with efficiency/performance core grouping
+- [ ] GPU utilization backend where public platform APIs provide a stable value
+- [ ] User-configurable temperature and fan-failure notifications
+- [ ] Exportable diagnostics snapshot for comparing readings across monitors
+
 ### v1.29 — Distribution & Updates
 
 - [x] Local signed/notarized release workflow
@@ -127,15 +145,15 @@ These are the highest-leverage improvements before adding large new surfaces.
 
 ## Next
 
-### v1.30 — Automation
+### v1.31 — Automation
 
 - [ ] Rule editor in the detail window: battery, AC power, time, CPU temp
-- [ ] Per-profile curve previews in the popover
+- [x] Per-profile curve previews in the popover
 - [ ] Import/export config from the UI
 - [ ] Notifications for critical temperature, fan command failures, and updates
 - [ ] "Quiet on battery, performance on AC" preset
 
-### v1.31 — Power-User Surfaces
+### v1.32 — Power-User Surfaces
 
 - [ ] Local HTTP API hardening and docs examples for Raycast/Hammerspoon
 - [ ] Stream Deck / BetterTouchTool snippets
@@ -143,10 +161,12 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [ ] TUI curve editor parity with the detail window
 - [ ] Process list filtering and "quit process" safeguards
 
-### v1.32 — Platform Reach
+### v1.33 — Platform Reach
 
 - [x] Windows read-only metrics packaging with a native tray app, per-user
       installer scripts, checksum validation, and GitHub Actions release upload
+- [x] Gate public releases on native Windows install, WebView2, tray readiness,
+      startup registration, and uninstall verification
 - [ ] Windows temperature/fan research spike
 - [ ] Linux `hwmon` research spike
 - [ ] Separate platform capability matrix in docs

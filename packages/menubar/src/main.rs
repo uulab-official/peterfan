@@ -66,16 +66,19 @@ use peterfan_core::{HardwareProvider, SystemMonitor};
 const REFRESH: Duration = Duration::from_secs(1);
 const TEMPERATURE_REFRESH: Duration = Duration::from_secs(2);
 const FAN_REFRESH: Duration = Duration::from_secs(1);
+const FAN_STALE_AFTER: Duration = Duration::from_secs(4);
+const FAN_EMPTY_CONFIRMATIONS: u8 = 3;
 // The runner should be nearly still at idle and unmistakably fast under load.
 // Frames are pre-rendered, so each tick only swaps a cached status-item image.
-const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(140);
-const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(1000);
+const RUNNER_FRAME_COUNT: u8 = 8;
+const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(110);
+const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(900);
 #[cfg(target_os = "macos")]
-const MENUBAR_GRAPH_WIDTH: f64 = 28.0;
+const MENUBAR_GRAPH_WIDTH: f64 = 30.0;
 #[cfg(target_os = "macos")]
 const MENUBAR_NUMBER_WIDTH: f64 = 50.0;
 #[cfg(target_os = "macos")]
-const MENUBAR_BOTH_WIDTH: f64 = 76.0;
+const MENUBAR_BOTH_WIDTH: f64 = 78.0;
 const POPOVER_PREWARM_DELAY: Duration = Duration::from_millis(1200);
 const POPOVER_SHOW_DELAY: Duration = Duration::from_millis(35);
 const DASHBOARD_OPEN_GRACE: Duration = Duration::from_millis(900);
@@ -258,6 +261,9 @@ fn pending_command_key(cmd: &str) -> Option<String> {
     }
     if matches!(cmd, "auto") || cmd.starts_with("profile:") {
         return Some("global-fan-control".to_string());
+    }
+    if cmd.starts_with("display:") {
+        return Some("menubar-display".to_string());
     }
     if let Some(rest) = cmd.strip_prefix("fanhold:") {
         return rest
@@ -525,6 +531,7 @@ struct App {
     /// advances on each refresh, with bigger CPU load taking larger strides.
     runner_frame: u8,
     runner_cpu_pct: f32,
+    runner_has_sample: bool,
     runner_icons: Vec<Icon>,
     #[cfg(target_os = "macos")]
     runner_native_images: Vec<Retained<NSImage>>,
@@ -535,6 +542,8 @@ struct App {
     next_temperature_refresh: Instant,
     temperature_read: Arc<BackgroundRead<TimedSample<Vec<TempSensor>>>>,
     fan_cache: Vec<Fan>,
+    fan_sampled_at: Option<Instant>,
+    fan_empty_samples: u8,
     next_fan_refresh: Instant,
     fan_read: Arc<BackgroundRead<Vec<Fan>>>,
     all_temp_rows_cache: Vec<serde_json::Value>,
@@ -544,7 +553,9 @@ struct App {
     all_temp_read: Arc<BackgroundRead<TimedSample<Vec<TempSensor>>>>,
     daemon_json_cache: Option<serde_json::Value>,
     daemon_json_sampled_at: Option<Instant>,
+    daemon_probe_completed: bool,
     next_daemon_refresh: Instant,
+    daemon_read: Arc<BackgroundRead<Option<serde_json::Value>>>,
     update_install_result: Option<peterfan_platform::updater::UpdateInstallResult>,
     next_update_result_refresh: Instant,
     control_confirm_until: Option<Instant>,
@@ -1208,12 +1219,17 @@ fn recover_after_pause(app: &mut App, now: Instant) {
     app.temperature_cache.clear();
     app.temperature_sampled_at = None;
     app.temperature_sampled_at_unix_ms = None;
-    app.fan_cache.clear();
+    // Keep the last known fan identities across sleep so the UI does not
+    // briefly claim that built-in fans disappeared. Readings remain gated by
+    // `fan_sampled_at` until a fresh post-wake sample arrives.
+    app.fan_sampled_at = None;
+    app.fan_empty_samples = 0;
     app.all_temp_rows_cache.clear();
     app.all_temp_sampled_at = None;
     app.all_temp_sampled_at_unix_ms = None;
     app.daemon_json_cache = None;
     app.daemon_json_sampled_at = None;
+    app.daemon_probe_completed = false;
     app.dashboard_slow_cache = DashboardSlowCache::default();
     app.fan_hist.clear();
     app.cpu_h.clear();
@@ -1227,6 +1243,7 @@ fn recover_after_pause(app: &mut App, now: Instant) {
     let _ = app.temperature_read.take();
     let _ = app.fan_read.take();
     let _ = app.all_temp_read.take();
+    let _ = app.daemon_read.take();
     app.next_temperature_refresh = now;
     app.next_fan_refresh = now;
     app.next_all_temp_refresh = now;
@@ -1487,6 +1504,7 @@ fn main() {
         next_dashboard_slow_refresh: Instant::now() + DASHBOARD_SLOW_REFRESH,
         runner_frame: 0,
         runner_cpu_pct: 0.0,
+        runner_has_sample: false,
         runner_icons: make_runner_icons(),
         #[cfg(target_os = "macos")]
         runner_native_images: make_runner_native_images(),
@@ -1497,6 +1515,8 @@ fn main() {
         next_temperature_refresh: Instant::now(),
         temperature_read: Arc::new(BackgroundRead::default()),
         fan_cache: Vec::new(),
+        fan_sampled_at: None,
+        fan_empty_samples: 0,
         next_fan_refresh: Instant::now(),
         fan_read: Arc::new(BackgroundRead::default()),
         all_temp_rows_cache: Vec::new(),
@@ -1506,7 +1526,9 @@ fn main() {
         all_temp_read: Arc::new(BackgroundRead::default()),
         daemon_json_cache: None,
         daemon_json_sampled_at: None,
-        next_daemon_refresh: Instant::now() + DAEMON_REFRESH,
+        daemon_probe_completed: false,
+        next_daemon_refresh: Instant::now(),
+        daemon_read: Arc::new(BackgroundRead::default()),
         update_install_result: peterfan_platform::updater::read_update_install_result(),
         next_update_result_refresh: Instant::now() + Duration::from_secs(1),
         control_confirm_until: None,
@@ -1686,6 +1708,23 @@ fn main() {
                         *STATUS.lock().expect("status poisoned") = status;
                     });
                     refresh_after_pending = true;
+                } else if let Some(value) = c.strip_prefix("display:") {
+                    if let Some(display) = MenubarDisplay::parse(value) {
+                        app.display = display;
+                        app.last_runner_icon = None;
+                        next_runner_at = now;
+                        #[cfg(target_os = "macos")]
+                        if let Some(tray) = &app.tray {
+                            configure_native_status_item(tray, app.display);
+                        }
+                        if let Some(ref tm) = app.tray_menu {
+                            for (candidate, item) in &tm.display_items {
+                                item.set_checked(*candidate == display);
+                            }
+                        }
+                        save_menubar_display(display);
+                        refresh_after_pending = true;
+                    }
                 } else if c == "diagnosefan" {
                     *STATUS.lock().expect("status poisoned") = "running fan diagnostics…".into();
                     let provider = std::sync::Arc::clone(&app.provider);
@@ -2232,7 +2271,10 @@ fn build_popover(
                 enqueue_pending("ready:popover");
             } else if body == "refresh" {
                 CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
-            } else if body == "checkupdates" || body == "toggle-login-item" || body == "togglelogin"
+            } else if body == "checkupdates"
+                || body == "toggle-login-item"
+                || body == "togglelogin"
+                || body.starts_with("display:")
             {
                 enqueue_pending(body);
             } else if body.starts_with("h:") {
@@ -2342,7 +2384,10 @@ fn open_detail_window(
                 enqueue_pending("ready:detail");
             } else if body == "refresh" {
                 CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
-            } else if body == "checkupdates" || body == "toggle-login-item" || body == "togglelogin"
+            } else if body == "checkupdates"
+                || body == "toggle-login-item"
+                || body == "togglelogin"
+                || body.starts_with("display:")
             {
                 enqueue_pending(body);
             } else if let Some(cmd) = body.strip_prefix("cmd:") {
@@ -2713,7 +2758,6 @@ fn hide_popover(app: &mut App) {
 fn defer_dashboard_io_after_open(app: &mut App) {
     let now = Instant::now();
     app.next_dashboard_slow_refresh = now + DASHBOARD_SLOW_OPEN_GRACE;
-    app.next_daemon_refresh = now + DASHBOARD_OPEN_GRACE;
     app.next_all_temp_refresh = now + DASHBOARD_OPEN_GRACE + Duration::from_millis(500);
 }
 
@@ -2845,14 +2889,47 @@ fn refresh_temperature_cache(app: &mut App, now: Instant) {
     }
 }
 
-fn refresh_fan_cache(app: &mut App, now: Instant, dashboard_visible: bool) {
-    if let Some(fans) = app.fan_read.take() {
-        app.fan_cache = fans;
+fn merge_fan_sample(cache: &mut Vec<Fan>, empty_samples: &mut u8, fans: Vec<Fan>) {
+    if fans.is_empty() && !cache.is_empty() {
+        *empty_samples = empty_samples.saturating_add(1);
+        if *empty_samples >= FAN_EMPTY_CONFIRMATIONS {
+            cache.clear();
+        }
+    } else {
+        *cache = fans;
+        *empty_samples = 0;
     }
-    if dashboard_visible && now >= app.next_fan_refresh {
+}
+
+fn refresh_fan_cache(app: &mut App, now: Instant) {
+    if let Some(fans) = app.fan_read.take() {
+        app.fan_sampled_at = Some(now);
+        merge_fan_sample(&mut app.fan_cache, &mut app.fan_empty_samples, fans);
+    }
+    if now >= app.next_fan_refresh {
         app.next_fan_refresh = now + FAN_REFRESH;
         let provider = Arc::clone(&app.provider);
         app.fan_read.start(move || provider.fans().ok());
+    }
+}
+
+fn refresh_daemon_cache(app: &mut App, now: Instant) {
+    if let Some(snapshot) = app.daemon_read.take() {
+        app.daemon_probe_completed = true;
+        if let Some(snapshot) = snapshot {
+            app.daemon_json_cache = Some(snapshot);
+            app.daemon_json_sampled_at = Some(now);
+        } else if app
+            .daemon_json_sampled_at
+            .is_some_and(|sampled_at| now.duration_since(sampled_at) > DAEMON_STALE_AFTER)
+        {
+            app.daemon_json_cache = None;
+            app.daemon_json_sampled_at = None;
+        }
+    }
+    if now >= app.next_daemon_refresh {
+        app.next_daemon_refresh = now + DAEMON_REFRESH;
+        app.daemon_read.start(|| Some(daemon_temps_json()));
     }
 }
 
@@ -2902,7 +2979,6 @@ fn update(app: &mut App) {
     let dashboard_visible = app.popover_visible || detail_visible;
     let active_view = ACTIVE_RAIL_VIEW.load(Ordering::Relaxed);
     let overview_visible = dashboard_visible && active_view == 0;
-    let fan_visible = dashboard_visible && active_view == 1;
     let settings_visible = dashboard_visible && active_view == 2;
     let system_visible = dashboard_visible && active_view == 3;
     let proc_sort = if PROC_SORT.load(Ordering::Relaxed) == 1 {
@@ -2927,18 +3003,17 @@ fn update(app: &mut App) {
     // thread: on unsupported or waking hardware they can take long enough to
     // make the menu-bar item appear unclickable.
     refresh_temperature_cache(app, now);
-    refresh_fan_cache(app, now, fan_visible || settings_visible || system_visible);
+    refresh_fan_cache(app, now);
+    refresh_daemon_cache(app, now);
     let temperature_stale =
         sample_is_stale(app.temperature_sampled_at, now, TEMPERATURE_STALE_AFTER);
     let temperature_age_secs = sample_age(app.temperature_sampled_at, now)
         .map(|age| age.as_secs())
         .unwrap_or(0);
     let temps = app.temperature_cache.clone();
-    let fans = if fan_visible || settings_visible || system_visible {
-        app.fan_cache.clone()
-    } else {
-        Vec::new()
-    };
+    let fans = app.fan_cache.clone();
+    let fan_data_stale = sample_is_stale(app.fan_sampled_at, now, FAN_STALE_AFTER);
+    let fan_data_ready = !fan_data_stale;
     let display_temp = (!temperature_stale)
         .then(|| primary_menu_temperature(&temps, TemperatureSource::CoreAverage))
         .flatten()
@@ -2985,7 +3060,9 @@ fn update(app: &mut App) {
         app.temp_h.push(temp);
     }
     app.net_h.push((rx + tx) as f32);
-    app.runner_cpu_pct = cpu.usage_percent;
+    app.runner_cpu_pct =
+        smooth_runner_cpu(app.runner_cpu_pct, cpu.usage_percent, app.runner_has_sample);
+    app.runner_has_sample = true;
 
     // Menu-bar item: keep it calm and literal. The top bar shows only the CPU
     // Core Average temperature; richer metrics live inside the popover.
@@ -3053,11 +3130,21 @@ fn update(app: &mut App) {
         refresh_dashboard_slow_cache(app, proc_sort);
         app.next_dashboard_slow_refresh = now + DASHBOARD_SLOW_REFRESH;
     }
+    let system_info = app.monitor.system_info();
     let ghz = cpu.frequency_mhz as f64 / 1000.0;
     let load_str = cpu
         .load_avg
         .map(|l| format!("load {:.2} {:.2} {:.2}", l.one, l.five, l.fifteen))
         .unwrap_or_default();
+    let load_avg_text = cpu
+        .load_avg
+        .map(|l| format!("{:.2} · {:.2} · {:.2}", l.one, l.five, l.fifteen))
+        .unwrap_or_else(|| "—".to_string());
+    let power_text = app
+        .dashboard_slow_cache
+        .power_w
+        .map(|watts| format!("{watts:.1} W"))
+        .unwrap_or_else(|| "—".to_string());
     app.disk_io_h.push(app.dashboard_slow_cache.disk_io_rate);
 
     // Temperatures: CPU average is the headline users compare with iStat/Stats;
@@ -3111,28 +3198,9 @@ fn update(app: &mut App) {
         Vec::new()
     };
 
-    // Fans: every fan listed with its own RPM and a speed bar (rpm / max).
-    // Daemon status is useful, but a stale/missing socket can block for its
-    // read timeout. Cache it briefly so opening the popover never waits on IPC.
-    if (fan_visible || settings_visible) && now >= app.next_daemon_refresh {
-        if let Some(snapshot) = daemon_temps_json() {
-            app.daemon_json_cache = Some(snapshot);
-            app.daemon_json_sampled_at = Some(now);
-        } else if app
-            .daemon_json_sampled_at
-            .is_some_and(|sampled_at| now.duration_since(sampled_at) > DAEMON_STALE_AFTER)
-        {
-            app.daemon_json_cache = None;
-            app.daemon_json_sampled_at = None;
-        }
-        // A failed first probe is still a completed probe. Mark it as checked
-        // so the fan view can show a stable "setup needed" state instead of
-        // briefly rendering a setup banner and removing it on the next tick.
-        if app.daemon_json_sampled_at.is_none() {
-            app.daemon_json_sampled_at = Some(now);
-        }
-        app.next_daemon_refresh = now + DAEMON_REFRESH;
-    }
+    // Fans and daemon state are prefetched continuously on background threads,
+    // so opening this view only renders cached values and never waits on SMC
+    // or a Unix socket.
     let daemon_json = app.daemon_json_cache.clone();
     let daemon_st = daemon_json
         .as_ref()
@@ -3254,12 +3322,13 @@ fn update(app: &mut App) {
         .collect();
 
     let fan_control_supported = app.provider.capabilities().control_fans || daemon_usable;
-    let can_control = fan_control_access(
-        app.provider.capabilities().control_fans,
-        daemon_usable,
-        direct_fan_control_allowed(),
-        app.provider.name() == "mock",
-    );
+    let can_control = fan_data_ready
+        && fan_control_access(
+            app.provider.capabilities().control_fans,
+            daemon_usable,
+            direct_fan_control_allowed(),
+            app.provider.name() == "mock",
+        );
     let ctl_status = if daemon_update_needed {
         match app.language.resolve() {
             ResolvedLanguage::Ko => "팬 제어 재설치 필요".to_string(),
@@ -3288,7 +3357,12 @@ fn update(app: &mut App) {
     } else {
         fan_rpm_values.iter().sum::<u32>() / fan_rpm_values.len() as u32
     };
-    let fan_avg_rpm_text = if fan_avg_rpm > 0 {
+    let fan_avg_rpm_text = if fan_data_stale {
+        match app.language.resolve() {
+            ResolvedLanguage::Ko => "읽는 중…".to_string(),
+            ResolvedLanguage::En => "Reading…".to_string(),
+        }
+    } else if fan_avg_rpm > 0 {
         format!("{fan_avg_rpm} RPM")
     } else if fans.is_empty() {
         match app.language.resolve() {
@@ -3302,7 +3376,7 @@ fn update(app: &mut App) {
         }
     };
 
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
         "cpu_text": format!("{:.1}%", cpu.usage_percent),
         "cpu_sub": format!(
@@ -3346,6 +3420,7 @@ fn update(app: &mut App) {
         "fans": fan_rows,
         "fan_avg_rpm": fan_avg_rpm,
         "fan_avg_rpm_text": fan_avg_rpm_text,
+        "fan_data_stale": fan_data_stale,
         "batt_present": app.dashboard_slow_cache.batt_present,
         "batt_pct": app.dashboard_slow_cache.batt_pct,
         "batt_text": &app.dashboard_slow_cache.batt_text,
@@ -3378,7 +3453,7 @@ fn update(app: &mut App) {
         "control_revision": control_revision,
         "applied_control_revision": applied_control_revision,
         "fan_setup_needed": fan_control_supported && !can_control,
-        "fan_control_state_ready": !fan_control_supported || app.daemon_json_sampled_at.is_some(),
+        "fan_control_state_ready": !fan_control_supported || (fan_data_ready && app.daemon_probe_completed),
         "fan_count": fans.len(),
         "controllable_fan_count": fans.iter().filter(|f| f.controllable).count(),
         "fan_curve_input_temp_c": display_temp,
@@ -3396,6 +3471,15 @@ fn update(app: &mut App) {
         "curve_points": &app.dashboard_slow_cache.curve_points,
         "last_cmd_status": STATUS.lock().expect("status poisoned").clone(),
     });
+    payload["menubar_display"] = serde_json::json!(app.display.as_str());
+    payload["runner_cpu_pct"] = serde_json::json!(app.runner_cpu_pct);
+    payload["runner_interval_ms"] =
+        serde_json::json!(runner_frame_interval(app.runner_cpu_pct).as_millis());
+    payload["network_rate_text"] = serde_json::json!(format!("{}/s", bytes((rx + tx) as u64)));
+    payload["load_avg_text"] = serde_json::json!(load_avg_text);
+    payload["power_text"] = serde_json::json!(power_text);
+    payload["uptime_text"] = serde_json::json!(format_uptime(system_info.uptime_secs));
+    payload["logical_cores"] = serde_json::json!(system_info.logical_cores);
     let script = format!(
         "window.__pf_pending={payload};window.__pf&&window.__pf.update(window.__pf_pending)"
     );
@@ -4403,6 +4487,19 @@ fn bytes(n: u64) -> String {
     }
 }
 
+fn format_uptime(total_secs: u64) -> String {
+    let days = total_secs / 86_400;
+    let hours = (total_secs % 86_400) / 3_600;
+    let minutes = (total_secs % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
 fn temp_cls(c: Celsius) -> &'static str {
     match c.0 {
         x if x < 50.0 => "g",
@@ -4426,6 +4523,18 @@ fn runner_frame_interval(cpu_pct: f32) -> Duration {
     Duration::from_millis(ms.round() as u64)
 }
 
+fn smooth_runner_cpu(previous: f32, sample: f32, has_sample: bool) -> f32 {
+    let sample = sample.clamp(0.0, 100.0);
+    if !has_sample {
+        return sample;
+    }
+    // Workload spikes should be visible immediately. Decay is deliberately
+    // slower so a single quiet sample cannot make the cat stutter between
+    // sprinting and walking.
+    let alpha = if sample >= previous { 0.72 } else { 0.28 };
+    (previous + (sample - previous) * alpha).clamp(0.0, 100.0)
+}
+
 fn runner_enabled(display: MenubarDisplay) -> bool {
     matches!(display, MenubarDisplay::Graph | MenubarDisplay::Both)
 }
@@ -4440,13 +4549,14 @@ fn runner_load_band(cpu_pct: f32) -> usize {
 }
 
 fn runner_icon_index(cpu_pct: f32, frame: u8) -> usize {
-    runner_load_band(cpu_pct) * 4 + usize::from(frame % 4)
+    runner_load_band(cpu_pct) * usize::from(RUNNER_FRAME_COUNT)
+        + usize::from(frame % RUNNER_FRAME_COUNT)
 }
 
 fn make_runner_icons() -> Vec<Icon> {
     [0.0, 30.0, 65.0, 90.0]
         .into_iter()
-        .flat_map(|cpu| (0..4).map(move |frame| make_runner_icon(cpu, frame)))
+        .flat_map(|cpu| (0..RUNNER_FRAME_COUNT).map(move |frame| make_runner_icon(cpu, frame)))
         .collect()
 }
 
@@ -4454,7 +4564,9 @@ fn make_runner_icons() -> Vec<Icon> {
 fn make_runner_native_images() -> Vec<Retained<NSImage>> {
     [0.0, 30.0, 65.0, 90.0]
         .into_iter()
-        .flat_map(|cpu| (0..4).map(move |frame| make_runner_native_image(cpu, frame)))
+        .flat_map(|cpu| {
+            (0..RUNNER_FRAME_COUNT).map(move |frame| make_runner_native_image(cpu, frame))
+        })
         .collect()
 }
 
@@ -4474,7 +4586,7 @@ fn make_runner_native_image(cpu_pct: f32, frame: u8) -> Retained<NSImage> {
     let data = NSData::from_vec(encoded);
     let image = NSImage::initWithData(NSImage::alloc(), &data)
         .expect("encoded runner frame must decode as NSImage");
-    image.setSize(NSSize::new(18.0, 18.0));
+    image.setSize(NSSize::new(20.0, 20.0));
     image.setTemplate(false);
     image
 }
@@ -4552,6 +4664,49 @@ fn make_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
 fn make_cat_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
     const W: u32 = 32;
     const H: u32 = 32;
+    const BOUNCE: [f32; 8] = [0.0, 0.4, -1.2, -0.7, 0.0, 0.4, -1.2, -0.7];
+    const STRETCH: [f32; 8] = [0.5, 0.1, -0.6, 0.2, 0.5, 0.1, -0.6, 0.2];
+    const TAIL_LIFT: [f32; 8] = [0.0, 0.8, 1.5, 0.7, 0.0, -0.8, -1.4, -0.6];
+    const HIND_NEAR: [Pt; 8] = [
+        Pt::new(6.0, 26.4),
+        Pt::new(10.0, 27.0),
+        Pt::new(14.0, 24.3),
+        Pt::new(17.0, 23.2),
+        Pt::new(18.0, 26.4),
+        Pt::new(15.0, 26.1),
+        Pt::new(11.5, 23.1),
+        Pt::new(8.0, 24.5),
+    ];
+    const FORE_NEAR: [Pt; 8] = [
+        Pt::new(27.0, 26.3),
+        Pt::new(25.0, 27.0),
+        Pt::new(22.0, 24.0),
+        Pt::new(18.5, 22.7),
+        Pt::new(16.0, 26.4),
+        Pt::new(18.5, 26.0),
+        Pt::new(22.0, 23.0),
+        Pt::new(26.0, 24.5),
+    ];
+    const HIND_FAR: [Pt; 8] = [
+        Pt::new(17.2, 26.1),
+        Pt::new(14.5, 26.0),
+        Pt::new(11.0, 23.5),
+        Pt::new(8.0, 24.5),
+        Pt::new(6.5, 26.2),
+        Pt::new(10.0, 27.0),
+        Pt::new(14.0, 24.0),
+        Pt::new(17.0, 23.2),
+    ];
+    const FORE_FAR: [Pt; 8] = [
+        Pt::new(16.5, 26.2),
+        Pt::new(18.5, 26.0),
+        Pt::new(22.0, 23.0),
+        Pt::new(26.0, 24.5),
+        Pt::new(27.0, 26.3),
+        Pt::new(25.0, 27.0),
+        Pt::new(22.0, 24.0),
+        Pt::new(18.5, 22.7),
+    ];
     let mut rgba = vec![0u8; (W * H * 4) as usize];
 
     let (r, g, b) = match cpu_pct.clamp(0.0, 100.0) {
@@ -4561,24 +4716,58 @@ fn make_cat_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
         _ => (255u8, 69u8, 58u8),              // red
     };
 
-    let phase = frame % 4;
-    let stride = match phase {
-        0 => -2.4,
-        1 => 1.8,
-        2 => 2.4,
-        _ => -1.8,
-    };
-    let bounce = if matches!(phase, 1 | 3) { -0.8 } else { 0.0 };
-    let tail_lift = if matches!(phase, 0 | 1) { -2.0 } else { 1.4 };
+    let pose = usize::from(frame % RUNNER_FRAME_COUNT);
+    let bounce = BOUNCE[pose];
+    let body_color = (r, g, b, 244);
+    let far_leg_color = (r, g, b, 164);
+    let near_leg_color = (r, g, b, 236);
 
+    draw_runner_leg(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(10.4, 19.4 + bounce),
+        HIND_FAR[pose],
+        -1.2,
+        far_leg_color,
+    );
+    draw_runner_leg(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(20.0, 18.7 + bounce),
+        FORE_FAR[pose],
+        1.0,
+        far_leg_color,
+    );
+
+    let tail_lift = TAIL_LIFT[pose];
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(8.1, 15.1 + bounce),
+        Pt::new(4.7, 11.4 + bounce + tail_lift),
+        2.9,
+        (r, g, b, 236),
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(4.7, 11.4 + bounce + tail_lift),
+        Pt::new(3.2, 7.1 + bounce + tail_lift * 0.7),
+        2.5,
+        (r, g, b, 224),
+    );
     draw_ellipse(
         &mut rgba,
         W,
         H,
         Pt::new(15.2, 17.2 + bounce),
-        8.4,
+        8.4 + STRETCH[pose],
         5.2,
-        (r, g, b, 238),
+        body_color,
     );
     draw_disc(
         &mut rgba,
@@ -4586,7 +4775,7 @@ fn make_cat_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
         H,
         Pt::new(23.0, 13.0 + bounce),
         4.1,
-        (r, g, b, 245),
+        body_color,
     );
     draw_triangle(
         &mut rgba,
@@ -4595,7 +4784,7 @@ fn make_cat_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
         Pt::new(20.4, 10.4 + bounce),
         Pt::new(21.7, 6.6 + bounce),
         Pt::new(23.3, 10.6 + bounce),
-        (r, g, b, 235),
+        body_color,
     );
     draw_triangle(
         &mut rgba,
@@ -4604,62 +4793,28 @@ fn make_cat_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
         Pt::new(24.0, 10.3 + bounce),
         Pt::new(26.0, 7.0 + bounce),
         Pt::new(26.4, 11.3 + bounce),
-        (r, g, b, 235),
+        body_color,
     );
-    draw_line(
+
+    draw_runner_leg(
         &mut rgba,
         W,
         H,
-        Pt::new(8.4, 15.0 + bounce),
-        Pt::new(4.8, 11.0 + tail_lift),
-        2.7,
-        (r, g, b, 235),
+        Pt::new(11.8, 20.2 + bounce),
+        HIND_NEAR[pose],
+        -1.4,
+        near_leg_color,
     );
-    draw_line(
+    draw_runner_leg(
         &mut rgba,
         W,
         H,
-        Pt::new(4.8, 11.0 + tail_lift),
-        Pt::new(3.4, 6.7 + tail_lift * 0.6),
-        2.5,
-        (r, g, b, 225),
+        Pt::new(21.0, 18.7 + bounce),
+        FORE_NEAR[pose],
+        1.3,
+        near_leg_color,
     );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(10.2, 20.5 + bounce),
-        Pt::new(8.4 + stride, 27.0),
-        2.3,
-        (r, g, b, 220),
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(14.4, 21.0 + bounce),
-        Pt::new(14.1 - stride, 27.0),
-        2.3,
-        (r, g, b, 220),
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(18.6, 20.5 + bounce),
-        Pt::new(19.2 + stride, 26.6),
-        2.3,
-        (r, g, b, 220),
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(22.0, 18.4 + bounce),
-        Pt::new(23.8 - stride, 25.8),
-        2.1,
-        (r, g, b, 220),
-    );
+
     draw_disc(
         &mut rgba,
         W,
@@ -4676,15 +4831,6 @@ fn make_cat_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
         0.9,
         (r, g, b, 235),
     );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(5.0, 28.0),
-        Pt::new(28.0, 28.0),
-        1.0,
-        (r, g, b, 65),
-    );
 
     rgba
 }
@@ -4696,9 +4842,35 @@ struct Pt {
 }
 
 impl Pt {
-    fn new(x: f32, y: f32) -> Self {
+    const fn new(x: f32, y: f32) -> Self {
         Self { x, y }
     }
+}
+
+fn draw_runner_leg(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    hip: Pt,
+    paw: Pt,
+    knee_bend: f32,
+    color: (u8, u8, u8, u8),
+) {
+    let knee = Pt::new(
+        (hip.x + paw.x) * 0.5 + knee_bend,
+        hip.y + (paw.y - hip.y) * 0.53 - 0.5,
+    );
+    draw_line(rgba, w, h, hip, knee, 2.8, color);
+    draw_line(rgba, w, h, knee, paw, 2.5, color);
+    draw_line(
+        rgba,
+        w,
+        h,
+        Pt::new(paw.x - 0.4, paw.y),
+        Pt::new(paw.x + 1.7, paw.y),
+        1.8,
+        color,
+    );
 }
 
 fn draw_disc(rgba: &mut [u8], w: u32, h: u32, center: Pt, radius: f32, color: (u8, u8, u8, u8)) {
@@ -4830,6 +5002,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Storage<", ">저장공간<")
             .replace(">Temperature<", ">온도<")
             .replace(">CPU temperature<", ">CPU 온도<")
+            .replace(">CPU temp<", ">CPU 온도<")
             .replace(">Fan average<", ">팬 평균 RPM<")
             .replace(">Fan<", ">팬<")
             .replace(">Fans<", ">팬<")
@@ -4843,6 +5016,15 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">General Settings<", ">일반 설정<")
             .replace(">General<", ">일반<")
             .replace(">App Preferences<", ">앱 설정<")
+            .replace(">Menu bar<", ">메뉴 막대<")
+            .replace(">Number<", ">숫자<")
+            .replace(">Cat<", ">고양이<")
+            .replace(">Both<", ">둘 다<")
+            .replace("CPU runner · waiting", "CPU 러너 · 대기 중")
+            .replace(">Load average<", ">로드 평균<")
+            .replace(">Power<", ">소비 전력<")
+            .replace(">Network rate<", ">네트워크 속도<")
+            .replace(">Uptime<", ">가동 시간<")
             .replace(">Fan Control Health<", ">팬 제어 상태<")
             .replace(">Technical details<", ">기술 정보<")
             .replace(">Hardware Availability<", ">하드웨어 감지 상태<")
@@ -4862,6 +5044,17 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Update<", ">업데이트<")
             .replace(">Current<", ">현재<")
             .replace(">Latest<", ">최신<")
+            .replace(">Installed app<", ">설치된 앱<")
+            .replace(">Latest signed<", ">최신 서명 릴리스<")
+            .replace("Checking your Mac…", "Mac 상태 확인 중…")
+            .replace(
+                "Waiting for the first sensor sample.",
+                "첫 센서 값을 기다리는 중입니다.",
+            )
+            .replace(
+                "macOS manages fan speed for the current workload.",
+                "현재 작업에 맞춰 macOS가 팬 속도를 관리합니다.",
+            )
             .replace(">Release Notes<", ">릴리즈 노트<")
             .replace(">Check &amp; Update<", ">확인 및 업데이트<")
             .replace(">Auto<", ">자동<")
@@ -4953,21 +5146,21 @@ const DASHBOARD_HTML_EN: &str = r##"<!doctype html><html lang="__LANG__"><head><
 html,body{background:var(--panel-bg);font-family:-apple-system,system-ui,sans-serif;color:var(--text);-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased;overflow:hidden;}
 .panel{background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:10px;overflow:hidden;box-shadow:var(--shadow);max-height:100vh;}
 .dashboard-shell{display:grid;grid-template-columns:minmax(0,1fr) 54px;gap:7px;padding:7px;height:100vh;max-height:100vh;}
-.main-pane{min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:8px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:none;background:rgba(255,255,255,.012);contain:layout paint;}
+.main-pane{position:relative;min-width:0;min-height:0;max-height:calc(100vh - 14px);border:1px solid var(--line);border-radius:8px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:none;background:rgba(255,255,255,.012);contain:layout paint;}
 .main-pane::-webkit-scrollbar{display:none;}
-.data-loading{display:flex;align-items:center;gap:7px;padding:9px var(--content-x);border-bottom:1px solid var(--line);color:var(--dim);font-size:10px;line-height:1.35;}
+.data-loading{position:absolute;z-index:12;top:50px;left:var(--content-x);right:var(--content-x);display:flex;align-items:center;gap:7px;padding:9px 10px;border:1px solid var(--line);border-radius:7px;color:var(--dim);font-size:10.5px;line-height:1.35;box-shadow:0 5px 18px rgba(0,0,0,.16);transition:opacity .12s ease,visibility .12s ease;}
 .data-loading-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);animation:data-loading-pulse 1.2s ease-in-out infinite;flex:0 0 auto;}
 .loading-retry{margin-left:auto;background:var(--chip-bg);border:1px solid var(--accent-border);border-radius:5px;color:var(--accent);font:inherit;font-size:9.5px;font-weight:700;padding:3px 7px;cursor:pointer;}
 .loading-retry:hover{background:var(--chip-hover);}
 .loading-retry:disabled{opacity:.5;cursor:default;}
 @keyframes data-loading-pulse{0%,100%{opacity:.45}50%{opacity:1}}
-body.data-ready .data-loading{display:none;}
+body.data-ready .data-loading{opacity:0;visibility:hidden;pointer-events:none;}
 body.compact .compact-extra{display:none!important;}
 body.compact[data-rail-view="system"] .compact-extra{display:grid!important;}
 body.compact[data-rail-view="system"] .foot.compact-extra{display:block!important;}
 .summary-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:0 var(--content-x) 10px;}
 .summary-cell{min-width:0;padding:8px 9px;border:1px solid var(--line);border-radius:7px;background:var(--chip-bg);}
-.summary-label{display:block;color:var(--dim);font-size:8.5px;font-weight:750;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.summary-label{display:block;color:var(--dim);font-size:10px;font-weight:750;letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .summary-value{display:block;margin-top:3px;color:var(--text);font-size:13px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .summary-value.g{color:var(--g);}.summary-value.y{color:var(--y);}.summary-value.r{color:var(--r);}.summary-value.info{color:var(--accent);}
 .action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;contain:layout paint;}
@@ -5020,16 +5213,16 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .v.g{color:var(--g);}.v.y{color:var(--y);}.v.r{color:var(--r);}
 .trow.stale .l,.trow.stale .src,.trow.stale .v{color:var(--dim);opacity:.72;}
 .val.stale{color:var(--dim);}
-.all-temp-head{font-size:10px;font-weight:700;color:var(--dim);margin-top:9px;padding-top:8px;border-top:1px solid var(--line);cursor:pointer;}
+.all-temp-head{display:block;width:100%;background:transparent;border:0;border-top:1px solid var(--line);font:inherit;font-size:10.5px;font-weight:700;color:var(--dim);margin-top:9px;padding:8px 0 0;text-align:left;cursor:pointer;}
 .all-temp-head:hover{color:var(--accent);}
-.all-temp-list .trow{font-size:9.5px;margin-top:4px;gap:10px;}
+.all-temp-list .trow{font-size:10.5px;margin-top:5px;gap:10px;}
 .all-temp-list .trow .l{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.all-temp-list .trow .src{flex:0 0 auto;color:var(--dim);font-size:9.5px;font-weight:700;}
+.all-temp-list .trow .src{flex:0 0 auto;color:var(--dim);font-size:10px;font-weight:700;}
 .sensor-group-head{margin-top:8px;padding-top:6px;border-top:1px solid var(--line);color:var(--text);font-size:10px;font-weight:750;}
 .sensor-group-head:first-child{margin-top:3px;padding-top:0;border-top:0;}
 .prow{display:grid;grid-template-columns:1fr auto auto auto;gap:9px;align-items:baseline;font-size:10.5px;margin-top:5px;}
 .pkill{opacity:0;background:none;border:0;color:var(--r);font:inherit;font-size:13px;font-weight:700;line-height:1;padding:0 1px;cursor:pointer;transition:opacity .15s;}
-.prow:hover .pkill{opacity:1;}
+.prow:hover .pkill,.pkill:focus-visible{opacity:1;}
 .prow .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .prow .c{color:var(--accent);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .prow .m{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
@@ -5040,7 +5233,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .ctl-status{display:block;max-width:58%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim);font-size:9.5px;font-weight:650;font-variant-numeric:tabular-nums;}
 .fan-inputs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:10px 0 8px;}
 .fan-input{min-width:0;padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.018);}
-.fan-input span{display:block;font-size:8px;font-weight:700;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fan-input span{display:block;font-size:10px;font-weight:700;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .fan-input b{display:block;margin-top:2px;font-size:10px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .profile-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin:2px 0 9px;}
 .profile-strip button{min-width:0;background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:10px;font-weight:700;padding:7px 3px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s,border-color .15s,opacity .15s;}
@@ -5051,7 +5244,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .profile-strip.pending button{cursor:progress;}
 .profile-strip.pending button:not(.active){opacity:.48;}
 .profile-strip.pending button.active{box-shadow:inset 0 -2px 0 var(--accent);}
-.fan-apply-status{min-height:15px;margin:-2px 0 5px;color:var(--dim);font-size:9.5px;line-height:1.45;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fan-apply-status{min-height:15px;margin:-2px 0 5px;color:var(--dim);font-size:10.5px;line-height:1.45;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .fan-apply-status.pending{color:var(--accent);}
 .fan-apply-status.ok{color:var(--g);}
 .fan-apply-status.error{color:var(--r);}
@@ -5099,8 +5292,8 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .curve-actions button:hover{background:var(--chip-hover);}
 .curve-actions button.primary{background:var(--accent-medium);border-color:var(--accent-border);color:var(--accent);}
 .chart{width:100%;height:32px;display:block;margin-top:9px;border-radius:4px;cursor:crosshair;}
-.chart-tip{position:fixed;pointer-events:none;background:rgba(20,20,22,.92);color:#fff;font-size:9.5px;font-weight:600;padding:3px 7px;border-radius:5px;display:none;z-index:999;white-space:nowrap;font-variant-numeric:tabular-nums;}
-.chart-stats{font-size:9.5px;color:var(--dim);text-align:right;margin-top:3px;font-variant-numeric:tabular-nums;}
+.chart-tip{position:fixed;pointer-events:none;background:rgba(20,20,22,.92);color:#fff;font-size:10.5px;font-weight:600;padding:3px 7px;border-radius:5px;display:none;z-index:999;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.chart-stats{font-size:10px;color:var(--dim);text-align:right;margin-top:3px;font-variant-numeric:tabular-nums;}
 .rail-panel{display:none;padding:var(--panel-pad) var(--content-x);border-bottom:1px solid var(--line);}
 .panel-title-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;}
 .rail-panel .panel-title{font-size:15px;font-weight:700;min-width:0;}
@@ -5109,21 +5302,34 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .panel-pill.warn{background:var(--warn-soft);color:var(--y);}
 .panel-pill.info{background:var(--accent-soft);color:var(--accent);}
 .rail-panel .panel-copy{display:none;}
-.view-loading{display:flex;align-items:center;gap:7px;margin:-2px 0 10px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;color:var(--dim);font-size:10px;line-height:1.35;background:rgba(255,255,255,.018);}
+.view-loading{position:absolute;z-index:8;top:48px;left:var(--content-x);right:var(--content-x);display:flex;align-items:center;gap:7px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;color:var(--dim);font-size:10px;line-height:1.35;background:var(--surface-raised);box-shadow:0 5px 16px rgba(0,0,0,.14);}
 .view-loading .data-loading-dot{width:6px;height:6px;}
 #rail-settings-pill,#rail-more-pill{display:none;}
+#rail-more-panel{position:relative;}
 .rail-panel .panel-action{min-height:30px;background:var(--accent-medium);border:1px solid var(--accent-border);color:var(--accent);font:inherit;font-size:11px;font-weight:700;padding:6px 10px;border-radius:7px;cursor:pointer;}
 .rail-panel .panel-action.secondary{background:var(--chip-bg);border-color:transparent;color:var(--text);}
 .rail-panel .panel-action.danger{background:var(--danger-soft);border-color:var(--danger-border);color:var(--r);}
 .rail-panel .panel-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .release-notes-card{margin-top:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
-.release-notes-title{font-size:10px;font-weight:800;color:var(--text);margin-bottom:5px;}
-.release-notes-body{font-size:9.5px;line-height:1.45;color:var(--dim);white-space:pre-wrap;max-height:118px;overflow:hidden;}
+.release-notes-title{font-size:11px;font-weight:800;color:var(--text);margin-bottom:5px;}
+.release-notes-body{font-size:10.5px;line-height:1.45;color:var(--dim);white-space:pre-wrap;max-height:118px;overflow:hidden;}
 .settings-list{display:flex;flex-direction:column;gap:0;}
 .settings-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line);}
 .settings-item:first-child{border-top:0;}
 .settings-item-title{font-size:11.5px;font-weight:700;color:var(--text);}
 .settings-item-copy{display:none;}
+.settings-control-stack{display:flex;flex-direction:column;align-items:flex-end;gap:5px;width:184px;min-width:0;}
+.display-segment{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px;width:100%;padding:3px;border-radius:8px;background:var(--chip-bg);}
+.display-segment button{min-width:0;min-height:27px;padding:4px 5px;border:0;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:750;cursor:pointer;white-space:nowrap;}
+.display-segment button:hover{background:var(--track-hover);color:var(--text);}
+.display-segment button.active{background:var(--surface-raised);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.15);}
+.runner-pace{color:var(--dim);font-size:9.5px;font-variant-numeric:tabular-nums;text-align:right;}
+.system-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin:0 0 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);}
+.system-fact{min-width:0;padding:8px 10px;}
+.system-fact:nth-child(even){border-left:1px solid var(--line);}
+.system-fact:nth-child(n+3){border-top:1px solid var(--line);}
+.system-fact-label{display:block;color:var(--dim);font-size:9.5px;font-weight:700;}
+.system-fact-value{display:block;margin-top:3px;color:var(--text);font-size:11px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .health-card{padding:10px 0;border-top:1px solid var(--line);}
 .settings-details{border-top:1px solid var(--line);padding:10px 0;}
 .settings-details>summary{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--text);font-size:11.5px;font-weight:700;cursor:pointer;list-style:none;}
@@ -5133,7 +5339,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .settings-details[open]>summary{margin-bottom:10px;}
 .settings-details>summary .panel-pill{margin-left:auto;}
 #fan-action-log-card{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);}
-.sensor-loading{padding:8px 0;color:var(--dim);font-size:10px;}
+.sensor-loading{padding:8px 0;color:var(--dim);font-size:10.5px;}
 .health-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
 .health-title{font-size:11px;font-weight:800;color:var(--text);}
 .health-grid{display:grid;grid-template-columns:1fr;gap:6px;}
@@ -5165,20 +5371,33 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .range-tab{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:600;padding:3px 9px;border-radius:99px;cursor:pointer;transition:background .15s,color .15s;}
 .range-tab:hover{background:var(--chip-hover);}
 .range-tab.active{background:rgba(91,157,255,.22);color:var(--accent);}
+.health-verdict{display:flex;align-items:center;gap:10px;padding:10px var(--content-x);border-bottom:1px solid var(--line);background:var(--chip-bg);}
+.health-verdict-dot{width:9px;height:9px;border-radius:3px;background:var(--dim);box-shadow:0 0 0 4px rgba(150,157,168,.10);flex:0 0 auto;}
+.health-verdict-copy{display:flex;align-items:baseline;gap:8px;min-width:0;}
+.health-verdict-title{font-size:12px;font-weight:800;white-space:nowrap;}
+.health-verdict-detail{min-width:0;color:var(--dim);font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;}
+.health-verdict.ok .health-verdict-dot{background:var(--g);box-shadow:0 0 0 4px var(--ok-soft);}
+.health-verdict.info .health-verdict-dot{background:var(--accent);box-shadow:0 0 0 4px var(--accent-soft);}
+.health-verdict.warm .health-verdict-dot{background:var(--y);box-shadow:0 0 0 4px var(--warn-soft);}
+.health-verdict.hot .health-verdict-dot{background:var(--r);box-shadow:0 0 0 4px var(--danger-soft);}
+.health-verdict.ok .health-verdict-title{color:var(--g);}
+.health-verdict.info .health-verdict-title{color:var(--accent);}
+.health-verdict.warm .health-verdict-title{color:var(--y);}
+.health-verdict.hot .health-verdict-title{color:var(--r);}
 /* Product hierarchy: one compact live summary, calm detail bands, and an icon rail. */
 .panel{border-radius:12px;background:var(--panel-bg);}
 .dashboard-shell{grid-template-columns:minmax(0,1fr) 50px;gap:0;padding:0;}
 .main-pane{max-height:100vh;border:0;border-radius:0;background:var(--surface);scrollbar-gutter:auto;}
 .range-tabs{margin:0;padding:14px var(--content-x) 12px;min-height:50px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;}
 .view-title{font-size:16px;font-weight:750;letter-spacing:0;}
-.range-tab{min-width:29px;padding:4px 8px;border-radius:6px;font-size:9.5px;font-weight:700;letter-spacing:0;}
+.range-tab{min-width:32px;min-height:28px;padding:4px 8px;border-radius:6px;font-size:10.5px;font-weight:700;letter-spacing:0;}
 .range-tab.active{background:var(--surface-raised);box-shadow:0 1px 4px rgba(0,0,0,.15);color:var(--accent);}
 body:not([data-rail-view="overview"]) .range-tabs .range-tab{display:none;}
 .summary-strip{grid-template-columns:repeat(4,minmax(0,1fr));gap:0;padding:12px var(--content-x) 14px;border-bottom:1px solid var(--line);}
 .summary-cell{position:relative;min-height:50px;padding:0 10px;border:0;border-left:1px solid var(--line);border-radius:0;background:transparent;overflow:hidden;}
 .summary-cell:first-child{padding-left:0;border-left:0;}
 .summary-cell:last-child{padding-right:0;}
-.summary-label{font-size:9px;font-weight:650;letter-spacing:0;}
+.summary-label{font-size:10px;font-weight:650;letter-spacing:0;}
 .summary-value{margin-top:5px;font-size:17px;line-height:1.05;font-weight:750;letter-spacing:0;}
 .summary-meter{display:block;height:3px;margin-top:8px;border-radius:99px;background:var(--track);overflow:hidden;}
 .summary-meter .bar-fill{display:block;}
@@ -5205,7 +5424,7 @@ body:not([data-rail-view="overview"]) .range-tabs .range-tab{display:none;}
 .fan-input{padding:0 10px;border:0;border-left:1px solid var(--line);border-radius:0;background:transparent;}
 .fan-input:first-child{padding-left:0;border-left:0;}
 .fan-input:last-child{padding-right:0;}
-.fan-input span{font-size:8.5px;font-weight:650;letter-spacing:0;}
+.fan-input span{font-size:10px;font-weight:650;letter-spacing:0;}
 .fan-input b{margin-top:4px;font-size:11px;}
 .profile-strip{padding:4px;gap:3px;border-radius:9px;background:var(--chip-bg);}
 .profile-strip{position:relative;overflow:hidden;}
@@ -5217,6 +5436,13 @@ body:not([data-rail-view="overview"]) .range-tabs .range-tab{display:none;}
 .profile-strip.confirmed button.active{color:var(--g);box-shadow:0 1px 4px rgba(0,0,0,.15),inset 0 0 0 1px var(--ok-soft);}
 .profile-strip.failed{box-shadow:inset 0 0 0 1px var(--danger-border);}
 @keyframes fan-pending-slide{0%{transform:translateX(-110%)}100%{transform:translateX(305%)}}
+.profile-guide{display:grid;grid-template-columns:minmax(0,1fr) 64px;gap:10px;align-items:center;margin:0 0 8px;padding:8px 9px;border:1px solid var(--line);border-radius:7px;background:rgba(255,255,255,.018);}
+.profile-guide-copy{min-width:0;}
+.profile-guide-title{display:block;color:var(--text);font-size:11px;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.profile-guide-detail{display:block;margin-top:2px;color:var(--dim);font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.profile-preview-bars{display:flex;align-items:flex-end;justify-content:flex-end;gap:3px;height:28px;}
+.profile-preview-bars span{width:8px;min-height:2px;border-radius:2px 2px 1px 1px;background:var(--accent);opacity:.82;transition:height .18s ease;}
+.profile-guide[data-mode="auto"] .profile-preview-bars span{background:var(--g);opacity:.6;}
 .fan-apply-status{display:flex;align-items:center;gap:6px;min-height:17px;margin:0 0 5px;}
 .fan-apply-status::before{content:"";display:block;width:6px;height:6px;border-radius:2px;background:currentColor;opacity:.9;flex:0 0 auto;}
 .fan-apply-status:empty::before{display:none;}
@@ -5237,7 +5463,7 @@ body:not([data-rail-view="overview"]) .range-tabs .range-tab{display:none;}
 .release-notes-card{border-radius:7px;background:var(--chip-bg);}
 .profile-strip button:not(:disabled):active,.fan-seg button:not(:disabled):active,.panel-action:not(:disabled):active,.range-tab:not(:disabled):active,.setup-actions button:not(:disabled):active{transform:scale(.97);}
 .action-rail{align-self:stretch;gap:4px;padding:10px 5px;border-left:1px solid var(--line);background:var(--panel-bg);}
-.rail-btn{height:40px;border:0;border-radius:8px;transition:background .15s,color .15s,transform .1s;}
+.rail-btn{height:44px;border:0;border-radius:8px;transition:background .15s,color .15s,transform .1s;}
 .rail-btn:hover{border-color:transparent;background:var(--chip-hover);}
 .rail-btn:active{transform:scale(.96);}
 .rail-btn svg{width:19px;height:19px;}
@@ -5255,16 +5481,21 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 
 <div class="range-tabs" id="range-tabs">
 <div class="view-title">Status</div>
-<button class="range-tab active" data-range="2m" onclick="setChartRange('2m')">2m</button>
-<button class="range-tab" data-range="1h" onclick="setChartRange('1h')">1h</button>
-<button class="range-tab" data-range="1d" onclick="setChartRange('1d')">1d</button>
+<button class="range-tab active" data-range="2m" aria-pressed="true" onclick="setChartRange('2m')">2m</button>
+<button class="range-tab" data-range="1h" aria-pressed="false" onclick="setChartRange('1h')">1h</button>
+<button class="range-tab" data-range="1d" aria-pressed="false" onclick="setChartRange('1d')">1d</button>
+</div>
+
+<div class="health-verdict info" id="health-verdict" role="status" aria-live="polite" aria-atomic="true">
+<span class="health-verdict-dot" aria-hidden="true"></span>
+<div class="health-verdict-copy"><strong class="health-verdict-title" id="health-verdict-title">Checking your Mac…</strong><span class="health-verdict-detail" id="health-verdict-detail">Waiting for the first sensor sample.</span></div>
 </div>
 
 <div class="summary-strip" id="summary-strip" aria-label="Live summary">
 <div class="summary-cell cpu"><span class="summary-label" id="summary-cpu-label">CPU</span><span class="summary-value" id="summary-cpu">—</span><span class="summary-meter"><span class="bar-fill" id="summary-cpu-bar"></span></span></div>
 <div class="summary-cell memory"><span class="summary-label" id="summary-mem-label">Memory</span><span class="summary-value" id="summary-mem">—</span><span class="summary-meter"><span class="bar-fill" id="summary-mem-bar"></span></span></div>
-<div class="summary-cell temperature"><span class="summary-label" id="summary-temp-label">CPU temperature</span><span class="summary-value" id="summary-temp">—</span><span class="summary-meter"><span class="bar-fill" id="summary-temp-bar"></span></span></div>
-<div class="summary-cell fan"><span class="summary-label" id="summary-fan-label">Fan average</span><span class="summary-value" id="summary-fan">—</span><span class="summary-meter"><span class="bar-fill info" id="summary-fan-bar"></span></span></div>
+<div class="summary-cell temperature"><span class="summary-label" id="summary-temp-label">CPU temp</span><span class="summary-value" id="summary-temp">—</span><span class="summary-meter"><span class="bar-fill" id="summary-temp-bar"></span></span></div>
+<div class="summary-cell fan"><span class="summary-label" id="summary-fan-label">Fans</span><span class="summary-value" id="summary-fan">—</span><span class="summary-meter"><span class="bar-fill info" id="summary-fan-bar"></span></span></div>
 </div>
 
 <div class="data-loading" id="data-loading" role="status" aria-live="polite"><span class="data-loading-dot"></span><span id="data-loading-text">Reading system sensors…</span><button class="loading-retry" id="data-loading-retry" style="display:none" onclick="retryDashboard()">Retry</button></div>
@@ -5290,6 +5521,17 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="settings-item" id="startup-setting">
 <div><div class="settings-item-title">Start on login</div><div class="settings-item-copy">Run PeterFan automatically on startup.</div></div>
 <button id="startup-toggle" class="panel-action secondary" disabled onclick="toggleStartupItem(this)">Enable</button>
+</div>
+<div class="settings-item" id="menubar-display-setting">
+<div><div class="settings-item-title">Menu bar</div><div class="settings-item-copy">Choose temperature, CPU runner, or both.</div></div>
+<div class="settings-control-stack">
+<div class="display-segment" role="group" aria-label="Menu bar style">
+<button id="display-number" data-display="number" aria-pressed="false" onclick="setMenubarDisplay('number')">Number</button>
+<button id="display-cat" data-display="cat" aria-pressed="false" onclick="setMenubarDisplay('cat')">Cat</button>
+<button id="display-both" data-display="both" aria-pressed="true" onclick="setMenubarDisplay('both')">Both</button>
+</div>
+<div class="runner-pace" id="runner-pace">CPU runner · waiting</div>
+</div>
 </div>
 <details class="settings-details" id="fan-health-card">
 <summary><span>Fan Control Health</span><span class="panel-pill info" id="health-pill">Ready</span></summary>
@@ -5328,8 +5570,8 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="panel-title-row"><div class="panel-title">Updates</div><span class="panel-pill info" id="rail-update-pill">Ready</span></div>
 <div class="panel-copy" id="rail-update-copy">One click checks, verifies, installs, and relaunches PeterFan.</div>
 <div class="health-grid" id="update-version-grid">
-<div class="health-row"><span class="health-label">Current</span><span class="health-value" id="update-current-version">—</span></div>
-<div class="health-row"><span class="health-label">Latest</span><span class="health-value" id="update-latest-version">—</span></div>
+<div class="health-row"><span class="health-label">Installed app</span><span class="health-value" id="update-current-version">—</span></div>
+<div class="health-row"><span class="health-label">Latest signed</span><span class="health-value" id="update-latest-version">—</span></div>
 <div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result">—</span></div>
 </div>
 <div class="release-notes-card" id="update-release-notes-card" style="display:none"><div class="release-notes-title">Release Notes</div><div class="release-notes-body" id="update-release-notes">—</div></div>
@@ -5340,6 +5582,12 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="panel-title-row"><div class="panel-title">Hardware</div><span class="panel-pill info" id="rail-more-pill">Live</span></div>
 <div class="panel-copy">Storage, battery, network, and active processes.</div>
 <div class="view-loading" id="system-loading" role="status" aria-live="polite" style="display:none"><span class="data-loading-dot"></span><span>Reading system metrics…</span></div>
+<div class="system-facts" aria-label="System quick facts">
+<div class="system-fact"><span class="system-fact-label">Load average</span><span class="system-fact-value" id="system-load">—</span></div>
+<div class="system-fact"><span class="system-fact-label">Power</span><span class="system-fact-value" id="system-power">—</span></div>
+<div class="system-fact"><span class="system-fact-label">Network rate</span><span class="system-fact-value" id="system-network-rate">—</span></div>
+<div class="system-fact"><span class="system-fact-label">Uptime</span><span class="system-fact-value" id="system-uptime">—</span></div>
+</div>
 <div class="health-card" id="hardware-availability-card" style="display:none">
 <div class="health-head"><div class="health-title">Hardware Availability</div><span class="panel-pill info" id="hardware-pill">Ready</span></div>
 <div class="health-grid">
@@ -5359,14 +5607,18 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="fan-input"><span>Critical Limit</span><b id="fan-critical-limit">—</b></div>
 </div>
 <div class="profile-strip" id="profile-strip">
-<button class="active" disabled data-mode="auto" title="Auto" onclick="setAuto()">Auto</button>
-<button disabled data-mode="profile" data-profile="silent" title="Silent" onclick="setProfile('silent')">Quiet</button>
-<button disabled data-mode="profile" data-profile="balanced" title="Balanced" onclick="setProfile('balanced')">Balance</button>
-<button disabled data-mode="profile" data-profile="gaming" title="Gaming" onclick="setProfile('gaming')">Game</button>
-<button disabled data-mode="profile" data-profile="performance" title="Performance" onclick="setProfile('performance')">Fast</button>
-<button disabled data-mode="profile" data-profile="maximum" title="Maximum" onclick="setProfile('maximum')">Max</button>
+<button class="active" disabled data-mode="auto" aria-pressed="true" title="Auto" onclick="setAuto()">Auto</button>
+<button disabled data-mode="profile" data-profile="silent" aria-pressed="false" title="Silent" onclick="setProfile('silent')">Quiet</button>
+<button disabled data-mode="profile" data-profile="balanced" aria-pressed="false" title="Balanced" onclick="setProfile('balanced')">Balance</button>
+<button disabled data-mode="profile" data-profile="gaming" aria-pressed="false" title="Gaming" onclick="setProfile('gaming')">Game</button>
+<button disabled data-mode="profile" data-profile="performance" aria-pressed="false" title="Performance" onclick="setProfile('performance')">Fast</button>
+<button disabled data-mode="profile" data-profile="maximum" aria-pressed="false" title="Maximum" onclick="setProfile('maximum')">Max</button>
 </div>
-<div class="fan-apply-status" id="fan-apply-status"></div>
+<div class="profile-guide" id="profile-guide" data-mode="auto" role="status" aria-live="polite" aria-atomic="true">
+<div class="profile-guide-copy"><strong class="profile-guide-title" id="profile-guide-title">macOS Auto</strong><span class="profile-guide-detail" id="profile-guide-detail">macOS manages fan speed for the current workload.</span></div>
+<div class="profile-preview-bars" id="profile-preview-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+</div>
+<div class="fan-apply-status" id="fan-apply-status" role="status" aria-live="polite" aria-atomic="true"></div>
 <div class="fan-cards" id="fan-cards"></div>
 <div class="empty-state" id="fan-empty-state" style="display:none"><strong class="empty-state-title">No fan sensors</strong><span class="empty-state-copy">No fan sensors were reported by this system. CPU, memory, temperature, and network monitoring continue normally.</span></div>
 <div class="ctl-note" id="ctl-note" style="display:none"></div>
@@ -5409,7 +5661,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="row" id="sec-temp"><span class="ic"><svg viewBox="0 0 24 24"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg></span>
 <div class="content"><div class="head"><span class="name" id="temp-name">Temperature</span><span class="val" id="temp-val">—</span></div>
 <div class="bar"><div class="bar-fill" id="temp-bar"></div></div><div id="temp-list"></div><div class="metric-empty" id="temp-empty" style="display:none">CPU temperature sensors are unavailable.</div>
-<div class="all-temp-head" id="all-temp-head" onclick="toggleRawTemps()">All sensors</div><div class="all-temp-list" id="all-temp-list"></div>
+<button type="button" class="all-temp-head" id="all-temp-head" aria-expanded="false" aria-controls="all-temp-list" onclick="toggleRawTemps()">All sensors</button><div class="all-temp-list" id="all-temp-list"></div>
 <canvas class="chart" id="temp-chart"></canvas><div class="chart-stats" id="temp-chart-stats"></div></div></div>
 
 <div class="row compact-extra" id="sec-batt" data-compact-extra="battery"><span class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="18" height="9" rx="2"/><path d="M22 11v3"/></svg></span>
@@ -5423,7 +5675,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <canvas class="chart" id="net-chart"></canvas><div class="chart-stats" id="net-chart-stats"></div></div></div>
 
 <div class="row compact-extra" id="sec-procs" data-compact-extra="processes"><span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5"/></svg></span>
-<div class="content"><div class="head"><span class="name">Top Processes</span><span class="sort-tabs"><button class="range-tab" id="ps-cpu" onclick="setProcSort('cpu')">CPU</button><button class="range-tab" id="ps-mem" onclick="setProcSort('mem')">MEM</button></span></div>
+<div class="content"><div class="head"><span class="name">Top Processes</span><span class="sort-tabs"><button class="range-tab" id="ps-cpu" aria-pressed="true" onclick="setProcSort('cpu')">CPU</button><button class="range-tab" id="ps-mem" aria-pressed="false" onclick="setProcSort('mem')">MEM</button></span></div>
 <div id="procs-list"></div></div></div>
 
 <div class="foot compact-extra" data-compact-extra="quit"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
@@ -5524,7 +5776,7 @@ function resetRailPaneScroll(){
 function applyRailView(resetScroll){
   var view=railView();
   document.body.setAttribute('data-rail-view',view);
-  var all=['range-tabs','summary-strip','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','foot','rail-update-panel','rail-settings-panel','rail-more-panel'];
+  var all=['range-tabs','health-verdict','summary-strip','setup-row','fan-control-section','curve-editor-section','sec-cpu','sec-mem','sec-storage','sec-temp','sec-batt','sec-network','sec-procs','foot','rail-update-panel','rail-settings-panel','rail-more-panel'];
   all.forEach(function(id){setVisible(id,false);});
   setVisible('range-tabs',true);
   if(view==='fan'){
@@ -5536,7 +5788,7 @@ function applyRailView(resetScroll){
   } else if(view==='system'){
     ['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach(function(id){setVisible(id,true);});
   } else {
-    ['summary-strip','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
+    ['health-verdict','summary-strip','sec-cpu','sec-mem','sec-temp'].forEach(function(id){setVisible(id,true);});
   }
   ['Detail','Fan','Settings','System'].forEach(function(name){
     var key=name.toLowerCase();
@@ -5683,13 +5935,22 @@ function renderUpdateStatus(status){
     pillTone='warn';
     setText('update-check-result',LANG==='ko'?'설치 실패':'installation failed');
   } else if(s.latest){
-    var newer=compareVersions(current,s.latest)<0;
-    msg=s.message||(newer
-      ?(LANG==='ko'?'새 버전을 사용할 수 있습니다.':'A newer PeterFan release is available.')
-      :(LANG==='ko'?'최신 버전을 사용 중입니다.':'You are up to date.'));
-    pillText=newer?(LANG==='ko'?'업데이트 있음':'Update'):(LANG==='ko'?'최신':'Current');
-    pillTone=newer?'warn':'ok';
-    setText('update-check-result',newer?(LANG==='ko'?'업데이트 가능':'update available'):(LANG==='ko'?'최신 상태':'up to date'));
+    var comparison=compareVersions(current,s.latest);
+    var newer=comparison<0,ahead=comparison>0;
+    msg=ahead
+      ?(LANG==='ko'
+        ?'설치된 앱이 최신 서명 릴리스보다 앞선 개발 빌드입니다.'
+        :'The installed app is a development build ahead of the latest signed release.')
+      :(s.message||(newer
+        ?(LANG==='ko'?'새 서명 릴리스를 사용할 수 있습니다.':'A newer signed PeterFan release is available.')
+        :(LANG==='ko'?'최신 서명 릴리스를 사용 중입니다.':'You are running the latest signed release.')));
+    pillText=newer
+      ?(LANG==='ko'?'업데이트 있음':'Update')
+      :(ahead?(LANG==='ko'?'개발 빌드':'Dev build'):(LANG==='ko'?'최신':'Current'));
+    pillTone=newer?'warn':(ahead?'info':'ok');
+    setText('update-check-result',newer
+      ?(LANG==='ko'?'업데이트 가능':'update available')
+      :(ahead?(LANG==='ko'?'서명 릴리스보다 앞섬':'ahead of signed release'):(LANG==='ko'?'최신 상태':'up to date')));
   } else {
     setText('update-check-result',LANG==='ko'?'대기 중':'ready');
   }
@@ -5725,6 +5986,7 @@ function renderRawTempList(d){
   var ah=document.getElementById('all-temp-head'),al=document.getElementById('all-temp-list'),all=d.all_temps||[];
   if(ah){
     ah.textContent=(RAW_TEMP_OPEN?'▾ ':'▸ ')+(LANG==='ko'?'전체 센서':'All sensors')+(all.length?' · '+all.length:'');
+    ah.setAttribute('aria-expanded',RAW_TEMP_OPEN?'true':'false');
     ah.style.display='';
   }
   if(al){
@@ -5745,6 +6007,42 @@ function renderRawTempList(d){
       });
     }
   }
+}
+function updateHealthVerdict(d){
+  var root=document.getElementById('health-verdict');
+  var title=document.getElementById('health-verdict-title');
+  var detail=document.getElementById('health-verdict-detail');
+  if(!root||!title||!detail)return;
+  var temp=Number(d.temp_pct),cpu=Number(d.cpu_pct||0),fans=Number(d.fan_avg_rpm||0);
+  var hasTemp=!!d.temp_present&&!d.temp_stale&&isFinite(temp)&&temp>0;
+  var health=d.control_health||{};
+  var failsafe=!!health.failsafe_active;
+  var tone='ok',heading=LANG==='ko'?'정상':'Normal';
+  if(!hasTemp){
+    tone='info';
+    heading=LANG==='ko'?'모니터링 중':'Monitoring';
+  } else if(failsafe||temp>=95){
+    tone='hot';
+    heading=LANG==='ko'?'확인 필요':'Needs attention';
+  } else if(temp>=88){
+    tone='hot';
+    heading=LANG==='ko'?'뜨거움':'Hot';
+  } else if(temp>=78){
+    tone='warm';
+    heading=LANG==='ko'?'따뜻함':'Warm';
+  } else if(cpu>=85){
+    tone='info';
+    heading=LANG==='ko'?'작업 중':'Busy';
+  }
+  var parts=[];
+  if(hasTemp)parts.push((LANG==='ko'?'CPU 평균 ':'CPU avg ')+Math.round(temp)+'°C');
+  else parts.push(d.temp_stale?(LANG==='ko'?'온도 값 오래됨':'temperature stale'):(LANG==='ko'?'온도 센서 없음':'temperature unavailable'));
+  parts.push('CPU '+Math.round(cpu)+'%');
+  if(fans>0)parts.push((LANG==='ko'?'팬 ':'fans ')+Math.round(fans)+' RPM');
+  if(failsafe)parts.push(LANG==='ko'?'macOS 자동 복귀':'macOS safety fallback');
+  root.className='health-verdict '+tone;
+  title.textContent=heading;
+  detail.textContent=parts.join(' · ');
 }
 function cssColor(token,fallback){
   var value=getComputedStyle(document.documentElement).getPropertyValue(token);
@@ -5767,6 +6065,7 @@ window.__pf={
  CHART_RANGE_LABEL=d.chart_range;
  updateRail(d);
  if(view==='overview'){
+   updateHealthVerdict(d);
    set('summary-cpu',d.cpu_text||'—');
    set('summary-mem',d.mem_text||'—');
    set('summary-temp',d.temp_present?(d.temp_stale?'--°C':(d.temp_text||'—')):'—');
@@ -5797,10 +6096,16 @@ window.__pf={
    drawChart('cpu-chart', d.cpu_hist, cssColor('--accent','#6ea8ff'), 100, function(v){return v.toFixed(1)+'%';});
    drawChart('mem-chart', d.mem_hist, cssColor('--accent','#6ea8ff'), 100, function(v){return v.toFixed(1)+'%';});
    if(d.temp_present)drawChart('temp-chart', d.temp_stale?[]:d.temp_hist, cssColor('--y','#f4c95d'), null, function(v){return v.toFixed(0)+'°C';});
-   document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){b.classList.toggle('active',b.dataset.range===d.chart_range);});
+   document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){var active=b.dataset.range===d.chart_range;b.classList.toggle('active',active);b.setAttribute('aria-pressed',active?'true':'false');});
  } else if(view==='settings'||view==='system'){
-   if(view==='settings')updateSetup(d);
-   else updateHardwareAvailability(d);
+   if(view==='settings'){updateSetup(d);updateMenubarDisplay(d);}
+   else {
+     updateHardwareAvailability(d);
+     set('system-load',d.load_avg_text||'—');
+     set('system-power',d.power_text||'—');
+     set('system-network-rate',d.network_rate_text||'—');
+     set('system-uptime',d.uptime_text||'—');
+   }
    var systemLoading=document.getElementById('system-loading');
    if(systemLoading)systemLoading.style.display=view==='system'&&!d.slow_data_ready?'':'none';
    set('disk-val',d.disk_text);set('disk-sub',d.disk_sub);bar('disk-bar',d.disk_pct);
@@ -5811,7 +6116,8 @@ window.__pf={
    var battSec=document.getElementById('sec-batt');if(battSec)battSec.dataset.present=d.batt_present?'1':'0';
    set('net-sub',d.net_sub);show('net-ip',!!d.net_ip);if(d.net_ip)set('net-ip',d.net_ip);
    var psCpu=document.getElementById('ps-cpu'),psMem=document.getElementById('ps-mem');
-   if(psCpu)psCpu.classList.toggle('active',d.proc_sort!=='mem');
+   if(psCpu){var cpuSort=d.proc_sort!=='mem';psCpu.classList.toggle('active',cpuSort);psCpu.setAttribute('aria-pressed',cpuSort?'true':'false');}
+   if(psMem){var memSort=d.proc_sort==='mem';psMem.classList.toggle('active',memSort);psMem.setAttribute('aria-pressed',memSort?'true':'false');}
    if(psMem)psMem.classList.toggle('active',d.proc_sort==='mem');
    var pl=document.getElementById('procs-list');
    if(pl){pl.innerHTML='';(d.procs||[]).forEach(function(p){var r=document.createElement('div');r.className='prow';r.innerHTML='<span class="n"></span><span class="c"></span><span class="m"></span><button class="pkill" title="Quit process">×</button>';r.children[0].textContent=p.name;r.children[1].textContent=p.cpu;r.children[2].textContent=p.mem;r.children[3].onclick=function(){quitProcess(p.pid,p.name);};pl.appendChild(r);});}
@@ -6392,7 +6698,7 @@ function focusFanControl(){
   }
 }
 function setChartRange(r){
-  document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){b.classList.toggle('active',b.dataset.range===r);});
+  document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){var active=b.dataset.range===r;b.classList.toggle('active',active);b.setAttribute('aria-pressed',active?'true':'false');});
   window.ipc.postMessage('range:'+r);
 }
 function setProfile(profile){
@@ -6417,6 +6723,45 @@ function beginFanControl(mode,profile){
 }
 function fanControlStatusFailed(status){
   return /error|failed|invalid|cancel|unavailable|not ready/i.test(status||'');
+}
+function profileDutyAt(points,temp){
+  if(!points||!points.length)return 0;
+  if(temp<=points[0][0])return points[0][1];
+  for(var i=1;i<points.length;i++){
+    if(temp<=points[i][0]){
+      var left=points[i-1],right=points[i];
+      var ratio=(temp-left[0])/(right[0]-left[0]);
+      return left[1]+(right[1]-left[1])*ratio;
+    }
+  }
+  return points[points.length-1][1];
+}
+function renderProfileGuide(mode,profile){
+  var root=document.getElementById('profile-guide');
+  var title=document.getElementById('profile-guide-title');
+  var detail=document.getElementById('profile-guide-detail');
+  var bars=document.querySelectorAll('#profile-preview-bars span');
+  if(!root||!title||!detail)return;
+  var guides={
+    silent:{en:['Quiet','Lowest noise; allows warmer temperatures.'],ko:['저소음','소음을 줄이고 더 높은 온도를 허용합니다.'],curve:[[30,0],[50,20],[70,40],[85,70]]},
+    balanced:{en:['Balanced','Default balance of noise and cooling.'],ko:['균형','소음과 냉각의 기본 균형입니다.'],curve:[[30,15],[50,25],[70,45],[85,75],[90,100]]},
+    gaming:{en:['Gaming','Ramps earlier for sustained workloads.'],ko:['게임','지속 부하에 대비해 더 일찍 회전합니다.'],curve:[[30,30],[50,50],[70,75],[85,100]]},
+    performance:{en:['Performance','Aggressive cooling for heavy work.'],ko:['고성능','무거운 작업을 위해 적극적으로 냉각합니다.'],curve:[[30,40],[50,60],[75,90],[85,100]]},
+    maximum:{en:['Maximum','Fans stay at 100%; loudest and coolest.'],ko:['최대','팬을 100%로 유지합니다. 가장 크고 시원합니다.'],curve:[[0,100],[100,100]]}
+  };
+  var isAuto=mode!=='profile'||!guides[profile];
+  var guide=isAuto
+    ?{en:['macOS Auto','macOS manages fan speed for the current workload.'],ko:['macOS 자동','현재 작업에 맞춰 macOS가 팬 속도를 관리합니다.'],curve:null}
+    :guides[profile];
+  var copy=LANG==='ko'?guide.ko:guide.en;
+  title.textContent=copy[0];
+  detail.textContent=copy[1];
+  root.dataset.mode=isAuto?'auto':profile;
+  var temps=[30,50,70,85,90];
+  Array.prototype.slice.call(bars).forEach(function(bar,index){
+    var duty=isAuto?[18,30,46,68,88][index]:profileDutyAt(guide.curve,temps[index]);
+    bar.style.height=Math.max(2,Math.round(duty*.26))+'px';
+  });
 }
 function updateProfileStrip(d){
   var strip=document.getElementById('profile-strip');
@@ -6444,6 +6789,7 @@ function updateProfileStrip(d){
     activeMode=FAN_CONTROL_PENDING.mode;
     activeProfile=FAN_CONTROL_PENDING.profile;
   }
+  if(!activeMode)activeMode='auto';
   var pending=!!FAN_CONTROL_PENDING;
   strip.classList.toggle('disabled',!enabled);
   strip.classList.toggle('pending',pending);
@@ -6452,8 +6798,11 @@ function updateProfileStrip(d){
     b.disabled=!enabled||pending;
     var isAuto=b.dataset.mode==='auto'&&activeMode==='auto';
     var isProfile=b.dataset.mode==='profile'&&activeMode==='profile'&&b.dataset.profile===activeProfile;
-    b.classList.toggle('active',enabled&&(isAuto||isProfile));
+    var selected=isAuto||isProfile;
+    b.classList.toggle('active',selected);
+    b.setAttribute('aria-pressed',selected?'true':'false');
   });
+  renderProfileGuide(activeMode,activeProfile);
 }
 function fanModeLabel(mode,profile){
   if(mode==='auto')return LANG==='ko'?'macOS 자동':'macOS Auto';
@@ -6493,9 +6842,35 @@ function updateFanApplyStatus(d){
 }
 function setProcSort(s){
   var cpu=document.getElementById('ps-cpu'),mem=document.getElementById('ps-mem');
-  if(cpu)cpu.classList.toggle('active',s==='cpu');
-  if(mem)mem.classList.toggle('active',s==='mem');
+  if(cpu){cpu.classList.toggle('active',s==='cpu');cpu.setAttribute('aria-pressed',s==='cpu'?'true':'false');}
+  if(mem){mem.classList.toggle('active',s==='mem');mem.setAttribute('aria-pressed',s==='mem'?'true':'false');}
   window.ipc.postMessage('procsort:'+s);
+}
+function setMenubarDisplay(style){
+  if(!/^(number|cat|both)$/.test(style))return;
+  var data=window.__pf_pending||{};
+  data.menubar_display=style;
+  updateMenubarDisplay(data);
+  if(window.ipc)window.ipc.postMessage('display:'+style);
+}
+function updateMenubarDisplay(d){
+  var style=/^(number|cat|both)$/.test(d.menubar_display)?d.menubar_display:'both';
+  document.querySelectorAll('.display-segment button').forEach(function(button){
+    var active=button.dataset.display===style;
+    button.classList.toggle('active',active);
+    button.setAttribute('aria-pressed',active?'true':'false');
+  });
+  var pace=document.getElementById('runner-pace');
+  if(!pace)return;
+  var cpu=Math.max(0,Math.min(100,Number(d.runner_cpu_pct)||0));
+  var label=cpu<20
+    ?(LANG==='ko'?'천천히':'Strolling')
+    :(cpu<55
+      ?(LANG==='ko'?'가볍게':'Jogging')
+      :(cpu<80?(LANG==='ko'?'빠르게':'Running'):(LANG==='ko'?'전력 질주':'Sprinting')));
+  pace.textContent='CPU '+Math.round(cpu)+'% · '+label;
+  pace.title=(LANG==='ko'?'CPU 사용률에 따라 고양이 속도가 바뀝니다':'Cat speed follows CPU usage')
+    +' · '+Math.round(Number(d.runner_interval_ms)||0)+' ms';
 }
 function quitProcess(pid,name){
   var msg=LANG==='ko'?('"'+name+'" 프로세스를 종료할까요?'):('Quit "'+name+'"?');
@@ -6863,9 +7238,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn native_status_item_width_is_stable_for_each_display_style() {
-        assert_eq!(native_status_item_width(MenubarDisplay::Graph), 28.0);
+        assert_eq!(native_status_item_width(MenubarDisplay::Graph), 30.0);
         assert_eq!(native_status_item_width(MenubarDisplay::Number), 50.0);
-        assert_eq!(native_status_item_width(MenubarDisplay::Both), 76.0);
+        assert_eq!(native_status_item_width(MenubarDisplay::Both), 78.0);
     }
 
     #[test]
@@ -6890,6 +7265,8 @@ mod tests {
         queue_pending_command(&mut queue, "fanhold:fan.left:40".into());
         queue_pending_command(&mut queue, "fanhold:fan.left:65".into());
         queue_pending_command(&mut queue, "fanhold:fan.right:55".into());
+        queue_pending_command(&mut queue, "display:number".into());
+        queue_pending_command(&mut queue, "display:both".into());
 
         assert_eq!(
             queue,
@@ -6898,6 +7275,7 @@ mod tests {
                 "profile:performance",
                 "fanhold:fan.left:65",
                 "fanhold:fan.right:55",
+                "display:both",
             ]
         );
     }
@@ -7253,6 +7631,82 @@ mod tests {
     }
 
     #[test]
+    fn runner_gait_has_eight_distinct_contact_and_flight_poses() {
+        let frames = (0..RUNNER_FRAME_COUNT)
+            .map(|frame| make_cat_runner_rgba(50.0, frame))
+            .collect::<Vec<_>>();
+        let unique = frames.iter().collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique.len(), usize::from(RUNNER_FRAME_COUNT));
+
+        let ground_pixels = frames
+            .iter()
+            .map(|rgba| {
+                rgba.chunks_exact(4)
+                    .enumerate()
+                    .filter(|(index, pixel)| index / 32 >= 25 && pixel[3] > 96)
+                    .count()
+            })
+            .collect::<Vec<_>>();
+        let least_contact = ground_pixels.iter().min().copied().unwrap_or_default();
+        let most_contact = ground_pixels.iter().max().copied().unwrap_or_default();
+        assert!(most_contact >= least_contact + 6);
+    }
+
+    #[test]
+    #[ignore = "writes the workspace target/runner-sprite-sheet.png for visual QA"]
+    fn render_runner_sprite_sheet_for_visual_qa() {
+        const SCALE: u32 = 4;
+        const CELL: u32 = 36;
+        const ICON: u32 = 32;
+        let width = CELL * u32::from(RUNNER_FRAME_COUNT) * SCALE;
+        let height = CELL * SCALE;
+        let mut sheet = vec![0u8; (width * height * 4) as usize];
+
+        for pixel in sheet.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[28, 28, 30, 255]);
+        }
+
+        for frame in 0..RUNNER_FRAME_COUNT {
+            let icon = make_cat_runner_rgba(50.0, frame);
+            let origin_x = (u32::from(frame) * CELL + 2) * SCALE;
+            let origin_y = 2 * SCALE;
+            for source_y in 0..ICON {
+                for source_x in 0..ICON {
+                    let source_index = ((source_y * ICON + source_x) * 4) as usize;
+                    let alpha = f32::from(icon[source_index + 3]) / 255.0;
+                    for scale_y in 0..SCALE {
+                        for scale_x in 0..SCALE {
+                            let target_x = origin_x + source_x * SCALE + scale_x;
+                            let target_y = origin_y + source_y * SCALE + scale_y;
+                            let target_index = ((target_y * width + target_x) * 4) as usize;
+                            for channel in 0..3 {
+                                let foreground = f32::from(icon[source_index + channel]);
+                                sheet[target_index + channel] =
+                                    (foreground * alpha + 28.0 * (1.0 - alpha)).round() as u8;
+                            }
+                            sheet[target_index + 3] = 255;
+                        }
+                    }
+                }
+            }
+        }
+
+        let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target");
+        std::fs::create_dir_all(&target).expect("create target directory");
+        let file = std::fs::File::create(target.join("runner-sprite-sheet.png"))
+            .expect("create runner QA sheet");
+        let mut encoder = png::Encoder::new(file, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .and_then(|mut writer| writer.write_image_data(&sheet))
+            .expect("write runner QA sheet");
+    }
+
+    #[test]
     fn runner_animation_speed_tracks_cpu_load() {
         let idle = runner_frame_interval(5.0);
         let normal = runner_frame_interval(45.0);
@@ -7262,16 +7716,59 @@ mod tests {
         assert!(normal > busy);
         assert!(idle <= RUNNER_MAX_INTERVAL);
         assert!(busy >= RUNNER_MIN_INTERVAL);
-        assert!(idle.as_millis() >= 900);
+        assert!(idle.as_millis() >= 800);
         assert!((300..=450).contains(&normal.as_millis()));
-        assert!(busy.as_millis() <= 160);
+        assert!(busy.as_millis() <= 130);
 
         assert!(!runner_enabled(MenubarDisplay::Number));
         assert!(runner_enabled(MenubarDisplay::Graph));
         assert!(runner_enabled(MenubarDisplay::Both));
-        assert_eq!(make_runner_icons().len(), 16);
+        assert_eq!(make_runner_icons().len(), 32);
         assert_eq!(runner_load_band(10.0), 0);
         assert_eq!(runner_load_band(90.0), 3);
+    }
+
+    #[test]
+    fn runner_reacts_quickly_to_spikes_and_decays_smoothly() {
+        assert_eq!(smooth_runner_cpu(0.0, 67.0, false), 67.0);
+        let spike = smooth_runner_cpu(20.0, 90.0, true);
+        let decay = smooth_runner_cpu(90.0, 20.0, true);
+        assert!(spike > 70.0);
+        assert!(decay > 65.0);
+        assert!(smooth_runner_cpu(40.0, 140.0, true) <= 100.0);
+    }
+
+    #[test]
+    fn settings_expose_cpu_runner_style_and_live_pace() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+
+        for html in [&en, &ko] {
+            assert!(html.contains(r#"id="menubar-display-setting""#));
+            assert!(html.contains(r#"id="display-number""#));
+            assert!(html.contains(r#"id="display-cat""#));
+            assert!(html.contains(r#"id="display-both""#));
+            assert!(html.contains("function setMenubarDisplay(style)"));
+            assert!(html.contains("window.ipc.postMessage('display:'+style)"));
+            assert!(html.contains("function updateMenubarDisplay(d)"));
+        }
+    }
+
+    #[test]
+    fn system_view_has_high_value_quick_facts() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+
+        for id in [
+            "system-load",
+            "system-power",
+            "system-network-rate",
+            "system-uptime",
+        ] {
+            assert!(en.contains(&format!(r#"id="{id}""#)));
+        }
+        assert_eq!(format_uptime(90), "1m");
+        assert_eq!(format_uptime(7_320), "2h 2m");
+        assert_eq!(format_uptime(183_600), "2d 3h");
     }
 
     #[test]
@@ -7307,13 +7804,13 @@ mod tests {
         ] {
             assert!(en.contains(&format!(r##"id="{id}""##)));
         }
-        assert!(en.contains("CPU temperature"));
-        assert!(en.contains("Fan average"));
+        assert!(en.contains(r#"id="summary-temp-label">CPU temp<"#));
+        assert!(en.contains(r#"id="summary-fan-label">Fans<"#));
         assert!(en.contains("d.fan_avg_rpm_text"));
         assert!(en.contains("fan_avg_rpm"));
         assert!(source.contains("\"fan_avg_rpm_text\": fan_avg_rpm_text"));
         assert!(en.contains("setVisible('range-tabs',true);"));
-        assert!(en.contains("['summary-strip','sec-cpu','sec-mem','sec-temp']"));
+        assert!(en.contains("['health-verdict','summary-strip','sec-cpu','sec-mem','sec-temp']"));
     }
 
     #[test]
@@ -7567,7 +8064,9 @@ mod tests {
         assert!(en.contains("Read-only fans"));
         assert!(en.contains("controllableCount>0"));
         assert!(en.contains(r#"id="profile-strip""#));
-        assert!(en.contains(r#"disabled data-mode="auto" title="Auto" onclick="setAuto()">"#));
+        assert!(en.contains(
+            r#"disabled data-mode="auto" aria-pressed="true" title="Auto" onclick="setAuto()">"#
+        ));
 
         assert!(ko.contains(">하드웨어 감지 상태<"));
         assert!(ko.contains(">배터리<"));
@@ -7575,6 +8074,22 @@ mod tests {
         assert!(ko.contains(">팬 센서 없음<"));
         assert!(ko.contains("이 시스템에서는 팬 센서를 찾지 못했습니다"));
         assert!(ko.contains("읽기 전용 팬"));
+    }
+
+    #[test]
+    fn hardware_prefetch_and_loading_overlays_do_not_shift_the_dashboard() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("refresh_fan_cache(app, now);"));
+        assert!(source.contains("refresh_daemon_cache(app, now);"));
+        assert!(source.contains("daemon_read: Arc<BackgroundRead<Option<serde_json::Value>>>"));
+        assert!(en.contains(".data-loading{position:absolute;"));
+        assert!(en.contains(".view-loading{position:absolute;"));
+        assert!(en.contains(
+            "body.data-ready .data-loading{opacity:0;visibility:hidden;pointer-events:none;}"
+        ));
+        assert!(!en.contains("body.data-ready .data-loading{display:none;}"));
     }
 
     #[test]
@@ -7739,7 +8254,9 @@ mod tests {
         ));
         assert!(en.contains("setVisible('setup-row',true);"));
         assert!(
-            en.contains("} else {\n    ['summary-strip','sec-cpu','sec-mem','sec-temp'].forEach")
+            en.contains(
+                "} else {\n    ['health-verdict','summary-strip','sec-cpu','sec-mem','sec-temp'].forEach"
+            )
         );
         assert!(!en.contains(
             "['range-tabs','setup-row','summary-strip','sec-cpu','sec-mem','sec-temp'].forEach"
@@ -7987,6 +8504,47 @@ mod tests {
         assert!(en.contains("cssColor('--g','#5dd879')"));
         assert!(!en.contains("drawChart('cpu-chart', d.cpu_hist, '#5b9dff'"));
         assert!(!en.contains("ctx.strokeStyle='#5b9dff'"));
+    }
+
+    #[test]
+    fn dashboard_meets_the_gstack_local_product_gate() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+        let checklist = include_str!("../../../docs/GSTACK_PRODUCT_CHECKLIST.md");
+
+        assert_eq!(
+            checklist
+                .lines()
+                .filter(|line| line.starts_with("- [x]"))
+                .count(),
+            10
+        );
+        for id in [
+            "health-verdict",
+            "health-verdict-title",
+            "health-verdict-detail",
+            "profile-guide",
+            "profile-guide-title",
+            "profile-preview-bars",
+        ] {
+            assert!(en.contains(&format!(r#"id="{id}""#)), "missing {id}");
+        }
+        assert!(en.contains("function updateHealthVerdict(d)"));
+        assert!(en.contains("function renderProfileGuide(mode,profile)"));
+        assert!(en.contains("CPU avg "));
+        assert!(en.contains("macOS safety fallback"));
+        assert!(en.contains("Latest signed"));
+        assert!(en.contains("ahead of the latest signed release"));
+        assert!(ko.contains("최신 서명 릴리스"));
+        assert!(ko.contains("Mac 상태 확인 중"));
+        assert!(en.contains(
+            r#"<button type="button" class="all-temp-head" id="all-temp-head" aria-expanded="false""#
+        ));
+        assert!(en.contains(r#"id="fan-apply-status" role="status" aria-live="polite""#));
+        assert!(en.contains("b.setAttribute('aria-pressed',selected?'true':'false');"));
+        assert!(en.contains("b.setAttribute('aria-pressed',active?'true':'false');"));
+        assert!(en.contains(".prow:hover .pkill,.pkill:focus-visible{opacity:1;}"));
+        assert!(en.contains(".rail-btn{height:44px"));
     }
 
     #[test]
@@ -8603,6 +9161,29 @@ mod tests {
         assert_eq!(normalized_fan_speed_percent(&fan_at(2_000)), Some(0.0));
         assert_eq!(normalized_fan_speed_percent(&fan_at(4_000)), Some(50.0));
         assert_eq!(normalized_fan_speed_percent(&fan_at(6_000)), Some(100.0));
+    }
+
+    #[test]
+    fn fan_cache_ignores_transient_empty_samples() {
+        let fan = Fan {
+            id: "fan.test".into(),
+            label: "Test Fan".into(),
+            rpm: 3_200,
+            min_rpm: Some(2_000),
+            max_rpm: Some(6_000),
+            duty_percent: None,
+            controllable: true,
+        };
+        let mut cache = vec![fan];
+        let mut empty_samples = 0;
+
+        merge_fan_sample(&mut cache, &mut empty_samples, Vec::new());
+        merge_fan_sample(&mut cache, &mut empty_samples, Vec::new());
+        assert_eq!(cache.len(), 1);
+        assert_eq!(empty_samples, 2);
+
+        merge_fan_sample(&mut cache, &mut empty_samples, Vec::new());
+        assert!(cache.is_empty());
     }
 
     #[test]

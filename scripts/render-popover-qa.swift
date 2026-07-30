@@ -243,12 +243,30 @@ func drawAuxiliaryView(_ spec: CaseSpec, main: NSRect) {
             text(profile, NSRect(x: x, y: y + 7, width: segmentWidth - 1, height: 12), 8, index == 0 ? p.text : p.dim, weight: .semibold, align: .center)
         }
 
+        let guideY = segmentY - 47
+        rounded(NSRect(x: left, y: guideY, width: width, height: 39), radius: 7, fill: p.panel, stroke: p.line)
+        text(label("macOS Auto", "macOS 자동", spec), NSRect(x: left + 9, y: guideY + 21, width: 150, height: 13), 9.5, p.text, weight: .bold)
+        text(
+            label("macOS adapts to the workload", "현재 작업에 맞춰 자동 조절", spec),
+            NSRect(x: left + 9, y: guideY + 7, width: 190, height: 12),
+            8.5,
+            p.dim
+        )
+        let previewHeights: [CGFloat] = [5, 8, 12, 18, 24]
+        for (index, height) in previewHeights.enumerated() {
+            rounded(
+                NSRect(x: main.maxX - 62 + CGFloat(index) * 9, y: guideY + 7, width: 6, height: height),
+                radius: 2,
+                fill: p.green.withAlphaComponent(0.7)
+            )
+        }
+
         let diagnostics = [
             (label("Curve input", "커브 입력", spec), "61°C"),
             (label("Safety hottest", "안전 최고", spec), "64°C"),
             (label("Critical limit", "임계값", spec), "95°C"),
         ]
-        let diagY = segmentY - 50
+        let diagY = guideY - 48
         let diagWidth = width / 3
         for (index, item) in diagnostics.enumerated() {
             let x = left + CGFloat(index) * diagWidth
@@ -265,7 +283,7 @@ func drawAuxiliaryView(_ spec: CaseSpec, main: NSRect) {
             (label("Right fan", "오른쪽 팬", spec), "2,388 RPM", 0.32),
         ]
         for (index, fan) in fans.enumerated() {
-            let y = diagY - 69 - CGFloat(index) * 66
+            let y = diagY - 54 - CGFloat(index) * 55
             text(fan.0, NSRect(x: left, y: y + 28, width: 130, height: 14), 9.5, p.text, weight: .semibold)
             text(fan.1, NSRect(x: main.maxX - 112, y: y + 28, width: 94, height: 14), 9, p.dim, weight: .semibold, align: .right)
             meter(NSRect(x: left, y: y + 15, width: width, height: 4), value: fan.2, color: p.accent, palette: p)
@@ -278,27 +296,63 @@ func drawAuxiliaryView(_ spec: CaseSpec, main: NSRect) {
         rounded(NSRect(x: main.maxX - 73, y: loginY + 8, width: 55, height: 25), radius: 7, fill: p.accent.withAlphaComponent(0.13))
         text(label("Enabled", "켜짐", spec), NSRect(x: main.maxX - 73, y: loginY + 15, width: 55, height: 12), 8, p.accent, weight: .bold, align: .center)
         line(from: CGPoint(x: left, y: loginY - 4), to: CGPoint(x: main.maxX - 18, y: loginY - 4), color: p.line)
-        text(label("Fan control health", "팬 제어 상태", spec), NSRect(x: left, y: loginY - 35, width: 190, height: 15), 10, p.text, weight: .semibold)
-        text(label("Ready", "정상", spec), NSRect(x: main.maxX - 80, y: loginY - 35, width: 62, height: 15), 9, p.green, weight: .bold, align: .right)
+        let menuY = loginY - 42
+        text(label("Menu bar", "메뉴 막대", spec), NSRect(x: left, y: menuY + 8, width: 100, height: 15), 10, p.text, weight: .semibold)
+        let menuWidth: CGFloat = 144
+        let menuX = main.maxX - menuWidth - 18
+        rounded(NSRect(x: menuX, y: menuY + 2, width: menuWidth, height: 27), radius: 7, fill: p.panel)
+        let menuLabels = spec.isKorean ? ["숫자", "고양이", "둘 다"] : ["Number", "Cat", "Both"]
+        for (index, menuLabel) in menuLabels.enumerated() {
+            let segmentWidth = menuWidth / 3
+            let x = menuX + CGFloat(index) * segmentWidth
+            if index == 2 {
+                rounded(NSRect(x: x + 2, y: menuY + 4, width: segmentWidth - 4, height: 23), radius: 5, fill: p.section)
+            }
+            text(menuLabel, NSRect(x: x, y: menuY + 11, width: segmentWidth, height: 12), 7.5, index == 2 ? p.text : p.dim, weight: .semibold, align: .center)
+        }
+        text(label("CPU 54% · Running", "CPU 54% · 빠르게", spec), NSRect(x: menuX, y: menuY - 10, width: menuWidth, height: 11), 7.5, p.dim, align: .right)
+        line(from: CGPoint(x: left, y: menuY - 18), to: CGPoint(x: main.maxX - 18, y: menuY - 18), color: p.line)
+        text(label("Fan control health", "팬 제어 상태", spec), NSRect(x: left, y: menuY - 48, width: 190, height: 15), 10, p.text, weight: .semibold)
+        text(label("Ready", "정상", spec), NSRect(x: main.maxX - 80, y: menuY - 48, width: 62, height: 15), 9, p.green, weight: .bold, align: .right)
 
-        line(from: CGPoint(x: main.minX, y: loginY - 58), to: CGPoint(x: main.maxX, y: loginY - 58), color: p.line)
-        drawSectionTitle(label("Updates", "업데이트", spec), pill: label("Current", "최신", spec), y: loginY - 87, main: main, palette: p)
+        line(from: CGPoint(x: main.minX, y: menuY - 70), to: CGPoint(x: main.maxX, y: menuY - 70), color: p.line)
+        drawSectionTitle(label("Updates", "업데이트", spec), pill: label("Current", "최신", spec), y: menuY - 98, main: main, palette: p)
         let updateRows = [
-            (label("Current version", "현재 버전", spec), "v\(version)"),
-            (label("Latest version", "최신 버전", spec), "v\(version)"),
+            (label("Installed app", "설치된 앱", spec), "v\(version)"),
+            (label("Latest signed", "최신 서명 릴리스", spec), "v\(version)"),
             (label("Status", "상태", spec), label("Up to date", "최신 상태", spec)),
         ]
         for (index, item) in updateRows.enumerated() {
-            let y = loginY - 124 - CGFloat(index) * 31
+            let y = menuY - 135 - CGFloat(index) * 28
             text(item.0, NSRect(x: left, y: y, width: 160, height: 14), 8.5, p.dim)
             text(item.1, NSRect(x: main.maxX - 150, y: y, width: 132, height: 14), 8.5, index == 2 ? p.green : p.text, weight: .semibold, align: .right)
             line(from: CGPoint(x: left, y: y - 8), to: CGPoint(x: main.maxX - 18, y: y - 8), color: p.line)
         }
-        let buttonY = loginY - 241
+        let buttonY = menuY - 224
         rounded(NSRect(x: left, y: buttonY, width: 118, height: 30), radius: 7, fill: p.accent.withAlphaComponent(0.15))
         text(label("Check for updates", "업데이트 확인", spec), NSRect(x: left, y: buttonY + 9, width: 118, height: 13), 8.5, p.accent, weight: .bold, align: .center)
     } else {
         drawSectionTitle(label("Hardware", "하드웨어", spec), pill: label("Live", "실시간", spec), y: top, main: main, palette: p)
+        let facts = [
+            (label("Load average", "로드 평균", spec), "2.18 · 1.92 · 1.74"),
+            (label("Power", "소비 전력", spec), "35.4 W"),
+            (label("Network rate", "네트워크 속도", spec), "1.4 MB/s"),
+            (label("Uptime", "가동 시간", spec), "3d 7h"),
+        ]
+        let factsTop = top - 31
+        for (index, fact) in facts.enumerated() {
+            let column = index % 2
+            let row = index / 2
+            let factWidth = width / 2
+            let x = left + CGFloat(column) * factWidth
+            let y = factsTop - CGFloat(row) * 37
+            if column == 1 {
+                line(from: CGPoint(x: x, y: y - 5), to: CGPoint(x: x, y: y + 27), color: p.line)
+            }
+            text(fact.0, NSRect(x: x + (column == 1 ? 10 : 0), y: y + 13, width: factWidth - 12, height: 11), 7.5, p.dim, weight: .semibold)
+            text(fact.1, NSRect(x: x + (column == 1 ? 10 : 0), y: y - 1, width: factWidth - 12, height: 13), 8.5, p.text, weight: .bold)
+        }
+        line(from: CGPoint(x: left, y: factsTop - 48), to: CGPoint(x: main.maxX - 18, y: factsTop - 48), color: p.line)
         let items: [(String, String, CGFloat, NSColor)] = [
             (label("Storage", "저장공간", spec), "87.2%", 0.87, p.red),
             (label("Battery", "배터리", spec), "98%", 0.98, p.green),
@@ -306,7 +360,7 @@ func drawAuxiliaryView(_ spec: CaseSpec, main: NSRect) {
             (label("Top process", "상위 프로세스", spec), "PeterFan 4.2%", 0.18, p.yellow),
         ]
         for (index, item) in items.enumerated() {
-            let y = top - 70 - CGFloat(index) * 82
+            let y = top - 142 - CGFloat(index) * 61
             text(item.0, NSRect(x: left, y: y + 38, width: 150, height: 15), 10, p.text, weight: .semibold)
             text(item.1, NSRect(x: main.maxX - 140, y: y + 38, width: 122, height: 15), 10, p.text, weight: .bold, align: .right)
             meter(NSRect(x: left, y: y + 22, width: width, height: 4), value: item.2, color: item.3, palette: p)
@@ -363,14 +417,26 @@ func drawCase(_ spec: CaseSpec, origin: CGPoint) {
         return
     }
 
+    let healthY = main.maxY - 91
+    rounded(NSRect(x: main.minX, y: healthY, width: main.width, height: 40), radius: 0, fill: p.panel)
+    rounded(NSRect(x: main.minX + 18, y: healthY + 16, width: 9, height: 9), radius: 3, fill: p.green)
+    text(label("Normal", "정상", spec), NSRect(x: main.minX + 37, y: healthY + 20, width: 64, height: 14), 10.5, p.green, weight: .bold)
+    text(
+        label("CPU avg 61°C · CPU 57% · fans 3865 RPM", "CPU 평균 61°C · CPU 57% · 팬 3865 RPM", spec),
+        NSRect(x: main.minX + 96, y: healthY + 20, width: main.width - 114, height: 14),
+        8.5,
+        p.dim
+    )
+    line(from: CGPoint(x: main.minX, y: healthY), to: CGPoint(x: main.maxX, y: healthY), color: p.line)
+
     let summary: [(String, String, CGFloat, NSColor)] = [
         (label("CPU", "CPU", spec), "57%", 0.57, p.green),
         (label("Memory", "메모리", spec), "73%", 0.73, p.accent),
         (label("CPU temp", "CPU 온도", spec), "61°C", 0.61, p.yellow),
-        (label("Fan avg", "팬 평균", spec), "3865", 0.52, p.accent),
+        (label("Fans", "팬", spec), "3865", 0.52, p.accent),
     ]
     let summaryX = main.minX + 18
-    let summaryY = main.maxY - 122
+    let summaryY = main.maxY - 163
     let summaryWidth = (main.width - 36) / 4
     for (index, item) in summary.enumerated() {
         let x = summaryX + CGFloat(index) * summaryWidth
@@ -410,18 +476,7 @@ func drawCase(_ spec: CaseSpec, origin: CGPoint) {
         }
     }
 
-    text(label("All sensors · 18", "전체 센서 · 18", spec), NSRect(x: contentX, y: main.minY + 17, width: contentWidth, height: 16), 9.5, p.dim, weight: .semibold)
-    let sensors = [
-        (label("CPU Core Average", "CPU 코어 평균", spec), "61°C"),
-        (label("CPU Performance Core 1", "CPU 성능 코어 1", spec), "63°C"),
-        (label("CPU Performance Core 2", "CPU 성능 코어 2", spec), "62°C"),
-        (label("CPU Efficiency Average", "CPU 효율 코어 평균", spec), "58°C"),
-    ]
-    for (index, sensor) in sensors.enumerated() {
-        let y = main.minY + 42 + CGFloat(index) * 17
-        text(sensor.0, NSRect(x: contentX, y: y, width: contentWidth - 58, height: 13), 8.5, p.dim, weight: .medium)
-        text(sensor.1, NSRect(x: main.maxX - 70, y: y, width: 52, height: 13), 8.5, p.text, weight: .semibold, align: .right)
-    }
+    text(label("All sensors · 18", "전체 센서 · 18", spec), NSRect(x: contentX, y: main.minY + 17, width: contentWidth, height: 16), 10, p.dim, weight: .semibold)
 
     drawRail(spec, rail: rail)
 }

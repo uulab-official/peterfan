@@ -28,10 +28,10 @@ It combines:
 
 | Area | Status |
 | --- | --- |
-| macOS menu-bar app | Live menu-bar sparkline, popover dashboard, detail window, light/dark mode |
+| macOS menu-bar app | Natural eight-frame cat whose speed follows CPU load, temperature/cat/both styles, popover dashboard, detail window, light/dark mode |
 | CLI | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `temps`, `temps --all`, `fans`, `fan`, `doctor`, `integrity`, `serve`, `update`, and more |
 | TUI | Terminal dashboard built with ratatui |
-| System metrics | CPU, memory, disks, network, processes, battery |
+| System metrics | CPU and per-core load, memory, disks, network, processes, battery, load average, power, and uptime |
 | macOS sensors | The menu-bar headline temperature defaults to CPU Core Average, while CPU Hottest, SMC summary/aggregate diagnostics, IOHID tdie, SSD and battery temperature, fan RPM, and the full SMC/IOHID inventory remain visible in the detailed lists |
 | Fan control | Manual fan setting, profiles, editable curves, daemon-driven persistent control |
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
@@ -88,7 +88,7 @@ Prebuilt release artifacts live on
 | --- | --- | --- |
 | `PeterFan-vX.Y.Z.dmg` | macOS | `PeterFan.app` and an Applications shortcut |
 | `peterfan-vX.Y.Z-universal-apple-darwin.tar.gz` | macOS | CLI, TUI, daemon, menu-bar binary, and app bundle |
-| `peterfan-vX.Y.Z-x86_64-pc-windows-msvc.zip` | Windows | `PeterFan.exe`, CLI/TUI, per-user installer/uninstaller, and Windows notes |
+| `peterfan-vX.Y.Z-x86_64-pc-windows-msvc.zip` | Windows | `PeterFan.exe`, CLI/TUI, per-user installer/uninstaller, Microsoft-signed WebView2 bootstrapper, and Windows notes |
 
 For macOS, a properly published DMG should be Developer ID signed, notarized,
 and stapled. You can verify a downloaded DMG before installing:
@@ -123,9 +123,10 @@ the installed directory to remove the app.
 
 Windows release assets are built by
 [`.github/workflows/windows.yml`](./.github/workflows/windows.yml). The workflow
-runs workspace tests, a real system-metrics JSON smoke test, tray single-instance
-and restart checks, ZIP validation, and then attaches the archive to an existing
-GitHub Release while refreshing `checksums.txt`.
+runs workspace tests, real system-metrics checks, WebView2/tray readiness,
+single-instance and restart checks, and a complete install/startup/uninstall
+lifecycle. The unified release workflow publishes only after both macOS and
+Windows artifacts pass.
 
 ### One-line install (from source)
 
@@ -315,11 +316,16 @@ scripts/setup-macos-signing.sh import /path/to/developerID_application.cer
 scripts/setup-macos-signing.sh notary
 ```
 
-Build, sign, notarize, staple, checksum, and upload a tagged release:
+Build, sign, notarize, staple, run the native Windows release gate, checksum,
+and publish a tagged release:
 
 ```bash
-scripts/release-local-macos.sh vX.Y.Z --draft
+scripts/release-local-macos.sh vX.Y.Z
 ```
+
+The script first creates a private draft, dispatches the Windows workflow, and
+publishes only after the Windows ZIP is attached. Add `--draft` to leave the
+complete release private for manual review.
 
 Verify an artifact:
 
@@ -342,10 +348,9 @@ Maintainer reminder before every version bump:
 - run `scripts/check-docs.sh`
 - run `cargo fmt --check`, `cargo test --workspace`, and
   `cargo clippy --workspace --all-targets -- -D warnings`
-- run `scripts/release-local-macos.sh vX.Y.Z` and install-test the DMG from
-  `/Applications`
-- confirm the Windows workflow attached
-  `peterfan-vX.Y.Z-x86_64-pc-windows-msvc.zip` and updated `checksums.txt`
+- run `scripts/release-local-macos.sh vX.Y.Z`; it install-tests the DMG,
+  waits for the Windows workflow, verifies the Windows ZIP attachment, and
+  then publishes the complete release
 
 ## Project Layout
 

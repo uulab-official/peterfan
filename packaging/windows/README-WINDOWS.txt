@@ -23,6 +23,13 @@ Included programs
   peterfan-tui.exe    Terminal dashboard
   install.ps1         Per-user installer
   uninstall.ps1       Per-user uninstaller
+  MicrosoftEdgeWebview2Setup.exe
+                      Microsoft-signed WebView2 Evergreen bootstrapper
+
+The installer checks for Microsoft Edge WebView2 before PeterFan starts. It
+uses the bundled Microsoft-signed bootstrapper only when the runtime is
+missing. Windows 11 already includes WebView2, and most Windows 10 machines
+already have it, so this normally adds no installation step.
 
 Current Windows support
 -----------------------

@@ -60,10 +60,11 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Build arm64/x86_64 release intermediates sequentially and clean them after
       copying, so Universal packaging does not depend on excess local disk space.
 - [x] Build and test Windows x64 on a native GitHub Actions runner.
-- [x] Verify Windows system-metrics JSON, tray single-instance behavior,
-      restart behavior, archive layout, and executable versions before upload.
-- [x] Attach the Windows ZIP to the existing release and refresh the shared
-      `checksums.txt` manifest without rebuilding the signed macOS artifacts.
+- [x] Verify Windows system-metrics JSON, WebView2/tray readiness, per-user
+      install, startup registration, single-instance/restart behavior,
+      uninstall, archive layout, and executable versions before upload.
+- [x] Keep a new release private until the verified Windows ZIP is attached,
+      then publish macOS and Windows assets with one shared `checksums.txt`.
 - [x] Enforce RustSec policy in CI and remove or isolate allowed warnings.
 - [ ] Test release signing and notarization from a second authorized Mac.
 

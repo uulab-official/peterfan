@@ -8,11 +8,31 @@ $ErrorActionPreference = "Stop"
 $Cli = Join-Path $BinDir "peterfan.exe"
 $Tray = Join-Path $BinDir "peterfan-menubar.exe"
 $Tui = Join-Path $BinDir "peterfan-tui.exe"
+$Log = Join-Path $env:APPDATA "peterfan\menubar.log"
 
 foreach ($Binary in @($Cli, $Tray, $Tui)) {
     if (-not (Test-Path $Binary -PathType Leaf)) {
         throw "Missing Windows binary: $Binary"
     }
+}
+
+function Wait-ForTrayReady([string]$Path, [int]$TimeoutSeconds = 20) {
+    $Deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if (Test-Path $Path -PathType Leaf) {
+            $Content = Get-Content $Path -Raw
+            if (
+                $Content -match "tray created" -and
+                $Content -match "popover webview created" -and
+                $Content -match "popover webview ready"
+            ) {
+                return
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $Deadline)
+    $Tail = if (Test-Path $Path) { (Get-Content $Path -Tail 30) -join "`n" } else { "<missing>" }
+    throw "Windows tray or WebView2 did not become ready.`n$Tail"
 }
 
 & $Cli --version
@@ -27,9 +47,24 @@ if (
 ) {
     throw "Windows status JSON is incomplete."
 }
+$Doctor = (& $Cli --json doctor) | ConvertFrom-Json
+if (
+    $Doctor.os -ne "windows" -or
+    $Doctor.arch -ne "x86_64" -or
+    $Doctor.metrics_backend -ne "sysinfo" -or
+    $Doctor.thermal_backend -ne "windows" -or
+    -not $Doctor.metrics.cpu -or
+    -not $Doctor.metrics.memory -or
+    $Doctor.thermal.read_temps -or
+    $Doctor.thermal.read_fans -or
+    $Doctor.thermal.control_fans
+) {
+    throw "Windows doctor did not report the expected real metrics and honest thermal capabilities."
+}
 
+Remove-Item $Log -Force -ErrorAction SilentlyContinue
 $First = Start-Process $Tray -PassThru
-Start-Sleep -Seconds 4
+Wait-ForTrayReady $Log
 if ($First.HasExited) {
     throw "Windows tray app exited during startup."
 }
@@ -52,4 +87,4 @@ if ($Restarted.HasExited) {
 }
 Stop-Process -Id $Restarted.Id -Force
 
-Write-Host "Windows smoke test passed: metrics JSON, single instance, restart."
+Write-Host "Windows smoke test passed: real metrics/capabilities, tray, WebView2, single instance, restart."
