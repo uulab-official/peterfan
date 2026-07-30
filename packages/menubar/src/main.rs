@@ -119,6 +119,138 @@ static RAW_TEMPS_OPEN: AtomicBool = AtomicBool::new(false);
 static DAEMON_VERSION_CACHE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
 static MENUBAR_LOG_LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(Debug, Clone, PartialEq)]
+struct CpuCoreGroup {
+    kind: &'static str,
+    start_index: usize,
+    usages: Vec<f32>,
+}
+
+fn cpu_core_groups_for_layout(
+    per_core: &[f32],
+    performance_efficiency_counts: Option<(usize, usize)>,
+) -> Vec<CpuCoreGroup> {
+    if let Some((performance, efficiency)) = performance_efficiency_counts {
+        if performance > 0
+            && efficiency > 0
+            && performance.saturating_add(efficiency) == per_core.len()
+        {
+            return vec![
+                CpuCoreGroup {
+                    // Apple Silicon exposes Mach logical CPU indexes with the
+                    // efficiency cluster first. Keep that ordering so sysinfo's
+                    // per-core samples retain their real logical CPU indexes.
+                    kind: "efficiency",
+                    start_index: 0,
+                    usages: per_core[..efficiency].to_vec(),
+                },
+                CpuCoreGroup {
+                    kind: "performance",
+                    start_index: efficiency,
+                    usages: per_core[efficiency..].to_vec(),
+                },
+            ];
+        }
+    }
+
+    vec![CpuCoreGroup {
+        kind: "logical",
+        start_index: 0,
+        usages: per_core.to_vec(),
+    }]
+}
+
+#[cfg(target_os = "macos")]
+fn apple_cpu_cluster_counts() -> Option<(usize, usize)> {
+    static COUNTS: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
+    *COUNTS.get_or_init(|| {
+        let output = std::process::Command::new("/usr/sbin/sysctl")
+            .args([
+                "-n",
+                "hw.perflevel0.name",
+                "hw.perflevel0.logicalcpu",
+                "hw.perflevel1.name",
+                "hw.perflevel1.logicalcpu",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let values = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if values.len() != 4 {
+            return None;
+        }
+
+        let clusters = [
+            (
+                values[0].to_ascii_lowercase(),
+                values[1].parse::<usize>().ok()?,
+            ),
+            (
+                values[2].to_ascii_lowercase(),
+                values[3].parse::<usize>().ok()?,
+            ),
+        ];
+        let performance = clusters
+            .iter()
+            .find(|(name, _)| name.contains("performance"))
+            .map(|(_, count)| *count)?;
+        let efficiency = clusters
+            .iter()
+            .find(|(name, _)| name.contains("efficiency"))
+            .map(|(_, count)| *count)?;
+        Some((performance, efficiency))
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apple_cpu_cluster_counts() -> Option<(usize, usize)> {
+    None
+}
+
+fn dashboard_cpu_core_groups(per_core: &[f32]) -> Vec<serde_json::Value> {
+    cpu_core_groups_for_layout(per_core, apple_cpu_cluster_counts())
+        .into_iter()
+        .map(|group| {
+            let prefix = match group.kind {
+                "performance" => "P",
+                "efficiency" => "E",
+                _ => "C",
+            };
+            let cores = group
+                .usages
+                .iter()
+                .enumerate()
+                .map(|(offset, usage)| {
+                    serde_json::json!({
+                        "index": group.start_index + offset,
+                        "label": format!("{prefix}{}", offset + 1),
+                        "usage": usage,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let average = if group.usages.is_empty() {
+                0.0
+            } else {
+                group.usages.iter().sum::<f32>() / group.usages.len() as f32
+            };
+            let peak = group.usages.iter().copied().fold(0.0_f32, f32::max);
+            serde_json::json!({
+                "kind": group.kind,
+                "average": average,
+                "peak": peak,
+                "cores": cores,
+            })
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum ChartRange {
     TwoMin,
@@ -3389,6 +3521,7 @@ fn update(app: &mut App) {
             ResolvedLanguage::En => "Reading…".to_string(),
         }
     };
+    let cpu_core_groups = dashboard_cpu_core_groups(&cpu.per_core);
 
     let mut payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
@@ -3403,6 +3536,7 @@ fn update(app: &mut App) {
                 .unwrap_or_default()
         ),
         "cores": &cpu.per_core,
+        "core_groups": cpu_core_groups,
         "mem_pct": mem.used_percent,
         "mem_text": format!("{:.1}%", mem.used_percent),
         "mem_sub": format!(
@@ -5086,6 +5220,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Latest<", ">최신<")
             .replace(">Installed app<", ">설치된 앱<")
             .replace(">Latest signed<", ">최신 서명 릴리스<")
+            .replace(">Core details<", ">코어 상세<")
             .replace(">Check for Updates<", ">업데이트 확인<")
             .replace(">Install Update<", ">지금 업데이트<")
             .replace(">View Release<", ">릴리즈 보기<")
@@ -5253,6 +5388,22 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .cores{display:flex;align-items:flex-end;gap:2.5px;height:22px;margin-top:8px;background:var(--track);border-radius:4px;padding:2px 3px 0;}
 .core{flex:1;border-radius:1px 1px 0 0;min-height:2px;transition:height .3s ease;cursor:default;}
 .core.g{background:var(--g);}.core.y{background:var(--y);}.core.r{background:var(--r);}
+.core-details-head{display:block;width:100%;background:transparent;border:0;font:inherit;font-size:10.5px;font-weight:700;color:var(--dim);margin-top:7px;padding:2px 0;text-align:left;cursor:pointer;}
+.core-details-head:hover{color:var(--accent);}
+.core-details-list{display:none;margin-top:4px;}
+.core-details-list.open{display:block;}
+.core-group{padding-top:7px;margin-top:6px;border-top:1px solid var(--line);}
+.core-group:first-child{padding-top:2px;margin-top:0;border-top:0;}
+.core-group-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:5px;font-size:10px;}
+.core-group-name{font-weight:750;color:var(--text);}
+.core-group-stats{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.core-detail-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;}
+.core-detail{min-width:0;padding:5px 4px;border-radius:5px;background:var(--chip-bg);text-align:center;}
+.core-detail-label{display:block;color:var(--dim);font-size:9px;font-weight:750;}
+.core-detail-value{display:block;margin-top:2px;color:var(--text);font-size:10px;font-weight:750;font-variant-numeric:tabular-nums;}
+.core-detail-meter{display:block;height:2px;margin-top:4px;border-radius:99px;background:var(--track);overflow:hidden;}
+.core-detail-meter>span{display:block;height:100%;border-radius:99px;background:var(--g);}
+.core-detail-meter>span.y{background:var(--y);}.core-detail-meter>span.r{background:var(--r);}
 .trow{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;margin-top:5px;}
 .trow .l{color:var(--dim);}
 .trow .v{font-weight:600;font-variant-numeric:tabular-nums;}
@@ -5690,6 +5841,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="row" id="sec-cpu"><span class="ic"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>
 <div class="content"><div class="head"><span class="name">CPU</span><span class="val" id="cpu-val">—</span></div>
 <div class="sub" id="cpu-sub"></div><div class="cores" id="cores"></div>
+<button type="button" class="core-details-head" id="core-details-head" aria-expanded="false" aria-controls="core-details-list" onclick="toggleCoreDetails()">Core details</button><div class="core-details-list" id="core-details-list"></div>
 <div class="bar"><div class="bar-fill" id="cpu-bar"></div></div>
 <canvas class="chart" id="cpu-chart"></canvas><div class="chart-stats" id="cpu-chart-stats"></div></div></div>
 
@@ -5736,6 +5888,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <script>
 var LANG='__LANG__';
 var SHOW_CURVE_EDITOR='__SHOWCURVE__';
+var CORE_DETAILS_OPEN=false;
 // Keep WebView failures visible to the native diagnostic log. A blank pane is
 // otherwise indistinguishable from a slow sensor read.
 window.onerror=function(message,source,line,column,error){
@@ -6042,6 +6195,53 @@ function runRailAction(action,btn){
     case 'update':setRailView('settings');break;
   }
 }
+function coreGroupName(kind){
+  if(kind==='performance')return LANG==='ko'?'성능 코어':'Performance cores';
+  if(kind==='efficiency')return LANG==='ko'?'효율 코어':'Efficiency cores';
+  return LANG==='ko'?'논리 코어':'Logical cores';
+}
+function coreMetadata(groups){
+  var metadata={};
+  (groups||[]).forEach(function(group){
+    (group.cores||[]).forEach(function(core){metadata[Number(core.index)]=core;});
+  });
+  return metadata;
+}
+function renderCoreDetails(d){
+  var head=document.getElementById('core-details-head');
+  var list=document.getElementById('core-details-list');
+  if(!head||!list)return;
+  var groups=d.core_groups||[];
+  var total=(d.cores||[]).length;
+  head.textContent=(CORE_DETAILS_OPEN?'▾ ':'▸ ')+(LANG==='ko'?'코어 상세':'Core details')+(total?' · '+total:'');
+  head.setAttribute('aria-expanded',CORE_DETAILS_OPEN?'true':'false');
+  list.classList.toggle('open',CORE_DETAILS_OPEN);
+  if(!CORE_DETAILS_OPEN)return;
+  list.innerHTML='';
+  groups.forEach(function(group){
+    var section=document.createElement('div');section.className='core-group';
+    var heading=document.createElement('div');heading.className='core-group-head';
+    var name=document.createElement('span');name.className='core-group-name';name.textContent=coreGroupName(group.kind);
+    var stats=document.createElement('span');stats.className='core-group-stats';
+    stats.textContent=(LANG==='ko'?'평균 ':'avg ')+Number(group.average||0).toFixed(0)+'% · '+(LANG==='ko'?'최고 ':'peak ')+Number(group.peak||0).toFixed(0)+'%';
+    heading.appendChild(name);heading.appendChild(stats);section.appendChild(heading);
+    var grid=document.createElement('div');grid.className='core-detail-grid';
+    (group.cores||[]).forEach(function(core){
+      var usage=Math.max(0,Math.min(100,Number(core.usage)||0));
+      var cell=document.createElement('div');cell.className='core-detail';cell.title=String(core.label||'Core')+': '+usage.toFixed(1)+'%';
+      var label=document.createElement('span');label.className='core-detail-label';label.textContent=core.label||'—';
+      var value=document.createElement('span');value.className='core-detail-value';value.textContent=usage.toFixed(0)+'%';
+      var meter=document.createElement('span');meter.className='core-detail-meter';
+      var fill=document.createElement('span');fill.className=usage<50?'':(usage<80?'y':'r');fill.style.width=usage+'%';
+      meter.appendChild(fill);cell.appendChild(label);cell.appendChild(value);cell.appendChild(meter);grid.appendChild(cell);
+    });
+    section.appendChild(grid);list.appendChild(section);
+  });
+}
+function toggleCoreDetails(){
+  CORE_DETAILS_OPEN=!CORE_DETAILS_OPEN;
+  renderCoreDetails(window.__pf_pending||{});
+}
 var RAW_TEMP_OPEN=false;
 function toggleRawTemps(){
   RAW_TEMP_OPEN=!RAW_TEMP_OPEN;
@@ -6151,7 +6351,8 @@ window.__pf={
    var summaryFan=document.getElementById('summary-fan');
    if(summaryFan)summaryFan.className='summary-value '+(d.fan_avg_rpm>0?'info':'');
    set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
-   var cc=document.getElementById('cores');if(cc){cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span');s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title='Core '+(i+1)+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
+   var cc=document.getElementById('cores');if(cc){var coreMeta=coreMetadata(d.core_groups);cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span'),meta=coreMeta[i];s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title=(meta&&meta.label?meta.label:('Core '+(i+1)))+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
+   renderCoreDetails(d);
    set('mem-val',d.mem_text);set('mem-sub',d.mem_sub);bar('mem-bar',d.mem_pct);
    show('sec-temp',true);if(d.temp_present){show('temp-empty',false);set('temp-name',(LANG==='ko'?'온도':'Temperature')+(d.temp_source?' · '+d.temp_source:'')+(d.temp_stale?' · '+(LANG==='ko'?'오래됨 ':'stale ')+Number(d.temp_age_secs||0)+'s':''));set('temp-val',d.temp_text);var tv=document.getElementById('temp-val');if(tv)tv.classList.toggle('stale',!!d.temp_stale);bar('temp-bar',d.temp_stale?0:d.temp_pct,d.temp_cls);
      var tl=document.getElementById('temp-list');if(tl){tl.innerHTML='';(d.temps||[]).forEach(function(t){var r=document.createElement('div');r.className='trow'+(t.stale?' stale':'');r.innerHTML='<span class="l"></span><span class="v"></span>';r.children[0].textContent=t.l;r.children[1].textContent=t.c+(t.stale?' · '+Number(t.age_secs||0)+'s':'');r.children[1].className='v '+t.cls;tl.appendChild(r);});}
@@ -7334,6 +7535,35 @@ mod tests {
     }
 
     #[test]
+    fn cpu_core_groups_split_valid_performance_and_efficiency_layouts() {
+        let usages = (0..14).map(|index| index as f32).collect::<Vec<_>>();
+        let groups = cpu_core_groups_for_layout(&usages, Some((10, 4)));
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].kind, "efficiency");
+        assert_eq!(groups[0].start_index, 0);
+        assert_eq!(groups[0].usages, usages[..4]);
+        assert_eq!(groups[1].kind, "performance");
+        assert_eq!(groups[1].start_index, 4);
+        assert_eq!(groups[1].usages, usages[4..]);
+    }
+
+    #[test]
+    fn cpu_core_groups_fall_back_when_platform_counts_do_not_match() {
+        let usages = vec![12.0, 34.0, 56.0, 78.0];
+        let groups = cpu_core_groups_for_layout(&usages, Some((8, 2)));
+
+        assert_eq!(
+            groups,
+            vec![CpuCoreGroup {
+                kind: "logical",
+                start_index: 0,
+                usages,
+            }]
+        );
+    }
+
+    #[test]
     fn pending_commands_coalesce_ready_and_fan_targets_without_crossing_fans() {
         let mut queue = Vec::new();
         queue_pending_command(&mut queue, "ready:popover".into());
@@ -7562,6 +7792,7 @@ mod tests {
         assert!(ko.contains(">하드웨어<"));
         assert!(ko.contains(">시스템<"));
         assert!(ko.contains(">상세 창 열기<"));
+        assert!(ko.contains(">코어 상세<"));
         assert!(ko.contains("저장공간, 배터리, 네트워크"));
         assert!(ko.contains(">자동<"));
         assert!(ko.contains(">균형<"));
@@ -7891,6 +8122,12 @@ mod tests {
         assert!(source.contains("\"fan_avg_rpm_text\": fan_avg_rpm_text"));
         assert!(en.contains("setVisible('range-tabs',true);"));
         assert!(en.contains("['health-verdict','summary-strip','sec-cpu','sec-mem','sec-temp']"));
+        assert!(en.contains(r#"id="core-details-head""#));
+        assert!(en.contains(r#"id="core-details-list""#));
+        assert!(en.contains("function renderCoreDetails(d)"));
+        assert!(en.contains("function coreGroupName(kind)"));
+        assert!(en.contains("d.core_groups"));
+        assert!(source.contains("\"core_groups\": cpu_core_groups"));
     }
 
     #[test]

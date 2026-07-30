@@ -31,7 +31,7 @@ It combines:
 | macOS menu-bar app | Natural eight-frame cat whose speed follows CPU load, temperature/cat/both styles, popover dashboard, detail window, light/dark mode |
 | CLI | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `temps`, `temps --all`, `fans`, `fan`, `doctor`, `integrity`, `serve`, `update`, and more |
 | TUI | Terminal dashboard built with ratatui |
-| System metrics | CPU and per-core load, memory, disks, network, processes, battery, load average, power, and uptime |
+| System metrics | CPU and per-core load with Apple Silicon performance/efficiency grouping, memory, disks, network, processes, battery, load average, power, and uptime |
 | macOS sensors | The menu-bar headline temperature defaults to CPU Core Average, while CPU Hottest, SMC summary/aggregate diagnostics, IOHID tdie, SSD and battery temperature, fan RPM, and the full SMC/IOHID inventory remain visible in the detailed lists |
 | Fan control | Manual fan setting, profiles, editable curves, daemon-driven persistent control |
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |

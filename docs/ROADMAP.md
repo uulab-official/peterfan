@@ -125,7 +125,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] Eight-frame menu-bar cat whose pace follows smoothed CPU usage
 - [x] Menu-bar number / cat / number + cat selector in Settings
 - [x] System quick facts for load average, power, network rate, and uptime
-- [ ] Per-core CPU detail window with efficiency/performance core grouping
+- [x] Per-core CPU detail with Apple Silicon efficiency/performance grouping
 - [ ] GPU utilization backend where public platform APIs provide a stable value
 - [ ] User-configurable temperature and fan-failure notifications
 - [ ] Exportable diagnostics snapshot for comparing readings across monitors

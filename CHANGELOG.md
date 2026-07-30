@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.62] — P/E 코어 상세 보기
+
+### Added
+
+- CPU 영역에 펼침형 코어 상세 보기를 추가해 그룹 평균·피크와 각 코어 사용률을 함께 확인할 수 있습니다.
+- Apple Silicon은 macOS가 보고한 `hw.perflevel` 구성을 이용해 성능(P)·효율(E) 코어를 구분하고, Windows·Intel Mac·알 수 없는 구성은 잘못 추측하지 않고 논리 코어로 표시합니다.
+
 ## [1.27.61] — 항상 보이는 업데이트 동작
 
 ### Changed

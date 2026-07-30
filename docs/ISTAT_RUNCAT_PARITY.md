@@ -15,7 +15,7 @@ Reference points:
 
 | Capability | PeterFan | Product status |
 | --- | --- | --- |
-| Aggregate and per-core CPU usage | Live values and 2m/1h/1d history | Ready |
+| Aggregate and per-core CPU usage | Live values and 2m/1h/1d history; Apple Silicon P/E group averages, peaks, and individual core detail | Ready |
 | CPU frequency and load average | Live values; 1/5/15m load in System | Ready |
 | Memory, swap, and macOS breakdown | Live values and history | Ready |
 | Disk capacity and read/write activity | Live values and history | Ready |
@@ -45,8 +45,7 @@ Reference points:
 
 ## Next Product Priorities
 
-1. Add efficiency/performance-core grouping and a larger per-core detail view.
-2. Add native notification rules for temperature, fan failure, and updates.
-3. Add an exportable comparison snapshot for sensor-source troubleshooting.
-4. Research stable GPU utilization sources separately for macOS and Windows.
-5. Validate animation CPU overhead and fan-control stability in the six-hour soak.
+1. Add native notification rules for temperature, fan failure, and updates.
+2. Add an exportable comparison snapshot for sensor-source troubleshooting.
+3. Research stable GPU utilization sources separately for macOS and Windows.
+4. Validate animation CPU overhead and fan-control stability in the six-hour soak.
