@@ -54,7 +54,7 @@ use peterfan_core::config::{
     CustomCurveConfig, Language, MenubarDisplay, ResolvedLanguage, TemperatureSource,
 };
 use peterfan_core::error::CoreError;
-use peterfan_core::metrics::ProcSort;
+use peterfan_core::metrics::{DiskInfo, ProcSort};
 use peterfan_core::profile::Profile;
 use peterfan_core::thermals::{representative_temperature_c, safety_temperature_c};
 use peterfan_core::types::SensorKind;
@@ -489,7 +489,6 @@ struct App {
     /// without blocking the event loop — SMC calls take tens to hundreds of
     /// ms, especially when they're failing (no daemon, no root).
     provider: std::sync::Arc<dyn HardwareProvider>,
-    has_battery: bool,
     display: MenubarDisplay,
     temperature_source: TemperatureSource,
     critical_temp_c: f32,
@@ -802,9 +801,13 @@ fn primary_menu_temperature(
     }
     .or_else(|| {
         hottest_temperature(temps).map(|t| SelectedTemperature {
-            id: "hottest".to_string(),
+            id: t.id.clone(),
             value: t.value.0,
-            label_hint: Some("hottest"),
+            label_hint: Some(if t.kind == SensorKind::Cpu {
+                "hottest"
+            } else {
+                "system"
+            }),
         })
     })
 }
@@ -845,6 +848,11 @@ fn display_temperature_source(
         match lang {
             ResolvedLanguage::Ko => "CPU Core Average".to_string(),
             ResolvedLanguage::En => "CPU Core Average".to_string(),
+        }
+    } else if sensor.id.starts_with("system.acpi.thermal_zone.") {
+        match lang {
+            ResolvedLanguage::Ko => "시스템 열 영역".to_string(),
+            ResolvedLanguage::En => "System thermal zone".to_string(),
         }
     } else if sensor.label_hint == Some("hottest") || sensor.id.contains("hot") {
         match lang {
@@ -1116,7 +1124,9 @@ fn save_custom_curve(provider: &dyn HardwareProvider, points_json: &str) -> Stri
     }
     if provider.capabilities().control_fans {
         let temps = provider.temperatures().unwrap_or_default();
-        let temp = representative_temperature_c(&temps).unwrap_or(0.0);
+        let Some(temp) = representative_temperature_c(&temps) else {
+            return "custom curve saved; not applied: no trustworthy temperature".into();
+        };
         let duty = fan_curve.duty_at(temp);
         for fan in provider.fans().unwrap_or_default() {
             if fan.controllable {
@@ -1466,8 +1476,6 @@ fn main() {
                 peterfan_platform::detect().into(),
             )
         };
-    let has_battery = monitor.capabilities().battery;
-
     #[allow(unused_mut)]
     let mut event_loop = EventLoopBuilder::<()>::new().build();
     #[cfg(target_os = "macos")]
@@ -1477,7 +1485,6 @@ fn main() {
     let mut app = App {
         monitor,
         provider,
-        has_battery,
         display,
         temperature_source,
         critical_temp_c,
@@ -2772,7 +2779,7 @@ fn default_curve_points() -> Vec<[f32; 2]> {
 
 fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
     let disks = app.monitor.disks();
-    let disk = disks.first();
+    let disk = primary_disk(&disks);
     let disk_io_present = disk.is_some_and(|d| d.read_bytes_per_sec + d.write_bytes_per_sec > 0.0);
     let disk_io_sub = disk
         .map(|d| {
@@ -2801,11 +2808,9 @@ fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
         })
         .collect();
 
-    let battery = if app.has_battery {
-        app.monitor.battery()
-    } else {
-        None
-    };
+    // Discovery can transiently fail at launch after sleep or during a Windows
+    // power-state transition. Retry with each slow dashboard sample.
+    let battery = app.monitor.battery();
     let (batt_present, batt_pct, batt_text, batt_sub) = battery
         .as_ref()
         .map(|b| {
@@ -3682,7 +3687,9 @@ fn apply_local(provider: &dyn HardwareProvider, cmd: &str) -> String {
         match Profile::parse(name) {
             Some(p) => {
                 let temps = provider.temperatures().unwrap_or_default();
-                let temp = representative_temperature_c(&temps).unwrap_or(0.0);
+                let Some(temp) = representative_temperature_c(&temps) else {
+                    return "profile not applied: no trustworthy temperature".into();
+                };
                 let duty = p.default_curve().duty_at(temp);
                 (
                     fans.iter()
@@ -3931,7 +3938,15 @@ fn kill_process(pid: u32) {
         libc::kill(pid as libc::pid_t, libc::SIGTERM);
     }
 }
-#[cfg(not(unix))]
+#[cfg(target_os = "windows")]
+fn kill_process(pid: u32) {
+    let _ = std::process::Command::new("taskkill.exe")
+        .args(["/PID", &pid.to_string(), "/T"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+#[cfg(not(any(unix, target_os = "windows")))]
 fn kill_process(_pid: u32) {}
 
 /// Show a desktop notification for a control action triggered from the
@@ -4316,7 +4331,7 @@ fn maybe_prompt_stale_daemon_update() {}
 /// Silent background check, run once after launch. It deliberately does not
 /// open a dialog; menu-bar apps launched at login should not steal focus.
 /// The manual update action runs the native check-and-install flow.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn check_for_updates_on_launch() {
     std::thread::sleep(Duration::from_secs(20));
     if APP_UPDATE_IN_FLIGHT.load(Ordering::Acquire) {
@@ -4342,7 +4357,7 @@ fn check_for_updates_on_launch() {
     }
     // Network hiccup or GitHub rate limit: fail silently, try again next launch.
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn check_for_updates_on_launch() {}
 
 /// User-initiated update action. One click checks, securely downloads, queues
@@ -4445,16 +4460,39 @@ fn check_for_updates_interactive() {
             set_app_update_state("current", Some(&release), Some(message.clone()));
             *STATUS.lock().expect("status poisoned") = message;
         }
-        Ok(release) => {
+        Ok(release) if release.asset_url.is_none() || release.checksum_url.is_none() => {
             let message = format!(
-                "PeterFan v{} is available. Opening the verified Windows download.",
+                "PeterFan v{} is available, but its verified Windows files are not ready.",
                 release.version
             );
             set_app_update_state("available", Some(&release), Some(message.clone()));
             *STATUS.lock().expect("status poisoned") = message;
-            let _ = std::process::Command::new("cmd")
-                .args(["/C", "start", "", &release.html_url])
-                .spawn();
+        }
+        Ok(release) => {
+            set_app_update_state(
+                "downloading",
+                Some(&release),
+                Some(format!(
+                    "Downloading and verifying PeterFan v{}.",
+                    release.version
+                )),
+            );
+            match peterfan_platform::updater::download_and_install_release(&release) {
+                Ok(()) => {
+                    let message = format!(
+                        "PeterFan v{} is verified and ready to relaunch.",
+                        release.version
+                    );
+                    set_app_update_state("queued", Some(&release), Some(message.clone()));
+                    *STATUS.lock().expect("status poisoned") = message;
+                    QUIT.store(true, Ordering::Release);
+                }
+                Err(error) => {
+                    let message = format!("Update failed: {error}");
+                    set_app_update_state("failed", Some(&release), Some(message.clone()));
+                    *STATUS.lock().expect("status poisoned") = message;
+                }
+            }
         }
         Err(error) => {
             let message = format!("Couldn't check for updates: {error}");
@@ -4471,6 +4509,38 @@ fn check_for_updates_interactive() {}
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn primary_disk(disks: &[DiskInfo]) -> Option<&DiskInfo> {
+    let home = dirs::home_dir();
+    let executable = std::env::current_exe().ok();
+    disks.iter().max_by_key(|disk| {
+        let score = home
+            .iter()
+            .chain(executable.iter())
+            .map(|target| mount_match_score(&disk.mount, &target.display().to_string()))
+            .max()
+            .unwrap_or(0);
+        (score, !disk.removable, disk.total)
+    })
+}
+
+fn mount_match_score(mount: &str, target: &str) -> usize {
+    let normalize = |value: &str| {
+        let value = value.replace('\\', "/");
+        if cfg!(target_os = "windows") {
+            value.to_ascii_lowercase()
+        } else {
+            value
+        }
+    };
+    let mount = normalize(mount);
+    let target = normalize(target);
+    if target.starts_with(&mount) {
+        mount.len()
+    } else {
+        0
+    }
+}
 
 fn bytes(n: u64) -> String {
     const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -5107,8 +5177,8 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
                 ">팬 센서 없음<",
             )
             .replace(
-                "No fan sensors were reported by this system. CPU, memory, temperature, and network monitoring continue normally.",
-                "이 시스템에서는 팬 센서를 찾지 못했습니다. CPU, 메모리, 온도, 네트워크 모니터링은 계속됩니다.",
+                "No fan sensors were reported. CPU, memory, and network monitoring remain available; temperature appears only when this system exposes a supported sensor.",
+                "팬 센서를 찾지 못했습니다. CPU, 메모리와 네트워크는 계속 표시되며, 온도는 이 시스템이 지원 센서를 제공할 때만 표시됩니다.",
             )
             .replace(
                 "Manage startup and fan-control safety.",
@@ -5620,7 +5690,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 </div>
 <div class="fan-apply-status" id="fan-apply-status" role="status" aria-live="polite" aria-atomic="true"></div>
 <div class="fan-cards" id="fan-cards"></div>
-<div class="empty-state" id="fan-empty-state" style="display:none"><strong class="empty-state-title">No fan sensors</strong><span class="empty-state-copy">No fan sensors were reported by this system. CPU, memory, temperature, and network monitoring continue normally.</span></div>
+<div class="empty-state" id="fan-empty-state" style="display:none"><strong class="empty-state-title">No fan sensors</strong><span class="empty-state-copy">No fan sensors were reported. CPU, memory, and network monitoring remain available; temperature appears only when this system exposes a supported sensor.</span></div>
 <div class="ctl-note" id="ctl-note" style="display:none"></div>
 </div>
 
@@ -7088,8 +7158,8 @@ function updateHardwareAvailability(d){
   var networkCount=d.network_count||0, networkActive=!!d.network_active;
   var card=document.getElementById('hardware-availability-card');
   if(card)card.style.display='';
-  var allGood=(controllable>0)&&battery&&networkActive;
-  setPanelPill('hardware-pill',allGood?(LANG==='ko'?'감지됨':'Detected'):(LANG==='ko'?'확인 필요':'Check'),allGood?'ok':'info');
+  var live=(fanCount>0)||battery||networkCount>0;
+  setPanelPill('hardware-pill',live?(LANG==='ko'?'실시간':'Live'):(LANG==='ko'?'요약':'Summary'),live?'ok':'info');
   setHealthValue('hardware-fans',
     controllable>0
       ?(controllable+' / '+fanCount)
@@ -7117,7 +7187,7 @@ function updateFanEmptyState(d){
       ?(LANG==='ko'?'팬 센서가 없습니다':'No fan sensors')
       :(LANG==='ko'?'읽기 전용 팬':'Read-only fans');
     if(copy)copy.textContent=noFans
-      ?(LANG==='ko'?'이 시스템에서는 팬 센서를 찾지 못했습니다. CPU, 메모리, 온도, 네트워크 모니터링은 계속됩니다.':'No fan sensors were reported by this system. CPU, memory, temperature, and network monitoring continue normally.')
+      ?(LANG==='ko'?'팬 센서를 찾지 못했습니다. CPU, 메모리와 네트워크는 계속 표시되며, 온도는 지원 센서가 있을 때만 표시됩니다.':'No fan sensors were reported. CPU, memory, and network monitoring remain available; temperature appears only when a supported sensor exists.')
       :(LANG==='ko'?'팬은 감지됐지만 앱에서 직접 제어할 수 없습니다. 실시간 RPM은 계속 표시됩니다.':'Fans are detected, but this system does not expose controllable writes. Live RPM continues to be monitored.');
   }
 }
@@ -8060,7 +8130,7 @@ mod tests {
         assert!(source.contains(r#"body == "refresh""#));
         assert!(source.contains("CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);"));
         assert!(en.contains(">No fan sensors<"));
-        assert!(en.contains("No fan sensors were reported by this system"));
+        assert!(en.contains("No fan sensors were reported"));
         assert!(en.contains("Read-only fans"));
         assert!(en.contains("controllableCount>0"));
         assert!(en.contains(r#"id="profile-strip""#));
@@ -8072,7 +8142,7 @@ mod tests {
         assert!(ko.contains(">배터리<"));
         assert!(ko.contains(">네트워크<"));
         assert!(ko.contains(">팬 센서 없음<"));
-        assert!(ko.contains("이 시스템에서는 팬 센서를 찾지 못했습니다"));
+        assert!(ko.contains("팬 센서를 찾지 못했습니다"));
         assert!(ko.contains("읽기 전용 팬"));
     }
 
@@ -9388,5 +9458,29 @@ mod tests {
         assert!(html.contains("t.stale?' stale':'"));
         assert!(html.contains("d.temp_stale?[]:d.temp_hist"));
         assert!(html.contains(".trow.stale"));
+    }
+
+    #[test]
+    fn storage_mount_matching_prefers_the_disk_containing_the_user() {
+        assert!(mount_match_score("/", "/Users/bonjin") > 0);
+        assert!(mount_match_score("/Volumes/Data", "/Volumes/Data/work") > 1);
+        assert_eq!(mount_match_score("/Volumes/Other", "/Users/bonjin"), 0);
+    }
+
+    #[test]
+    fn windows_acpi_temperature_is_labeled_as_system_not_cpu() {
+        let selected = SelectedTemperature {
+            id: "system.acpi.thermal_zone.0".into(),
+            value: 47.0,
+            label_hint: Some("system"),
+        };
+        assert_eq!(
+            display_temperature_source(ResolvedLanguage::En, Some(&selected)),
+            "System thermal zone"
+        );
+        assert_eq!(
+            display_temperature_source(ResolvedLanguage::Ko, Some(&selected)),
+            "시스템 열 영역"
+        );
     }
 }

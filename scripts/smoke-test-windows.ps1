@@ -43,7 +43,8 @@ $Status = (& $Cli --json status) | ConvertFrom-Json
 if (
     $null -eq $Status.cpu.usage_percent -or
     $null -eq $Status.memory.used_percent -or
-    $Status.metrics_backend -ne "sysinfo"
+    $Status.metrics_backend -ne "sysinfo" -or
+    $Status.simulated_sensors
 ) {
     throw "Windows status JSON is incomplete."
 }
@@ -55,11 +56,31 @@ if (
     $Doctor.thermal_backend -ne "windows" -or
     -not $Doctor.metrics.cpu -or
     -not $Doctor.metrics.memory -or
-    $Doctor.thermal.read_temps -or
     $Doctor.thermal.read_fans -or
     $Doctor.thermal.control_fans
 ) {
     throw "Windows doctor did not report the expected real metrics and honest thermal capabilities."
+}
+$ThermalRows = @($Status.temps)
+foreach ($Sensor in $ThermalRows) {
+    if (
+        $Sensor.source -ne "acpi" -or
+        $Sensor.kind -ne "mainboard" -or
+        $Sensor.value -lt 1 -or
+        $Sensor.value -gt 125
+    ) {
+        throw "Windows reported an invalid or mislabeled ACPI thermal sensor."
+    }
+}
+
+$Update = (& $Cli --json update) | ConvertFrom-Json
+if (
+    -not $Update.ok -or
+    $Update.asset_name -notmatch "x86_64-pc-windows-msvc\.zip$" -or
+    -not $Update.asset_url -or
+    -not $Update.checksum_url
+) {
+    throw "Windows update metadata did not select the native verified ZIP."
 }
 
 Remove-Item $Log -Force -ErrorAction SilentlyContinue

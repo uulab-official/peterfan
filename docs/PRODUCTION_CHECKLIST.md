@@ -65,6 +65,9 @@ by an automated test, a release-script check, or a recorded real-Mac result.
       uninstall, archive layout, and executable versions before upload.
 - [x] Keep a new release private until the verified Windows ZIP is attached,
       then publish macOS and Windows assets with one shared `checksums.txt`.
+- [x] Select the Windows ZIP for Windows update checks and verify its GitHub
+      digest, checksum manifest, and embedded CLI version before reinstalling.
+- [x] Never substitute mock temperatures or fans on a production backend.
 - [x] Enforce RustSec policy in CI and remove or isolate allowed warnings.
 - [ ] Test release signing and notarization from a second authorized Mac.
 

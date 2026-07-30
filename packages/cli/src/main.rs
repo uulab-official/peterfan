@@ -564,10 +564,45 @@ fn cmd_login_item(action: LoginItemAction) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn cmd_login_item(action: LoginItemAction) -> Result<()> {
+    use peterfan_platform::windows_login_item;
+
+    match action {
+        LoginItemAction::Status => {
+            if windows_login_item::is_installed() {
+                println!("  {} PeterFan starts when this user signs in", "✓".green());
+            } else {
+                println!(
+                    "  {} startup is disabled — run `peterfan login-item install`",
+                    "—".dimmed()
+                );
+            }
+        }
+        LoginItemAction::Install { binary, metric: _ } => {
+            let path =
+                windows_login_item::install(binary.as_deref()).map_err(anyhow::Error::msg)?;
+            println!(
+                "  {} startup enabled\n  binary: {}",
+                "✓".green(),
+                path.display().bold()
+            );
+        }
+        LoginItemAction::Remove => {
+            if windows_login_item::remove().map_err(anyhow::Error::msg)? {
+                println!("  {} startup disabled", "✓".green());
+            } else {
+                println!("  {} startup was already disabled", "—".dimmed());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn cmd_login_item(action: LoginItemAction) -> Result<()> {
     let _ = action;
-    anyhow::bail!("login-item is only supported on macOS")
+    anyhow::bail!("login-item is only supported on macOS and Windows")
 }
 
 #[cfg(target_os = "macos")]
@@ -1066,8 +1101,7 @@ fn api_apply_profile(
         }
         let curve = profile.default_curve();
         let temps = provider.temperatures().unwrap_or_default();
-        let temp = representative_temperature_c(&temps).unwrap_or(0.0);
-        let duty = curve.duty_at(temp);
+        let duty = representative_temperature_c(&temps).map(|temp| curve.duty_at(temp));
         return (
             200,
             serde_json::json!({
@@ -1085,7 +1119,15 @@ fn api_apply_profile(
     }
     let curve = profile.default_curve();
     let temps = provider.temperatures().unwrap_or_default();
-    let temp = representative_temperature_c(&temps).unwrap_or(0.0);
+    let Some(temp) = representative_temperature_c(&temps) else {
+        return (
+            409,
+            serde_json::json!({
+                "applied": false,
+                "error": "no trustworthy temperature reading; refusing direct profile control"
+            }),
+        );
+    };
     let duty = curve.duty_at(temp);
     for f in provider
         .fans()
@@ -2134,34 +2176,18 @@ fn temperature_rows_json_with_freshness(
         .collect()
 }
 
-/// Read temps + fans, transparently falling back to the mock backend (and
-/// flagging the data as simulated) when the real backend can't read sensors yet.
+/// Read exactly what the selected backend exposes.
+///
+/// Production paths must never replace unsupported or temporarily missing
+/// hardware with demo values. Partial backends are valid: Windows may expose
+/// an ACPI thermal zone while still having no readable fan RPM.
 fn read_sensors(provider: &dyn HardwareProvider) -> Result<Sensors> {
-    let caps = provider.capabilities();
-    if caps.read_temps && caps.read_fans {
-        let temps = provider.temperatures()?;
-        let sampled_at = unix_now_ms();
-        return Ok(Sensors {
-            temps,
-            fans: provider.fans()?,
-            simulated: false,
-            temps_sampled_at_unix_ms: Some(sampled_at),
-            temps_age_ms: Some(0),
-            temps_stale: false,
-            daemon_mode: None,
-            daemon_power_w: None,
-            daemon_backend: None,
-            daemon_control_health: None,
-            daemon_fan_readbacks: None,
-        });
-    }
-    let mock = peterfan_platform::mock();
-    let temps = mock.temperatures()?;
+    let temps = provider.temperatures()?;
     let sampled_at = unix_now_ms();
     Ok(Sensors {
         temps,
-        fans: mock.fans()?,
-        simulated: true,
+        fans: provider.fans()?,
+        simulated: provider.name() == "mock",
         temps_sampled_at_unix_ms: Some(sampled_at),
         temps_age_ms: Some(0),
         temps_stale: false,
@@ -2636,7 +2662,9 @@ fn cmd_profile(
 
     let curve = profile.default_curve();
     let sensors = read_sensors(provider)?;
-    let temp = representative_temperature_c(&sensors.temps).unwrap_or(0.0);
+    let temp = representative_temperature_c(&sensors.temps).ok_or_else(|| {
+        anyhow::anyhow!("no trustworthy temperature reading; refusing direct profile control")
+    })?;
     let duty = curve.duty_at(temp);
 
     let caps = provider.capabilities();
@@ -2814,6 +2842,8 @@ fn fan_control_readiness(
 fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     let provider = provider(mock);
     let monitor = instant_monitor(mock);
+    #[cfg(target_os = "windows")]
+    let _ = provider.temperatures();
     let caps = provider.capabilities();
     let mcaps = monitor.capabilities();
     let elevated = is_elevated();
@@ -3224,11 +3254,11 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     if !caps.read_temps {
         println!();
         println!(
-            "  {} thermal sensor reading is not implemented for the '{}' backend yet;",
+            "  {} the '{}' backend did not report a supported thermal sensor;",
             "note:".yellow().bold(),
             provider.name()
         );
-        println!("        the CLI falls back to simulated temps/fans. System metrics are real.");
+        println!("        temperature and fan lists stay empty; system metrics remain real.");
     }
     Ok(())
 }
@@ -3775,7 +3805,7 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
     if install && update_available {
         if release.asset_url.is_none() {
             let message = format!(
-                "release {} has no macOS app update asset; open {}",
+                "release {} has no update asset for this platform; open {}",
                 release.tag, release.html_url
             );
             if json {
@@ -3830,6 +3860,7 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
                 "asset_digest": release.asset_digest,
                 "archive_url": release.archive_url,
                 "dmg_url": release.dmg_url,
+                "windows_url": release.windows_url,
                 "checksum_url": release.checksum_url,
                 "checksum_digest": release.checksum_digest,
             })
@@ -3853,10 +3884,13 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
             println!("  {}", url.dimmed());
         }
         if release.checksum_url.is_some() {
-            println!(
-                "  integrity: {}",
-                "checksums.txt + codesign + notarization".green()
-            );
+            #[cfg(target_os = "macos")]
+            let integrity = "checksums.txt + codesign + notarization";
+            #[cfg(target_os = "windows")]
+            let integrity = "GitHub digest + checksums.txt";
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            let integrity = "checksums.txt";
+            println!("  integrity: {}", integrity.green());
         } else {
             println!("  integrity: {}", "missing checksums.txt".yellow());
         }
@@ -3902,9 +3936,14 @@ fn install_update(release: &peterfan_platform::updater::ReleaseInfo) -> Result<(
     peterfan_platform::updater::download_and_install_release(release).map_err(anyhow::Error::msg)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn install_update(release: &peterfan_platform::updater::ReleaseInfo) -> Result<()> {
+    peterfan_platform::updater::download_and_install_release(release).map_err(anyhow::Error::msg)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn install_update(_release: &peterfan_platform::updater::ReleaseInfo) -> Result<()> {
-    anyhow::bail!("OTA app installation is macOS-only; use the release URL instead")
+    anyhow::bail!("OTA app installation is only available on macOS and Windows")
 }
 
 struct IntegrityOptions {
@@ -4621,7 +4660,47 @@ fn cmd_alert_agent(action: AlertAction) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory;
-    use peterfan_core::types::{Celsius, SensorKind, SensorSource, TempSensor};
+    use peterfan_core::provider::{Capabilities, HardwareProvider};
+    use peterfan_core::types::{Celsius, Fan, HardwareInfo, SensorKind, SensorSource, TempSensor};
+
+    struct PartialThermalProvider;
+
+    impl HardwareProvider for PartialThermalProvider {
+        fn name(&self) -> &str {
+            "partial-real"
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                read_temps: true,
+                read_fans: false,
+                control_fans: false,
+            }
+        }
+
+        fn hardware_info(&self) -> peterfan_core::error::Result<HardwareInfo> {
+            Ok(HardwareInfo {
+                cpu: "CPU".into(),
+                gpu: None,
+                motherboard: None,
+                memory: None,
+                os: "test".into(),
+            })
+        }
+
+        fn temperatures(&self) -> peterfan_core::error::Result<Vec<TempSensor>> {
+            Ok(vec![temp(
+                "system.acpi.thermal_zone.0",
+                "System Thermal Zone",
+                SensorKind::Mainboard,
+                47.0,
+            )])
+        }
+
+        fn fans(&self) -> peterfan_core::error::Result<Vec<Fan>> {
+            Ok(Vec::new())
+        }
+    }
 
     #[test]
     fn cli_has_no_account_or_license_command() {
@@ -4647,6 +4726,15 @@ mod tests {
         assert!(super::control_reply_ok("ok balanced (macos)"));
         assert!(!super::control_reply_ok("error: write failed"));
         assert!(!super::control_reply_ok(""));
+    }
+
+    #[test]
+    fn partial_real_backend_never_falls_back_to_demo_sensors() {
+        let sensors = super::read_sensors(&PartialThermalProvider).unwrap();
+        assert!(!sensors.simulated);
+        assert_eq!(sensors.temps.len(), 1);
+        assert_eq!(sensors.temps[0].id, "system.acpi.thermal_zone.0");
+        assert!(sensors.fans.is_empty());
     }
 
     #[test]

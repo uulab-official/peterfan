@@ -38,7 +38,6 @@ pub struct SysinfoMonitor {
     disk_rates: HashMap<String, (f64, f64)>,
     last_slow_refresh: Option<Instant>,
     battery_mgr: Option<battery::Manager>,
-    has_battery: bool,
     /// When true, `refresh()` skips processes, disks, and network I/O — used by
     /// commands that only need CPU% or memory (saves ~150 ms on macOS).
     quick: bool,
@@ -69,23 +68,12 @@ impl SysinfoMonitor {
                 .with_processes(ProcessRefreshKind::everything())
         };
         let sys = System::new_with_specifics(rk);
-        let disks = if quick {
-            Disks::new()
-        } else {
-            Disks::new_with_refreshed_list()
-        };
-        let networks = if quick {
-            Networks::new()
-        } else {
-            Networks::new_with_refreshed_list()
-        };
-
+        // Disk, network, and battery enumeration can touch every mounted
+        // volume or power device. Keep app startup focused on CPU/memory and
+        // discover these families on the first explicit slow refresh instead.
+        let disks = Disks::new();
+        let networks = Networks::new();
         let battery_mgr = battery::Manager::new().ok();
-        let has_battery = battery_mgr
-            .as_ref()
-            .and_then(|m| m.batteries().ok())
-            .map(|mut b| b.next().is_some())
-            .unwrap_or(false);
 
         Self {
             sys,
@@ -95,7 +83,6 @@ impl SysinfoMonitor {
             disk_rates: HashMap::new(),
             last_slow_refresh: None,
             battery_mgr,
-            has_battery,
             quick,
         }
     }
@@ -119,7 +106,7 @@ impl SystemMonitor for SysinfoMonitor {
             disks: true,
             networks: true,
             processes: true,
-            battery: self.has_battery,
+            battery: self.battery_mgr.is_some(),
         }
     }
 
@@ -446,9 +433,13 @@ mod tests {
     fn split_refresh_keeps_expensive_families_out_of_quick_ticks() {
         let mut monitor = SysinfoMonitor::new();
         monitor.last_slow_refresh = None;
+        assert!(monitor.disks.is_empty());
+        assert!(monitor.networks.is_empty());
 
         monitor.refresh_quick();
         assert!(monitor.last_slow_refresh.is_none());
+        assert!(monitor.disks.is_empty());
+        assert!(monitor.networks.is_empty());
 
         monitor.refresh_slow();
         assert!(monitor.last_slow_refresh.is_some());

@@ -19,6 +19,7 @@ tray-icon = { workspace = true }
 tao = { workspace = true }
 wry = "0.55.1"
 serde_json = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 png = "0.18.1"

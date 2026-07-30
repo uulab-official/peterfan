@@ -1,6 +1,6 @@
-//! Check GitHub Releases for a newer version, and (macOS) download + install
-//! it in place. Shared by `peterfan update` and the menu-bar app's automatic
-//! update check.
+//! Check GitHub Releases for a newer version and install verified desktop
+//! updates in place on macOS and Windows. Shared by `peterfan update` and the
+//! menu-bar app's automatic update check.
 //!
 //! Shells out to `curl`/`tar` rather than pulling in an HTTP client crate —
 //! consistent with how the rest of the codebase talks to `osascript`/
@@ -238,17 +238,17 @@ pub struct ReleaseInfo {
     /// but keeping the source in the native response avoids a second WebView
     /// request that can be blocked by CORS or app transport policy.
     pub notes: String,
-    /// Preferred direct download URL for the macOS app update asset.
+    /// Preferred direct download URL for the current platform's app asset.
     ///
-    /// PeterFan prefers the notarized DMG because it is the same artifact end
-    /// users install and it carries the strongest release validation. If that
-    /// is absent, it falls back to the universal `apple-darwin.tar.gz`.
+    /// macOS prefers the notarized DMG and falls back to the universal archive.
+    /// Windows selects the native x64 ZIP.
     pub asset_url: Option<String>,
     pub asset_name: Option<String>,
     /// Normalized lowercase SHA-256 digest for the selected update asset.
     pub asset_digest: Option<String>,
     pub archive_url: Option<String>,
     pub dmg_url: Option<String>,
+    pub windows_url: Option<String>,
     /// Direct download URL for `checksums.txt`, used to verify the selected
     /// update asset before extraction.
     pub checksum_url: Option<String>,
@@ -313,8 +313,13 @@ fn parse_release_response(body: &[u8]) -> Result<ReleaseInfo, String> {
     let dmg = find_asset(assets, is_macos_dmg);
     let archive = find_asset(assets, is_preferred_macos_archive)
         .or_else(|| find_asset(assets, is_macos_archive));
+    let windows = find_asset(assets, is_windows_archive);
     let checksums = find_asset(assets, is_checksum_asset);
-    let preferred = dmg.as_ref().or(archive.as_ref());
+    let preferred = if cfg!(target_os = "windows") {
+        windows.as_ref()
+    } else {
+        dmg.as_ref().or(archive.as_ref())
+    };
     Ok(ReleaseInfo {
         version,
         tag,
@@ -325,6 +330,7 @@ fn parse_release_response(body: &[u8]) -> Result<ReleaseInfo, String> {
         asset_digest: preferred.and_then(|a| a.digest.clone()),
         archive_url: archive.map(|a| a.url),
         dmg_url: dmg.map(|a| a.url),
+        windows_url: windows.map(|a| a.url),
         checksum_url: checksums.as_ref().map(|a| a.url.clone()),
         checksum_name: checksums.as_ref().map(|a| a.name.clone()),
         checksum_digest: checksums.and_then(|a| a.digest),
@@ -377,6 +383,12 @@ fn is_macos_archive(name: &str) -> bool {
 
 fn is_macos_dmg(name: &str) -> bool {
     name.starts_with("PeterFan-") && name.ends_with(".dmg")
+}
+
+fn is_windows_archive(name: &str) -> bool {
+    name.starts_with("peterfan-")
+        && name.contains("x86_64-pc-windows-msvc")
+        && name.ends_with(".zip")
 }
 
 fn is_checksum_asset(name: &str) -> bool {
@@ -1090,6 +1102,212 @@ pub fn download_and_install_release(release: &ReleaseInfo) -> Result<(), String>
     )
 }
 
+#[cfg(target_os = "windows")]
+pub fn download_and_install_release(release: &ReleaseInfo) -> Result<(), String> {
+    let asset_url = release
+        .asset_url
+        .as_deref()
+        .ok_or("release has no Windows x64 update asset")?;
+    let asset_name = release
+        .asset_name
+        .as_deref()
+        .filter(|name| is_windows_archive(name))
+        .ok_or("selected update asset is not a Windows x64 ZIP")?;
+    let asset_digest = release
+        .asset_digest
+        .as_deref()
+        .ok_or("Windows release asset has no GitHub SHA-256 digest")?;
+    let checksum_url = release
+        .checksum_url
+        .as_deref()
+        .ok_or("release has no checksums.txt; refusing OTA install")?;
+    let checksum_digest = release
+        .checksum_digest
+        .as_deref()
+        .ok_or("checksums.txt has no GitHub SHA-256 digest")?;
+
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "peterfan-update-{}-{}",
+        std::process::id(),
+        UpdateInstallResult::new("pending", &release.version, "").updated_at_unix
+    ));
+    let package_dir = tmp_dir.join("package");
+    std::fs::create_dir_all(&package_dir).map_err(|e| e.to_string())?;
+    let archive = tmp_dir.join(asset_name);
+    let checksums_path = tmp_dir.join("checksums.txt");
+
+    download_file(asset_url, &archive)?;
+    verify_expected_sha256("GitHub asset digest", asset_digest, &archive)?;
+    download_file(checksum_url, &checksums_path)?;
+    verify_expected_sha256(
+        "GitHub checksums.txt digest",
+        checksum_digest,
+        &checksums_path,
+    )?;
+    let checksums = std::fs::read_to_string(&checksums_path).map_err(|e| e.to_string())?;
+    verify_download_checksum(&checksums, asset_name, &archive)?;
+
+    let command = format!(
+        "Expand-Archive -LiteralPath {} -DestinationPath {} -Force",
+        powershell_quote(&archive),
+        powershell_quote(&package_dir)
+    );
+    let output = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &command,
+        ])
+        .output()
+        .map_err(|e| format!("could not extract Windows update: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "could not extract Windows update: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let installer = find_file_named(&package_dir, "install.ps1")
+        .ok_or("downloaded Windows ZIP did not contain install.ps1")?;
+    let payload_dir = installer
+        .parent()
+        .ok_or("Windows installer has no payload directory")?;
+    for required in ["PeterFan.exe", "peterfan-cli.exe", "peterfan-tui.exe"] {
+        if !payload_dir.join(required).is_file() {
+            return Err(format!("downloaded Windows ZIP is missing {required}"));
+        }
+    }
+    let version_output = std::process::Command::new(payload_dir.join("peterfan-cli.exe"))
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("could not inspect downloaded Windows CLI: {e}"))?;
+    let version_text = String::from_utf8_lossy(&version_output.stdout);
+    if !version_output.status.success()
+        || !version_text
+            .split_whitespace()
+            .any(|part| part == release.version)
+    {
+        return Err(format!(
+            "downloaded Windows payload version does not match v{}",
+            release.version
+        ));
+    }
+
+    let result_path =
+        update_install_result_path().ok_or("could not determine update result path")?;
+    let pending = UpdateInstallResult::new(
+        "pending",
+        &release.version,
+        format!("PeterFan v{} is verified and queued.", release.version),
+    );
+    write_update_install_result_to(&result_path, &pending)?;
+
+    let script_path = tmp_dir.join("apply-update.ps1");
+    let script =
+        build_windows_apply_update_script(&installer, &tmp_dir, &result_path, &release.version);
+    std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
+    if let Err(error) = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(&script_path)
+        .spawn()
+    {
+        let failed = UpdateInstallResult::new(
+            "failed",
+            &release.version,
+            format!("Could not launch the Windows updater: {error}"),
+        );
+        let _ = write_update_install_result_to(&result_path, &failed);
+        return Err(format!("could not launch Windows updater: {error}"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn build_windows_apply_update_script(
+    installer: &std::path::Path,
+    tmp_dir: &std::path::Path,
+    result_path: &std::path::Path,
+    target_version: &str,
+) -> String {
+    let result_tmp = result_path.with_extension("json.tmp-updater");
+    let installed = serde_json::to_string(&UpdateInstallResult::new(
+        "installed",
+        target_version,
+        format!("PeterFan v{target_version} was installed successfully."),
+    ))
+    .expect("update result serializes");
+    let failed = serde_json::to_string(&UpdateInstallResult::new(
+        "failed",
+        target_version,
+        "The Windows update failed. The existing installation was left in place.",
+    ))
+    .expect("update result serializes");
+    format!(
+        "$ErrorActionPreference = 'Stop'\n\
+         $result = {result}\n\
+         $resultTmp = {result_tmp}\n\
+         function Write-Result([string]$json) {{\n\
+         \tNew-Item -ItemType Directory -Force -Path (Split-Path -Parent $result) | Out-Null\n\
+         \t[System.IO.File]::WriteAllText($resultTmp, $json, [System.Text.UTF8Encoding]::new($false))\n\
+         \tMove-Item -LiteralPath $resultTmp -Destination $result -Force\n\
+         }}\n\
+         try {{\n\
+         \t& {installer}\n\
+         \tWrite-Result {installed}\n\
+         }} catch {{\n\
+         \tWrite-Result {failed}\n\
+         \t$existing = Join-Path $env:LOCALAPPDATA 'Programs\\PeterFan\\PeterFan.exe'\n\
+         \tif (Test-Path $existing -PathType Leaf) {{ Start-Process $existing }}\n\
+         \texit 1\n\
+         }}\n\
+         Start-Sleep -Seconds 2\n\
+         Remove-Item -LiteralPath {tmp} -Recurse -Force -ErrorAction SilentlyContinue\n",
+        result = powershell_quote(result_path),
+        result_tmp = powershell_quote(&result_tmp),
+        installer = powershell_quote(installer),
+        installed = powershell_quote_str(&installed),
+        failed = powershell_quote_str(&failed),
+        tmp = powershell_quote(tmp_dir),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn find_file_named(root: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    for entry in std::fs::read_dir(root).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.file_name().and_then(|value| value.to_str()) == Some(name) {
+            return Some(path);
+        }
+        if path.is_dir() {
+            if let Some(found) = find_file_named(&path, name) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_quote(path: &std::path::Path) -> String {
+    powershell_quote_str(&path.display().to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_quote_str(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 #[cfg(target_os = "macos")]
 pub fn download_and_install(asset_url: &str) -> Result<(), String> {
     let asset_name = asset_url
@@ -1148,7 +1366,7 @@ fn download_and_install_unchecked(
     install_downloaded_update(&app_path, &tmp_dir, &download, asset_name, target_version)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn download_file(url: &str, destination: &std::path::Path) -> Result<(), String> {
     let status = std::process::Command::new("curl")
         .args([
@@ -1346,7 +1564,7 @@ fn build_apply_update_script(
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn verify_download_checksum(
     checksums: &str,
     asset_name: &str,
@@ -1357,7 +1575,7 @@ fn verify_download_checksum(
     verify_expected_sha256("checksums.txt", &expected, path)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn verify_expected_sha256(
     source: &str,
     expected: &str,
@@ -1411,6 +1629,27 @@ fn sha256_file(path: &std::path::Path) -> Result<String, String> {
         .filter(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
         .map(|hash| hash.to_ascii_lowercase())
         .ok_or_else(|| "shasum did not print a SHA-256 digest".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn sha256_file(path: &std::path::Path) -> Result<String, String> {
+    let out = std::process::Command::new("certutil.exe")
+        .args(["-hashfile"])
+        .arg(path)
+        .arg("SHA256")
+        .output()
+        .map_err(|e| format!("certutil is not available: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "certutil failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .find(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(|value| value.to_ascii_lowercase())
+        .ok_or_else(|| "certutil did not print a SHA-256 digest".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -1746,11 +1985,30 @@ mod tests {
         assert_eq!(info.version, "0.27.1");
         assert_eq!(info.tag, "v0.27.1");
         assert_eq!(info.notes, "Signed update with native progress reporting.");
-        assert!(info.asset_url.unwrap().contains("aarch64-apple-darwin"));
-        assert!(info.asset_name.unwrap().contains("aarch64-apple-darwin"));
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(info.asset_url.unwrap().contains("aarch64-apple-darwin"));
+            assert!(info.asset_name.unwrap().contains("aarch64-apple-darwin"));
+            assert_eq!(
+                info.asset_digest.as_deref(),
+                Some("abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd")
+            );
+        }
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(
+                info.asset_name.as_deref(),
+                Some("peterfan-v0.27.1-x86_64-pc-windows-msvc.zip")
+            );
+            assert_eq!(
+                info.asset_url.as_deref(),
+                Some("https://example.com/windows.zip")
+            );
+            assert!(info.asset_digest.is_none());
+        }
         assert_eq!(
-            info.asset_digest.as_deref(),
-            Some("abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd")
+            info.windows_url.as_deref(),
+            Some("https://example.com/windows.zip")
         );
         assert_eq!(info.checksum_name.as_deref(), Some("checksums.txt"));
         assert!(info.checksum_url.unwrap().ends_with("/checksums.txt"));
@@ -1761,6 +2019,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn prefers_dmg_for_ota_when_both_are_present() {
         let body = br#"{
             "tag_name": "v2.0.0",
@@ -1784,6 +2043,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn falls_back_to_dmg_when_archive_is_missing() {
         let body = br#"{
             "tag_name": "v2.1.0",
@@ -1797,6 +2057,17 @@ mod tests {
         assert_eq!(info.asset_url.unwrap(), "https://example.com/PeterFan.dmg");
         assert!(info.archive_url.is_none());
         assert_eq!(info.dmg_url.unwrap(), "https://example.com/PeterFan.dmg");
+    }
+
+    #[test]
+    fn recognizes_only_native_windows_x64_archives() {
+        assert!(is_windows_archive(
+            "peterfan-v1.27.59-x86_64-pc-windows-msvc.zip"
+        ));
+        assert!(!is_windows_archive("PeterFan-v1.27.59.dmg"));
+        assert!(!is_windows_archive(
+            "peterfan-v1.27.59-aarch64-apple-darwin.tar.gz"
+        ));
     }
 
     #[test]
@@ -1966,6 +2237,25 @@ TeamIdentifier=N99FMBQ662
             1
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_apply_script_records_outcome_and_preserves_existing_install_on_failure() {
+        let script = build_windows_apply_update_script(
+            std::path::Path::new(r"C:\Temp\PeterFan update\install.ps1"),
+            std::path::Path::new(r"C:\Temp\PeterFan update"),
+            std::path::Path::new(r"C:\Users\Test\AppData\Local\PeterFan\update-result.json"),
+            "1.2.3",
+        );
+
+        assert!(script.contains("& 'C:\\Temp\\PeterFan update\\install.ps1'"));
+        assert!(script.contains("Write-Result"));
+        assert!(script.contains(r#""status":"installed""#));
+        assert!(script.contains(r#""status":"failed""#));
+        assert!(script.contains("Join-Path $env:LOCALAPPDATA 'Programs\\PeterFan\\PeterFan.exe'"));
+        assert!(script.contains("Start-Process $existing"));
+        assert!(script.contains("Remove-Item -LiteralPath 'C:\\Temp\\PeterFan update'"));
     }
 
     #[cfg(target_os = "macos")]

@@ -52,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.27.58.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.27.59.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -64,7 +64,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 | macOS 하드웨어 정보(`sysctl` 기반 CPU/RAM/OS) | ✅ 실측치, 읽기 전용 |
 | **macOS 온도 & 팬 RPM** | ✅ 실측치 — M3 Pro/Max 메뉴바 상단 온도는 CPU core 평균을 기본값으로 사용합니다. `CPU Hottest`는 hot-core SMC 키(`Tf06`/`Tf16`/`Tf26`/`Tf36`/`Tf46`)도 포함해 상세 목록에 표시합니다. 임계 팬 제어는 mapped core 최고를 우선하며, 고정된 진단용 hotspot 값이 팬을 100%로 오작동시키지 않습니다. 각 후보는 별도 행/진단값으로 노출해서 iStat/Macs Fan Control과 비교할 때 어떤 센서 계열이 다른지 바로 확인 가능. 메뉴바 `전체 센서`와 `peterfan temps --all`은 원시 SMC/IOHID 온도 센서를 `CPU hotspot`, `CPU core hot sensor`, `GPU sensor` 같은 일반 그룹명과 함께 표시 |
 | Windows 트레이 앱과 시스템 지표 | ✅ CPU, 메모리, 디스크, 네트워크, 프로세스, 배터리 실측 |
-| Windows 온도/팬 정보 읽기와 제어(EC/WMI) | 🚧 지원 장치가 없으면 사용 불가로 표시하며 가상값을 사용하지 않음 |
+| Windows 온도/팬 정보 읽기와 제어 | 🟡 펌웨어가 제공하는 ACPI 시스템 열 영역은 실측값으로 표시. CPU 코어 온도, 팬 RPM·제어는 제조사별 백엔드가 필요하며 가상값을 사용하지 않음 |
 | GPU 사용률 | 🔬 조사 완료 — IOReport 연동 자체는 동작하지만, 노출되는 residency 값이 Activity Monitor의 GPU % 값과 일치하지 않아 부정확한 값을 내보내느니 보류함 ([`docs/RESEARCH.md`](./docs/RESEARCH.md)) |
 | 팬 **제어** | ⚙️ SMC 쓰기, **root 권한 필요** (`sudo peterfan fan set N` 또는 데몬 사용). `fan set`은 **RPM을 다시 읽어들여 검증**하므로 가짜 "성공" 메시지가 아니라 진짜 ✓/✗를 확인할 수 있습니다. Intel에서는 검증 완료, Apple Silicon에서는 시도 및 검증되지만(일부 모델은 펌웨어가 이를 무시할 수 있음) |
 | CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`temps --all`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`integrity`/`config`/`serve`/`benchmark`/`log`/`alert`/`completions`, 전역 `--watch` & `--json` | ✅ 실행 가능 — `doctor`는 CPU 대표/최고/summary/aggregate/hotspot/P-core 온도 후보까지 진단, `integrity`는 설치된 앱의 서명/공증/Gatekeeper 상태를 진단 |
@@ -121,7 +121,9 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 암호가 필요 없습니다. 설치기는 WebView2 Runtime을 확인해 없는 노트북에서만
 Microsoft 서명 부트스트래퍼를 실행합니다. Windows ZIP은 GitHub Actions가 테스트,
 실측 JSON, 설치·시작 프로그램·트레이·WebView2·제거 검증을 모두 통과한 뒤 macOS
-산출물과 함께 릴리스됩니다.
+산출물과 함께 릴리스됩니다. 이후 설정의 업데이트 버튼이나
+`peterfan update --install`은 Windows ZIP의 GitHub digest와 `checksums.txt`,
+내장 CLI 버전을 확인한 뒤 같은 사용자 영역 설치를 갱신합니다.
 
 공식 `.dmg`는 Developer ID로 서명하고 Apple 공증(notarization)과 stapling까지
 마친 뒤 배포합니다. Gatekeeper가 거부한다면 먼저 최신 릴리즈를 다시 받아보고,
@@ -192,7 +194,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.27.58
+PeterFan v1.27.59
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max

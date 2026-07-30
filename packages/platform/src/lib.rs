@@ -5,8 +5,8 @@
 //! - [`mock`] — a fully simulated machine. Always available, used for the demo
 //!   experience, for `--mock`, and as the substrate for tests.
 //! - `macos` — real SMC/IOHID temperatures, fan RPM, and guarded fan control.
-//! - `windows` — real system information with explicit unsupported thermal and
-//!   fan capabilities until a hardware-specific EC/WMI backend is available.
+//! - `windows` — real system information and ACPI/WMI thermal zones where the
+//!   firmware exposes them; fan RPM and fan control remain hardware-dependent.
 //!
 //! Use [`detect`] to get the best backend for the current OS, or [`mock`] to
 //! force the simulated one.
@@ -88,7 +88,13 @@ pub fn cpu_temperature_probe() -> Option<()> {
 pub fn all_temperature_sensors() -> Vec<peterfan_core::types::TempSensor> {
     macos::all_temperature_sensors()
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn all_temperature_sensors() -> Vec<peterfan_core::types::TempSensor> {
+    windows::WindowsProvider::new()
+        .temperatures()
+        .unwrap_or_default()
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn all_temperature_sensors() -> Vec<peterfan_core::types::TempSensor> {
     Vec::new()
 }

@@ -51,10 +51,19 @@ Microsoft-signed bootstrapper only when the runtime is absent.
 ## Hardware scope
 
 The Windows build uses real cross-platform system metrics for CPU, memory,
-disks, networks, processes, and battery. The hardware provider reports
-temperature, fan RPM, and fan control as unsupported until PeterFan has a
-tested EC/WMI backend for the machine. Production Windows builds never fall
-back to simulated sensors.
+disks, networks, processes, and battery. On systems whose firmware exposes
+`MSAcpi_ThermalZoneTemperature`, PeterFan also shows the ACPI reading as
+**System Thermal Zone**. It is deliberately not labeled as CPU temperature:
+many vendors expose a chassis or board zone instead of CPU cores.
+
+CPU-core temperature, fan RPM, and fan control remain unavailable until
+PeterFan has a tested vendor-specific EC/WMI backend for the machine.
+Production Windows builds never fall back to simulated sensors.
+
+Update checks select the native Windows x64 ZIP, verify both the GitHub asset
+digest and `checksums.txt`, validate the embedded CLI version, then run the
+same per-user installer used for a clean install. Existing startup preference
+is preserved and no administrator prompt is required.
 
 ## Manual release recovery
 

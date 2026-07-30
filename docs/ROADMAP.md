@@ -167,7 +167,10 @@ These are the highest-leverage improvements before adding large new surfaces.
       installer scripts, checksum validation, and GitHub Actions release upload
 - [x] Gate public releases on native Windows install, WebView2, tray readiness,
       startup registration, and uninstall verification
-- [ ] Windows temperature/fan research spike
+- [x] Read firmware-provided Windows ACPI system thermal zones without
+      mislabeling them as CPU-core temperatures
+- [ ] Windows vendor-specific CPU temperature, fan RPM, and fan-control
+      research spike
 - [ ] Linux `hwmon` research spike
 - [ ] Separate platform capability matrix in docs
 

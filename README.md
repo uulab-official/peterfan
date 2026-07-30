@@ -38,7 +38,7 @@ It combines:
 | Automation | JSON output, local HTTP API, shell completions |
 | Updates | GitHub Release checks from CLI and menu-bar app |
 | Integrity | Installed-app, GitHub release, offline local DMG, and complete release-directory verification for SHA-256, bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |
-| Windows | Native tray app plus real CPU, memory, disk, network, process, and battery metrics; hardware temperature/fan access is reported unavailable until a real EC/WMI backend exists |
+| Windows | Native tray app plus real CPU, memory, disk, network, process, and battery metrics; firmware ACPI thermal zones are shown as system temperatures when available, while CPU-core temperature and fan access remain explicitly unsupported |
 
 ## Repository Map
 
@@ -298,7 +298,7 @@ Check for updates:
 ```bash
 peterfan update
 peterfan update --open
-peterfan update --install   # macOS app OTA, when running from PeterFan.app
+peterfan update --install   # verified in-place update on macOS or Windows
 ```
 
 ## Release Builds

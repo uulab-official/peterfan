@@ -56,6 +56,7 @@ impl SensorKind {
 pub enum SensorSource {
     Smc,
     Iohid,
+    Acpi,
     Battery,
     Simulated,
     #[default]
@@ -67,6 +68,7 @@ impl SensorSource {
         match self {
             SensorSource::Smc => "SMC",
             SensorSource::Iohid => "IOHID",
+            SensorSource::Acpi => "ACPI",
             SensorSource::Battery => "Battery",
             SensorSource::Simulated => "Simulated",
             SensorSource::Unknown => "Unknown",

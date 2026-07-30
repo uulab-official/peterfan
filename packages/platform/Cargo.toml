@@ -1,6 +1,6 @@
 [package]
 name = "peterfan-platform"
-description = "Platform backends for PeterFan: the mock provider plus OS-specific drivers (macOS today; Windows/Linux planned)."
+description = "Platform backends for PeterFan: mock, macOS SMC/IOHID, Windows ACPI, and cross-platform system metrics."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
