@@ -20,6 +20,9 @@ tao = { workspace = true }
 wry = "0.55.1"
 serde_json = { workspace = true }
 
+[dev-dependencies]
+png = "0.18.1"
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
