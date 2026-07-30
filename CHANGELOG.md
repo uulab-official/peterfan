@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.61] — 항상 보이는 업데이트 동작
+
+### Changed
+
+- 설정의 `지금 업데이트` 버튼을 항상 같은 위치에 표시하고, 확인 전·최신 버전·릴리스 준비 중·설치 가능·설치 중 상태를 버튼 자체에서 구분하도록 다듬었습니다.
+
 ## [1.27.60] — 명확한 앱 업데이트 동작
 
 ### Changed

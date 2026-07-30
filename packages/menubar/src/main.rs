@@ -5621,7 +5621,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result">—</span></div>
 </div>
 <div class="release-notes-card" id="update-release-notes-card" style="display:none"><div class="release-notes-title">Release Notes</div><div class="release-notes-body" id="update-release-notes">—</div></div>
-<div class="panel-actions" style="margin-top:10px"><button class="panel-action secondary" id="rail-update-check" disabled onclick="checkAppUpdates(this)">Check for Updates</button><button class="panel-action" id="rail-update-install" disabled onclick="installAppUpdate(this)" style="display:none">Install Update</button><button class="panel-action secondary" id="update-release-link" onclick="openLatestRelease()" style="display:none">View Release</button></div>
+<div class="panel-actions" style="margin-top:10px"><button class="panel-action secondary" id="rail-update-check" disabled onclick="checkAppUpdates(this)">Check for Updates</button><button class="panel-action" id="rail-update-install" disabled onclick="installAppUpdate(this)">Install Update</button><button class="panel-action secondary" id="update-release-link" onclick="openLatestRelease()" style="display:none">View Release</button></div>
 </div>
 
 <div class="rail-panel" id="rail-more-panel">
@@ -6009,14 +6009,23 @@ function renderUpdateStatus(status){
     link.textContent=LANG==='ko'?'릴리즈 보기':'View Release';
   }
   if(install){
-    var updateKnown=!!s.latest&&compareVersions(current,s.latest)<0;
+    var comparison=s.latest?compareVersions(current,s.latest):0;
+    var updateKnown=!!s.latest&&comparison<0;
     var installing=phase==='downloading'||phase==='queued';
     var canInstall=updateKnown&&s.install_ready===true&&!s.checking&&phase!=='checking'&&!installing;
-    install.style.display=(updateKnown&&s.install_ready===true)?'':'none';
+    install.style.display='';
     install.disabled=!canInstall;
     install.textContent=installing
       ?(LANG==='ko'?'설치 중…':'Installing…')
-      :(LANG==='ko'?'지금 업데이트':'Install Update');
+        :(updateKnown
+          ?(s.install_ready===true
+            ?(LANG==='ko'?'지금 업데이트':'Install Update')
+            :(LANG==='ko'?'설치 준비 중':'Preparing Update'))
+          :(s.latest&&comparison===0
+            ?(LANG==='ko'?'최신 버전':'Up to Date')
+            :(s.latest&&comparison>0
+              ?(LANG==='ko'?'개발 빌드':'Development Build')
+              :(LANG==='ko'?'지금 업데이트':'Install Update'))));
   }
 }
 function openLatestRelease(){
@@ -8203,6 +8212,12 @@ mod tests {
         assert!(en.contains("mode==='install'?'installupdate':'checkupdates'"));
         assert!(en.contains("s.install_ready===true"));
         assert!(en.contains("install_ready:!!nativeUpdate.install_ready"));
+        assert!(en.contains("Preparing Update"));
+        assert!(en.contains("Up to Date"));
+        assert!(en.contains("Development Build"));
+        assert!(!en.contains(
+            r#"id="rail-update-install" disabled onclick="installAppUpdate(this)" style="display:none""#
+        ));
         assert!(en.contains("APP_UPDATE_STATUS.current=d.app_version||APP_UPDATE_STATUS.current;"));
         assert!(en.contains("d.update_install_result"));
         assert!(en.contains("s.install_status==='installed'"));
