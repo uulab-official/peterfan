@@ -867,6 +867,18 @@ fn runner_character_label(lang: ResolvedLanguage, character: RunnerCharacter) ->
         (ResolvedLanguage::En, RunnerCharacter::Dinosaur) => "Dinosaur",
         (ResolvedLanguage::En, RunnerCharacter::Robot) => "Robot",
         (ResolvedLanguage::En, RunnerCharacter::Ghost) => "Ghost",
+        (ResolvedLanguage::En, RunnerCharacter::Bird) => "Bird",
+        (ResolvedLanguage::En, RunnerCharacter::Duck) => "Duck",
+        (ResolvedLanguage::En, RunnerCharacter::Sheep) => "Sheep",
+        (ResolvedLanguage::En, RunnerCharacter::Fish) => "Fish",
+        (ResolvedLanguage::En, RunnerCharacter::Slime) => "Slime",
+        (ResolvedLanguage::En, RunnerCharacter::Human) => "Human",
+        (ResolvedLanguage::En, RunnerCharacter::Pushup) => "Push-up",
+        (ResolvedLanguage::En, RunnerCharacter::Orbit) => "Orbit",
+        (ResolvedLanguage::En, RunnerCharacter::Sushi) => "Sushi",
+        (ResolvedLanguage::En, RunnerCharacter::City) => "City",
+        (ResolvedLanguage::En, RunnerCharacter::Sausage) => "Sausage",
+        (ResolvedLanguage::En, RunnerCharacter::Party) => "Party",
         (ResolvedLanguage::Ko, RunnerCharacter::Cat) => "고양이",
         (ResolvedLanguage::Ko, RunnerCharacter::Dog) => "강아지",
         (ResolvedLanguage::Ko, RunnerCharacter::Rabbit) => "토끼",
@@ -875,6 +887,18 @@ fn runner_character_label(lang: ResolvedLanguage, character: RunnerCharacter) ->
         (ResolvedLanguage::Ko, RunnerCharacter::Dinosaur) => "공룡",
         (ResolvedLanguage::Ko, RunnerCharacter::Robot) => "로봇",
         (ResolvedLanguage::Ko, RunnerCharacter::Ghost) => "유령",
+        (ResolvedLanguage::Ko, RunnerCharacter::Bird) => "새",
+        (ResolvedLanguage::Ko, RunnerCharacter::Duck) => "오리",
+        (ResolvedLanguage::Ko, RunnerCharacter::Sheep) => "양",
+        (ResolvedLanguage::Ko, RunnerCharacter::Fish) => "물고기",
+        (ResolvedLanguage::Ko, RunnerCharacter::Slime) => "슬라임",
+        (ResolvedLanguage::Ko, RunnerCharacter::Human) => "달리는 사람",
+        (ResolvedLanguage::Ko, RunnerCharacter::Pushup) => "푸시업",
+        (ResolvedLanguage::Ko, RunnerCharacter::Orbit) => "궤도",
+        (ResolvedLanguage::Ko, RunnerCharacter::Sushi) => "회전초밥",
+        (ResolvedLanguage::Ko, RunnerCharacter::City) => "도시",
+        (ResolvedLanguage::Ko, RunnerCharacter::Sausage) => "소시지",
+        (ResolvedLanguage::Ko, RunnerCharacter::Party) => "파티",
     }
 }
 
@@ -2367,8 +2391,7 @@ fn help_text() -> String {
          OPTIONS:\n    \
          --mock                Use simulated hardware instead of real sensors\n    \
         --display <number|cat|both>             How it's rendered (cat also accepts legacy graph)\n    \
-        --character <cat|dog|rabbit|fox|penguin|dinosaur|robot|ghost>\n    \
-                                                  CPU runner character\n    \
+        --character <name>                      CPU runner character (20 choices)\n    \
          (The flag overrides the saved preference; changing it from the\n    \
          right-click menu persists for next launch.)\n    \
          --version, -V         Print version and exit\n    \
@@ -5324,6 +5347,18 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
         RunnerCharacter::Dinosaur => make_dinosaur_runner_rgba(cpu_pct, frame),
         RunnerCharacter::Robot => make_robot_runner_rgba(cpu_pct, frame),
         RunnerCharacter::Ghost => make_ghost_runner_rgba(cpu_pct, frame),
+        RunnerCharacter::Bird
+        | RunnerCharacter::Duck
+        | RunnerCharacter::Sheep
+        | RunnerCharacter::Fish
+        | RunnerCharacter::Slime
+        | RunnerCharacter::Human
+        | RunnerCharacter::Pushup
+        | RunnerCharacter::Orbit
+        | RunnerCharacter::Sushi
+        | RunnerCharacter::City
+        | RunnerCharacter::Sausage
+        | RunnerCharacter::Party => make_novelty_runner_rgba(character, cpu_pct, frame),
     }
 }
 
@@ -5898,6 +5933,332 @@ fn make_ghost_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
     rgba
 }
 
+fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<u8> {
+    const BOB: [f32; 8] = [0.8, 0.0, -1.5, -2.8, -1.5, 0.1, 0.9, -1.2];
+    const SWING: [f32; 8] = [-7.0, -4.0, 0.0, 6.0, 8.0, 4.0, 0.5, -6.0];
+    const WAVE: [f32; 8] = [4.0, 1.0, -3.0, -6.0, -3.5, 0.5, 5.5, 7.0];
+
+    let pose = usize::from(frame % RUNNER_FRAME_COUNT);
+    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
+    let motion = 0.55 + load.sqrt() * 0.76;
+    let bob = BOB[pose] * motion;
+    let swing = SWING[pose] * motion;
+    let wave = WAVE[pose] * motion;
+    let solid = (255, 255, 255, 248);
+    let detail = (255, 255, 255, 222);
+    let mut canvas = RunnerCanvas::new();
+
+    match character {
+        RunnerCharacter::Bird => {
+            canvas.triangle(
+                Pt::new(17.0, 14.0 + bob),
+                Pt::new(2.0, 9.0 + bob + wave * 0.4),
+                Pt::new(15.0, 20.0 + bob),
+                detail,
+            );
+            canvas.line(
+                Pt::new(24.0, 15.0 + bob),
+                Pt::new(16.0, 7.0 + bob + wave),
+                4.2,
+                detail,
+            );
+            canvas.ellipse(Pt::new(27.0, 15.0 + bob), 11.5, 5.7, solid);
+            canvas.disc(Pt::new(38.0, 11.8 + bob), 4.2, solid);
+            canvas.triangle(
+                Pt::new(41.0, 11.0 + bob),
+                Pt::new(47.5, 13.0 + bob),
+                Pt::new(41.0, 14.0 + bob),
+                detail,
+            );
+            canvas.line(
+                Pt::new(24.0, 19.0 + bob),
+                Pt::new(22.0 + swing * 0.65, 27.0),
+                2.0,
+                solid,
+            );
+            canvas.line(
+                Pt::new(30.0, 19.0 + bob),
+                Pt::new(30.0 - swing * 0.65, 27.0),
+                2.0,
+                detail,
+            );
+            canvas.erase_disc(Pt::new(39.0, 10.9 + bob), 0.85);
+        }
+        RunnerCharacter::Duck => {
+            canvas.ellipse(Pt::new(25.0, 16.0 + bob), 13.5, 6.5, solid);
+            canvas.disc(Pt::new(38.0, 11.2 + bob), 5.0, solid);
+            canvas.ellipse(Pt::new(45.0, 13.0 + bob), 4.6, 1.8, detail);
+            canvas.triangle(
+                Pt::new(13.0, 15.0 + bob),
+                Pt::new(3.0, 11.5 + bob + wave * 0.3),
+                Pt::new(13.0, 20.0 + bob),
+                detail,
+            );
+            canvas.line(
+                Pt::new(22.0, 20.0 + bob),
+                Pt::new(20.0 + swing * 0.65, 27.0),
+                2.6,
+                detail,
+            );
+            canvas.line(
+                Pt::new(29.0, 20.0 + bob),
+                Pt::new(30.0 - swing * 0.65, 27.0),
+                2.6,
+                solid,
+            );
+            canvas.erase_disc(Pt::new(39.0, 10.0 + bob), 0.9);
+        }
+        RunnerCharacter::Sheep => {
+            for (x, y, radius) in [
+                (14.0, 15.0, 5.4),
+                (20.0, 12.0, 6.0),
+                (27.0, 13.0, 6.4),
+                (32.0, 17.0, 6.0),
+                (23.0, 18.0, 6.5),
+            ] {
+                canvas.disc(Pt::new(x, y + bob), radius, solid);
+            }
+            canvas.ellipse(Pt::new(39.0, 15.0 + bob), 6.5, 4.8, detail);
+            canvas.line(
+                Pt::new(18.0, 20.0 + bob),
+                Pt::new(16.0 + swing * 0.55, 27.0),
+                2.8,
+                detail,
+            );
+            canvas.line(
+                Pt::new(31.0, 20.0 + bob),
+                Pt::new(32.0 - swing * 0.55, 27.0),
+                2.8,
+                solid,
+            );
+            canvas.disc(Pt::new(6.0, 15.0 + bob + wave * 0.3), 3.0, detail);
+            canvas.erase_disc(Pt::new(41.0, 13.8 + bob), 0.9);
+        }
+        RunnerCharacter::Fish => {
+            canvas.triangle(
+                Pt::new(16.0, 14.0 + bob),
+                Pt::new(2.0, 6.0 + bob + wave),
+                Pt::new(3.0, 23.0 + bob - wave * 0.45),
+                detail,
+            );
+            canvas.ellipse(Pt::new(28.0, 14.5 + bob), 14.0 + load, 7.5, solid);
+            canvas.triangle(
+                Pt::new(25.0, 15.0 + bob),
+                Pt::new(21.0 + swing * 0.25, 27.0 + bob),
+                Pt::new(32.0, 18.0 + bob),
+                detail,
+            );
+            canvas.disc(Pt::new(44.0, 6.0 + wave * 0.25), 1.8, detail);
+            canvas.disc(Pt::new(47.0, 2.5 + wave * 0.18), 1.1, detail);
+            canvas.erase_disc(Pt::new(39.5, 12.0 + bob), 1.0);
+        }
+        RunnerCharacter::Slime => {
+            canvas.line(
+                Pt::new(14.0, 18.0 + bob),
+                Pt::new(3.0, 14.0 + bob + swing * 0.45),
+                4.0,
+                detail,
+            );
+            canvas.line(
+                Pt::new(37.0, 18.0 + bob),
+                Pt::new(48.0, 14.0 + bob - swing * 0.45),
+                4.0,
+                detail,
+            );
+            canvas.ellipse(Pt::new(26.0, 17.0 + bob), 15.5 + load, 9.4, solid);
+            canvas.triangle(
+                Pt::new(12.0, 20.0 + bob),
+                Pt::new(17.0, 28.0 + bob + wave * 0.2),
+                Pt::new(22.0, 20.0 + bob),
+                solid,
+            );
+            canvas.triangle(
+                Pt::new(22.0, 20.0 + bob),
+                Pt::new(28.0, 27.0 + bob - wave * 0.18),
+                Pt::new(34.0, 20.0 + bob),
+                solid,
+            );
+            canvas.triangle(
+                Pt::new(33.0, 20.0 + bob),
+                Pt::new(39.0, 27.0 + bob + wave * 0.15),
+                Pt::new(42.0, 19.0 + bob),
+                solid,
+            );
+            canvas.erase_disc(Pt::new(22.0, 14.5 + bob), 1.15);
+            canvas.erase_disc(Pt::new(31.0, 14.5 + bob), 1.15);
+        }
+        RunnerCharacter::Human => {
+            let hip = Pt::new(28.0, 19.0 + bob);
+            canvas.disc(Pt::new(34.5, 6.0 + bob), 4.0, solid);
+            canvas.line(Pt::new(32.0, 10.0 + bob), hip, 3.8, solid);
+            canvas.line(
+                Pt::new(31.5, 12.0 + bob),
+                Pt::new(18.0, 10.0 + bob + swing * 0.55),
+                3.0,
+                detail,
+            );
+            canvas.line(
+                Pt::new(31.5, 12.0 + bob),
+                Pt::new(45.0, 12.0 + bob - swing * 0.55),
+                3.0,
+                solid,
+            );
+            canvas.line(hip, Pt::new(9.0 + swing, 27.0), 3.4, detail);
+            canvas.line(hip, Pt::new(45.0 - swing, 27.0), 3.4, solid);
+        }
+        RunnerCharacter::Pushup => {
+            let flex = ((pose as f32 - 3.5).abs() - 1.75) * motion;
+            canvas.line(
+                Pt::new(10.0, 14.0 + flex),
+                Pt::new(38.0, 13.0 + bob),
+                6.0,
+                solid,
+            );
+            canvas.disc(Pt::new(43.0, 13.0 + bob), 4.0, solid);
+            canvas.line(
+                Pt::new(34.0, 15.0 + bob),
+                Pt::new(39.0 + swing * 0.25, 27.0),
+                3.0,
+                detail,
+            );
+            canvas.line(
+                Pt::new(30.0, 15.0 + bob),
+                Pt::new(27.0 - swing * 0.25, 27.0),
+                3.0,
+                solid,
+            );
+            canvas.line(Pt::new(11.0, 15.0 + flex), Pt::new(2.0, 24.0), 3.2, detail);
+        }
+        RunnerCharacter::Orbit => {
+            canvas.line(
+                Pt::new(3.0, 16.0 + wave * 0.25),
+                Pt::new(45.0, 16.0 - wave * 0.25),
+                2.0,
+                detail,
+            );
+            canvas.line(
+                Pt::new(8.0, 7.0 - wave * 0.2),
+                Pt::new(41.0, 25.0 + wave * 0.2),
+                1.8,
+                detail,
+            );
+            canvas.disc(Pt::new(25.0, 16.0 + bob), 6.0 + load, solid);
+            canvas.disc(
+                Pt::new(7.0 + (pose as f32 * 5.1) % 38.0, 8.0 + wave),
+                2.5,
+                solid,
+            );
+            canvas.disc(
+                Pt::new(43.0 - (pose as f32 * 4.2) % 35.0, 24.0 - wave * 0.7),
+                2.0,
+                detail,
+            );
+            canvas.erase_disc(Pt::new(25.0, 16.0 + bob), 2.3);
+        }
+        RunnerCharacter::Sushi => {
+            canvas.line(Pt::new(2.0, 25.0), Pt::new(48.0, 25.0), 3.2, detail);
+            for index in 0..5 {
+                let x = 5.0 + ((index * 11 + pose * 3) % 48) as f32;
+                canvas.disc(Pt::new(x, 27.0), 2.0, detail);
+            }
+            canvas.rect(15.0, 12.0 + bob, 37.0, 22.0 + bob, solid);
+            canvas.ellipse(Pt::new(26.0 + swing * 0.18, 10.5 + bob), 13.5, 3.8, detail);
+            canvas.line(
+                Pt::new(17.0, 15.0 + bob),
+                Pt::new(8.0, 10.0 + bob + wave * 0.3),
+                2.0,
+                detail,
+            );
+            canvas.erase_disc(Pt::new(26.0, 17.0 + bob), 2.0);
+        }
+        RunnerCharacter::City => {
+            canvas.rect(3.0, 14.0, 11.0, 27.0, solid);
+            canvas.rect(12.0, 8.0 + bob * 0.2, 20.0, 27.0, solid);
+            canvas.rect(21.0, 12.0, 29.0, 27.0, solid);
+            canvas.rect(30.0, 5.0, 39.0, 27.0, solid);
+            canvas.rect(40.0, 16.0, 48.0, 27.0, solid);
+            for (x, y) in [
+                (7.0, 18.0),
+                (16.0, 12.0),
+                (25.0, 16.0),
+                (34.5, 9.0),
+                (44.0, 20.0),
+            ] {
+                canvas.erase_disc(Pt::new(x, y), 1.1);
+            }
+            canvas.disc(Pt::new(35.0 + swing * 0.35, 2.0 + wave * 0.2), 2.0, detail);
+        }
+        RunnerCharacter::Sausage => {
+            canvas.ellipse(Pt::new(25.0, 15.0 + bob), 17.0 + load, 5.6, solid);
+            canvas.line(
+                Pt::new(10.0, 15.0 + bob),
+                Pt::new(2.0, 9.0 + bob + swing * 0.45),
+                2.8,
+                detail,
+            );
+            canvas.line(
+                Pt::new(39.0, 15.0 + bob),
+                Pt::new(48.0, 10.0 + bob - swing * 0.45),
+                2.8,
+                detail,
+            );
+            canvas.line(
+                Pt::new(19.0, 19.0 + bob),
+                Pt::new(17.0 + swing * 0.7, 27.0),
+                2.7,
+                detail,
+            );
+            canvas.line(
+                Pt::new(31.0, 19.0 + bob),
+                Pt::new(32.0 - swing * 0.7, 27.0),
+                2.7,
+                solid,
+            );
+            canvas.erase_disc(Pt::new(37.0, 14.0 + bob), 0.9);
+        }
+        RunnerCharacter::Party => {
+            for (index, x) in [12.0, 25.0, 38.0].into_iter().enumerate() {
+                let offset = if index % 2 == 0 { wave } else { -wave };
+                let local_bob = bob + offset * 0.18;
+                canvas.disc(Pt::new(x, 7.0 + local_bob), 3.0, solid);
+                canvas.line(
+                    Pt::new(x, 10.0 + local_bob),
+                    Pt::new(x, 19.0 + local_bob),
+                    2.8,
+                    solid,
+                );
+                canvas.line(
+                    Pt::new(x, 12.0 + local_bob),
+                    Pt::new(x - 7.0, 8.0 + local_bob + offset * 0.45),
+                    2.3,
+                    detail,
+                );
+                canvas.line(
+                    Pt::new(x, 12.0 + local_bob),
+                    Pt::new(x + 7.0, 8.0 + local_bob - offset * 0.45),
+                    2.3,
+                    detail,
+                );
+                canvas.line(
+                    Pt::new(x, 19.0 + local_bob),
+                    Pt::new(x - 5.0 - swing * 0.2, 27.0),
+                    2.5,
+                    solid,
+                );
+                canvas.line(
+                    Pt::new(x, 19.0 + local_bob),
+                    Pt::new(x + 5.0 + swing * 0.2, 27.0),
+                    2.5,
+                    detail,
+                );
+            }
+        }
+        _ => unreachable!("non-novelty runner reached novelty renderer"),
+    }
+
+    canvas.finish()
+}
+
 #[derive(Clone, Copy)]
 struct Pt {
     x: f32,
@@ -5907,6 +6268,92 @@ struct Pt {
 impl Pt {
     const fn new(x: f32, y: f32) -> Self {
         Self { x, y }
+    }
+}
+
+struct RunnerCanvas {
+    rgba: Vec<u8>,
+}
+
+impl RunnerCanvas {
+    fn new() -> Self {
+        Self {
+            rgba: vec![0u8; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize],
+        }
+    }
+
+    fn finish(self) -> Vec<u8> {
+        self.rgba
+    }
+
+    fn line(&mut self, start: Pt, end: Pt, thickness: f32, color: (u8, u8, u8, u8)) {
+        draw_line(
+            &mut self.rgba,
+            RUNNER_PIXEL_WIDTH,
+            RUNNER_PIXEL_HEIGHT,
+            start,
+            end,
+            thickness,
+            color,
+        );
+    }
+
+    fn disc(&mut self, center: Pt, radius: f32, color: (u8, u8, u8, u8)) {
+        draw_disc(
+            &mut self.rgba,
+            RUNNER_PIXEL_WIDTH,
+            RUNNER_PIXEL_HEIGHT,
+            center,
+            radius,
+            color,
+        );
+    }
+
+    fn ellipse(&mut self, center: Pt, rx: f32, ry: f32, color: (u8, u8, u8, u8)) {
+        draw_ellipse(
+            &mut self.rgba,
+            RUNNER_PIXEL_WIDTH,
+            RUNNER_PIXEL_HEIGHT,
+            center,
+            rx,
+            ry,
+            color,
+        );
+    }
+
+    fn triangle(&mut self, a: Pt, b: Pt, c: Pt, color: (u8, u8, u8, u8)) {
+        draw_triangle(
+            &mut self.rgba,
+            RUNNER_PIXEL_WIDTH,
+            RUNNER_PIXEL_HEIGHT,
+            a,
+            b,
+            c,
+            color,
+        );
+    }
+
+    fn rect(&mut self, left: f32, top: f32, right: f32, bottom: f32, color: (u8, u8, u8, u8)) {
+        draw_rect(
+            &mut self.rgba,
+            RUNNER_PIXEL_WIDTH,
+            RUNNER_PIXEL_HEIGHT,
+            left,
+            top,
+            right,
+            bottom,
+            color,
+        );
+    }
+
+    fn erase_disc(&mut self, center: Pt, radius: f32) {
+        erase_disc(
+            &mut self.rgba,
+            RUNNER_PIXEL_WIDTH,
+            RUNNER_PIXEL_HEIGHT,
+            center,
+            radius,
+        );
     }
 }
 
@@ -6158,6 +6605,18 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Dinosaur<", ">공룡<")
             .replace(">Robot<", ">로봇<")
             .replace(">Ghost<", ">유령<")
+            .replace(">Bird<", ">새<")
+            .replace(">Duck<", ">오리<")
+            .replace(">Sheep<", ">양<")
+            .replace(">Fish<", ">물고기<")
+            .replace(">Slime<", ">슬라임<")
+            .replace(">Human<", ">달리는 사람<")
+            .replace(">Push-up<", ">푸시업<")
+            .replace(">Orbit<", ">궤도<")
+            .replace(">Sushi<", ">회전초밥<")
+            .replace(">City<", ">도시<")
+            .replace(">Sausage<", ">소시지<")
+            .replace(">Party<", ">파티<")
             .replace(">Both<", ">둘 다<")
             .replace("CPU runner · waiting", "CPU 러너 · 대기 중")
             .replace(">Notifications<", ">알림<")
@@ -6501,10 +6960,9 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .display-segment button{min-width:0;min-height:27px;padding:4px 5px;border:0;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:750;cursor:pointer;white-space:nowrap;}
 .display-segment button:hover{background:var(--track-hover);color:var(--text);}
 .display-segment button.active{background:var(--surface-raised);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.15);}
-.character-segment{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px;width:184px;padding:3px;border-radius:8px;background:var(--chip-bg);}
-.character-segment button{min-width:0;min-height:27px;padding:4px 6px;border:0;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:750;cursor:pointer;white-space:nowrap;}
-.character-segment button:hover{background:var(--track-hover);color:var(--text);}
-.character-segment button.active{background:var(--surface-raised);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.15);}
+.character-select{width:184px;height:31px;padding:4px 28px 4px 9px;border:1px solid var(--line);border-radius:7px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10px;font-weight:700;cursor:pointer;color-scheme:inherit;}
+.character-select:hover{border-color:var(--accent-border);background-color:var(--track-hover);}
+.character-select:focus{outline:2px solid var(--accent);outline-offset:1px;}
 .runner-pace{color:var(--dim);font-size:9.5px;font-variant-numeric:tabular-nums;text-align:right;}
 .system-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin:0 0 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);}
 .system-fact{min-width:0;padding:8px 10px;}
@@ -6732,16 +7190,28 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 </div>
 <div class="settings-item" id="runner-character-setting">
 <div><div class="settings-item-title">Character</div><div class="settings-item-copy">Choose your CPU-responsive runner.</div></div>
-<div class="character-segment" role="group" aria-label="Runner character">
-<button data-character="cat" aria-pressed="true" onclick="setRunnerCharacter('cat')">Cat</button>
-<button data-character="dog" aria-pressed="false" onclick="setRunnerCharacter('dog')">Dog</button>
-<button data-character="rabbit" aria-pressed="false" onclick="setRunnerCharacter('rabbit')">Rabbit</button>
-<button data-character="fox" aria-pressed="false" onclick="setRunnerCharacter('fox')">Fox</button>
-<button data-character="penguin" aria-pressed="false" onclick="setRunnerCharacter('penguin')">Penguin</button>
-<button data-character="dinosaur" aria-pressed="false" onclick="setRunnerCharacter('dinosaur')">Dinosaur</button>
-<button data-character="robot" aria-pressed="false" onclick="setRunnerCharacter('robot')">Robot</button>
-<button data-character="ghost" aria-pressed="false" onclick="setRunnerCharacter('ghost')">Ghost</button>
-</div>
+<select id="runner-character-select" class="character-select" aria-label="Runner character" onchange="setRunnerCharacter(this.value)">
+<option data-character="cat" value="cat" selected>Cat</option>
+<option data-character="dog" value="dog">Dog</option>
+<option data-character="rabbit" value="rabbit">Rabbit</option>
+<option data-character="fox" value="fox">Fox</option>
+<option data-character="penguin" value="penguin">Penguin</option>
+<option data-character="dinosaur" value="dinosaur">Dinosaur</option>
+<option data-character="robot" value="robot">Robot</option>
+<option data-character="ghost" value="ghost">Ghost</option>
+<option data-character="bird" value="bird">Bird</option>
+<option data-character="duck" value="duck">Duck</option>
+<option data-character="sheep" value="sheep">Sheep</option>
+<option data-character="fish" value="fish">Fish</option>
+<option data-character="slime" value="slime">Slime</option>
+<option data-character="human" value="human">Human</option>
+<option data-character="pushup" value="pushup">Push-up</option>
+<option data-character="orbit" value="orbit">Orbit</option>
+<option data-character="sushi" value="sushi">Sushi</option>
+<option data-character="city" value="city">City</option>
+<option data-character="sausage" value="sausage">Sausage</option>
+<option data-character="party" value="party">Party</option>
+</select>
 </div>
 <details class="settings-details" id="notification-settings">
 <summary><span>Notifications</span><span class="panel-pill info" id="notification-pill">2 on</span></summary>
@@ -8201,8 +8671,9 @@ function setMenubarDisplay(style){
   updateMenubarDisplay(data);
   if(window.ipc)window.ipc.postMessage('display:'+style);
 }
+var RUNNER_CHARACTERS=['cat','dog','rabbit','fox','penguin','dinosaur','robot','ghost','bird','duck','sheep','fish','slime','human','pushup','orbit','sushi','city','sausage','party'];
 function setRunnerCharacter(character){
-  if(!/^(cat|dog|rabbit|fox)$/.test(character))return;
+  if(RUNNER_CHARACTERS.indexOf(character)<0)return;
   var data=window.__pf_pending||{};
   data.runner_character=character;
   updateMenubarDisplay(data);
@@ -8215,12 +8686,9 @@ function updateMenubarDisplay(d){
     button.classList.toggle('active',active);
     button.setAttribute('aria-pressed',active?'true':'false');
   });
-  var character=/^(cat|dog|rabbit|fox|penguin|dinosaur|robot|ghost)$/.test(d.runner_character)?d.runner_character:'cat';
-  document.querySelectorAll('.character-segment button').forEach(function(button){
-    var active=button.dataset.character===character;
-    button.classList.toggle('active',active);
-    button.setAttribute('aria-pressed',active?'true':'false');
-  });
+  var character=RUNNER_CHARACTERS.indexOf(d.runner_character)>=0?d.runner_character:'cat';
+  var characterSelect=document.getElementById('runner-character-select');
+  if(characterSelect&&characterSelect.value!==character)characterSelect.value=character;
   var pace=document.getElementById('runner-pace');
   if(!pace)return;
   var cpu=Math.max(0,Math.min(100,Number(d.runner_cpu_pct)||0));
@@ -9338,19 +9806,38 @@ mod tests {
             assert!(html.contains(r#"id="display-runner""#));
             assert!(html.contains(r#"id="display-both""#));
             assert!(html.contains(r#"id="runner-character-setting""#));
+            assert!(html.contains(r#"id="runner-character-select""#));
             for character in RunnerCharacter::ALL {
                 assert!(
                     html.contains(&format!(r#"data-character="{}""#, character.as_str())),
                     "settings are missing {character:?}"
                 );
             }
+            assert!(html.contains("RUNNER_CHARACTERS.indexOf(character)<0"));
             assert!(html.contains("function setRunnerCharacter(character)"));
             assert!(html.contains("window.ipc.postMessage('character:'+character)"));
             assert!(html.contains("function setMenubarDisplay(style)"));
             assert!(html.contains("window.ipc.postMessage('display:'+style)"));
             assert!(html.contains("function updateMenubarDisplay(d)"));
         }
-        for label in ["펭귄", "공룡", "로봇", "유령"] {
+        for label in [
+            "펭귄",
+            "공룡",
+            "로봇",
+            "유령",
+            "새",
+            "오리",
+            "양",
+            "물고기",
+            "슬라임",
+            "달리는 사람",
+            "푸시업",
+            "궤도",
+            "회전초밥",
+            "도시",
+            "소시지",
+            "파티",
+        ] {
             assert!(ko.contains(label), "Korean settings are missing {label}");
         }
     }
@@ -10637,7 +11124,8 @@ mod tests {
 
         let help = help_text();
         assert!(help.contains("--display <number|cat|both>"));
-        assert!(help.contains("--character <cat|dog|rabbit|fox|penguin|dinosaur|robot|ghost>"));
+        assert!(help.contains("--character <name>"));
+        assert!(help.contains("CPU runner character (20 choices)"));
         assert!(help.contains("cat also accepts legacy graph"));
         assert!(!help.contains("--metric"));
     }

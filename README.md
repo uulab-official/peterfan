@@ -28,7 +28,7 @@ It combines:
 
 | Area | Status |
 | --- | --- |
-| macOS menu-bar app | Eight selectable CPU-responsive runners (cat, dog, rabbit, fox, penguin, dinosaur, robot, ghost), each with a distinct eight-frame gait; temperature/runner/both styles, popover dashboard, detail window, light/dark mode |
+| macOS menu-bar app | Twenty selectable CPU-responsive runners, from animals to slime, robot, orbit, sushi, city, and party scenes, each with a distinct eight-frame motion cycle; temperature/runner/both styles, popover dashboard, detail window, light/dark mode |
 | CLI | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `temps`, `temps --all`, `fans`, `fan`, `doctor`, `integrity`, `serve`, `update`, and more |
 | TUI | Terminal dashboard built with ratatui |
 | System metrics | CPU and per-core load with Apple Silicon performance/efficiency grouping, memory, disks, network, processes, battery, load average, power, and uptime |

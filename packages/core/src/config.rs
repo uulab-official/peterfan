@@ -206,10 +206,22 @@ pub enum RunnerCharacter {
     Dinosaur,
     Robot,
     Ghost,
+    Bird,
+    Duck,
+    Sheep,
+    Fish,
+    Slime,
+    Human,
+    Pushup,
+    Orbit,
+    Sushi,
+    City,
+    Sausage,
+    Party,
 }
 
 impl RunnerCharacter {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 20] = [
         Self::Cat,
         Self::Dog,
         Self::Rabbit,
@@ -218,6 +230,18 @@ impl RunnerCharacter {
         Self::Dinosaur,
         Self::Robot,
         Self::Ghost,
+        Self::Bird,
+        Self::Duck,
+        Self::Sheep,
+        Self::Fish,
+        Self::Slime,
+        Self::Human,
+        Self::Pushup,
+        Self::Orbit,
+        Self::Sushi,
+        Self::City,
+        Self::Sausage,
+        Self::Party,
     ];
 
     pub fn parse(s: &str) -> Option<Self> {
@@ -230,6 +254,18 @@ impl RunnerCharacter {
             "dinosaur" | "dino" => Some(Self::Dinosaur),
             "robot" | "bot" => Some(Self::Robot),
             "ghost" => Some(Self::Ghost),
+            "bird" => Some(Self::Bird),
+            "duck" => Some(Self::Duck),
+            "sheep" => Some(Self::Sheep),
+            "fish" => Some(Self::Fish),
+            "slime" => Some(Self::Slime),
+            "human" | "runner" => Some(Self::Human),
+            "pushup" | "push-up" => Some(Self::Pushup),
+            "orbit" | "reactor" => Some(Self::Orbit),
+            "sushi" => Some(Self::Sushi),
+            "city" => Some(Self::City),
+            "sausage" | "hotdog" => Some(Self::Sausage),
+            "party" => Some(Self::Party),
             _ => None,
         }
     }
@@ -244,6 +280,18 @@ impl RunnerCharacter {
             Self::Dinosaur => "dinosaur",
             Self::Robot => "robot",
             Self::Ghost => "ghost",
+            Self::Bird => "bird",
+            Self::Duck => "duck",
+            Self::Sheep => "sheep",
+            Self::Fish => "fish",
+            Self::Slime => "slime",
+            Self::Human => "human",
+            Self::Pushup => "pushup",
+            Self::Orbit => "orbit",
+            Self::Sushi => "sushi",
+            Self::City => "city",
+            Self::Sausage => "sausage",
+            Self::Party => "party",
         }
     }
 }
@@ -676,7 +724,11 @@ mod tests {
     fn runner_character_parses_supported_choices() {
         assert_eq!(
             RunnerCharacter::ALL.map(|character| character.as_str()),
-            ["cat", "dog", "rabbit", "fox", "penguin", "dinosaur", "robot", "ghost"]
+            [
+                "cat", "dog", "rabbit", "fox", "penguin", "dinosaur", "robot", "ghost", "bird",
+                "duck", "sheep", "fish", "slime", "human", "pushup", "orbit", "sushi", "city",
+                "sausage", "party"
+            ]
         );
         assert_eq!(
             RunnerCharacter::parse("bunny"),
@@ -687,6 +739,14 @@ mod tests {
             Some(RunnerCharacter::Dinosaur)
         );
         assert_eq!(RunnerCharacter::parse("bot"), Some(RunnerCharacter::Robot));
+        assert_eq!(
+            RunnerCharacter::parse("push-up"),
+            Some(RunnerCharacter::Pushup)
+        );
+        assert_eq!(
+            RunnerCharacter::parse("hotdog"),
+            Some(RunnerCharacter::Sausage)
+        );
         assert_eq!(RunnerCharacter::parse("unknown"), None);
     }
 
