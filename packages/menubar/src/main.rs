@@ -73,14 +73,16 @@ const FAN_EMPTY_CONFIRMATIONS: u8 = 3;
 // The runner should be nearly still at idle and unmistakably fast under load.
 // Frames are pre-rendered, so each tick only swaps a cached status-item image.
 const RUNNER_FRAME_COUNT: u8 = 8;
-const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(110);
-const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(900);
+const RUNNER_PIXEL_WIDTH: u32 = 48;
+const RUNNER_PIXEL_HEIGHT: u32 = 32;
+const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(55);
+const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(780);
 #[cfg(target_os = "macos")]
-const MENUBAR_GRAPH_WIDTH: f64 = 30.0;
+const MENUBAR_GRAPH_WIDTH: f64 = 36.0;
 #[cfg(target_os = "macos")]
 const MENUBAR_NUMBER_WIDTH: f64 = 50.0;
 #[cfg(target_os = "macos")]
-const MENUBAR_BOTH_WIDTH: f64 = 78.0;
+const MENUBAR_BOTH_WIDTH: f64 = 84.0;
 const POPOVER_PREWARM_DELAY: Duration = Duration::from_millis(1200);
 const POPOVER_SHOW_DELAY: Duration = Duration::from_millis(35);
 const DASHBOARD_OPEN_GRACE: Duration = Duration::from_millis(900);
@@ -4991,9 +4993,9 @@ fn runner_frame_interval(cpu_pct: f32) -> Duration {
     let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
     let min_ms = RUNNER_MIN_INTERVAL.as_millis() as f32;
     let max_ms = RUNNER_MAX_INTERVAL.as_millis() as f32;
-    // Ease-out curve: modest load is visibly faster, while the upper range
-    // has enough separation to feel like a sprint rather than a color change.
-    let idle_weight = (1.0 - load).powi(2);
+    // Cubic response makes ordinary work visibly brisk and reserves the
+    // shortest intervals for sustained high load.
+    let idle_weight = (1.0 - load).powi(3);
     let ms = min_ms + (max_ms - min_ms) * idle_weight;
     Duration::from_millis(ms.round() as u64)
 }
@@ -5006,7 +5008,7 @@ fn smooth_runner_cpu(previous: f32, sample: f32, has_sample: bool) -> f32 {
     // Workload spikes should be visible immediately. Decay is deliberately
     // slower so a single quiet sample cannot make the cat stutter between
     // sprinting and walking.
-    let alpha = if sample >= previous { 0.72 } else { 0.28 };
+    let alpha = if sample >= previous { 0.82 } else { 0.22 };
     (previous + (sample - previous) * alpha).clamp(0.0, 100.0)
 }
 
@@ -5071,7 +5073,7 @@ fn make_runner_native_image(
     let rgba = make_runner_rgba(character, cpu_pct, frame);
     let mut encoded = Vec::new();
     {
-        let mut encoder = png::Encoder::new(&mut encoded, 32, 32);
+        let mut encoder = png::Encoder::new(&mut encoded, RUNNER_PIXEL_WIDTH, RUNNER_PIXEL_HEIGHT);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         encoder
@@ -5082,8 +5084,8 @@ fn make_runner_native_image(
     let data = NSData::from_vec(encoded);
     let image = NSImage::initWithData(NSImage::alloc(), &data)
         .expect("encoded runner frame must decode as NSImage");
-    image.setSize(NSSize::new(20.0, 20.0));
-    image.setTemplate(false);
+    image.setSize(NSSize::new(27.0, 18.0));
+    image.setTemplate(true);
     image
 }
 
@@ -5195,109 +5197,76 @@ fn menubar_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
 
 fn make_runner_icon(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Icon {
     let rgba = make_runner_rgba(character, cpu_pct, frame);
-    Icon::from_rgba(rgba, 32, 32).expect("valid icon")
+    Icon::from_rgba(rgba, RUNNER_PIXEL_WIDTH, RUNNER_PIXEL_HEIGHT).expect("valid icon")
 }
 
 fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<u8> {
-    const W: u32 = 32;
-    const H: u32 = 32;
-    const BOUNCE: [f32; 8] = [0.0, 0.4, -1.2, -0.7, 0.0, 0.4, -1.2, -0.7];
-    const STRETCH: [f32; 8] = [0.5, 0.1, -0.6, 0.2, 0.5, 0.1, -0.6, 0.2];
-    const TAIL_LIFT: [f32; 8] = [0.0, 0.8, 1.5, 0.7, 0.0, -0.8, -1.4, -0.6];
-    const HIND_NEAR: [Pt; 8] = [
-        Pt::new(6.0, 26.4),
-        Pt::new(10.0, 27.0),
-        Pt::new(14.0, 24.3),
-        Pt::new(17.0, 23.2),
-        Pt::new(18.0, 26.4),
-        Pt::new(15.0, 26.1),
-        Pt::new(11.5, 23.1),
-        Pt::new(8.0, 24.5),
+    const W: u32 = RUNNER_PIXEL_WIDTH;
+    const H: u32 = RUNNER_PIXEL_HEIGHT;
+    const BOUNCE: [f32; 8] = [0.2, 0.0, -1.5, -0.9, 0.2, 0.0, -1.5, -0.9];
+    const STRETCH: [f32; 8] = [1.0, 0.4, -0.6, 0.1, 1.0, 0.4, -0.6, 0.1];
+    const TAIL_LIFT: [f32; 8] = [0.0, 1.0, 2.0, 1.0, 0.0, -0.8, -1.6, -0.7];
+    const HIND_PAW: [Pt; 8] = [
+        Pt::new(7.5, 27.0),
+        Pt::new(12.0, 27.2),
+        Pt::new(19.0, 24.8),
+        Pt::new(24.0, 22.8),
+        Pt::new(29.0, 25.0),
+        Pt::new(25.0, 27.1),
+        Pt::new(17.0, 23.8),
+        Pt::new(10.0, 22.8),
     ];
-    const FORE_NEAR: [Pt; 8] = [
-        Pt::new(27.0, 26.3),
-        Pt::new(25.0, 27.0),
-        Pt::new(22.0, 24.0),
-        Pt::new(18.5, 22.7),
-        Pt::new(16.0, 26.4),
-        Pt::new(18.5, 26.0),
-        Pt::new(22.0, 23.0),
-        Pt::new(26.0, 24.5),
+    const FORE_PAW: [Pt; 8] = [
+        Pt::new(42.5, 26.2),
+        Pt::new(38.0, 27.2),
+        Pt::new(32.0, 24.0),
+        Pt::new(27.0, 22.8),
+        Pt::new(22.0, 25.4),
+        Pt::new(27.0, 27.1),
+        Pt::new(35.0, 23.8),
+        Pt::new(42.0, 22.8),
     ];
-    const HIND_FAR: [Pt; 8] = [
-        Pt::new(17.2, 26.1),
-        Pt::new(14.5, 26.0),
-        Pt::new(11.0, 23.5),
-        Pt::new(8.0, 24.5),
-        Pt::new(6.5, 26.2),
-        Pt::new(10.0, 27.0),
-        Pt::new(14.0, 24.0),
-        Pt::new(17.0, 23.2),
-    ];
-    const FORE_FAR: [Pt; 8] = [
-        Pt::new(16.5, 26.2),
-        Pt::new(18.5, 26.0),
-        Pt::new(22.0, 23.0),
-        Pt::new(26.0, 24.5),
-        Pt::new(27.0, 26.3),
-        Pt::new(25.0, 27.0),
-        Pt::new(22.0, 24.0),
-        Pt::new(18.5, 22.7),
-    ];
+
     let mut rgba = vec![0u8; (W * H * 4) as usize];
-
-    let (r, g, b) = match cpu_pct.clamp(0.0, 100.0) {
-        x if x < 20.0 => (91u8, 157u8, 255u8), // calm blue
-        x if x < 55.0 => (48u8, 209u8, 88u8),  // green
-        x if x < 80.0 => (255u8, 214u8, 10u8), // yellow
-        _ => (255u8, 69u8, 58u8),              // red
-    };
-
     let pose = usize::from(frame % RUNNER_FRAME_COUNT);
-    let bounce = BOUNCE[pose];
-    let body_color = (r, g, b, 244);
-    let far_leg_color = (r, g, b, 164);
-    let near_leg_color = (r, g, b, 236);
-
-    draw_runner_leg(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(10.4, 19.4 + bounce),
-        HIND_FAR[pose],
-        -1.2,
-        far_leg_color,
+    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
+    let bounce_scale = 0.72 + load.sqrt() * 0.48;
+    let stride_scale = 0.70 + load.sqrt() * 0.42;
+    let bounce = BOUNCE[pose] * bounce_scale;
+    let tail_lift = TAIL_LIFT[pose] * bounce_scale;
+    let body_color = (255, 255, 255, 248);
+    let detail_color = (255, 255, 255, 226);
+    let leg_color = (255, 255, 255, 244);
+    let hind_hip = Pt::new(16.0, 20.0 + bounce);
+    let fore_hip = Pt::new(33.5, 19.4 + bounce);
+    let hind_paw = Pt::new(
+        hind_hip.x + (HIND_PAW[pose].x - hind_hip.x) * stride_scale,
+        HIND_PAW[pose].y,
     );
-    draw_runner_leg(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(20.0, 18.7 + bounce),
-        FORE_FAR[pose],
-        1.0,
-        far_leg_color,
+    let fore_paw = Pt::new(
+        fore_hip.x + (FORE_PAW[pose].x - fore_hip.x) * stride_scale,
+        FORE_PAW[pose].y,
     );
 
-    let tail_lift = TAIL_LIFT[pose];
     match character {
         RunnerCharacter::Cat => {
             draw_line(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(8.1, 15.1 + bounce),
-                Pt::new(4.7, 11.4 + bounce + tail_lift),
-                2.9,
-                (r, g, b, 236),
+                Pt::new(11.2, 16.2 + bounce),
+                Pt::new(6.2, 12.0 + bounce - tail_lift * 0.35),
+                2.5,
+                detail_color,
             );
             draw_line(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(4.7, 11.4 + bounce + tail_lift),
-                Pt::new(3.2, 7.1 + bounce + tail_lift * 0.7),
-                2.5,
-                (r, g, b, 224),
+                Pt::new(6.2, 12.0 + bounce - tail_lift * 0.35),
+                Pt::new(3.2, 6.6 + bounce - tail_lift),
+                2.1,
+                detail_color,
             );
         }
         RunnerCharacter::Dog => {
@@ -5305,19 +5274,19 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(8.0, 15.4 + bounce),
-                Pt::new(4.5, 12.4 + bounce - tail_lift * 0.35),
+                Pt::new(11.0, 16.0 + bounce),
+                Pt::new(6.0, 12.5 + bounce - tail_lift * 0.45),
                 3.2,
-                (r, g, b, 232),
+                detail_color,
             );
             draw_line(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(4.5, 12.4 + bounce - tail_lift * 0.35),
-                Pt::new(3.3, 9.5 + bounce - tail_lift * 0.5),
-                2.6,
-                (r, g, b, 220),
+                Pt::new(6.0, 12.5 + bounce - tail_lift * 0.45),
+                Pt::new(4.2, 9.3 + bounce - tail_lift * 0.65),
+                2.7,
+                detail_color,
             );
         }
         RunnerCharacter::Rabbit => {
@@ -5325,9 +5294,9 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(6.5, 15.7 + bounce),
-                2.4,
-                (r, g, b, 228),
+                Pt::new(9.4, 16.0 + bounce),
+                2.9,
+                detail_color,
             );
         }
         RunnerCharacter::Fox => {
@@ -5335,70 +5304,76 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(8.2, 16.0 + bounce),
-                Pt::new(4.6, 12.7 + bounce + tail_lift * 0.25),
-                4.8,
-                (r, g, b, 226),
+                Pt::new(11.5, 17.0 + bounce),
+                Pt::new(6.3, 13.3 + bounce - tail_lift * 0.25),
+                6.2,
+                detail_color,
             );
             draw_line(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(4.6, 12.7 + bounce + tail_lift * 0.25),
-                Pt::new(2.9, 9.4 + bounce + tail_lift * 0.4),
-                3.8,
-                (r, g, b, 214),
-            );
-            draw_disc(
-                &mut rgba,
-                W,
-                H,
-                Pt::new(2.9, 9.4 + bounce + tail_lift * 0.4),
-                1.5,
-                (238, 238, 240, 218),
+                Pt::new(6.3, 13.3 + bounce - tail_lift * 0.25),
+                Pt::new(2.8, 8.7 + bounce - tail_lift * 0.55),
+                4.6,
+                detail_color,
             );
         }
     }
-    let (body_radius_x, body_radius_y) = match character {
-        RunnerCharacter::Rabbit => (8.8, 5.6),
-        RunnerCharacter::Fox => (8.1, 5.0),
-        _ => (8.4, 5.2),
+
+    draw_runner_leg(&mut rgba, W, H, hind_hip, hind_paw, -2.0, leg_color);
+    draw_runner_leg(&mut rgba, W, H, fore_hip, fore_paw, 1.8, leg_color);
+
+    let body_radius = match character {
+        RunnerCharacter::Rabbit => (13.5, 5.8),
+        RunnerCharacter::Fox => (13.0, 5.2),
+        _ => (13.2, 5.4),
     };
     draw_ellipse(
         &mut rgba,
         W,
         H,
-        Pt::new(15.2, 17.2 + bounce),
-        body_radius_x + STRETCH[pose],
-        body_radius_y,
+        Pt::new(24.0, 16.8 + bounce),
+        body_radius.0 + STRETCH[pose] * (0.7 + load * 0.5),
+        body_radius.1,
         body_color,
     );
     draw_disc(
         &mut rgba,
         W,
         H,
-        Pt::new(23.0, 13.0 + bounce),
-        4.1,
+        Pt::new(38.0, 13.2 + bounce),
+        4.4,
         body_color,
     );
+
     match character {
         RunnerCharacter::Cat => {
             draw_triangle(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(20.4, 10.4 + bounce),
-                Pt::new(21.7, 6.6 + bounce),
-                Pt::new(23.3, 10.6 + bounce),
+                Pt::new(34.4, 10.8 + bounce),
+                Pt::new(35.8, 5.8 + bounce),
+                Pt::new(38.0, 10.3 + bounce),
                 body_color,
             );
             draw_triangle(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(24.0, 10.3 + bounce),
-                Pt::new(26.0, 7.0 + bounce),
-                Pt::new(26.4, 11.3 + bounce),
+                Pt::new(38.4, 9.8 + bounce),
+                Pt::new(41.2, 5.7 + bounce),
+                Pt::new(41.7, 11.2 + bounce),
+                body_color,
+            );
+            draw_ellipse(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(42.0, 14.1 + bounce),
+                2.7,
+                1.8,
                 body_color,
             );
         }
@@ -5407,27 +5382,18 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(20.3, 10.7 + bounce),
-                2.2,
+                Pt::new(35.1, 10.1 + bounce),
+                2.5,
+                4.4,
+                detail_color,
+            );
+            draw_ellipse(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(42.0, 14.2 + bounce),
                 3.5,
-                (r, g, b, 220),
-            );
-            draw_ellipse(
-                &mut rgba,
-                W,
-                H,
-                Pt::new(25.7, 10.8 + bounce),
-                2.0,
-                3.3,
-                (r, g, b, 220),
-            );
-            draw_ellipse(
-                &mut rgba,
-                W,
-                H,
-                Pt::new(27.0, 14.5 + bounce),
-                2.2,
-                1.7,
+                2.1,
                 body_color,
             );
         }
@@ -5436,18 +5402,27 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(21.7, 10.3 + bounce),
-                Pt::new(21.2, 4.0 + bounce),
-                3.4,
+                Pt::new(36.0, 10.6 + bounce),
+                Pt::new(34.8, 2.8 + bounce),
+                3.8,
                 body_color,
             );
             draw_line(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(24.5, 10.2 + bounce),
-                Pt::new(25.8, 3.5 + bounce),
-                3.3,
+                Pt::new(39.1, 10.1 + bounce),
+                Pt::new(40.3, 2.4 + bounce),
+                3.6,
+                body_color,
+            );
+            draw_ellipse(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(42.0, 14.2 + bounce),
+                2.5,
+                1.8,
                 body_color,
             );
         }
@@ -5456,66 +5431,31 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(20.0, 10.8 + bounce),
-                Pt::new(21.4, 5.5 + bounce),
-                Pt::new(23.4, 10.5 + bounce),
+                Pt::new(34.2, 10.9 + bounce),
+                Pt::new(35.8, 5.0 + bounce),
+                Pt::new(38.3, 10.3 + bounce),
                 body_color,
             );
             draw_triangle(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(23.5, 10.2 + bounce),
-                Pt::new(26.3, 5.8 + bounce),
-                Pt::new(26.7, 11.5 + bounce),
+                Pt::new(38.2, 9.9 + bounce),
+                Pt::new(41.1, 5.0 + bounce),
+                Pt::new(41.9, 11.0 + bounce),
                 body_color,
             );
             draw_triangle(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(25.2, 12.0 + bounce),
-                Pt::new(29.0, 14.1 + bounce),
-                Pt::new(25.3, 15.5 + bounce),
+                Pt::new(40.2, 11.1 + bounce),
+                Pt::new(46.1, 14.0 + bounce),
+                Pt::new(40.3, 16.3 + bounce),
                 body_color,
             );
         }
     }
-
-    draw_runner_leg(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(11.8, 20.2 + bounce),
-        HIND_NEAR[pose],
-        -1.4,
-        near_leg_color,
-    );
-    draw_runner_leg(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(21.0, 18.7 + bounce),
-        FORE_NEAR[pose],
-        1.3,
-        near_leg_color,
-    );
-
-    draw_disc(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(24.2, 12.5 + bounce),
-        0.8,
-        (0, 0, 0, 150),
-    );
-    let nose = match character {
-        RunnerCharacter::Cat => (Pt::new(27.2, 13.5 + bounce), (r, g, b, 235)),
-        RunnerCharacter::Dog => (Pt::new(28.5, 14.4 + bounce), (0, 0, 0, 190)),
-        RunnerCharacter::Rabbit => (Pt::new(27.0, 13.8 + bounce), (238, 160, 180, 235)),
-        RunnerCharacter::Fox => (Pt::new(29.0, 14.1 + bounce), (0, 0, 0, 205)),
-    };
-    draw_disc(&mut rgba, W, H, nose.0, 0.9, nose.1);
 
     rgba
 }
@@ -5594,8 +5534,10 @@ fn draw_ellipse(
             let dx = (x as f32 - center.x) / rx;
             let dy = (y as f32 - center.y) / ry;
             let dist = (dx * dx + dy * dy).sqrt();
-            if dist <= 1.08 {
-                blend_pixel(rgba, w, x, y, color, (1.08 - dist).clamp(0.0, 1.0));
+            let edge_distance = (1.0 - dist) * rx.min(ry);
+            let coverage = (edge_distance + 0.5).clamp(0.0, 1.0);
+            if coverage > 0.0 {
+                blend_pixel(rgba, w, x, y, color, coverage);
             }
         }
     }
@@ -8156,9 +8098,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn native_status_item_width_is_stable_for_each_display_style() {
-        assert_eq!(native_status_item_width(MenubarDisplay::Graph), 30.0);
+        assert_eq!(native_status_item_width(MenubarDisplay::Graph), 36.0);
         assert_eq!(native_status_item_width(MenubarDisplay::Number), 50.0);
-        assert_eq!(native_status_item_width(MenubarDisplay::Both), 78.0);
+        assert_eq!(native_status_item_width(MenubarDisplay::Both), 84.0);
     }
 
     #[cfg(target_os = "macos")]
@@ -8707,7 +8649,10 @@ mod tests {
             .map(|rgba| {
                 rgba.chunks_exact(4)
                     .enumerate()
-                    .filter(|(index, pixel)| index / 32 >= 25 && pixel[3] > 96)
+                    .filter(|(index, pixel)| {
+                        index / RUNNER_PIXEL_WIDTH as usize >= (RUNNER_PIXEL_HEIGHT - 7) as usize
+                            && pixel[3] > 96
+                    })
                     .count()
             })
             .collect::<Vec<_>>();
@@ -8720,10 +8665,10 @@ mod tests {
     #[ignore = "writes the workspace target/runner-sprite-sheet.png for visual QA"]
     fn render_runner_sprite_sheet_for_visual_qa() {
         const SCALE: u32 = 4;
-        const CELL: u32 = 36;
-        const ICON: u32 = 32;
-        let width = CELL * u32::from(RUNNER_FRAME_COUNT) * SCALE;
-        let height = CELL * RunnerCharacter::ALL.len() as u32 * SCALE;
+        const CELL_WIDTH: u32 = RUNNER_PIXEL_WIDTH + 4;
+        const CELL_HEIGHT: u32 = RUNNER_PIXEL_HEIGHT + 4;
+        let width = CELL_WIDTH * u32::from(RUNNER_FRAME_COUNT) * SCALE;
+        let height = CELL_HEIGHT * RunnerCharacter::ALL.len() as u32 * SCALE;
         let mut sheet = vec![0u8; (width * height * 4) as usize];
 
         for pixel in sheet.chunks_exact_mut(4) {
@@ -8733,11 +8678,12 @@ mod tests {
         for (row, character) in RunnerCharacter::ALL.into_iter().enumerate() {
             for frame in 0..RUNNER_FRAME_COUNT {
                 let icon = make_runner_rgba(character, 50.0, frame);
-                let origin_x = (u32::from(frame) * CELL + 2) * SCALE;
-                let origin_y = (row as u32 * CELL + 2) * SCALE;
-                for source_y in 0..ICON {
-                    for source_x in 0..ICON {
-                        let source_index = ((source_y * ICON + source_x) * 4) as usize;
+                let origin_x = (u32::from(frame) * CELL_WIDTH + 2) * SCALE;
+                let origin_y = (row as u32 * CELL_HEIGHT + 2) * SCALE;
+                for source_y in 0..RUNNER_PIXEL_HEIGHT {
+                    for source_x in 0..RUNNER_PIXEL_WIDTH {
+                        let source_index =
+                            ((source_y * RUNNER_PIXEL_WIDTH + source_x) * 4) as usize;
                         let alpha = f32::from(icon[source_index + 3]) / 255.0;
                         for scale_y in 0..SCALE {
                             for scale_x in 0..SCALE {
@@ -8782,9 +8728,10 @@ mod tests {
         assert!(normal > busy);
         assert!(idle <= RUNNER_MAX_INTERVAL);
         assert!(busy >= RUNNER_MIN_INTERVAL);
-        assert!(idle.as_millis() >= 800);
-        assert!((300..=450).contains(&normal.as_millis()));
-        assert!(busy.as_millis() <= 130);
+        assert!(idle.as_millis() >= 670);
+        assert!((160..=190).contains(&normal.as_millis()));
+        assert!(busy.as_millis() <= 60);
+        assert!(idle.as_millis() >= busy.as_millis() * 10);
 
         assert!(!runner_enabled(MenubarDisplay::Number));
         assert!(runner_enabled(MenubarDisplay::Graph));
@@ -8799,9 +8746,40 @@ mod tests {
         assert_eq!(smooth_runner_cpu(0.0, 67.0, false), 67.0);
         let spike = smooth_runner_cpu(20.0, 90.0, true);
         let decay = smooth_runner_cpu(90.0, 20.0, true);
-        assert!(spike > 70.0);
-        assert!(decay > 65.0);
+        assert!(spike > 75.0);
+        assert!(decay > 70.0);
         assert!(smooth_runner_cpu(40.0, 140.0, true) <= 100.0);
+    }
+
+    #[test]
+    fn runner_silhouettes_are_wide_and_fill_the_menu_bar_slot() {
+        for character in RunnerCharacter::ALL {
+            let rgba = make_runner_rgba(character, 55.0, 0);
+            let mut min_x = RUNNER_PIXEL_WIDTH;
+            let mut max_x = 0;
+            let mut min_y = RUNNER_PIXEL_HEIGHT;
+            let mut max_y = 0;
+
+            for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+                if pixel[3] <= 96 {
+                    continue;
+                }
+                let x = index as u32 % RUNNER_PIXEL_WIDTH;
+                let y = index as u32 / RUNNER_PIXEL_WIDTH;
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+
+            let width = max_x.saturating_sub(min_x) + 1;
+            let height = max_y.saturating_sub(min_y) + 1;
+            assert!(width >= 40, "{character:?} is too narrow: {width}px");
+            assert!(
+                width as f32 / height as f32 >= 1.40,
+                "{character:?} is not recognizably horizontal: {width}x{height}"
+            );
+        }
     }
 
     #[test]
