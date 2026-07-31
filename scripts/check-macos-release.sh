@@ -162,7 +162,11 @@ if [[ "$ARTIFACT_ONLY" != "1" ]]; then
     fail "Developer ID Application identity is not available in Keychain"
   fi
 
-  if [[ "$(uname)" == "Darwin" ]] && have_cmd xcrun && [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
+  if [[ -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER_ID:-}" && -n "${APPLE_API_KEY_PATH:-}" ]]; then
+    ok "notarytool API key credentials are configured"
+  elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
+    ok "notarytool Apple ID credentials are configured"
+  elif [[ "$(uname)" == "Darwin" ]] && have_cmd xcrun && [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
     if xcrun notarytool history --keychain-profile "$NOTARYTOOL_PROFILE" >/dev/null 2>&1; then
       ok "notarytool keychain profile works: $NOTARYTOOL_PROFILE"
     else

@@ -3,9 +3,9 @@
 # resulting ticket. Supports .dmg, .zip, .pkg, and signed .app bundles.
 #
 # Authentication options, checked in this order:
-#   NOTARYTOOL_PROFILE
 #   APPLE_API_KEY_ID + APPLE_API_ISSUER_ID + APPLE_API_KEY_PATH
 #   APPLE_ID + APPLE_TEAM_ID + APPLE_APP_SPECIFIC_PASSWORD
+#   NOTARYTOOL_PROFILE
 
 set -euo pipefail
 
@@ -24,20 +24,20 @@ if ! command -v xcrun >/dev/null 2>&1; then
 fi
 
 AUTH_ARGS=()
-if [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
-  AUTH_ARGS=(--keychain-profile "$NOTARYTOOL_PROFILE")
-elif [[ -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER_ID:-}" && -n "${APPLE_API_KEY_PATH:-}" ]]; then
+if [[ -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER_ID:-}" && -n "${APPLE_API_KEY_PATH:-}" ]]; then
   AUTH_ARGS=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
 elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
   AUTH_ARGS=(--apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD")
+elif [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
+  AUTH_ARGS=(--keychain-profile "$NOTARYTOOL_PROFILE")
 else
   cat >&2 <<'EOF'
 error: no notarization credentials configured.
 
 Set one of:
-  NOTARYTOOL_PROFILE
   APPLE_API_KEY_ID + APPLE_API_ISSUER_ID + APPLE_API_KEY_PATH
   APPLE_ID + APPLE_TEAM_ID + APPLE_APP_SPECIFIC_PASSWORD
+  NOTARYTOOL_PROFILE
 EOF
   exit 1
 fi

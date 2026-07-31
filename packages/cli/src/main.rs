@@ -205,9 +205,12 @@ enum Command {
     },
     /// Check for a newer version on GitHub, optionally installing the macOS app update.
     Update {
-        /// Install the update in-place when running from PeterFan.app on macOS.
+        /// Install the update in-place.
         #[arg(long)]
         install: bool,
+        /// Reinstall the latest release when already on the same version.
+        #[arg(long, requires = "install")]
+        reinstall: bool,
         /// Open the GitHub release page in the default browser.
         #[arg(long)]
         open: bool,
@@ -475,7 +478,11 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         Command::InstallDaemon { dry_run } => cmd_install_daemon(dry_run),
         Command::UninstallDaemon { dry_run } => cmd_uninstall_daemon(dry_run),
         Command::Watch { interval } => cmd_watch(mock, interval),
-        Command::Update { install, open } => cmd_update(json, install, open),
+        Command::Update {
+            install,
+            reinstall,
+            open,
+        } => cmd_update(json, install, reinstall, open),
         Command::Integrity {
             app,
             dmg,
@@ -3756,7 +3763,7 @@ fn cmd_watch(mock: bool, interval_secs: u64) -> Result<()> {
 // `peterfan update` — GitHub 최신 버전 확인
 // ---------------------------------------------------------------------------
 
-fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
+fn cmd_update(json: bool, install: bool, reinstall: bool, open: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     if !json {
         print!("Current: v{current}  Checking GitHub…");
@@ -3788,11 +3795,13 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
     };
 
     let update_available = peterfan_platform::updater::is_newer(current, &release.version);
+    let reinstall_available = reinstall && current == release.version;
+    let install_available = update_available || reinstall_available;
     // Resolve install/open requests before the JSON return path. Previously
     // `--json update --install` reported the release and returned early, so
     // automation could appear successful while never queueing the update.
     let mut install_status = if install {
-        Some(if update_available {
+        Some(if install_available {
             "pending"
         } else {
             "not_needed"
@@ -3802,7 +3811,7 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
     };
     let mut install_error: Option<String> = None;
 
-    if install && update_available {
+    if install && install_available {
         if release.asset_url.is_none() {
             let message = format!(
                 "release {} has no update asset for this platform; open {}",
@@ -3850,6 +3859,7 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
                 "tag": release.tag,
                 "update_available": update_available,
                 "install_requested": install,
+                "reinstall_requested": reinstall,
                 "install_status": install_status,
                 "install_error": install_error,
                 "open_requested": open,
@@ -3894,18 +3904,29 @@ fn cmd_update(json: bool, install: bool, open: bool) -> Result<()> {
         } else {
             println!("  integrity: {}", "missing checksums.txt".yellow());
         }
+    } else if reinstall_available {
+        println!(
+            "\n  {} Reinstalling verified v{}",
+            "↻".cyan(),
+            release.version
+        );
     } else {
         println!("  {} already up to date", "✓".green());
     }
 
     if install {
-        if !update_available {
+        if !install_available {
             println!("  {} nothing to install", "✓".green());
             return Ok(());
         }
         println!(
-            "  {} update queued; PeterFan will relaunch after the current app quits",
-            "✓".green()
+            "  {} {} queued; PeterFan will relaunch after the current app quits",
+            "✓".green(),
+            if reinstall_available {
+                "reinstall"
+            } else {
+                "update"
+            }
         );
     }
     Ok(())
@@ -4659,7 +4680,7 @@ fn cmd_alert_agent(action: AlertAction) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
     use peterfan_core::provider::{Capabilities, HardwareProvider};
     use peterfan_core::types::{Celsius, Fan, HardwareInfo, SensorKind, SensorSource, TempSensor};
 
@@ -4712,6 +4733,22 @@ mod tests {
 
         assert!(!names.contains(&"license"));
         assert!(!names.contains(&"login"));
+    }
+
+    #[test]
+    fn update_reinstall_requires_install_and_parses_together() {
+        assert!(super::Cli::try_parse_from(["peterfan", "update", "--reinstall"]).is_err());
+
+        let cli =
+            super::Cli::try_parse_from(["peterfan", "update", "--install", "--reinstall"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(super::Command::Update {
+                install: true,
+                reinstall: true,
+                open: false
+            })
+        ));
     }
 
     #[test]

@@ -137,6 +137,15 @@ Or rerun with --no-notarize for a local packaging dry run.
 EOF
     exit 1
   fi
+
+  if [[ -n "${NOTARYTOOL_PROFILE:-}" &&
+        ( -z "${APPLE_API_KEY_ID:-}" || -z "${APPLE_API_ISSUER_ID:-}" || -z "${APPLE_API_KEY_PATH:-}" ) &&
+        ( -z "${APPLE_ID:-}" || -z "${APPLE_TEAM_ID:-}" || -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ) ]] &&
+     ! xcrun notarytool history --keychain-profile "$NOTARYTOOL_PROFILE" >/dev/null 2>&1; then
+    echo "error: notarytool keychain profile is missing or invalid: $NOTARYTOOL_PROFILE" >&2
+    echo "       Repair the profile or provide direct Apple/API credentials before building." >&2
+    exit 1
+  fi
 fi
 
 rustup target add aarch64-apple-darwin x86_64-apple-darwin

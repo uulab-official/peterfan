@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.66] — 검증된 재설치와 공증 사전검사
+
+### Added
+
+- `peterfan update --install --reinstall`로 최신 버전을 다시 받아 무결성을 검증한 뒤 설치 앱을 복구할 수 있습니다. `--reinstall`은 실수로 단독 실행되지 않도록 `--install`과 함께 사용할 때만 허용합니다.
+
+### Fixed
+
+- 직접 전달된 Apple API 키 또는 Apple ID 공증 자격 증명보다 오래된 Keychain 프로필이 우선되어 공증이 실패하던 릴리스 경로를 수정했습니다.
+- Keychain 프로필만 사용하는 경우 긴 유니버설 빌드를 시작하기 전에 프로필 유효성을 확인하도록 배포 사전검사를 강화했습니다.
+
 ## [1.27.65] — 독립 CLI OTA 설치 복구
 
 ### Fixed
