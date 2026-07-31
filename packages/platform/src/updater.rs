@@ -1523,23 +1523,44 @@ fn install_downloaded_update(
         .arg(&script_path)
         .status();
 
-    let launched = std::process::Command::new("/bin/bash")
+    let updater_label = macos_updater_label(std::process::id(), target_version);
+    let launched = std::process::Command::new("/bin/launchctl")
+        .args(["submit", "-l", &updater_label, "--", "/bin/bash"])
         .arg(&script_path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
-    if let Err(e) = launched {
+        .status();
+    if !matches!(launched, Ok(status) if status.success()) {
+        let detail = match launched {
+            Ok(status) => format!("launchctl exited with {status}"),
+            Err(error) => error.to_string(),
+        };
         let failed = UpdateInstallResult::new(
             "failed",
             target_version,
-            format!("Could not launch the updater: {e}"),
+            format!("Could not launch the updater: {detail}"),
         );
         let _ = write_update_install_result_to(&result_path, &failed);
-        return Err(format!("could not launch the updater script: {e}"));
+        return Err(format!("could not launch the updater script: {detail}"));
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_updater_label(pid: u32, target_version: &str) -> String {
+    let version = target_version
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    format!("kr.co.uulab.peterfan.updater.{pid}.{version}")
 }
 
 #[cfg(target_os = "macos")]
@@ -2439,6 +2460,15 @@ TeamIdentifier=N99FMBQ662
         })
         .unwrap_err();
         assert_eq!(error, "signature verification failed");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_updater_label_is_unique_and_launchd_safe() {
+        assert_eq!(
+            macos_updater_label(42, "1.27.67-beta.1"),
+            "kr.co.uulab.peterfan.updater.42.1-27-67-beta-1"
+        );
     }
 
     #[cfg(target_os = "macos")]

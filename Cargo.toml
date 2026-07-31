@@ -12,7 +12,7 @@ members = [
 exclude = ["tools/icongen"]
 
 [workspace.package]
-version = "1.27.66"
+version = "1.27.67"
 edition = "2021"
 license = "MIT"
 authors = ["UULab"]

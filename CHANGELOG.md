@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.67] — OTA 적용 프로세스 분리
+
+### Fixed
+
+- macOS OTA 교체 스크립트를 호출 앱의 자식 프로세스로만 실행하지 않고 임시 `launchd` 작업으로 제출합니다. 앱·터미널·자동화 실행이 종료될 때 updater까지 함께 정리되어 설치가 `pending`에 멈추던 문제를 해결했습니다.
+
 ## [1.27.66] — 검증된 재설치와 공증 사전검사
 
 ### Added
