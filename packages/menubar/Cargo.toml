@@ -29,6 +29,6 @@ libc = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSButton", "NSImage", "NSEvent", "NSScreen", "NSStatusItem", "NSWindow"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAccessibility", "NSButton", "NSImage", "NSEvent", "NSScreen", "NSStatusItem", "NSWindow", "NSWorkspace"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSData", "NSGeometry", "NSString"] }
 png = "0.18.1"

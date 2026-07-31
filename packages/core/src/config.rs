@@ -193,6 +193,40 @@ impl MenubarDisplay {
     }
 }
 
+/// Animated character used by the CPU-responsive menu-bar runner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunnerCharacter {
+    #[default]
+    Cat,
+    Dog,
+    Rabbit,
+    Fox,
+}
+
+impl RunnerCharacter {
+    pub const ALL: [Self; 4] = [Self::Cat, Self::Dog, Self::Rabbit, Self::Fox];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "cat" => Some(Self::Cat),
+            "dog" => Some(Self::Dog),
+            "rabbit" | "bunny" => Some(Self::Rabbit),
+            "fox" => Some(Self::Fox),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cat => "cat",
+            Self::Dog => "dog",
+            Self::Rabbit => "rabbit",
+            Self::Fox => "fox",
+        }
+    }
+}
+
 /// UI language for the menu-bar app (native menu labels + popover text).
 /// `System` resolves from the `LANG`/`LC_ALL` environment variable at
 /// startup; the explicit variants are a user override, persisted so it
@@ -297,6 +331,7 @@ impl TemperatureSource {
 pub struct MenubarConfig {
     pub metric: MenubarMetric,
     pub display: MenubarDisplay,
+    pub character: RunnerCharacter,
     pub temperature_source: TemperatureSource,
     /// User picked "Don't Ask Again" on the first-run fan-control setup
     /// prompt — stop offering it automatically (still reachable via the
@@ -316,6 +351,7 @@ impl MenubarConfig {
     pub fn is_default(&self) -> bool {
         self.metric == MenubarMetric::Temp
             && self.display == MenubarDisplay::Both
+            && self.character == RunnerCharacter::Cat
             && self.temperature_source == TemperatureSource::CoreAverage
             && !self.setup_prompt_dismissed
             && self.daemon_update_prompt_dismissed_for.is_none()
@@ -582,14 +618,17 @@ mod tests {
 
         cfg.menubar.metric = MenubarMetric::Network;
         cfg.menubar.display = MenubarDisplay::Graph;
+        cfg.menubar.character = RunnerCharacter::Fox;
         cfg.menubar.temperature_source = TemperatureSource::IohidTdie;
         let toml = cfg.to_toml();
         assert!(toml.contains("[menubar]"));
         assert!(toml.contains("display = \"cat\""));
+        assert!(toml.contains("character = \"fox\""));
         assert!(toml.contains("temperature_source = \"iohid-tdie\""));
         let back = Config::from_toml(&toml).unwrap();
         assert_eq!(back.menubar.metric, MenubarMetric::Network);
         assert_eq!(back.menubar.display, MenubarDisplay::Graph);
+        assert_eq!(back.menubar.character, RunnerCharacter::Fox);
         assert_eq!(
             back.menubar.temperature_source,
             TemperatureSource::IohidTdie
@@ -597,6 +636,7 @@ mod tests {
 
         let legacy = Config::from_toml("[menubar]\ndisplay = \"graph\"\n").unwrap();
         assert_eq!(legacy.menubar.display, MenubarDisplay::Graph);
+        assert_eq!(legacy.menubar.character, RunnerCharacter::Cat);
         assert_eq!(
             legacy.menubar.temperature_source,
             TemperatureSource::CoreAverage
@@ -609,6 +649,19 @@ mod tests {
         assert_eq!(MenubarDisplay::parse("runner"), Some(MenubarDisplay::Graph));
         assert_eq!(MenubarDisplay::parse("graph"), Some(MenubarDisplay::Graph));
         assert_eq!(MenubarDisplay::Graph.as_str(), "cat");
+    }
+
+    #[test]
+    fn runner_character_parses_supported_choices() {
+        assert_eq!(
+            RunnerCharacter::ALL.map(|character| character.as_str()),
+            ["cat", "dog", "rabbit", "fox"]
+        );
+        assert_eq!(
+            RunnerCharacter::parse("bunny"),
+            Some(RunnerCharacter::Rabbit)
+        );
+        assert_eq!(RunnerCharacter::parse("unknown"), None);
     }
 
     #[test]

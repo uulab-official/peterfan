@@ -36,7 +36,11 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Route CLI profile changes through the running daemon before direct SMC access.
 - [x] Keep Settings limited to preferences/safety and System limited to metrics.
 - [x] Drive the menu-bar runner cadence from CPU load with tested idle/busy bounds.
-- [ ] Add a 6-hour control-loop soak test with bounded CPU and memory assertions.
+- [x] Persist and hot-swap four built-in runner characters without changing the
+      status-item width or restarting the app.
+- [x] Provide a 6-hour macOS menu-bar soak test with bounded CPU, RSS, thread
+      growth, process-liveness assertions, and CSV evidence. It can monitor an
+      existing PID without launching a duplicate menu-bar item.
 - [ ] Add sleep/wake and multi-display regression automation.
 - [x] Persist bounded diagnostic logs across app and daemon restarts: the
       menu-bar app rotates `~/Library/Logs/PeterFan/menubar.log`, while the

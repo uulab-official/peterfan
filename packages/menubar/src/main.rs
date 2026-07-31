@@ -40,7 +40,7 @@ use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
 use objc2::AllocAnyThread;
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSEvent, NSImage, NSScreen, NSWindow};
+use objc2_app_kit::{NSEvent, NSImage, NSScreen, NSWindow, NSWorkspace};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{MainThreadMarker, NSData, NSPoint, NSRect, NSSize, NSString};
 
@@ -52,7 +52,7 @@ use wry::{WebView, WebViewBuilder, RGBA};
 
 use peterfan_core::config::{
     CustomCurveConfig, Language, MenubarDisplay, NotificationConfig, ResolvedLanguage,
-    TemperatureSource,
+    RunnerCharacter, TemperatureSource,
 };
 use peterfan_core::error::CoreError;
 use peterfan_core::metrics::{DiskInfo, ProcSort};
@@ -65,7 +65,8 @@ use peterfan_core::types::{Celsius, Fan, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
-const TEMPERATURE_REFRESH: Duration = Duration::from_secs(2);
+const TEMPERATURE_REFRESH_VISIBLE: Duration = Duration::from_secs(2);
+const TEMPERATURE_REFRESH_BACKGROUND: Duration = Duration::from_secs(3);
 const FAN_REFRESH: Duration = Duration::from_secs(1);
 const FAN_STALE_AFTER: Duration = Duration::from_secs(4);
 const FAN_EMPTY_CONFIRMATIONS: u8 = 3;
@@ -89,7 +90,7 @@ const ALL_TEMP_REFRESH: Duration = Duration::from_secs(10);
 const DAEMON_REFRESH: Duration = Duration::from_secs(2);
 const DAEMON_STALE_AFTER: Duration = Duration::from_secs(8);
 const RESUME_RECOVERY_GAP: Duration = Duration::from_secs(8);
-const TEMPERATURE_STALE_AFTER: Duration = Duration::from_secs(6);
+const TEMPERATURE_STALE_AFTER: Duration = Duration::from_secs(8);
 const ALL_TEMPERATURE_STALE_AFTER: Duration = Duration::from_secs(30);
 const CONTROL_CONFIRM_REFRESH: Duration = Duration::from_millis(200);
 const CONTROL_CONFIRM_WINDOW: Duration = Duration::from_secs(8);
@@ -399,6 +400,9 @@ fn pending_command_key(cmd: &str) -> Option<String> {
     if cmd.starts_with("display:") {
         return Some("menubar-display".to_string());
     }
+    if cmd.starts_with("character:") {
+        return Some("runner-character".to_string());
+    }
     if let Some(setting) = cmd
         .strip_prefix("notifications:")
         .and_then(|value| value.split(':').next())
@@ -534,6 +538,8 @@ struct TrayMenu {
     quit: tray_icon::menu::MenuId,
     /// "Display" submenu — number / cat / both.
     display_items: Vec<(MenubarDisplay, tray_icon::menu::CheckMenuItem)>,
+    /// CPU runner character, independent of number/runner display mode.
+    character_items: Vec<(RunnerCharacter, tray_icon::menu::CheckMenuItem)>,
     /// "CPU Temperature Source" submenu — which sensor family feeds the
     /// headline/menu-bar temperature.
     temperature_source_items: Vec<(TemperatureSource, tray_icon::menu::CheckMenuItem)>,
@@ -571,6 +577,7 @@ struct L10n {
     check_updates: &'static str,
     quit: &'static str,
     menu_bar_style: &'static str,
+    runner_character: &'static str,
     temperature_source: &'static str,
     fan_speed: &'static str,
     language: &'static str,
@@ -595,12 +602,13 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             check_updates: "Update Now…",
             quit: "Quit PeterFan",
             menu_bar_style: "Menu Bar Style",
+            runner_character: "Runner Character",
             temperature_source: "Dashboard Temperature",
             fan_speed: "Fan Speed",
             language: "Language",
             style_number: "Number",
-            style_graph: "Cat",
-            style_both: "Number + Cat",
+            style_graph: "Runner",
+            style_both: "Number + Runner",
         },
         ResolvedLanguage::Ko => L10n {
             enable_fan_control: "팬 제어 활성화 (최초 1회 설정)…",
@@ -616,12 +624,13 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             check_updates: "지금 업데이트…",
             quit: "PeterFan 종료",
             menu_bar_style: "메뉴 막대 스타일",
+            runner_character: "러너 캐릭터",
             temperature_source: "대시보드 온도",
             fan_speed: "팬 속도",
             language: "언어",
             style_number: "숫자",
-            style_graph: "고양이",
-            style_both: "숫자 + 고양이",
+            style_graph: "러너",
+            style_both: "숫자 + 러너",
         },
     }
 }
@@ -633,6 +642,7 @@ struct App {
     /// ms, especially when they're failing (no daemon, no root).
     provider: std::sync::Arc<dyn HardwareProvider>,
     display: MenubarDisplay,
+    runner_character: RunnerCharacter,
     temperature_source: TemperatureSource,
     critical_temp_c: f32,
     notifications: NotificationConfig,
@@ -676,6 +686,7 @@ struct App {
     runner_frame: u8,
     runner_cpu_pct: f32,
     runner_has_sample: bool,
+    reduce_motion: bool,
     runner_icons: Vec<Icon>,
     #[cfg(target_os = "macos")]
     runner_native_images: Vec<Retained<NSImage>>,
@@ -819,6 +830,25 @@ fn save_menubar_display(display: MenubarDisplay) {
     let mut cfg = peterfan_platform::config::load();
     cfg.menubar.display = display;
     let _ = peterfan_platform::config::save(&cfg);
+}
+
+fn save_runner_character(character: RunnerCharacter) {
+    let mut cfg = peterfan_platform::config::load();
+    cfg.menubar.character = character;
+    let _ = peterfan_platform::config::save(&cfg);
+}
+
+fn runner_character_label(lang: ResolvedLanguage, character: RunnerCharacter) -> &'static str {
+    match (lang, character) {
+        (ResolvedLanguage::En, RunnerCharacter::Cat) => "Cat",
+        (ResolvedLanguage::En, RunnerCharacter::Dog) => "Dog",
+        (ResolvedLanguage::En, RunnerCharacter::Rabbit) => "Rabbit",
+        (ResolvedLanguage::En, RunnerCharacter::Fox) => "Fox",
+        (ResolvedLanguage::Ko, RunnerCharacter::Cat) => "고양이",
+        (ResolvedLanguage::Ko, RunnerCharacter::Dog) => "강아지",
+        (ResolvedLanguage::Ko, RunnerCharacter::Rabbit) => "토끼",
+        (ResolvedLanguage::Ko, RunnerCharacter::Fox) => "여우",
+    }
 }
 
 fn save_temperature_source(source: TemperatureSource) {
@@ -1717,6 +1747,12 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|v| MenubarDisplay::parse(v))
         .unwrap_or(saved.display);
+    let runner_character = args
+        .iter()
+        .position(|a| a == "--character")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| RunnerCharacter::parse(v))
+        .unwrap_or(saved.character);
     let temperature_source = saved.temperature_source;
     let language = saved.language;
 
@@ -1742,6 +1778,7 @@ fn main() {
         monitor,
         provider,
         display,
+        runner_character,
         temperature_source,
         critical_temp_c,
         notifications,
@@ -1770,9 +1807,10 @@ fn main() {
         runner_frame: 0,
         runner_cpu_pct: 0.0,
         runner_has_sample: false,
-        runner_icons: make_runner_icons(),
+        reduce_motion: system_reduce_motion(),
+        runner_icons: make_runner_icons(runner_character),
         #[cfg(target_os = "macos")]
-        runner_native_images: make_runner_native_images(),
+        runner_native_images: make_runner_native_images(runner_character),
         last_runner_icon: None,
         temperature_cache: Vec::new(),
         temperature_sampled_at: None,
@@ -1912,6 +1950,13 @@ fn main() {
             app.next_daemon_refresh = now;
         }
         if now >= next_metric_at {
+            let reduce_motion = system_reduce_motion();
+            if app.reduce_motion != reduce_motion {
+                app.reduce_motion = reduce_motion;
+                app.runner_frame = 0;
+                app.last_runner_icon = None;
+                apply_runner_icon(&mut app);
+            }
             update(&mut app);
             next_metric_at = now
                 + if confirming_control {
@@ -1919,20 +1964,20 @@ fn main() {
                 } else {
                     REFRESH
                 };
-            if runner_enabled(app.display) {
+            if runner_should_animate(app.display, app.reduce_motion) {
                 // A CPU spike must accelerate the runner immediately instead
                 // of waiting for the old idle-speed deadline to expire.
                 next_runner_at =
                     next_runner_at.min(now + runner_frame_interval(app.runner_cpu_pct));
             }
         }
-        if runner_enabled(app.display) && now >= next_runner_at {
+        if runner_should_animate(app.display, app.reduce_motion) && now >= next_runner_at {
             animate_runner(&mut app);
             next_runner_at = now + runner_frame_interval(app.runner_cpu_pct);
         }
         let next_tick = [
             Some(next_metric_at),
-            runner_enabled(app.display).then_some(next_runner_at),
+            runner_should_animate(app.display, app.reduce_motion).then_some(next_runner_at),
             prewarm_popover_at,
             app.popover_show_at,
         ]
@@ -1991,6 +2036,12 @@ fn main() {
                             }
                         }
                         save_menubar_display(display);
+                        refresh_after_pending = true;
+                    }
+                } else if let Some(value) = c.strip_prefix("character:") {
+                    if let Some(character) = RunnerCharacter::parse(value) {
+                        set_runner_character(&mut app, character);
+                        next_runner_at = now;
                         refresh_after_pending = true;
                     }
                 } else if c.starts_with("notifications:") {
@@ -2069,6 +2120,7 @@ fn main() {
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
             let id = &ev.id;
             let mut matched_display: Option<MenubarDisplay> = None;
+            let mut matched_character: Option<RunnerCharacter> = None;
             let mut matched_temperature_source: Option<TemperatureSource> = None;
             let mut matched_language: Option<Language> = None;
             let mut open_detail_requested = false;
@@ -2085,6 +2137,11 @@ fn main() {
                     tm.display_items.iter().find(|(_, item)| item.id() == id)
                 {
                     matched_display = Some(*d);
+                    None
+                } else if let Some((character, _)) =
+                    tm.character_items.iter().find(|(_, item)| item.id() == id)
+                {
+                    matched_character = Some(*character);
                     None
                 } else if let Some((source, _)) = tm
                     .temperature_source_items
@@ -2143,6 +2200,11 @@ fn main() {
                     }
                 }
                 save_menubar_display(app.display);
+                update(&mut app);
+            }
+            if let Some(character) = matched_character {
+                set_runner_character(&mut app, character);
+                next_runner_at = Instant::now();
                 update(&mut app);
             }
             if let Some(source) = matched_temperature_source {
@@ -2252,7 +2314,8 @@ fn help_text() -> String {
          USAGE:\n    peterfan-menubar [OPTIONS]\n\n\
          OPTIONS:\n    \
          --mock                Use simulated hardware instead of real sensors\n    \
-         --display <number|cat|both>             How it's rendered (cat also accepts legacy graph)\n    \
+        --display <number|cat|both>             How it's rendered (cat also accepts legacy graph)\n    \
+         --character <cat|dog|rabbit|fox>       CPU runner character\n    \
          (The flag overrides the saved preference; changing it from the\n    \
          right-click menu persists for next launch.)\n    \
          --version, -V         Print version and exit\n    \
@@ -2273,7 +2336,7 @@ fn unsupported_menubar_arg(args: &[String]) -> Option<&str> {
     while i < args.len() {
         match args[i].as_str() {
             "--mock" => i += 1,
-            "--metric" | "--display" => {
+            "--metric" | "--display" | "--character" => {
                 if i + 1 >= args.len() {
                     return Some(args[i].as_str());
                 }
@@ -2325,7 +2388,7 @@ fn build_tray(app: &mut App) {
     let check_updates_item = MenuItem::new(s.check_updates, true, None);
     let quit_item = MenuItem::new(s.quit, true, None);
 
-    // "Display" — number only / cat only / both.
+    // "Display" — number only / runner only / both.
     let display_submenu = Submenu::new(s.menu_bar_style, true);
     let display_items: Vec<(MenubarDisplay, CheckMenuItem)> = [
         (MenubarDisplay::Number, s.style_number),
@@ -2339,6 +2402,21 @@ fn build_tray(app: &mut App) {
         (d, item)
     })
     .collect();
+
+    let character_submenu = Submenu::new(s.runner_character, true);
+    let character_items = RunnerCharacter::ALL
+        .into_iter()
+        .map(|character| {
+            let item = CheckMenuItem::new(
+                runner_character_label(app.language.resolve(), character),
+                true,
+                app.runner_character == character,
+                None,
+            );
+            let _ = character_submenu.append(&item);
+            (character, item)
+        })
+        .collect::<Vec<_>>();
 
     // "CPU Temperature Source" — different monitoring apps pick different
     // Apple Silicon sensor families, so let users pin the one they compare
@@ -2423,6 +2501,7 @@ fn build_tray(app: &mut App) {
     }
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&display_submenu);
+    let _ = menu.append(&character_submenu);
     let _ = menu.append(&temperature_source_submenu);
     let _ = menu.append(&language_submenu);
     let _ = menu.append(&PredefinedMenuItem::separator());
@@ -2441,6 +2520,7 @@ fn build_tray(app: &mut App) {
             .collect(),
         quit: quit_item.id().clone(),
         display_items,
+        character_items,
         temperature_source_items,
         fan_speed_items,
         #[cfg(target_os = "macos")]
@@ -2556,6 +2636,7 @@ fn build_popover(
                 || body == "toggle-login-item"
                 || body == "togglelogin"
                 || body.starts_with("display:")
+                || body.starts_with("character:")
                 || body.starts_with("notifications:")
             {
                 enqueue_pending(body);
@@ -2671,6 +2752,7 @@ fn open_detail_window(
                 || body == "toggle-login-item"
                 || body == "togglelogin"
                 || body.starts_with("display:")
+                || body.starts_with("character:")
                 || body.starts_with("notifications:")
             {
                 enqueue_pending(body);
@@ -3146,7 +3228,15 @@ fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
 // Update: sample once, refresh the menu-bar title and (if open) the popover.
 // ---------------------------------------------------------------------------
 
-fn refresh_temperature_cache(app: &mut App, now: Instant) {
+fn temperature_refresh_interval(dashboard_visible: bool) -> Duration {
+    if dashboard_visible {
+        TEMPERATURE_REFRESH_VISIBLE
+    } else {
+        TEMPERATURE_REFRESH_BACKGROUND
+    }
+}
+
+fn refresh_temperature_cache(app: &mut App, now: Instant, dashboard_visible: bool) {
     if let Some(sample) = app.temperature_read.take() {
         if !sample.values.is_empty() {
             app.temperature_cache = sample.values;
@@ -3155,7 +3245,7 @@ fn refresh_temperature_cache(app: &mut App, now: Instant) {
         }
     }
     if app.temperature_cache.is_empty() || now >= app.next_temperature_refresh {
-        app.next_temperature_refresh = now + TEMPERATURE_REFRESH;
+        app.next_temperature_refresh = now + temperature_refresh_interval(dashboard_visible);
         let provider = Arc::clone(&app.provider);
         app.temperature_read.start(move || {
             provider
@@ -3284,7 +3374,7 @@ fn update(app: &mut App) {
     // they cross SMC and IOHID. Never perform those calls on the event-loop
     // thread: on unsupported or waking hardware they can take long enough to
     // make the menu-bar item appear unclickable.
-    refresh_temperature_cache(app, now);
+    refresh_temperature_cache(app, now, dashboard_visible);
     refresh_fan_cache(app, now);
     refresh_daemon_cache(app, now);
     let temperature_stale =
@@ -3776,9 +3866,12 @@ fn update(app: &mut App) {
         "last_cmd_status": STATUS.lock().expect("status poisoned").clone(),
     });
     payload["menubar_display"] = serde_json::json!(app.display.as_str());
+    payload["runner_character"] = serde_json::json!(app.runner_character.as_str());
     payload["runner_cpu_pct"] = serde_json::json!(app.runner_cpu_pct);
-    payload["runner_interval_ms"] =
-        serde_json::json!(runner_frame_interval(app.runner_cpu_pct).as_millis());
+    payload["runner_reduce_motion"] = serde_json::json!(app.reduce_motion);
+    payload["runner_interval_ms"] = serde_json::json!(
+        (!app.reduce_motion).then(|| runner_frame_interval(app.runner_cpu_pct).as_millis())
+    );
     payload["network_rate_text"] = serde_json::json!(format!("{}/s", bytes((rx + tx) as u64)));
     payload["load_avg_text"] = serde_json::json!(load_avg_text);
     payload["power_text"] = serde_json::json!(power_text);
@@ -4904,6 +4997,20 @@ fn runner_enabled(display: MenubarDisplay) -> bool {
     matches!(display, MenubarDisplay::Graph | MenubarDisplay::Both)
 }
 
+fn runner_should_animate(display: MenubarDisplay, reduce_motion: bool) -> bool {
+    runner_enabled(display) && !reduce_motion
+}
+
+#[cfg(target_os = "macos")]
+fn system_reduce_motion() -> bool {
+    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_reduce_motion() -> bool {
+    false
+}
+
 fn runner_load_band(cpu_pct: f32) -> usize {
     match cpu_pct.clamp(0.0, 100.0) {
         x if x < 20.0 => 0,
@@ -4918,26 +5025,33 @@ fn runner_icon_index(cpu_pct: f32, frame: u8) -> usize {
         + usize::from(frame % RUNNER_FRAME_COUNT)
 }
 
-fn make_runner_icons() -> Vec<Icon> {
-    [0.0, 30.0, 65.0, 90.0]
-        .into_iter()
-        .flat_map(|cpu| (0..RUNNER_FRAME_COUNT).map(move |frame| make_runner_icon(cpu, frame)))
-        .collect()
-}
-
-#[cfg(target_os = "macos")]
-fn make_runner_native_images() -> Vec<Retained<NSImage>> {
+fn make_runner_icons(character: RunnerCharacter) -> Vec<Icon> {
     [0.0, 30.0, 65.0, 90.0]
         .into_iter()
         .flat_map(|cpu| {
-            (0..RUNNER_FRAME_COUNT).map(move |frame| make_runner_native_image(cpu, frame))
+            (0..RUNNER_FRAME_COUNT).map(move |frame| make_runner_icon(character, cpu, frame))
         })
         .collect()
 }
 
 #[cfg(target_os = "macos")]
-fn make_runner_native_image(cpu_pct: f32, frame: u8) -> Retained<NSImage> {
-    let rgba = make_cat_runner_rgba(cpu_pct, frame);
+fn make_runner_native_images(character: RunnerCharacter) -> Vec<Retained<NSImage>> {
+    [0.0, 30.0, 65.0, 90.0]
+        .into_iter()
+        .flat_map(|cpu| {
+            (0..RUNNER_FRAME_COUNT)
+                .map(move |frame| make_runner_native_image(character, cpu, frame))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn make_runner_native_image(
+    character: RunnerCharacter,
+    cpu_pct: f32,
+    frame: u8,
+) -> Retained<NSImage> {
+    let rgba = make_runner_rgba(character, cpu_pct, frame);
     let mut encoded = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut encoded, 32, 32);
@@ -4983,6 +5097,26 @@ fn configure_native_status_item(tray: &TrayIcon, display: MenubarDisplay) {
     ));
 }
 
+fn set_runner_character(app: &mut App, character: RunnerCharacter) {
+    if app.runner_character == character {
+        return;
+    }
+    app.runner_character = character;
+    app.runner_icons = make_runner_icons(character);
+    #[cfg(target_os = "macos")]
+    {
+        app.runner_native_images = make_runner_native_images(character);
+    }
+    app.last_runner_icon = None;
+    if let Some(ref tm) = app.tray_menu {
+        for (candidate, item) in &tm.character_items {
+            item.set_checked(*candidate == character);
+        }
+    }
+    save_runner_character(character);
+    apply_runner_icon(app);
+}
+
 fn apply_runner_icon(app: &mut App) {
     let desired = runner_enabled(app.display)
         .then(|| runner_icon_index(app.runner_cpu_pct, app.runner_frame));
@@ -5018,15 +5152,15 @@ fn apply_runner_icon(app: &mut App) {
 
 #[cfg(test)]
 fn menubar_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
-    make_runner_icon(cpu_pct, frame)
+    make_runner_icon(RunnerCharacter::Cat, cpu_pct, frame)
 }
 
-fn make_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
-    let rgba = make_cat_runner_rgba(cpu_pct, frame);
+fn make_runner_icon(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Icon {
+    let rgba = make_runner_rgba(character, cpu_pct, frame);
     Icon::from_rgba(rgba, 32, 32).expect("valid icon")
 }
 
-fn make_cat_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
+fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<u8> {
     const W: u32 = 32;
     const H: u32 = 32;
     const BOUNCE: [f32; 8] = [0.0, 0.4, -1.2, -0.7, 0.0, 0.4, -1.2, -0.7];
@@ -5107,31 +5241,98 @@ fn make_cat_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
     );
 
     let tail_lift = TAIL_LIFT[pose];
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(8.1, 15.1 + bounce),
-        Pt::new(4.7, 11.4 + bounce + tail_lift),
-        2.9,
-        (r, g, b, 236),
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(4.7, 11.4 + bounce + tail_lift),
-        Pt::new(3.2, 7.1 + bounce + tail_lift * 0.7),
-        2.5,
-        (r, g, b, 224),
-    );
+    match character {
+        RunnerCharacter::Cat => {
+            draw_line(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(8.1, 15.1 + bounce),
+                Pt::new(4.7, 11.4 + bounce + tail_lift),
+                2.9,
+                (r, g, b, 236),
+            );
+            draw_line(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(4.7, 11.4 + bounce + tail_lift),
+                Pt::new(3.2, 7.1 + bounce + tail_lift * 0.7),
+                2.5,
+                (r, g, b, 224),
+            );
+        }
+        RunnerCharacter::Dog => {
+            draw_line(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(8.0, 15.4 + bounce),
+                Pt::new(4.5, 12.4 + bounce - tail_lift * 0.35),
+                3.2,
+                (r, g, b, 232),
+            );
+            draw_line(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(4.5, 12.4 + bounce - tail_lift * 0.35),
+                Pt::new(3.3, 9.5 + bounce - tail_lift * 0.5),
+                2.6,
+                (r, g, b, 220),
+            );
+        }
+        RunnerCharacter::Rabbit => {
+            draw_disc(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(6.5, 15.7 + bounce),
+                2.4,
+                (r, g, b, 228),
+            );
+        }
+        RunnerCharacter::Fox => {
+            draw_line(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(8.2, 16.0 + bounce),
+                Pt::new(4.6, 12.7 + bounce + tail_lift * 0.25),
+                4.8,
+                (r, g, b, 226),
+            );
+            draw_line(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(4.6, 12.7 + bounce + tail_lift * 0.25),
+                Pt::new(2.9, 9.4 + bounce + tail_lift * 0.4),
+                3.8,
+                (r, g, b, 214),
+            );
+            draw_disc(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(2.9, 9.4 + bounce + tail_lift * 0.4),
+                1.5,
+                (238, 238, 240, 218),
+            );
+        }
+    }
+    let (body_radius_x, body_radius_y) = match character {
+        RunnerCharacter::Rabbit => (8.8, 5.6),
+        RunnerCharacter::Fox => (8.1, 5.0),
+        _ => (8.4, 5.2),
+    };
     draw_ellipse(
         &mut rgba,
         W,
         H,
         Pt::new(15.2, 17.2 + bounce),
-        8.4 + STRETCH[pose],
-        5.2,
+        body_radius_x + STRETCH[pose],
+        body_radius_y,
         body_color,
     );
     draw_disc(
@@ -5142,24 +5343,106 @@ fn make_cat_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
         4.1,
         body_color,
     );
-    draw_triangle(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(20.4, 10.4 + bounce),
-        Pt::new(21.7, 6.6 + bounce),
-        Pt::new(23.3, 10.6 + bounce),
-        body_color,
-    );
-    draw_triangle(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(24.0, 10.3 + bounce),
-        Pt::new(26.0, 7.0 + bounce),
-        Pt::new(26.4, 11.3 + bounce),
-        body_color,
-    );
+    match character {
+        RunnerCharacter::Cat => {
+            draw_triangle(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(20.4, 10.4 + bounce),
+                Pt::new(21.7, 6.6 + bounce),
+                Pt::new(23.3, 10.6 + bounce),
+                body_color,
+            );
+            draw_triangle(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(24.0, 10.3 + bounce),
+                Pt::new(26.0, 7.0 + bounce),
+                Pt::new(26.4, 11.3 + bounce),
+                body_color,
+            );
+        }
+        RunnerCharacter::Dog => {
+            draw_ellipse(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(20.3, 10.7 + bounce),
+                2.2,
+                3.5,
+                (r, g, b, 220),
+            );
+            draw_ellipse(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(25.7, 10.8 + bounce),
+                2.0,
+                3.3,
+                (r, g, b, 220),
+            );
+            draw_ellipse(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(27.0, 14.5 + bounce),
+                2.2,
+                1.7,
+                body_color,
+            );
+        }
+        RunnerCharacter::Rabbit => {
+            draw_line(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(21.7, 10.3 + bounce),
+                Pt::new(21.2, 4.0 + bounce),
+                3.4,
+                body_color,
+            );
+            draw_line(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(24.5, 10.2 + bounce),
+                Pt::new(25.8, 3.5 + bounce),
+                3.3,
+                body_color,
+            );
+        }
+        RunnerCharacter::Fox => {
+            draw_triangle(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(20.0, 10.8 + bounce),
+                Pt::new(21.4, 5.5 + bounce),
+                Pt::new(23.4, 10.5 + bounce),
+                body_color,
+            );
+            draw_triangle(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(23.5, 10.2 + bounce),
+                Pt::new(26.3, 5.8 + bounce),
+                Pt::new(26.7, 11.5 + bounce),
+                body_color,
+            );
+            draw_triangle(
+                &mut rgba,
+                W,
+                H,
+                Pt::new(25.2, 12.0 + bounce),
+                Pt::new(29.0, 14.1 + bounce),
+                Pt::new(25.3, 15.5 + bounce),
+                body_color,
+            );
+        }
+    }
 
     draw_runner_leg(
         &mut rgba,
@@ -5188,14 +5471,13 @@ fn make_cat_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
         0.8,
         (0, 0, 0, 150),
     );
-    draw_disc(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(27.2, 13.5 + bounce),
-        0.9,
-        (r, g, b, 235),
-    );
+    let nose = match character {
+        RunnerCharacter::Cat => (Pt::new(27.2, 13.5 + bounce), (r, g, b, 235)),
+        RunnerCharacter::Dog => (Pt::new(28.5, 14.4 + bounce), (0, 0, 0, 190)),
+        RunnerCharacter::Rabbit => (Pt::new(27.0, 13.8 + bounce), (238, 160, 180, 235)),
+        RunnerCharacter::Fox => (Pt::new(29.0, 14.1 + bounce), (0, 0, 0, 205)),
+    };
+    draw_disc(&mut rgba, W, H, nose.0, 0.9, nose.1);
 
     rgba
 }
@@ -5382,8 +5664,13 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">General<", ">일반<")
             .replace(">App Preferences<", ">앱 설정<")
             .replace(">Menu bar<", ">메뉴 막대<")
+            .replace(">Character<", ">캐릭터<")
+            .replace(">Runner<", ">러너<")
             .replace(">Number<", ">숫자<")
             .replace(">Cat<", ">고양이<")
+            .replace(">Dog<", ">강아지<")
+            .replace(">Rabbit<", ">토끼<")
+            .replace(">Fox<", ">여우<")
             .replace(">Both<", ">둘 다<")
             .replace("CPU runner · waiting", "CPU 러너 · 대기 중")
             .replace(">Notifications<", ">알림<")
@@ -5727,6 +6014,10 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .display-segment button{min-width:0;min-height:27px;padding:4px 5px;border:0;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:750;cursor:pointer;white-space:nowrap;}
 .display-segment button:hover{background:var(--track-hover);color:var(--text);}
 .display-segment button.active{background:var(--surface-raised);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.15);}
+.character-segment{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;width:184px;padding:3px;border-radius:8px;background:var(--chip-bg);}
+.character-segment button{min-width:0;min-height:27px;padding:4px 3px;border:0;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:750;cursor:pointer;white-space:nowrap;}
+.character-segment button:hover{background:var(--track-hover);color:var(--text);}
+.character-segment button.active{background:var(--surface-raised);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.15);}
 .runner-pace{color:var(--dim);font-size:9.5px;font-variant-numeric:tabular-nums;text-align:right;}
 .system-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin:0 0 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);}
 .system-fact{min-width:0;padding:8px 10px;}
@@ -5946,10 +6237,19 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="settings-control-stack">
 <div class="display-segment" role="group" aria-label="Menu bar style">
 <button id="display-number" data-display="number" aria-pressed="false" onclick="setMenubarDisplay('number')">Number</button>
-<button id="display-cat" data-display="cat" aria-pressed="false" onclick="setMenubarDisplay('cat')">Cat</button>
+<button id="display-runner" data-display="cat" aria-pressed="false" onclick="setMenubarDisplay('cat')">Runner</button>
 <button id="display-both" data-display="both" aria-pressed="true" onclick="setMenubarDisplay('both')">Both</button>
 </div>
 <div class="runner-pace" id="runner-pace">CPU runner · waiting</div>
+</div>
+</div>
+<div class="settings-item" id="runner-character-setting">
+<div><div class="settings-item-title">Character</div><div class="settings-item-copy">Choose your CPU-responsive runner.</div></div>
+<div class="character-segment" role="group" aria-label="Runner character">
+<button data-character="cat" aria-pressed="true" onclick="setRunnerCharacter('cat')">Cat</button>
+<button data-character="dog" aria-pressed="false" onclick="setRunnerCharacter('dog')">Dog</button>
+<button data-character="rabbit" aria-pressed="false" onclick="setRunnerCharacter('rabbit')">Rabbit</button>
+<button data-character="fox" aria-pressed="false" onclick="setRunnerCharacter('fox')">Fox</button>
 </div>
 </div>
 <details class="settings-details" id="notification-settings">
@@ -6162,16 +6462,6 @@ function storageGet(k){
 function storageSet(k,v){
   try{localStorage.setItem(k,v);}catch(e){}
 }
-function popoverCompact(){
-  return storageGet('pf.compact')!=='0';
-}
-function setPopoverExpanded(expanded){
-  storageSet('pf.compact',expanded?'0':'1');
-  applyPopoverMode();
-}
-function togglePopoverExpanded(){
-  setPopoverExpanded(popoverCompact());
-}
 var RAIL_VIEW=storageGet('pf.rail.view')||'overview';
 if(RAIL_VIEW==='update'||RAIL_VIEW==='more')RAIL_VIEW='system';
 if(!/^(overview|fan|settings|system)$/.test(RAIL_VIEW))RAIL_VIEW='overview';
@@ -6241,12 +6531,7 @@ function applyRailView(resetScroll){
       :(view==='system'?(LANG==='ko'?'시스템':'System'):'PeterFan'));
   if(resetScroll)resetRailPaneScroll();
 }
-function applyPopoverMode(){
-  var compact=true;
-  document.body.classList.toggle('compact',compact);
-  document.body.classList.toggle('expanded',!compact);
-}
-applyPopoverMode();
+document.body.classList.add('compact');
 setRailView(railView());
 function setButtonLabel(btn,label){
   if(!btn)return;
@@ -6699,11 +6984,18 @@ window.__pf={
  }
 }};
 applyPendingUpdate();
-if(window.ipc)window.ipc.postMessage('ready');
+var WEBVIEW_READY_SENT=false;
+function sendWebviewReady(){
+  if(!WEBVIEW_READY_SENT&&window.ipc){
+    WEBVIEW_READY_SENT=true;
+    window.ipc.postMessage('ready');
+  }
+}
+sendWebviewReady();
 // A prewarmed macOS WebView can expose its IPC bridge a frame after the page
 // script runs. One retry makes the ready handshake deterministic without
 // touching the sensor path or delaying the first render.
-setTimeout(function(){if(window.ipc)window.ipc.postMessage('ready');},250);
+setTimeout(sendWebviewReady,250);
 // One card per controllable fan — independent Auto/Manual toggle + a slider
 // bounded to that fan's own min/max RPM (not a 0-100% abstraction), so you
 // can pin e.g. just the left fan while the right one keeps following the
@@ -7407,6 +7699,13 @@ function setMenubarDisplay(style){
   updateMenubarDisplay(data);
   if(window.ipc)window.ipc.postMessage('display:'+style);
 }
+function setRunnerCharacter(character){
+  if(!/^(cat|dog|rabbit|fox)$/.test(character))return;
+  var data=window.__pf_pending||{};
+  data.runner_character=character;
+  updateMenubarDisplay(data);
+  if(window.ipc)window.ipc.postMessage('character:'+character);
+}
 function updateMenubarDisplay(d){
   var style=/^(number|cat|both)$/.test(d.menubar_display)?d.menubar_display:'both';
   document.querySelectorAll('.display-segment button').forEach(function(button){
@@ -7414,16 +7713,29 @@ function updateMenubarDisplay(d){
     button.classList.toggle('active',active);
     button.setAttribute('aria-pressed',active?'true':'false');
   });
+  var character=/^(cat|dog|rabbit|fox)$/.test(d.runner_character)?d.runner_character:'cat';
+  document.querySelectorAll('.character-segment button').forEach(function(button){
+    var active=button.dataset.character===character;
+    button.classList.toggle('active',active);
+    button.setAttribute('aria-pressed',active?'true':'false');
+  });
   var pace=document.getElementById('runner-pace');
   if(!pace)return;
   var cpu=Math.max(0,Math.min(100,Number(d.runner_cpu_pct)||0));
+  if(d.runner_reduce_motion){
+    pace.textContent=LANG==='ko'?'동작 줄이기 · 정지 화면':'Reduce Motion · still frame';
+    pace.title=LANG==='ko'
+      ?'macOS 손쉬운 사용 설정에 따라 러너 애니메이션을 멈췄습니다'
+      :'The runner animation is paused by the macOS accessibility setting';
+    return;
+  }
   var label=cpu<20
     ?(LANG==='ko'?'천천히':'Strolling')
     :(cpu<55
       ?(LANG==='ko'?'가볍게':'Jogging')
       :(cpu<80?(LANG==='ko'?'빠르게':'Running'):(LANG==='ko'?'전력 질주':'Sprinting')));
   pace.textContent='CPU '+Math.round(cpu)+'% · '+label;
-  pace.title=(LANG==='ko'?'CPU 사용률에 따라 고양이 속도가 바뀝니다':'Cat speed follows CPU usage')
+  pace.title=(LANG==='ko'?'CPU 사용률에 따라 러너 속도가 바뀝니다':'Runner speed follows CPU usage')
     +' · '+Math.round(Number(d.runner_interval_ms)||0)+' ms';
 }
 function quitProcess(pid,name){
@@ -8265,23 +8577,36 @@ mod tests {
             assert!(!html.contains("function updateRunner(cpuPct)"));
             assert!(!html.contains("--runner-speed"));
             assert!(!html.contains("updateRunner(d.cpu_pct);"));
-            assert!(!html.contains(">Runner<"));
-            assert!(!html.contains(">러너<"));
         }
     }
 
     #[test]
     fn menu_bar_uses_cpu_driven_runner_icon() {
         let _idle = menubar_runner_icon(8.0, 0);
-        let _busy = make_runner_icon(92.0, 3);
-        assert_ne!(make_cat_runner_rgba(8.0, 0), make_cat_runner_rgba(92.0, 0));
-        assert_ne!(make_cat_runner_rgba(50.0, 0), make_cat_runner_rgba(50.0, 1));
+        let _busy = make_runner_icon(RunnerCharacter::Cat, 92.0, 3);
+        assert_ne!(
+            make_runner_rgba(RunnerCharacter::Cat, 8.0, 0),
+            make_runner_rgba(RunnerCharacter::Cat, 92.0, 0)
+        );
+        assert_ne!(
+            make_runner_rgba(RunnerCharacter::Cat, 50.0, 0),
+            make_runner_rgba(RunnerCharacter::Cat, 50.0, 1)
+        );
+    }
+
+    #[test]
+    fn runner_animation_respects_reduce_motion() {
+        assert!(runner_should_animate(MenubarDisplay::Graph, false));
+        assert!(runner_should_animate(MenubarDisplay::Both, false));
+        assert!(!runner_should_animate(MenubarDisplay::Number, false));
+        assert!(!runner_should_animate(MenubarDisplay::Graph, true));
+        assert!(!runner_should_animate(MenubarDisplay::Both, true));
     }
 
     #[test]
     fn menu_bar_runner_is_cat_like_and_animated() {
-        let idle = make_cat_runner_rgba(12.0, 0);
-        let active = make_cat_runner_rgba(72.0, 1);
+        let idle = make_runner_rgba(RunnerCharacter::Cat, 12.0, 0);
+        let active = make_runner_rgba(RunnerCharacter::Cat, 72.0, 1);
 
         assert!(idle.chunks_exact(4).any(|px| px[3] > 0));
         assert!(active.chunks_exact(4).any(|px| px[3] > 0));
@@ -8289,9 +8614,19 @@ mod tests {
     }
 
     #[test]
+    fn runner_characters_have_distinct_animated_silhouettes() {
+        let frames = RunnerCharacter::ALL.map(|character| make_runner_rgba(character, 50.0, 2));
+        let unique = frames.iter().collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique.len(), RunnerCharacter::ALL.len());
+        assert!(frames
+            .iter()
+            .all(|rgba| rgba.chunks_exact(4).any(|pixel| pixel[3] > 0)));
+    }
+
+    #[test]
     fn runner_gait_has_eight_distinct_contact_and_flight_poses() {
         let frames = (0..RUNNER_FRAME_COUNT)
-            .map(|frame| make_cat_runner_rgba(50.0, frame))
+            .map(|frame| make_runner_rgba(RunnerCharacter::Cat, 50.0, frame))
             .collect::<Vec<_>>();
         let unique = frames.iter().collect::<std::collections::HashSet<_>>();
         assert_eq!(unique.len(), usize::from(RUNNER_FRAME_COUNT));
@@ -8317,32 +8652,34 @@ mod tests {
         const CELL: u32 = 36;
         const ICON: u32 = 32;
         let width = CELL * u32::from(RUNNER_FRAME_COUNT) * SCALE;
-        let height = CELL * SCALE;
+        let height = CELL * RunnerCharacter::ALL.len() as u32 * SCALE;
         let mut sheet = vec![0u8; (width * height * 4) as usize];
 
         for pixel in sheet.chunks_exact_mut(4) {
             pixel.copy_from_slice(&[28, 28, 30, 255]);
         }
 
-        for frame in 0..RUNNER_FRAME_COUNT {
-            let icon = make_cat_runner_rgba(50.0, frame);
-            let origin_x = (u32::from(frame) * CELL + 2) * SCALE;
-            let origin_y = 2 * SCALE;
-            for source_y in 0..ICON {
-                for source_x in 0..ICON {
-                    let source_index = ((source_y * ICON + source_x) * 4) as usize;
-                    let alpha = f32::from(icon[source_index + 3]) / 255.0;
-                    for scale_y in 0..SCALE {
-                        for scale_x in 0..SCALE {
-                            let target_x = origin_x + source_x * SCALE + scale_x;
-                            let target_y = origin_y + source_y * SCALE + scale_y;
-                            let target_index = ((target_y * width + target_x) * 4) as usize;
-                            for channel in 0..3 {
-                                let foreground = f32::from(icon[source_index + channel]);
-                                sheet[target_index + channel] =
-                                    (foreground * alpha + 28.0 * (1.0 - alpha)).round() as u8;
+        for (row, character) in RunnerCharacter::ALL.into_iter().enumerate() {
+            for frame in 0..RUNNER_FRAME_COUNT {
+                let icon = make_runner_rgba(character, 50.0, frame);
+                let origin_x = (u32::from(frame) * CELL + 2) * SCALE;
+                let origin_y = (row as u32 * CELL + 2) * SCALE;
+                for source_y in 0..ICON {
+                    for source_x in 0..ICON {
+                        let source_index = ((source_y * ICON + source_x) * 4) as usize;
+                        let alpha = f32::from(icon[source_index + 3]) / 255.0;
+                        for scale_y in 0..SCALE {
+                            for scale_x in 0..SCALE {
+                                let target_x = origin_x + source_x * SCALE + scale_x;
+                                let target_y = origin_y + source_y * SCALE + scale_y;
+                                let target_index = ((target_y * width + target_x) * 4) as usize;
+                                for channel in 0..3 {
+                                    let foreground = f32::from(icon[source_index + channel]);
+                                    sheet[target_index + channel] =
+                                        (foreground * alpha + 28.0 * (1.0 - alpha)).round() as u8;
+                                }
+                                sheet[target_index + 3] = 255;
                             }
-                            sheet[target_index + 3] = 255;
                         }
                     }
                 }
@@ -8381,7 +8718,7 @@ mod tests {
         assert!(!runner_enabled(MenubarDisplay::Number));
         assert!(runner_enabled(MenubarDisplay::Graph));
         assert!(runner_enabled(MenubarDisplay::Both));
-        assert_eq!(make_runner_icons().len(), 32);
+        assert_eq!(make_runner_icons(RunnerCharacter::Cat).len(), 32);
         assert_eq!(runner_load_band(10.0), 0);
         assert_eq!(runner_load_band(90.0), 3);
     }
@@ -8404,8 +8741,12 @@ mod tests {
         for html in [&en, &ko] {
             assert!(html.contains(r#"id="menubar-display-setting""#));
             assert!(html.contains(r#"id="display-number""#));
-            assert!(html.contains(r#"id="display-cat""#));
+            assert!(html.contains(r#"id="display-runner""#));
             assert!(html.contains(r#"id="display-both""#));
+            assert!(html.contains(r#"id="runner-character-setting""#));
+            assert!(html.contains(r#"data-character="dog""#));
+            assert!(html.contains("function setRunnerCharacter(character)"));
+            assert!(html.contains("window.ipc.postMessage('character:'+character)"));
             assert!(html.contains("function setMenubarDisplay(style)"));
             assert!(html.contains("window.ipc.postMessage('display:'+style)"));
             assert!(html.contains("function updateMenubarDisplay(d)"));
@@ -8478,7 +8819,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_html_supports_compact_popover_mode() {
+    fn dashboard_html_uses_one_fixed_compact_popover_mode() {
         let en = dashboard_html(ResolvedLanguage::En, false);
 
         assert!(en.contains("compact-extra"));
@@ -8486,9 +8827,9 @@ mod tests {
         assert!(en.contains(r#"data-compact-extra="battery""#));
         assert!(en.contains(r#"data-compact-extra="network""#));
         assert!(en.contains(r#"data-compact-extra="processes""#));
-        assert!(en.contains("applyPopoverMode"));
-        assert!(en.contains("setPopoverExpanded"));
-        assert!(en.contains("pf.compact"));
+        assert!(en.contains("document.body.classList.add('compact')"));
+        assert!(!en.contains("setPopoverExpanded"));
+        assert!(!en.contains("pf.compact"));
     }
 
     #[test]
@@ -9255,7 +9596,11 @@ mod tests {
 
         assert!(en.contains("window.__pf_pending"));
         assert!(en.contains("function applyPendingUpdate()"));
-        assert!(en.contains("window.ipc.postMessage('ready')"));
+        assert!(en.contains("function sendWebviewReady()"));
+        assert!(en.contains("setTimeout(sendWebviewReady,250)"));
+        assert_eq!(en.matches("window.ipc.postMessage('ready')").count(), 1);
+        assert!(en.contains("runner_reduce_motion"));
+        assert!(en.contains("Reduce Motion · still frame"));
         assert!(en.contains("applyPendingUpdate();"));
         assert!(source.contains("ready:popover"));
         assert!(source.contains("ready:detail"));
@@ -9355,6 +9700,8 @@ mod tests {
             "temp".to_string(),
             "--display".to_string(),
             "graph".to_string(),
+            "--character".to_string(),
+            "fox".to_string(),
             "-psn_0_12345".to_string(),
         ];
         assert_eq!(unsupported_menubar_arg(&ok_args), None);
@@ -9665,14 +10012,15 @@ mod tests {
     }
 
     #[test]
-    fn menu_bar_display_style_labels_match_cat_runner() {
-        assert_eq!(strings(ResolvedLanguage::En).style_graph, "Cat");
-        assert_eq!(strings(ResolvedLanguage::En).style_both, "Number + Cat");
-        assert_eq!(strings(ResolvedLanguage::Ko).style_graph, "고양이");
-        assert_eq!(strings(ResolvedLanguage::Ko).style_both, "숫자 + 고양이");
+    fn menu_bar_display_style_labels_match_selectable_runner() {
+        assert_eq!(strings(ResolvedLanguage::En).style_graph, "Runner");
+        assert_eq!(strings(ResolvedLanguage::En).style_both, "Number + Runner");
+        assert_eq!(strings(ResolvedLanguage::Ko).style_graph, "러너");
+        assert_eq!(strings(ResolvedLanguage::Ko).style_both, "숫자 + 러너");
 
         let help = help_text();
         assert!(help.contains("--display <number|cat|both>"));
+        assert!(help.contains("--character <cat|dog|rabbit|fox>"));
         assert!(help.contains("cat also accepts legacy graph"));
         assert!(!help.contains("--metric"));
     }
@@ -10054,7 +10402,7 @@ mod tests {
     #[test]
     fn temperature_sample_becomes_stale_only_after_the_limit() {
         let now = Instant::now();
-        let sampled = now - Duration::from_secs(6);
+        let sampled = now - TEMPERATURE_STALE_AFTER;
         assert!(!sample_is_stale(
             Some(sampled),
             now,
@@ -10066,6 +10414,20 @@ mod tests {
             TEMPERATURE_STALE_AFTER
         ));
         assert!(sample_is_stale(None, now, TEMPERATURE_STALE_AFTER));
+    }
+
+    #[test]
+    fn temperature_refresh_slows_only_while_dashboards_are_closed() {
+        assert_eq!(
+            temperature_refresh_interval(true),
+            TEMPERATURE_REFRESH_VISIBLE
+        );
+        assert_eq!(
+            temperature_refresh_interval(false),
+            TEMPERATURE_REFRESH_BACKGROUND
+        );
+        assert!(TEMPERATURE_REFRESH_BACKGROUND > TEMPERATURE_REFRESH_VISIBLE);
+        assert!(TEMPERATURE_STALE_AFTER > TEMPERATURE_REFRESH_BACKGROUND * 2);
     }
 
     #[test]

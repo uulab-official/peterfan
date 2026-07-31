@@ -34,6 +34,18 @@ jobs:
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Validate landing site
+        shell: bash
+        run: |
+          test -s apps/landing/index.html
+          grep -q "UULab" apps/landing/index.html
+          if find apps/landing -type l -print -quit | grep -q .; then
+            echo "Landing site must not contain symbolic links." >&2
+            exit 1
+          fi
 
       - name: Upload landing site artifact
         uses: actions/upload-pages-artifact@v3

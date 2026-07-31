@@ -52,7 +52,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 
 - [x] CPU average temperature as the top temperature metric
 - [x] RunCat-style right action rail in the popover
-- [x] Compact/expanded popover modes
+- [x] Fixed compact popover with deeper metrics isolated in the System view
 - [x] Keep popover on the clicked monitor in multi-display setups
 - [x] Fan Control Health card in Settings: daemon, approval, command status
 - [x] Hide low-priority sections from the first viewport when they are idle
@@ -122,8 +122,8 @@ These are the highest-leverage improvements before adding large new surfaces.
 
 ### v1.30 — Glanceable System Monitor
 
-- [x] Eight-frame menu-bar cat whose pace follows smoothed CPU usage
-- [x] Menu-bar number / cat / number + cat selector in Settings
+- [x] Four selectable eight-frame menu-bar runners whose pace follows smoothed CPU usage
+- [x] Menu-bar temperature / runner / combined selector in Settings
 - [x] System quick facts for load average, power, network rate, and uptime
 - [x] Per-core CPU detail with Apple Silicon efficiency/performance grouping
 - [ ] GPU utilization backend where public platform APIs provide a stable value

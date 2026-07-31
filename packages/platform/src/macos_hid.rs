@@ -11,6 +11,8 @@
 //! provider `Send + Sync`).
 
 use std::os::raw::c_void;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use core_foundation::base::{kCFAllocatorDefault, CFAllocatorRef, TCFType};
 use core_foundation::dictionary::CFDictionary;
@@ -31,6 +33,13 @@ const TEMP_TYPE: i64 = 15;
 const PAGE: i32 = 0xff00;
 /// Apple-vendor temperature-sensor usage.
 const USAGE_TEMP: i32 = 5;
+/// A regular headline read and an expanded raw-sensor read can start on the
+/// same menu-bar tick. Sharing that one hardware sample avoids rebuilding the
+/// private IOHID client two or three times without making the 2–3 second UI
+/// refresh cadence any less current.
+const TEMP_CACHE_TTL: Duration = Duration::from_millis(900);
+type CachedTemps = Option<(Instant, Vec<(String, f32)>)>;
+static TEMP_CACHE: OnceLock<Mutex<CachedTemps>> = OnceLock::new();
 
 #[link(name = "IOKit", kind = "framework")]
 extern "C" {
@@ -44,6 +53,31 @@ extern "C" {
 
 /// Read all IOHID temperature sensors as `(name, °C)` pairs.
 pub fn read_temps() -> Vec<(String, f32)> {
+    let cache = TEMP_CACHE.get_or_init(|| Mutex::new(None));
+    let mut cached = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let now = Instant::now();
+    if let Some(values) = fresh_cached_temps(&cached, now) {
+        return values;
+    }
+
+    // Keep the lock during the hardware call. Readers run only on background
+    // threads, and serialization is what prevents two simultaneous cache
+    // misses from constructing duplicate IOHID clients.
+    let values = read_temps_uncached();
+    *cached = Some((Instant::now(), values.clone()));
+    values
+}
+
+fn fresh_cached_temps(cached: &CachedTemps, now: Instant) -> Option<Vec<(String, f32)>> {
+    cached
+        .as_ref()
+        .filter(|(sampled_at, _)| now.saturating_duration_since(*sampled_at) < TEMP_CACHE_TTL)
+        .map(|(_, values)| values.clone())
+}
+
+fn read_temps_uncached() -> Vec<(String, f32)> {
     let mut out = Vec::new();
     unsafe {
         let matching = CFDictionary::from_CFType_pairs(&[
@@ -98,6 +132,26 @@ pub fn read_temps() -> Vec<(String, f32)> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn short_lived_hid_cache_reuses_only_fresh_samples() {
+        let sampled_at = Instant::now();
+        let cached = Some((sampled_at, vec![("CPU die".to_string(), 61.5)]));
+
+        assert_eq!(
+            super::fresh_cached_temps(&cached, sampled_at + Duration::from_millis(500)),
+            Some(vec![("CPU die".to_string(), 61.5)])
+        );
+        assert_eq!(
+            super::fresh_cached_temps(
+                &cached,
+                sampled_at + super::TEMP_CACHE_TTL + Duration::from_millis(1)
+            ),
+            None
+        );
+    }
+
     #[test]
     #[ignore = "prints local IOHID temperature sensor names for manual debugging"]
     fn print_hid_temperature_sensors() {

@@ -12,10 +12,10 @@ members = [
 exclude = ["tools/icongen"]
 
 [workspace.package]
-version = "1.27.63"
+version = "1.27.64"
 edition = "2021"
 license = "MIT"
-authors = ["PeterFan contributors"]
+authors = ["UULab"]
 repository = "https://github.com/uulab-official/peterfan"
 rust-version = "1.80"
 

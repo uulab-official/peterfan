@@ -45,6 +45,15 @@ else
   fail "README.ko.md does not mention current version v$version"
 fi
 
+if grep -q 'authors = \["UULab"\]' "$ROOT/Cargo.toml" && \
+   grep -q 'PeterFan by UULab' "$ROOT/scripts/bundle-macos.sh" && \
+   grep -q '&copy; 2026 UULab' "$ROOT/apps/landing/index.html" && \
+   grep -q 'Copyright (c) 2026 UULab' "$ROOT/LICENSE"; then
+  ok "package, app bundle, landing page, and license identify UULab"
+else
+  fail "UULab product ownership metadata is incomplete"
+fi
+
 if grep -R "v1\\.26\\.2\\b" "$ROOT/README.md" "$ROOT/README.ko.md" >/dev/null; then
   fail "README files still contain stale v1.26.2 references"
 else
@@ -140,6 +149,14 @@ if grep -q 'needs: \[release-notes, package-macos, build-windows\]' \
   ok "Windows install and release gates are wired into both release paths"
 else
   fail "Windows install or release gate is incomplete"
+fi
+
+if [[ -x "$ROOT/scripts/soak-test-macos.sh" ]] && \
+   grep -q 'PETERFAN_SOAK_PID' "$ROOT/scripts/soak-test-macos.sh" && \
+   grep -q 'soak test with bounded CPU, RSS, thread' "$ROOT/docs/PRODUCTION_CHECKLIST.md"; then
+  ok "macOS six-hour soak gate is documented and executable"
+else
+  fail "macOS six-hour soak gate is incomplete"
 fi
 
 echo

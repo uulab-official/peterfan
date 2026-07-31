@@ -37,15 +37,16 @@ Reference points:
 - [x] CPU usage controls frame interval continuously from a calm idle to sprint.
 - [x] Load spikes accelerate quickly; falling load decays smoothly.
 - [x] Eight cached contact, flight, and landing frames avoid drawing work in the animation loop.
-- [x] Number, cat, and number + cat modes are available in native and app settings.
+- [x] Temperature, runner, and combined modes are available in native and app settings.
+- [x] Cat, dog, rabbit, and fox runners are selectable without restarting the app.
 - [x] The click target remains fixed-width while frames and temperatures change.
 - [x] Settings report the current smoothed CPU load and pace.
 - [ ] Custom runner packs with reviewed size and CPU-cost limits.
-- [ ] A native Reduce Motion policy that automatically switches to a still frame.
+- [x] macOS Reduce Motion automatically switches the runner to a still frame.
 
 ## Next Product Priorities
 
 1. Add an exportable comparison snapshot for sensor-source troubleshooting.
-2. Validate animation CPU overhead and fan-control stability in the six-hour soak.
-3. Add a native Reduce Motion policy for the CPU runner.
+2. Record the six-hour animation CPU and fan-control soak on release hardware.
+3. Add reviewed third-party runner packs with strict size and CPU-cost limits.
 4. Research stable GPU utilization sources separately for macOS and Windows.

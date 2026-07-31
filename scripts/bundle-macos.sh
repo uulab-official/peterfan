@@ -71,10 +71,11 @@ ${ICON_LINE}
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>CFBundleGetInfoString</key><string>PeterFan by UULab</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSHumanReadableCopyright</key><string>MIT © PeterFan contributors</string>
+  <key>NSHumanReadableCopyright</key><string>Copyright © 2026 UULab. MIT licensed.</string>
 </dict>
 </plist>
 PLIST

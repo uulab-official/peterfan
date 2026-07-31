@@ -275,5 +275,5 @@ Windows 上的 EC/WMI 后端）。
 
 ## 许可协议
 
-本仓库中的代码采用 [MIT](./LICENSE) 协议 © PeterFan contributors。
+本仓库中的代码采用 [MIT](./LICENSE) 协议 © UULab。
 菜单栏应用、CLI、TUI 和守护进程均无需账号或许可证密钥，可自由使用、研究、修改和分发。
