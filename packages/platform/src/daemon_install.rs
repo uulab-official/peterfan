@@ -135,7 +135,6 @@ fn required_daemon_is_healthy(installed_version: Option<&str>, reachable: bool) 
     reachable && installed_version.is_some_and(|version| !crate::daemon_update_required(version))
 }
 
-#[cfg(target_os = "macos")]
 fn wait_for_required_daemon(timeout: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
@@ -210,8 +209,7 @@ pub fn install(dry_run: bool) -> Result<InstallOutcome, String> {
     if dry_run {
         return Ok(InstallOutcome::DryRun(dry_run_output));
     }
-    std::thread::sleep(std::time::Duration::from_millis(800));
-    if crate::daemon_reachable() {
+    if wait_for_required_daemon(std::time::Duration::from_secs(10)) {
         Ok(InstallOutcome::Installed)
     } else {
         Ok(InstallOutcome::InstalledButUnreachable)
@@ -354,5 +352,11 @@ mod tests {
             false
         ));
         assert!(!required_daemon_is_healthy(None, true));
+    }
+
+    #[test]
+    fn install_waits_for_a_healthy_daemon_instead_of_using_a_fixed_delay() {
+        let source = include_str!("daemon_install.rs");
+        assert!(source.contains("wait_for_required_daemon(std::time::Duration::from_secs(10))"));
     }
 }

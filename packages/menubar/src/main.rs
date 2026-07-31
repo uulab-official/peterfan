@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -381,6 +381,10 @@ static FAN_ACTION_LOG: Mutex<VecDeque<serde_json::Value>> = Mutex::new(VecDeque:
 /// the install thread within the same tick and stacking two macOS
 /// admin-password dialogs.
 static INSTALL_FAN_CONTROL_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+/// Monotonic completion signal for fan-control setup. WebViews compare this
+/// with the value captured when setup started, so success, failure, and
+/// cancellation all leave the "Installing..." state immediately.
+static INSTALL_FAN_CONTROL_REVISION: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 static LOGIN_ITEM_TOGGLE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// Shadow of `apply_local`'s per-fan pins, consulted only when no daemon is
@@ -2007,7 +2011,11 @@ fn main() {
                     // triggers — exposed here too so the "update the daemon"
                     // fix is one click from the exact error message that
                     // told the user they needed it, not a hunt through menus.
-                    std::thread::spawn(install_fan_control);
+                    let proxy = event_proxy.clone();
+                    std::thread::spawn(move || {
+                        install_fan_control();
+                        let _ = proxy.send_event(());
+                    });
                     refresh_after_pending = true;
                 } else if c == "checkupdates" {
                     std::thread::spawn(check_for_updates_interactive);
@@ -2159,7 +2167,11 @@ fn main() {
                 {
                     Some(cmd.clone())
                 } else if is_enable_fan_control_id(tm, id) {
-                    std::thread::spawn(install_fan_control);
+                    let proxy = event_proxy.clone();
+                    std::thread::spawn(move || {
+                        install_fan_control();
+                        let _ = proxy.send_event(());
+                    });
                     None
                 } else if tm.check_updates == *id {
                     std::thread::spawn(install_update_interactive);
@@ -3843,6 +3855,8 @@ fn update(app: &mut App) {
         "control_revision": control_revision,
         "applied_control_revision": applied_control_revision,
         "fan_setup_needed": fan_control_supported && !can_control,
+        "fan_control_installing": INSTALL_FAN_CONTROL_IN_FLIGHT.load(Ordering::Acquire),
+        "fan_control_install_revision": INSTALL_FAN_CONTROL_REVISION.load(Ordering::Acquire),
         "fan_control_state_ready": !fan_control_supported || (fan_data_ready && app.daemon_probe_completed),
         "fan_count": fans.len(),
         "controllable_fan_count": fans.iter().filter(|f| f.controllable).count(),
@@ -4496,7 +4510,6 @@ fn install_fan_control() {
         Ok(InstallOutcome::DryRun(_)) => unreachable!("menu bar never passes dry_run=true"),
         Err(e) => (false, e),
     };
-    INSTALL_FAN_CONTROL_IN_FLIGHT.store(false, Ordering::SeqCst);
     log_menubar_event(&format!(
         "fan control install plan={plan:?} ok={ok} result={message}"
     ));
@@ -4512,6 +4525,9 @@ fn install_fan_control() {
     };
     record_fan_action(action_label, &message, ok);
     *STATUS.lock().expect("status poisoned") = message.clone();
+    INSTALL_FAN_CONTROL_IN_FLIGHT.store(false, Ordering::Release);
+    INSTALL_FAN_CONTROL_REVISION.fetch_add(1, Ordering::AcqRel);
+    CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
     notify_control_result(notification_title, ok, &message);
 }
 #[cfg(not(target_os = "macos"))]
@@ -6459,6 +6475,7 @@ window.onunhandledrejection=function(event){
   if(window.ipc)window.ipc.postMessage('js-error:'+String(event.reason||'unhandled rejection').slice(0,240));
 };
 var FAN_CONTROL_FIX_PENDING=false;
+var FAN_CONTROL_FIX_REVISION=0;
 var FAN_DIAGNOSTIC_PENDING=false;
 var FAN_DIAGNOSTIC_STARTED_AT=0;
 var LOGIN_ITEM_TOGGLE_PENDING=false;
@@ -6867,6 +6884,12 @@ window.__pf={
  function set(id,t){var e=document.getElementById(id);if(e)e.textContent=t;}
  function show(id,on){var e=document.getElementById(id);if(e)e.style.display=on?'':'none';}
  window.__pf_pending=d;
+ if(d.fan_control_installing){
+   if(!FAN_CONTROL_FIX_PENDING)FAN_CONTROL_FIX_REVISION=Number(d.fan_control_install_revision||0);
+   FAN_CONTROL_FIX_PENDING=true;
+ } else if(FAN_CONTROL_FIX_PENDING&&Number(d.fan_control_install_revision||0)>FAN_CONTROL_FIX_REVISION){
+   FAN_CONTROL_FIX_PENDING=false;
+ }
  document.body.classList.add('data-ready');
  clearTimeout(DATA_LOADING_TIMER);
  var loading=document.getElementById('data-loading');
@@ -7200,6 +7223,7 @@ function fanControlSetupButton(label){
 }
 function startFanControlSetup(btn){
   if(FAN_CONTROL_FIX_PENDING)return;
+  FAN_CONTROL_FIX_REVISION=Number((window.__pf_pending||{}).fan_control_install_revision||0);
   FAN_CONTROL_FIX_PENDING=true;
   if(btn){
     btn.disabled=true;
@@ -7211,10 +7235,13 @@ function startFanControlSetup(btn){
     setButtonLabel(top,LANG==='ko'?'설치 중…':'Installing…');
   }
   window.ipc.postMessage('cmd:enablefancontrol');
-  // No completion callback reaches JS (the result lands as a native macOS
-  // notification) — release the guard after a generous timeout so a
-  // dismissed/failed prompt doesn't lock the button forever.
-  setTimeout(function(){FAN_CONTROL_FIX_PENDING=false;},15000);
+  // Native setup publishes a completion revision and immediately refreshes
+  // this payload. Keep a watchdog only for a crashed native worker; never
+  // unlock while the installer still reports itself in flight.
+  setTimeout(function(){
+    var current=window.__pf_pending||{};
+    if(!current.fan_control_installing)FAN_CONTROL_FIX_PENDING=false;
+  },60000);
 }
 function runFanDiagnostics(btn){
   if(FAN_DIAGNOSTIC_PENDING)return;
@@ -9354,6 +9381,21 @@ mod tests {
         assert!(source.contains("app.daemon_json_sampled_at = Some(now);"));
         assert!(source.contains("fan_control_state_ready"));
         assert!(source.contains("now.duration_since(sampled_at) > DAEMON_STALE_AFTER"));
+    }
+
+    #[test]
+    fn fan_setup_completion_immediately_refreshes_native_and_webview_state() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("static INSTALL_FAN_CONTROL_REVISION: AtomicU64"));
+        assert!(source.contains("INSTALL_FAN_CONTROL_REVISION.fetch_add(1, Ordering::AcqRel);"));
+        assert!(source.contains("CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);"));
+        assert!(source.contains("let _ = proxy.send_event(());"));
+        assert!(en.contains("var FAN_CONTROL_FIX_REVISION=0;"));
+        assert!(en.contains("Number(d.fan_control_install_revision||0)>FAN_CONTROL_FIX_REVISION"));
+        assert!(en.contains("if(!current.fan_control_installing)FAN_CONTROL_FIX_PENDING=false;"));
+        assert!(!en.contains("},15000);"));
     }
 
     #[test]
