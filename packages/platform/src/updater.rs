@@ -1508,6 +1508,7 @@ fn install_downloaded_update(
         format!("Installing PeterFan v{target_version}."),
     );
     write_update_install_result_to(&result_path, &pending)?;
+    let updater_label = macos_updater_label(std::process::id(), target_version);
     let script = build_apply_update_script(
         app_path,
         &new_app,
@@ -1516,6 +1517,7 @@ fn install_downloaded_update(
         &log_path,
         &result_path,
         target_version,
+        &updater_label,
     );
     std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
     let _ = std::process::Command::new("chmod")
@@ -1523,7 +1525,6 @@ fn install_downloaded_update(
         .arg(&script_path)
         .status();
 
-    let updater_label = macos_updater_label(std::process::id(), target_version);
     let launched = std::process::Command::new("/bin/launchctl")
         .args(["submit", "-l", &updater_label, "--", "/bin/bash"])
         .arg(&script_path)
@@ -1564,6 +1565,7 @@ fn macos_updater_label(pid: u32, target_version: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
 fn build_apply_update_script(
     app_path: &std::path::Path,
     new_app: &std::path::Path,
@@ -1572,6 +1574,7 @@ fn build_apply_update_script(
     log_path: &std::path::Path,
     result_path: &std::path::Path,
     target_version: &str,
+    updater_label: &str,
 ) -> String {
     let executable = app_path.join("Contents/MacOS/PeterFan");
     let result_tmp = result_path.with_extension("json.tmp-updater");
@@ -1603,6 +1606,10 @@ fn build_apply_update_script(
         "#!/bin/bash\n\
          set -u\n\
          exec >{log} 2>&1\n\
+         cleanup_job() {{\n\
+         \t/bin/launchctl remove {updater_label} >/dev/null 2>&1 || true\n\
+         }}\n\
+         trap cleanup_job EXIT\n\
          write_result() {{\n\
          \t/usr/bin/printf '%s\\n' \"$1\" > {result_tmp} && /bin/mv -f {result_tmp} {result}\n\
          }}\n\
@@ -1668,6 +1675,7 @@ fn build_apply_update_script(
         failed = shell_quote_str(&failed),
         restore_failed = shell_quote_str(&restore_failed),
         executable = shell_quote(&executable),
+        updater_label = shell_quote_str(updater_label),
     )
 }
 
@@ -2409,6 +2417,7 @@ TeamIdentifier=N99FMBQ662
             std::path::Path::new("/tmp/update/apply-update.log"),
             std::path::Path::new("/tmp/support/update-result.json"),
             "1.2.3",
+            "kr.co.uulab.peterfan.updater.test-success",
         );
 
         let health_check = script.rfind("launch_until_healthy || rollback").unwrap();
@@ -2424,6 +2433,8 @@ TeamIdentifier=N99FMBQ662
         assert!(script.contains("wait_for_previous_exit || fail_before_replace"));
         assert!(script.contains("launch_until_healthy || rollback"));
         assert!(script.contains("write_result"));
+        assert!(script.contains("trap cleanup_job EXIT"));
+        assert!(script.contains("launchctl remove 'kr.co.uulab.peterfan.updater.test-success'"));
         assert!(script.contains("update-result.json"));
         assert!(script.contains(r#""status":"installed""#));
         assert!(script.contains(r#""status":"rolled_back""#));
@@ -2504,6 +2515,7 @@ TeamIdentifier=N99FMBQ662
             &log,
             &result,
             "1.2.3",
+            "kr.co.uulab.peterfan.updater.test-rollback",
         );
         std::fs::write(&script_path, script).unwrap();
         let status = std::process::Command::new("/bin/bash")

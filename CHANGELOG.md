@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.72] — OTA 작업 수명주기 정리
+
+### Fixed
+
+- macOS OTA 적용용 `launchctl submit` 작업이 실패 시 다시 실행되거나,
+  성공 후 삭제된 임시 스크립트를 재실행해 상태 127로 남던 문제를
+  수정했습니다. 적용 스크립트가 성공·롤백·이동 실패 어느 경로로
+  종료되더라도 `EXIT` trap에서 자신의 launchd label을 제거합니다.
+- 이전 실패 작업이 재시작되어 최신 `installed` 결과를 뒤늦게
+  `failed`로 덮어쓰는 경합과, 여러 버전의 updater 작업이 사용자
+  launchd 영역에 누적되는 문제를 함께 막았습니다.
+
+### Tests
+
+- 생성된 OTA 스크립트가 고유 updater label을 정리하는지 검사하고,
+  공개 공증 앱 재설치 후 결과가 `installed`, 실행 인스턴스가 하나,
+  남은 PeterFan updater 작업이 0개인지 실제 환경에서 확인했습니다.
+
 ## [1.27.71] — 역동적인 CPU 러닝 사이클
 
 ### Changed
