@@ -1099,18 +1099,64 @@ fn is_semverish(version: &str) -> bool {
 #[cfg(target_os = "macos")]
 pub fn current_app_bundle() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let app = exe
-        .parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
-        .ok_or("could not walk up to a .app bundle from the running executable")?;
-    if app.extension().and_then(|e| e.to_str()) != Some("app") {
-        return Err(format!(
-            "not running from inside a .app bundle (looked at {})",
-            app.display()
-        ));
+    app_bundle_containing_executable(&exe).ok_or_else(|| {
+        format!(
+            "not running from inside a .app bundle (executable: {})",
+            exe.display()
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn app_bundle_containing_executable(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    exe.ancestors()
+        .find(|path| path.extension().and_then(|extension| extension.to_str()) == Some("app"))
+        .map(std::path::Path::to_path_buf)
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_install_target<F>(
+    current_exe: &std::path::Path,
+    installed_app: &std::path::Path,
+    verify_installed: F,
+) -> Result<std::path::PathBuf, String>
+where
+    F: FnOnce(&std::path::Path) -> Result<(), String>,
+{
+    if let Some(app) = app_bundle_containing_executable(current_exe) {
+        return Ok(app);
     }
-    Ok(app.to_path_buf())
+    verify_installed(installed_app)?;
+    Ok(installed_app.to_path_buf())
+}
+
+#[cfg(target_os = "macos")]
+fn install_target_app_bundle() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let installed = default_installed_app_bundle();
+    resolve_install_target(&exe, &installed, |app| {
+        let report = verify_app_integrity(app);
+        if report.ok {
+            return Ok(());
+        }
+        let failures = report
+            .checks
+            .iter()
+            .filter(|check| !check.ok)
+            .take(3)
+            .map(|check| format!("{}: {}", check.name, check.detail))
+            .collect::<Vec<_>>()
+            .join("; ");
+        Err(format!(
+            "standalone updater refused untrusted installed app at {}{}",
+            app.display(),
+            if failures.is_empty() {
+                String::new()
+            } else {
+                format!(" ({failures})")
+            }
+        ))
+    })
 }
 
 /// Download `asset_url`, extract it, and write a detached helper script that
@@ -1371,7 +1417,7 @@ fn download_and_install_verified(
     checksum_url: &str,
     checksum_digest: Option<&str>,
 ) -> Result<(), String> {
-    let app_path = current_app_bundle()?;
+    let app_path = install_target_app_bundle()?;
     let tmp_dir = std::env::temp_dir().join(format!("peterfan-update-{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
 
@@ -1398,7 +1444,7 @@ fn download_and_install_unchecked(
     asset_name: &str,
     target_version: &str,
 ) -> Result<(), String> {
-    let app_path = current_app_bundle()?;
+    let app_path = install_target_app_bundle()?;
     let tmp_dir = std::env::temp_dir().join(format!("peterfan-update-{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
     let download = tmp_dir.join(asset_name);
@@ -2361,6 +2407,38 @@ TeamIdentifier=N99FMBQ662
         assert!(script.contains(r#""status":"installed""#));
         assert!(script.contains(r#""status":"rolled_back""#));
         assert!(delete_backup > health_check);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn install_target_prefers_the_bundle_containing_the_running_app() {
+        let embedded = std::path::Path::new("/Applications/PeterFan.app/Contents/MacOS/PeterFan");
+        let fallback = std::path::Path::new("/Applications/PeterFan.app");
+        let target = resolve_install_target(embedded, fallback, |_| {
+            panic!("embedded app must not need fallback verification")
+        })
+        .unwrap();
+        assert_eq!(target, fallback);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn standalone_cli_uses_only_a_verified_installed_app() {
+        let standalone = std::path::Path::new("/tmp/peterfan-release/peterfan");
+        let installed = std::path::Path::new("/Applications/PeterFan.app");
+
+        let target = resolve_install_target(standalone, installed, |candidate| {
+            assert_eq!(candidate, installed);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(target, installed);
+
+        let error = resolve_install_target(standalone, installed, |_| {
+            Err("signature verification failed".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(error, "signature verification failed");
     }
 
     #[cfg(target_os = "macos")]

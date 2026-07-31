@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.65] — 독립 CLI OTA 설치 복구
+
+### Fixed
+
+- 릴리스 tarball의 독립 `peterfan update --install`이 실행 파일 주변에서 `.app`을 찾다가 실패하던 문제를 수정했습니다. 앱 내부에서는 현재 번들을 사용하고, 독립 CLI에서는 서명·공증·번들 ID·Team ID 무결성을 통과한 `/Applications/PeterFan.app`만 업데이트 대상으로 허용합니다.
+
 ## [1.27.64] — 선택형 CPU 러너와 배포 안정화
 
 ### Added
