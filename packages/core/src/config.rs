@@ -202,10 +202,23 @@ pub enum RunnerCharacter {
     Dog,
     Rabbit,
     Fox,
+    Penguin,
+    Dinosaur,
+    Robot,
+    Ghost,
 }
 
 impl RunnerCharacter {
-    pub const ALL: [Self; 4] = [Self::Cat, Self::Dog, Self::Rabbit, Self::Fox];
+    pub const ALL: [Self; 8] = [
+        Self::Cat,
+        Self::Dog,
+        Self::Rabbit,
+        Self::Fox,
+        Self::Penguin,
+        Self::Dinosaur,
+        Self::Robot,
+        Self::Ghost,
+    ];
 
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
@@ -213,6 +226,10 @@ impl RunnerCharacter {
             "dog" => Some(Self::Dog),
             "rabbit" | "bunny" => Some(Self::Rabbit),
             "fox" => Some(Self::Fox),
+            "penguin" => Some(Self::Penguin),
+            "dinosaur" | "dino" => Some(Self::Dinosaur),
+            "robot" | "bot" => Some(Self::Robot),
+            "ghost" => Some(Self::Ghost),
             _ => None,
         }
     }
@@ -223,6 +240,10 @@ impl RunnerCharacter {
             Self::Dog => "dog",
             Self::Rabbit => "rabbit",
             Self::Fox => "fox",
+            Self::Penguin => "penguin",
+            Self::Dinosaur => "dinosaur",
+            Self::Robot => "robot",
+            Self::Ghost => "ghost",
         }
     }
 }
@@ -655,12 +676,17 @@ mod tests {
     fn runner_character_parses_supported_choices() {
         assert_eq!(
             RunnerCharacter::ALL.map(|character| character.as_str()),
-            ["cat", "dog", "rabbit", "fox"]
+            ["cat", "dog", "rabbit", "fox", "penguin", "dinosaur", "robot", "ghost"]
         );
         assert_eq!(
             RunnerCharacter::parse("bunny"),
             Some(RunnerCharacter::Rabbit)
         );
+        assert_eq!(
+            RunnerCharacter::parse("dino"),
+            Some(RunnerCharacter::Dinosaur)
+        );
+        assert_eq!(RunnerCharacter::parse("bot"), Some(RunnerCharacter::Robot));
         assert_eq!(RunnerCharacter::parse("unknown"), None);
     }
 

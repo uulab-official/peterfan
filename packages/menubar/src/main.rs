@@ -863,10 +863,18 @@ fn runner_character_label(lang: ResolvedLanguage, character: RunnerCharacter) ->
         (ResolvedLanguage::En, RunnerCharacter::Dog) => "Dog",
         (ResolvedLanguage::En, RunnerCharacter::Rabbit) => "Rabbit",
         (ResolvedLanguage::En, RunnerCharacter::Fox) => "Fox",
+        (ResolvedLanguage::En, RunnerCharacter::Penguin) => "Penguin",
+        (ResolvedLanguage::En, RunnerCharacter::Dinosaur) => "Dinosaur",
+        (ResolvedLanguage::En, RunnerCharacter::Robot) => "Robot",
+        (ResolvedLanguage::En, RunnerCharacter::Ghost) => "Ghost",
         (ResolvedLanguage::Ko, RunnerCharacter::Cat) => "고양이",
         (ResolvedLanguage::Ko, RunnerCharacter::Dog) => "강아지",
         (ResolvedLanguage::Ko, RunnerCharacter::Rabbit) => "토끼",
         (ResolvedLanguage::Ko, RunnerCharacter::Fox) => "여우",
+        (ResolvedLanguage::Ko, RunnerCharacter::Penguin) => "펭귄",
+        (ResolvedLanguage::Ko, RunnerCharacter::Dinosaur) => "공룡",
+        (ResolvedLanguage::Ko, RunnerCharacter::Robot) => "로봇",
+        (ResolvedLanguage::Ko, RunnerCharacter::Ghost) => "유령",
     }
 }
 
@@ -2359,7 +2367,8 @@ fn help_text() -> String {
          OPTIONS:\n    \
          --mock                Use simulated hardware instead of real sensors\n    \
         --display <number|cat|both>             How it's rendered (cat also accepts legacy graph)\n    \
-         --character <cat|dog|rabbit|fox>       CPU runner character\n    \
+        --character <cat|dog|rabbit|fox|penguin|dinosaur|robot|ghost>\n    \
+                                                  CPU runner character\n    \
          (The flag overrides the saved preference; changing it from the\n    \
          right-click menu persists for next launch.)\n    \
          --version, -V         Print version and exit\n    \
@@ -5306,6 +5315,19 @@ fn make_runner_icon(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Icon
 }
 
 fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<u8> {
+    match character {
+        RunnerCharacter::Cat
+        | RunnerCharacter::Dog
+        | RunnerCharacter::Rabbit
+        | RunnerCharacter::Fox => make_quadruped_runner_rgba(character, cpu_pct, frame),
+        RunnerCharacter::Penguin => make_penguin_runner_rgba(cpu_pct, frame),
+        RunnerCharacter::Dinosaur => make_dinosaur_runner_rgba(cpu_pct, frame),
+        RunnerCharacter::Robot => make_robot_runner_rgba(cpu_pct, frame),
+        RunnerCharacter::Ghost => make_ghost_runner_rgba(cpu_pct, frame),
+    }
+}
+
+fn make_quadruped_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<u8> {
     const W: u32 = RUNNER_PIXEL_WIDTH;
     const H: u32 = RUNNER_PIXEL_HEIGHT;
     const BOUNCE: [f32; 8] = [0.8, 0.2, -1.4, -3.0, -1.8, -0.2, 0.6, -1.6];
@@ -5432,6 +5454,7 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 detail_color,
             );
         }
+        _ => unreachable!("non-quadruped runner reached quadruped renderer"),
     }
 
     draw_runner_leg(&mut rgba, W, H, hind_hip, hind_paw, -2.0, leg_color);
@@ -5565,8 +5588,313 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 body_color,
             );
         }
+        _ => unreachable!("non-quadruped runner reached quadruped renderer"),
     }
 
+    rgba
+}
+
+fn make_penguin_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
+    const W: u32 = RUNNER_PIXEL_WIDTH;
+    const H: u32 = RUNNER_PIXEL_HEIGHT;
+    const BOB: [f32; 8] = [0.4, -0.4, -1.8, -0.8, 0.5, -0.3, -2.0, -0.7];
+    const LEAN: [f32; 8] = [-0.12, -0.06, 0.04, 0.13, 0.10, 0.02, -0.08, -0.14];
+    const STEP: [f32; 8] = [-7.0, -4.0, 0.0, 5.0, 7.0, 4.0, 0.0, -5.0];
+    const FLAP: [f32; 8] = [-4.0, -1.0, 3.0, 6.0, 3.0, -1.0, -5.0, -7.0];
+
+    let mut rgba = vec![0u8; (W * H * 4) as usize];
+    let pose = usize::from(frame % RUNNER_FRAME_COUNT);
+    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
+    let motion = 0.58 + load.sqrt() * 0.72;
+    let bob = BOB[pose] * motion;
+    let step = STEP[pose] * motion;
+    let flap = FLAP[pose] * motion;
+    let solid = (255, 255, 255, 248);
+    let detail = (255, 255, 255, 224);
+
+    draw_runner_leg(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(22.5, 20.5 + bob),
+        Pt::new(22.0 + step, 27.0),
+        -1.2,
+        solid,
+    );
+    draw_runner_leg(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(29.0, 20.5 + bob),
+        Pt::new(29.0 - step, 27.0),
+        1.2,
+        detail,
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(19.0, 14.0 + bob),
+        Pt::new(7.0, 15.0 + bob + flap),
+        4.0,
+        detail,
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(31.0, 14.0 + bob),
+        Pt::new(40.0, 16.0 + bob - flap * 0.55),
+        3.4,
+        detail,
+    );
+    draw_rotated_ellipse(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(26.0, 15.5 + bob),
+        10.5 + load * 0.8,
+        8.2,
+        LEAN[pose] * (0.65 + load * 0.55),
+        solid,
+    );
+    draw_disc(&mut rgba, W, H, Pt::new(37.0, 11.0 + bob), 5.1, solid);
+    draw_triangle(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(40.0, 10.5 + bob),
+        Pt::new(47.0, 12.3 + bob),
+        Pt::new(40.2, 14.0 + bob),
+        detail,
+    );
+    erase_disc(&mut rgba, W, H, Pt::new(38.2, 9.8 + bob), 1.0);
+    rgba
+}
+
+fn make_dinosaur_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
+    const W: u32 = RUNNER_PIXEL_WIDTH;
+    const H: u32 = RUNNER_PIXEL_HEIGHT;
+    const BOB: [f32; 8] = [0.8, 0.0, -1.8, -3.0, -1.5, 0.2, 0.7, -1.5];
+    const STEP: [f32; 8] = [-8.0, -5.0, 0.0, 7.0, 9.0, 5.0, 0.0, -7.0];
+    const TAIL: [f32; 8] = [3.0, 1.0, -2.0, -4.0, -2.0, 1.0, 4.0, 5.0];
+
+    let mut rgba = vec![0u8; (W * H * 4) as usize];
+    let pose = usize::from(frame % RUNNER_FRAME_COUNT);
+    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
+    let motion = 0.56 + load.sqrt() * 0.75;
+    let bob = BOB[pose] * motion;
+    let step = STEP[pose] * motion;
+    let tail = TAIL[pose] * motion;
+    let solid = (255, 255, 255, 248);
+    let detail = (255, 255, 255, 226);
+
+    draw_triangle(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(18.0, 15.0 + bob),
+        Pt::new(1.5, 11.0 + bob - tail),
+        Pt::new(15.5, 20.5 + bob),
+        detail,
+    );
+    draw_runner_leg(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(21.0, 19.5 + bob),
+        Pt::new(20.0 + step, 27.2),
+        -2.5,
+        detail,
+    );
+    draw_runner_leg(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(32.0, 19.0 + bob),
+        Pt::new(32.0 - step, 27.2),
+        2.5,
+        solid,
+    );
+    draw_rotated_ellipse(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(26.0, 16.0 + bob),
+        13.0 + load,
+        6.4,
+        -0.08 + (BOB[pose] / 40.0),
+        solid,
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(34.0, 14.0 + bob),
+        Pt::new(39.0, 9.0 + bob),
+        6.0,
+        solid,
+    );
+    draw_ellipse(&mut rgba, W, H, Pt::new(42.0, 8.5 + bob), 5.8, 4.2, solid);
+    draw_ellipse(&mut rgba, W, H, Pt::new(46.0, 10.0 + bob), 3.8, 2.2, solid);
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(35.5, 14.0 + bob),
+        Pt::new(41.5, 18.0 + bob + tail * 0.2),
+        2.2,
+        detail,
+    );
+    erase_disc(&mut rgba, W, H, Pt::new(43.2, 7.4 + bob), 0.9);
+    rgba
+}
+
+fn make_robot_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
+    const W: u32 = RUNNER_PIXEL_WIDTH;
+    const H: u32 = RUNNER_PIXEL_HEIGHT;
+    const BOB: [f32; 8] = [0.5, -0.2, -1.5, -2.7, -1.2, 0.0, 0.6, -1.4];
+    const STEP: [f32; 8] = [-7.0, -4.0, 0.0, 6.0, 8.0, 4.0, 0.0, -6.0];
+    const ARM: [f32; 8] = [6.0, 3.0, -1.0, -6.0, -7.0, -3.0, 1.0, 6.0];
+
+    let mut rgba = vec![0u8; (W * H * 4) as usize];
+    let pose = usize::from(frame % RUNNER_FRAME_COUNT);
+    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
+    let motion = 0.58 + load.sqrt() * 0.72;
+    let bob = BOB[pose] * motion;
+    let step = STEP[pose] * motion;
+    let arm = ARM[pose] * motion;
+    let solid = (255, 255, 255, 248);
+    let detail = (255, 255, 255, 220);
+
+    draw_runner_leg(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(21.0, 20.0 + bob),
+        Pt::new(20.0 + step, 27.0),
+        -2.5,
+        solid,
+    );
+    draw_runner_leg(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(30.0, 20.0 + bob),
+        Pt::new(30.0 - step, 27.0),
+        2.5,
+        detail,
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(17.0, 13.5 + bob),
+        Pt::new(7.0, 13.5 + bob + arm),
+        3.0,
+        detail,
+    );
+    draw_disc(&mut rgba, W, H, Pt::new(6.0, 13.5 + bob + arm), 2.1, solid);
+    draw_rect(&mut rgba, W, H, 14.0, 9.0 + bob, 34.0, 21.5 + bob, solid);
+    draw_rect(&mut rgba, W, H, 34.0, 7.0 + bob, 45.5, 16.5 + bob, solid);
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(39.5, 7.0 + bob),
+        Pt::new(40.5, 2.5 + bob),
+        1.7,
+        detail,
+    );
+    draw_disc(&mut rgba, W, H, Pt::new(40.7, 2.2 + bob), 1.7, solid);
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(34.0, 13.0 + bob),
+        Pt::new(47.5, 13.0 + bob - arm * 0.65),
+        3.0,
+        detail,
+    );
+    erase_disc(&mut rgba, W, H, Pt::new(37.7, 11.1 + bob), 1.1);
+    erase_disc(&mut rgba, W, H, Pt::new(42.3, 11.1 + bob), 1.1);
+    rgba
+}
+
+fn make_ghost_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
+    const W: u32 = RUNNER_PIXEL_WIDTH;
+    const H: u32 = RUNNER_PIXEL_HEIGHT;
+    const FLOAT: [f32; 8] = [1.0, 0.0, -1.5, -2.6, -1.4, 0.1, 0.5, -0.7];
+    const WAVE: [f32; 8] = [4.0, 1.0, -3.0, -6.0, -4.0, 0.0, 5.5, 7.0];
+    const REACH: [f32; 8] = [5.0, 2.0, -2.0, -5.0, -3.0, 1.0, 3.5, 7.0];
+
+    let mut rgba = vec![0u8; (W * H * 4) as usize];
+    let pose = usize::from(frame % RUNNER_FRAME_COUNT);
+    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
+    let motion = 0.55 + load.sqrt() * 0.78;
+    let float = FLOAT[pose] * motion;
+    let wave = WAVE[pose] * motion;
+    let reach = REACH[pose] * motion;
+    let solid = (255, 255, 255, 244);
+    let detail = (255, 255, 255, 218);
+
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(22.0, 12.0 + float),
+        Pt::new(3.0, 8.0 + float + wave),
+        5.0,
+        detail,
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(20.0, 17.0 + float),
+        Pt::new(5.0, 21.0 + float - wave * 0.55),
+        4.0,
+        detail,
+    );
+    draw_ellipse(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(31.0, 13.5 + float),
+        13.5 + load,
+        8.8,
+        solid,
+    );
+    draw_triangle(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(20.0, 18.0 + float),
+        Pt::new(24.0, 27.0 + float + wave * 0.18),
+        Pt::new(29.0, 19.0 + float),
+        solid,
+    );
+    draw_triangle(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(28.0, 19.0 + float),
+        Pt::new(33.0, 26.0 + float - wave * 0.15),
+        Pt::new(38.0, 18.0 + float),
+        solid,
+    );
+    draw_line(
+        &mut rgba,
+        W,
+        H,
+        Pt::new(37.0, 14.0 + float),
+        Pt::new(48.0, 13.0 + float - reach),
+        3.3,
+        detail,
+    );
+    erase_disc(&mut rgba, W, H, Pt::new(34.3, 11.4 + float), 1.25);
+    erase_disc(&mut rgba, W, H, Pt::new(40.0, 11.4 + float), 1.25);
+    erase_disc(&mut rgba, W, H, Pt::new(37.2, 15.4 + float), 1.45);
     rgba
 }
 
@@ -5606,6 +5934,52 @@ fn draw_runner_leg(
         1.8,
         color,
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_rect(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    color: (u8, u8, u8, u8),
+) {
+    let min_x = left.floor().max(0.0) as u32;
+    let max_x = right.ceil().min((w - 1) as f32) as u32;
+    let min_y = top.floor().max(0.0) as u32;
+    let max_y = bottom.ceil().min((h - 1) as f32) as u32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let edge_x = (x as f32 + 0.5 - left).min(right - (x as f32 + 0.5));
+            let edge_y = (y as f32 + 0.5 - top).min(bottom - (y as f32 + 0.5));
+            let coverage = edge_x.min(edge_y).clamp(0.0, 1.0);
+            if coverage > 0.0 {
+                blend_pixel(rgba, w, x, y, color, coverage);
+            }
+        }
+    }
+}
+
+fn erase_disc(rgba: &mut [u8], w: u32, h: u32, center: Pt, radius: f32) {
+    let min_x = (center.x - radius - 1.0).floor().max(0.0) as u32;
+    let max_x = (center.x + radius + 1.0).ceil().min((w - 1) as f32) as u32;
+    let min_y = (center.y - radius - 1.0).floor().max(0.0) as u32;
+    let max_y = (center.y + radius + 1.0).ceil().min((h - 1) as f32) as u32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dx = x as f32 - center.x;
+            let dy = y as f32 - center.y;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
+            if coverage > 0.0 {
+                let index = ((y * w + x) * 4) as usize;
+                rgba[index + 3] = (f32::from(rgba[index + 3]) * (1.0 - coverage)).round() as u8;
+            }
+        }
+    }
 }
 
 fn draw_disc(rgba: &mut [u8], w: u32, h: u32, center: Pt, radius: f32, color: (u8, u8, u8, u8)) {
@@ -5780,6 +6154,10 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Dog<", ">강아지<")
             .replace(">Rabbit<", ">토끼<")
             .replace(">Fox<", ">여우<")
+            .replace(">Penguin<", ">펭귄<")
+            .replace(">Dinosaur<", ">공룡<")
+            .replace(">Robot<", ">로봇<")
+            .replace(">Ghost<", ">유령<")
             .replace(">Both<", ">둘 다<")
             .replace("CPU runner · waiting", "CPU 러너 · 대기 중")
             .replace(">Notifications<", ">알림<")
@@ -6123,8 +6501,8 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .display-segment button{min-width:0;min-height:27px;padding:4px 5px;border:0;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:750;cursor:pointer;white-space:nowrap;}
 .display-segment button:hover{background:var(--track-hover);color:var(--text);}
 .display-segment button.active{background:var(--surface-raised);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.15);}
-.character-segment{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;width:184px;padding:3px;border-radius:8px;background:var(--chip-bg);}
-.character-segment button{min-width:0;min-height:27px;padding:4px 3px;border:0;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:9px;font-weight:750;cursor:pointer;white-space:nowrap;}
+.character-segment{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px;width:184px;padding:3px;border-radius:8px;background:var(--chip-bg);}
+.character-segment button{min-width:0;min-height:27px;padding:4px 6px;border:0;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:750;cursor:pointer;white-space:nowrap;}
 .character-segment button:hover{background:var(--track-hover);color:var(--text);}
 .character-segment button.active{background:var(--surface-raised);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.15);}
 .runner-pace{color:var(--dim);font-size:9.5px;font-variant-numeric:tabular-nums;text-align:right;}
@@ -6359,6 +6737,10 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <button data-character="dog" aria-pressed="false" onclick="setRunnerCharacter('dog')">Dog</button>
 <button data-character="rabbit" aria-pressed="false" onclick="setRunnerCharacter('rabbit')">Rabbit</button>
 <button data-character="fox" aria-pressed="false" onclick="setRunnerCharacter('fox')">Fox</button>
+<button data-character="penguin" aria-pressed="false" onclick="setRunnerCharacter('penguin')">Penguin</button>
+<button data-character="dinosaur" aria-pressed="false" onclick="setRunnerCharacter('dinosaur')">Dinosaur</button>
+<button data-character="robot" aria-pressed="false" onclick="setRunnerCharacter('robot')">Robot</button>
+<button data-character="ghost" aria-pressed="false" onclick="setRunnerCharacter('ghost')">Ghost</button>
 </div>
 </div>
 <details class="settings-details" id="notification-settings">
@@ -7833,7 +8215,7 @@ function updateMenubarDisplay(d){
     button.classList.toggle('active',active);
     button.setAttribute('aria-pressed',active?'true':'false');
   });
-  var character=/^(cat|dog|rabbit|fox)$/.test(d.runner_character)?d.runner_character:'cat';
+  var character=/^(cat|dog|rabbit|fox|penguin|dinosaur|robot|ghost)$/.test(d.runner_character)?d.runner_character:'cat';
   document.querySelectorAll('.character-segment button').forEach(function(button){
     var active=button.dataset.character===character;
     button.classList.toggle('active',active);
@@ -8767,12 +9149,21 @@ mod tests {
 
     #[test]
     fn runner_gait_has_eight_distinct_contact_and_flight_poses() {
+        for character in RunnerCharacter::ALL {
+            let frames = (0..RUNNER_FRAME_COUNT)
+                .map(|frame| make_runner_rgba(character, 50.0, frame))
+                .collect::<Vec<_>>();
+            let unique = frames.iter().collect::<std::collections::HashSet<_>>();
+            assert_eq!(
+                unique.len(),
+                usize::from(RUNNER_FRAME_COUNT),
+                "{character:?} has duplicate poses"
+            );
+        }
+
         let frames = (0..RUNNER_FRAME_COUNT)
             .map(|frame| make_runner_rgba(RunnerCharacter::Cat, 50.0, frame))
             .collect::<Vec<_>>();
-        let unique = frames.iter().collect::<std::collections::HashSet<_>>();
-        assert_eq!(unique.len(), usize::from(RUNNER_FRAME_COUNT));
-
         let ground_pixels = frames
             .iter()
             .map(|rgba| {
@@ -8947,12 +9338,20 @@ mod tests {
             assert!(html.contains(r#"id="display-runner""#));
             assert!(html.contains(r#"id="display-both""#));
             assert!(html.contains(r#"id="runner-character-setting""#));
-            assert!(html.contains(r#"data-character="dog""#));
+            for character in RunnerCharacter::ALL {
+                assert!(
+                    html.contains(&format!(r#"data-character="{}""#, character.as_str())),
+                    "settings are missing {character:?}"
+                );
+            }
             assert!(html.contains("function setRunnerCharacter(character)"));
             assert!(html.contains("window.ipc.postMessage('character:'+character)"));
             assert!(html.contains("function setMenubarDisplay(style)"));
             assert!(html.contains("window.ipc.postMessage('display:'+style)"));
             assert!(html.contains("function updateMenubarDisplay(d)"));
+        }
+        for label in ["펭귄", "공룡", "로봇", "유령"] {
+            assert!(ko.contains(label), "Korean settings are missing {label}");
         }
     }
 
@@ -10238,7 +10637,7 @@ mod tests {
 
         let help = help_text();
         assert!(help.contains("--display <number|cat|both>"));
-        assert!(help.contains("--character <cat|dog|rabbit|fox>"));
+        assert!(help.contains("--character <cat|dog|rabbit|fox|penguin|dinosaur|robot|ghost>"));
         assert!(help.contains("cat also accepts legacy graph"));
         assert!(!help.contains("--metric"));
     }

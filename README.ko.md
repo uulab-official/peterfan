@@ -52,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.27.72.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.27.73.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -69,7 +69,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 | 팬 **제어** | ⚙️ SMC 쓰기, **root 권한 필요** (`sudo peterfan fan set N` 또는 데몬 사용). `fan set`은 **RPM을 다시 읽어들여 검증**하므로 가짜 "성공" 메시지가 아니라 진짜 ✓/✗를 확인할 수 있습니다. Intel에서는 검증 완료, Apple Silicon에서는 시도 및 검증되지만(일부 모델은 펌웨어가 이를 무시할 수 있음) |
 | CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`temps --all`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`integrity`/`config`/`serve`/`benchmark`/`log`/`alert`/`completions`, 전역 `--watch` & `--json` | ✅ 실행 가능 — `doctor`는 CPU 대표/최고/summary/aggregate/hotspot/P-core 온도 후보까지 진단, `integrity`는 설치된 앱의 서명/공증/Gatekeeper 상태를 진단 |
 | TUI 시스템 대시보드(ratatui) — CPU/메모리/디스크/네트워크/배터리/프로세스 + 온도/팬/전력 | ✅ 실행 가능 |
-| **메뉴바 앱** — RunCat처럼 CPU 사용량에 따라 더 빠르게/느리게 뛰는 자연스러운 8프레임 메뉴바 러너(고양이/강아지/토끼/여우 및 온도/러너/둘 다 선택 가능), 상단 온도는 CPU 평균 기준, 로그인/라이선스 없이 바로 쓰는 간결한 팝오버, Apple Silicon P/E 코어 그룹 평균·피크와 코어별 사용률 상세, Settings의 **시작 시 자동 실행 토글**, 호버 시 간단 요약 툴팁, 2분/1시간/1일 히스토리 차트(호버로 정확한 값 + 평균/피크 확인), **각 팬의 실제 범위에 맞춰진 RPM 슬라이더로 팬별 Auto/Manual 제어**, 프로파일/Auto/Rules 제어, Top Processes에서 프로세스 종료, 영어/한국어 지원, 별도의 크기 조절 가능한 상세 창, 라이트/다크 모드 | ✅ 실행 가능 |
+| **메뉴바 앱** — RunCat처럼 CPU 사용량에 따라 동작 폭과 속도가 변하는 8프레임 메뉴바 러너 8종(고양이/강아지/토끼/여우/펭귄/공룡/로봇/유령 및 온도/러너/둘 다 선택 가능), 상단 온도는 CPU 평균 기준, 로그인/라이선스 없이 바로 쓰는 간결한 팝오버, Apple Silicon P/E 코어 그룹 평균·피크와 코어별 사용률 상세, Settings의 **시작 시 자동 실행 토글**, 호버 시 간단 요약 툴팁, 2분/1시간/1일 히스토리 차트(호버로 정확한 값 + 평균/피크 확인), **각 팬의 실제 범위에 맞춰진 RPM 슬라이더로 팬별 Auto/Manual 제어**, 프로파일/Auto/Rules 제어, Top Processes에서 프로세스 종료, 영어/한국어 지원, 별도의 크기 조절 가능한 상세 창, 라이트/다크 모드 | ✅ 실행 가능 |
 | **네이티브 알림** — 선택형 CPU 코어 평균 온도 경고(3°C 히스테리시스), 팬 쓰기·RPM 검증 실패, 새 서명 업데이트 발견 알림. 데몬의 90°C 임계 안전 알림은 사용자 설정과 별도로 항상 유지 | ✅ macOS + Windows |
 | **데몬**(`peterfand`) — 지속적인 커브 적용 + 종료 시 복원 + 임계 온도 오버라이드 + IPC 서버, LaunchDaemon 설치 지원 | ✅ 실행 가능 |
 | **자동 업데이트 & 무결성** — 설정에서 `업데이트 확인`으로 새 서명 릴리스를 찾으면 `지금 업데이트`가 나타나고, 간단 메뉴의 `지금 업데이트`는 확인부터 설치·재실행까지 한 번에 진행. GitHub asset digest + `checksums.txt` SHA-256 대조 + UULab Developer ID/Bundle ID + code signature + 공증 ticket 검증 후에만 제자리에서 교체합니다. CLI에서는 `peterfan update --install`을 사용합니다. `peterfan integrity`로 현재 설치된 앱을, `peterfan integrity --latest`/`--tag`로 GitHub 릴리즈 산출물을, `peterfan integrity --dmg ~/Downloads/PeterFan-vX.Y.Z.dmg --checksums ~/Downloads/checksums.txt`로 내려받은 DMG를, `peterfan integrity --release-dir dist/local-release/vX.Y.Z`로 배포 폴더 전체를 같은 기준으로 검증 가능. 릴리즈 폴더 검증은 DMG/tar.gz/checksums/내부 앱 버전이 서로 어긋나면 실패 | ✅ 실행 가능 |
@@ -195,7 +195,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.27.72
+PeterFan v1.27.73
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
