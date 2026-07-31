@@ -40,7 +40,7 @@ use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
 use objc2::AllocAnyThread;
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSEvent, NSImage, NSScreen, NSWindow, NSWorkspace};
+use objc2_app_kit::{NSCellImagePosition, NSEvent, NSImage, NSScreen, NSWindow, NSWorkspace};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{MainThreadMarker, NSData, NSPoint, NSRect, NSSize, NSString};
 
@@ -2024,7 +2024,7 @@ fn main() {
                 } else if let Some(value) = c.strip_prefix("display:") {
                     if let Some(display) = MenubarDisplay::parse(value) {
                         app.display = display;
-                        app.last_runner_icon = None;
+                        invalidate_runner_icon(&mut app.last_runner_icon);
                         next_runner_at = now;
                         #[cfg(target_os = "macos")]
                         if let Some(tray) = &app.tray {
@@ -2189,6 +2189,7 @@ fn main() {
             }
             if let Some(d) = matched_display {
                 app.display = d;
+                invalidate_runner_icon(&mut app.last_runner_icon);
                 next_runner_at = Instant::now();
                 #[cfg(target_os = "macos")]
                 if let Some(tray) = &app.tray {
@@ -5085,6 +5086,10 @@ fn configure_native_status_item(tray: &TrayIcon, display: MenubarDisplay) {
         return;
     };
     status_item.setLength(native_status_item_width(display));
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    if let Some(button) = status_item.button(mtm) {
+        button.setImagePosition(native_status_item_image_position(display));
+    }
     // Let tray-icon resize its click target once after the fixed native width
     // is installed. Subsequent title and frame updates bypass its expensive
     // variable-width relayout path.
@@ -5095,6 +5100,22 @@ fn configure_native_status_item(tray: &TrayIcon, display: MenubarDisplay) {
             ""
         },
     ));
+}
+
+#[cfg(target_os = "macos")]
+fn native_status_item_image_position(display: MenubarDisplay) -> NSCellImagePosition {
+    match display {
+        MenubarDisplay::Number => NSCellImagePosition::NoImage,
+        MenubarDisplay::Graph => NSCellImagePosition::ImageOnly,
+        MenubarDisplay::Both => NSCellImagePosition::ImageLeft,
+    }
+}
+
+fn invalidate_runner_icon(last_runner_icon: &mut Option<usize>) {
+    // `None` is the valid cached state for number-only mode. Use an impossible
+    // frame index so the next update removes a previously visible runner
+    // instead of mistaking the cache for an already-hidden icon.
+    *last_runner_icon = Some(usize::MAX);
 }
 
 fn set_runner_character(app: &mut App, character: RunnerCharacter) {
@@ -5134,6 +5155,7 @@ fn apply_runner_icon(app: &mut App) {
             let Some(button) = status_item.button(mtm) else {
                 return;
             };
+            button.setImagePosition(native_status_item_image_position(app.display));
             let image = desired
                 .and_then(|index| app.runner_native_images.get(index))
                 .map(|image| &**image);
@@ -8110,6 +8132,28 @@ mod tests {
         assert_eq!(native_status_item_width(MenubarDisplay::Graph), 30.0);
         assert_eq!(native_status_item_width(MenubarDisplay::Number), 50.0);
         assert_eq!(native_status_item_width(MenubarDisplay::Both), 78.0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn number_only_transition_cannot_alias_the_hidden_icon_cache() {
+        let mut last_runner_icon = Some(7);
+        invalidate_runner_icon(&mut last_runner_icon);
+
+        assert_eq!(last_runner_icon, Some(usize::MAX));
+        assert_ne!(last_runner_icon, None);
+        assert_eq!(
+            native_status_item_image_position(MenubarDisplay::Number),
+            NSCellImagePosition::NoImage
+        );
+        assert_eq!(
+            native_status_item_image_position(MenubarDisplay::Graph),
+            NSCellImagePosition::ImageOnly
+        );
+        assert_eq!(
+            native_status_item_image_position(MenubarDisplay::Both),
+            NSCellImagePosition::ImageLeft
+        );
     }
 
     #[test]
