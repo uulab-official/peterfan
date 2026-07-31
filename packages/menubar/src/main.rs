@@ -36,13 +36,18 @@ use tao::window::{Window, WindowBuilder};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
 #[cfg(target_os = "macos")]
+use block2::RcBlock;
+#[cfg(target_os = "macos")]
 use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
 use objc2::AllocAnyThread;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSCellImagePosition, NSEvent, NSImage, NSScreen, NSWindow, NSWorkspace};
 #[cfg(target_os = "macos")]
-use objc2_foundation::{MainThreadMarker, NSData, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSData, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
+    NSTimer,
+};
 
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{
@@ -70,13 +75,13 @@ const TEMPERATURE_REFRESH_BACKGROUND: Duration = Duration::from_secs(3);
 const FAN_REFRESH: Duration = Duration::from_secs(1);
 const FAN_STALE_AFTER: Duration = Duration::from_secs(4);
 const FAN_EMPTY_CONFIRMATIONS: u8 = 3;
-// The runner should be nearly still at idle and unmistakably fast under load.
+// The runner should jog legibly at idle and sprint at the display refresh limit.
 // Frames are pre-rendered, so each tick only swaps a cached status-item image.
 const RUNNER_FRAME_COUNT: u8 = 8;
 const RUNNER_PIXEL_WIDTH: u32 = 48;
 const RUNNER_PIXEL_HEIGHT: u32 = 32;
-const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(55);
-const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(780);
+const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(60);
+const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(480);
 #[cfg(target_os = "macos")]
 const MENUBAR_GRAPH_WIDTH: f64 = 36.0;
 #[cfg(target_os = "macos")]
@@ -696,6 +701,14 @@ struct App {
     runner_icons: Vec<Icon>,
     #[cfg(target_os = "macos")]
     runner_native_images: Vec<Retained<NSImage>>,
+    #[cfg(target_os = "macos")]
+    runner_native_timer: Option<Retained<NSTimer>>,
+    #[cfg(target_os = "macos")]
+    runner_native_timer_interval: Option<Duration>,
+    #[cfg(target_os = "macos")]
+    runner_native_timer_band: Option<usize>,
+    #[cfg(target_os = "macos")]
+    runner_native_frame: Arc<AtomicU64>,
     last_runner_icon: Option<usize>,
     temperature_cache: Vec<TempSensor>,
     temperature_sampled_at: Option<Instant>,
@@ -1817,6 +1830,14 @@ fn main() {
         runner_icons: make_runner_icons(runner_character),
         #[cfg(target_os = "macos")]
         runner_native_images: make_runner_native_images(runner_character),
+        #[cfg(target_os = "macos")]
+        runner_native_timer: None,
+        #[cfg(target_os = "macos")]
+        runner_native_timer_interval: None,
+        #[cfg(target_os = "macos")]
+        runner_native_timer_band: None,
+        #[cfg(target_os = "macos")]
+        runner_native_frame: Arc::new(AtomicU64::new(0)),
         last_runner_icon: None,
         temperature_cache: Vec::new(),
         temperature_sampled_at: None,
@@ -1870,6 +1891,8 @@ fn main() {
         match event {
             Event::NewEvents(StartCause::Init) => {
                 build_tray(&mut app);
+                #[cfg(target_os = "macos")]
+                sync_native_runner_timer(&mut app);
                 // Offer one-time setup right away instead of leaving it
                 // buried in the right-click menu — other fan-control apps
                 // ask for this during their installer; we don't have one,
@@ -1964,26 +1987,28 @@ fn main() {
                 apply_runner_icon(&mut app);
             }
             update(&mut app);
+            #[cfg(target_os = "macos")]
+            sync_native_runner_timer(&mut app);
             next_metric_at = now
                 + if confirming_control {
                     CONTROL_CONFIRM_REFRESH
                 } else {
                     REFRESH
                 };
-            if runner_should_animate(app.display, app.reduce_motion) {
+            if runner_uses_event_loop_timer(app.display, app.reduce_motion) {
                 // A CPU spike must accelerate the runner immediately instead
                 // of waiting for the old idle-speed deadline to expire.
                 next_runner_at =
                     next_runner_at.min(now + runner_frame_interval(app.runner_cpu_pct));
             }
         }
-        if runner_should_animate(app.display, app.reduce_motion) && now >= next_runner_at {
+        if runner_uses_event_loop_timer(app.display, app.reduce_motion) && now >= next_runner_at {
             animate_runner(&mut app);
             next_runner_at = now + runner_frame_interval(app.runner_cpu_pct);
         }
         let next_tick = [
             Some(next_metric_at),
-            runner_should_animate(app.display, app.reduce_motion).then_some(next_runner_at),
+            runner_uses_event_loop_timer(app.display, app.reduce_motion).then_some(next_runner_at),
             prewarm_popover_at,
             app.popover_show_at,
         ]
@@ -2040,6 +2065,8 @@ fn main() {
                         if let Some(tray) = &app.tray {
                             configure_native_status_item(tray, app.display);
                         }
+                        #[cfg(target_os = "macos")]
+                        sync_native_runner_timer(&mut app);
                         if let Some(ref tm) = app.tray_menu {
                             for (candidate, item) in &tm.display_items {
                                 item.set_checked(*candidate == display);
@@ -2209,6 +2236,8 @@ fn main() {
                 if let Some(tray) = &app.tray {
                     configure_native_status_item(tray, app.display);
                 }
+                #[cfg(target_os = "macos")]
+                sync_native_runner_timer(&mut app);
                 if let Some(ref tm) = app.tray_menu {
                     for (dd, item) in &tm.display_items {
                         item.set_checked(*dd == d);
@@ -4993,10 +5022,10 @@ fn runner_frame_interval(cpu_pct: f32) -> Duration {
     let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
     let min_ms = RUNNER_MIN_INTERVAL.as_millis() as f32;
     let max_ms = RUNNER_MAX_INTERVAL.as_millis() as f32;
-    // Cubic response makes ordinary work visibly brisk and reserves the
-    // shortest intervals for sustained high load.
-    let idle_weight = (1.0 - load).powi(3);
-    let ms = min_ms + (max_ms - min_ms) * idle_weight;
+    // A cubic curve makes ordinary work visibly quicker and gives sustained
+    // load a sevenfold sprint without making icon compositing create its own
+    // artificial CPU load.
+    let ms = min_ms + (max_ms - min_ms) * (1.0 - load).powi(3);
     Duration::from_millis(ms.round() as u64)
 }
 
@@ -5018,6 +5047,18 @@ fn runner_enabled(display: MenubarDisplay) -> bool {
 
 fn runner_should_animate(display: MenubarDisplay, reduce_motion: bool) -> bool {
     runner_enabled(display) && !reduce_motion
+}
+
+fn runner_uses_event_loop_timer(display: MenubarDisplay, reduce_motion: bool) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (display, reduce_motion);
+        false
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        runner_should_animate(display, reduce_motion)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -5136,10 +5177,72 @@ fn invalidate_runner_icon(last_runner_icon: &mut Option<usize>) {
     *last_runner_icon = Some(usize::MAX);
 }
 
+#[cfg(target_os = "macos")]
+fn stop_native_runner_timer(app: &mut App) {
+    if let Some(timer) = app.runner_native_timer.take() {
+        timer.invalidate();
+    }
+    app.runner_native_timer_interval = None;
+    app.runner_native_timer_band = None;
+}
+
+#[cfg(target_os = "macos")]
+fn sync_native_runner_timer(app: &mut App) {
+    if !runner_should_animate(app.display, app.reduce_motion) {
+        stop_native_runner_timer(app);
+        return;
+    }
+
+    let interval = runner_frame_interval(app.runner_cpu_pct);
+    let band = runner_load_band(app.runner_cpu_pct);
+    if app
+        .runner_native_timer
+        .as_ref()
+        .is_some_and(|timer| timer.isValid())
+        && app.runner_native_timer_interval == Some(interval)
+        && app.runner_native_timer_band == Some(band)
+    {
+        return;
+    }
+
+    stop_native_runner_timer(app);
+    let Some(tray) = &app.tray else {
+        return;
+    };
+    let Some(status_item) = tray.ns_status_item() else {
+        return;
+    };
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let Some(button) = status_item.button(mtm) else {
+        return;
+    };
+
+    let images = app.runner_native_images.clone();
+    let frame = Arc::clone(&app.runner_native_frame);
+    let block = RcBlock::new(move |_timer: std::ptr::NonNull<NSTimer>| {
+        let next = (frame.fetch_add(1, Ordering::Relaxed) + 1) % u64::from(RUNNER_FRAME_COUNT);
+        let index = band * usize::from(RUNNER_FRAME_COUNT) + next as usize;
+        if let Some(image) = images.get(index) {
+            button.setImage(Some(&**image));
+        }
+    });
+    let timer = unsafe {
+        NSTimer::timerWithTimeInterval_repeats_block(interval.as_secs_f64(), true, &block)
+    };
+    unsafe {
+        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+    }
+    app.runner_native_timer = Some(timer);
+    app.runner_native_timer_interval = Some(interval);
+    app.runner_native_timer_band = Some(band);
+}
+
 fn set_runner_character(app: &mut App, character: RunnerCharacter) {
     if app.runner_character == character {
         return;
     }
+    #[cfg(target_os = "macos")]
+    stop_native_runner_timer(app);
     app.runner_character = character;
     app.runner_icons = make_runner_icons(character);
     #[cfg(target_os = "macos")]
@@ -5154,6 +5257,8 @@ fn set_runner_character(app: &mut App, character: RunnerCharacter) {
     }
     save_runner_character(character);
     apply_runner_icon(app);
+    #[cfg(target_os = "macos")]
+    sync_native_runner_timer(app);
 }
 
 fn apply_runner_icon(app: &mut App) {
@@ -5203,42 +5308,50 @@ fn make_runner_icon(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Icon
 fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<u8> {
     const W: u32 = RUNNER_PIXEL_WIDTH;
     const H: u32 = RUNNER_PIXEL_HEIGHT;
-    const BOUNCE: [f32; 8] = [0.2, 0.0, -1.5, -0.9, 0.2, 0.0, -1.5, -0.9];
-    const STRETCH: [f32; 8] = [1.0, 0.4, -0.6, 0.1, 1.0, 0.4, -0.6, 0.1];
-    const TAIL_LIFT: [f32; 8] = [0.0, 1.0, 2.0, 1.0, 0.0, -0.8, -1.6, -0.7];
+    const BOUNCE: [f32; 8] = [0.8, 0.2, -1.4, -3.0, -1.8, -0.2, 0.6, -1.6];
+    const STRETCH: [f32; 8] = [2.2, 1.0, -0.8, -2.2, -0.4, 1.8, 0.8, -1.3];
+    const SQUASH: [f32; 8] = [-0.3, 0.3, 0.9, 1.3, 0.6, -0.2, 0.3, 1.0];
+    const BODY_ANGLE: [f32; 8] = [-0.12, -0.08, 0.0, 0.10, 0.15, 0.06, -0.06, -0.12];
+    const BODY_SHIFT_X: [f32; 8] = [-0.5, 0.0, 0.8, 1.7, 1.0, 0.1, -0.6, -0.8];
+    const HEAD_SHIFT_X: [f32; 8] = [1.1, 0.4, -0.5, -1.0, -0.2, 0.9, 1.2, 0.2];
+    const HEAD_SHIFT_Y: [f32; 8] = [-0.8, -0.2, 0.7, 1.4, 0.5, -0.6, -1.0, -0.5];
+    const TAIL_LIFT: [f32; 8] = [2.5, 1.0, -1.0, -3.0, -2.0, 0.0, 2.5, 3.5];
     const HIND_PAW: [Pt; 8] = [
-        Pt::new(7.5, 27.0),
-        Pt::new(12.0, 27.2),
-        Pt::new(19.0, 24.8),
-        Pt::new(24.0, 22.8),
-        Pt::new(29.0, 25.0),
+        Pt::new(4.5, 27.0),
+        Pt::new(10.0, 27.2),
+        Pt::new(18.0, 26.2),
+        Pt::new(27.0, 21.5),
+        Pt::new(31.0, 24.0),
         Pt::new(25.0, 27.1),
-        Pt::new(17.0, 23.8),
-        Pt::new(10.0, 22.8),
+        Pt::new(16.0, 27.0),
+        Pt::new(8.0, 23.0),
     ];
     const FORE_PAW: [Pt; 8] = [
-        Pt::new(42.5, 26.2),
-        Pt::new(38.0, 27.2),
-        Pt::new(32.0, 24.0),
-        Pt::new(27.0, 22.8),
-        Pt::new(22.0, 25.4),
-        Pt::new(27.0, 27.1),
-        Pt::new(35.0, 23.8),
-        Pt::new(42.0, 22.8),
+        Pt::new(46.0, 26.3),
+        Pt::new(40.0, 27.2),
+        Pt::new(34.0, 26.5),
+        Pt::new(25.0, 21.5),
+        Pt::new(18.0, 24.0),
+        Pt::new(25.0, 27.1),
+        Pt::new(37.0, 27.0),
+        Pt::new(45.0, 23.0),
     ];
 
     let mut rgba = vec![0u8; (W * H * 4) as usize];
     let pose = usize::from(frame % RUNNER_FRAME_COUNT);
     let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let bounce_scale = 0.72 + load.sqrt() * 0.48;
-    let stride_scale = 0.70 + load.sqrt() * 0.42;
+    let bounce_scale = 0.55 + load.sqrt() * 0.70;
+    let stride_scale = 0.60 + load.sqrt() * 0.65;
     let bounce = BOUNCE[pose] * bounce_scale;
     let tail_lift = TAIL_LIFT[pose] * bounce_scale;
     let body_color = (255, 255, 255, 248);
     let detail_color = (255, 255, 255, 226);
     let leg_color = (255, 255, 255, 244);
-    let hind_hip = Pt::new(16.0, 20.0 + bounce);
-    let fore_hip = Pt::new(33.5, 19.4 + bounce);
+    let body_shift_x = BODY_SHIFT_X[pose] * (0.55 + load * 0.7);
+    let head_shift_x = HEAD_SHIFT_X[pose] * (0.55 + load * 0.7);
+    let head_shift_y = HEAD_SHIFT_Y[pose] * bounce_scale;
+    let hind_hip = Pt::new(16.0 + body_shift_x, 20.0 + bounce);
+    let fore_hip = Pt::new(33.5 + body_shift_x, 19.4 + bounce);
     let hind_paw = Pt::new(
         hind_hip.x + (HIND_PAW[pose].x - hind_hip.x) * stride_scale,
         HIND_PAW[pose].y,
@@ -5329,23 +5442,20 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
         RunnerCharacter::Fox => (13.0, 5.2),
         _ => (13.2, 5.4),
     };
-    draw_ellipse(
+    let body_center = Pt::new(24.0 + body_shift_x, 16.8 + bounce);
+    draw_rotated_ellipse(
         &mut rgba,
         W,
         H,
-        Pt::new(24.0, 16.8 + bounce),
+        body_center,
         body_radius.0 + STRETCH[pose] * (0.7 + load * 0.5),
-        body_radius.1,
+        body_radius.1 + SQUASH[pose] * (0.45 + load * 0.45),
+        BODY_ANGLE[pose] * (0.5 + load * 0.7),
         body_color,
     );
-    draw_disc(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(38.0, 13.2 + bounce),
-        4.4,
-        body_color,
-    );
+    let head_point =
+        |x: f32, y: f32| Pt::new(x + body_shift_x + head_shift_x, y + bounce + head_shift_y);
+    draw_disc(&mut rgba, W, H, head_point(38.0, 13.2), 4.4, body_color);
 
     match character {
         RunnerCharacter::Cat => {
@@ -5353,25 +5463,25 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(34.4, 10.8 + bounce),
-                Pt::new(35.8, 5.8 + bounce),
-                Pt::new(38.0, 10.3 + bounce),
+                head_point(34.4, 10.8),
+                head_point(35.8, 5.8),
+                head_point(38.0, 10.3),
                 body_color,
             );
             draw_triangle(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(38.4, 9.8 + bounce),
-                Pt::new(41.2, 5.7 + bounce),
-                Pt::new(41.7, 11.2 + bounce),
+                head_point(38.4, 9.8),
+                head_point(41.2, 5.7),
+                head_point(41.7, 11.2),
                 body_color,
             );
             draw_ellipse(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(42.0, 14.1 + bounce),
+                head_point(42.0, 14.1),
                 2.7,
                 1.8,
                 body_color,
@@ -5382,7 +5492,7 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(35.1, 10.1 + bounce),
+                head_point(35.1, 10.1),
                 2.5,
                 4.4,
                 detail_color,
@@ -5391,7 +5501,7 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(42.0, 14.2 + bounce),
+                head_point(42.0, 14.2),
                 3.5,
                 2.1,
                 body_color,
@@ -5402,8 +5512,8 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(36.0, 10.6 + bounce),
-                Pt::new(34.8, 2.8 + bounce),
+                head_point(36.0, 10.6),
+                head_point(34.8, 2.8),
                 3.8,
                 body_color,
             );
@@ -5411,8 +5521,8 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(39.1, 10.1 + bounce),
-                Pt::new(40.3, 2.4 + bounce),
+                head_point(39.1, 10.1),
+                head_point(40.3, 2.4),
                 3.6,
                 body_color,
             );
@@ -5420,7 +5530,7 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(42.0, 14.2 + bounce),
+                head_point(42.0, 14.2),
                 2.5,
                 1.8,
                 body_color,
@@ -5431,27 +5541,27 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
                 &mut rgba,
                 W,
                 H,
-                Pt::new(34.2, 10.9 + bounce),
-                Pt::new(35.8, 5.0 + bounce),
-                Pt::new(38.3, 10.3 + bounce),
+                head_point(34.2, 10.9),
+                head_point(35.8, 5.0),
+                head_point(38.3, 10.3),
                 body_color,
             );
             draw_triangle(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(38.2, 9.9 + bounce),
-                Pt::new(41.1, 5.0 + bounce),
-                Pt::new(41.9, 11.0 + bounce),
+                head_point(38.2, 9.9),
+                head_point(41.1, 5.0),
+                head_point(41.9, 11.0),
                 body_color,
             );
             draw_triangle(
                 &mut rgba,
                 W,
                 H,
-                Pt::new(40.2, 11.1 + bounce),
-                Pt::new(46.1, 14.0 + bounce),
-                Pt::new(40.3, 16.3 + bounce),
+                head_point(40.2, 11.1),
+                head_point(46.1, 14.0),
+                head_point(40.3, 16.3),
                 body_color,
             );
         }
@@ -5525,14 +5635,33 @@ fn draw_ellipse(
     ry: f32,
     color: (u8, u8, u8, u8),
 ) {
-    let min_x = (center.x - rx - 1.0).floor().max(0.0) as u32;
-    let max_x = (center.x + rx + 1.0).ceil().min((w - 1) as f32) as u32;
-    let min_y = (center.y - ry - 1.0).floor().max(0.0) as u32;
-    let max_y = (center.y + ry + 1.0).ceil().min((h - 1) as f32) as u32;
+    draw_rotated_ellipse(rgba, w, h, center, rx, ry, 0.0, color);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_rotated_ellipse(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    center: Pt,
+    rx: f32,
+    ry: f32,
+    angle: f32,
+    color: (u8, u8, u8, u8),
+) {
+    let radius = rx.max(ry) + 1.0;
+    let min_x = (center.x - radius).floor().max(0.0) as u32;
+    let max_x = (center.x + radius).ceil().min((w - 1) as f32) as u32;
+    let min_y = (center.y - radius).floor().max(0.0) as u32;
+    let max_y = (center.y + radius).ceil().min((h - 1) as f32) as u32;
+    let sin = angle.sin();
+    let cos = angle.cos();
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            let dx = (x as f32 - center.x) / rx;
-            let dy = (y as f32 - center.y) / ry;
+            let offset_x = x as f32 - center.x;
+            let offset_y = y as f32 - center.y;
+            let dx = (offset_x * cos + offset_y * sin) / rx;
+            let dy = (-offset_x * sin + offset_y * cos) / ry;
             let dist = (dx * dx + dy * dy).sqrt();
             let edge_distance = (1.0 - dist) * rx.min(ry);
             let coverage = (edge_distance + 0.5).clamp(0.0, 1.0);
@@ -8677,7 +8806,7 @@ mod tests {
 
         for (row, character) in RunnerCharacter::ALL.into_iter().enumerate() {
             for frame in 0..RUNNER_FRAME_COUNT {
-                let icon = make_runner_rgba(character, 50.0, frame);
+                let icon = make_runner_rgba(character, 90.0, frame);
                 let origin_x = (u32::from(frame) * CELL_WIDTH + 2) * SCALE;
                 let origin_y = (row as u32 * CELL_HEIGHT + 2) * SCALE;
                 for source_y in 0..RUNNER_PIXEL_HEIGHT {
@@ -8728,10 +8857,11 @@ mod tests {
         assert!(normal > busy);
         assert!(idle <= RUNNER_MAX_INTERVAL);
         assert!(busy >= RUNNER_MIN_INTERVAL);
-        assert!(idle.as_millis() >= 670);
-        assert!((160..=190).contains(&normal.as_millis()));
-        assert!(busy.as_millis() <= 60);
-        assert!(idle.as_millis() >= busy.as_millis() * 10);
+        assert!((418..=422).contains(&idle.as_millis()));
+        assert!((128..=132).contains(&normal.as_millis()));
+        assert!((274..=276).contains(&runner_frame_interval(20.0).as_millis()));
+        assert!((59..=61).contains(&busy.as_millis()));
+        assert!(idle.as_millis() >= busy.as_millis() * 7);
 
         assert!(!runner_enabled(MenubarDisplay::Number));
         assert!(runner_enabled(MenubarDisplay::Graph));
@@ -8780,6 +8910,30 @@ mod tests {
                 "{character:?} is not recognizably horizontal: {width}x{height}"
             );
         }
+    }
+
+    #[test]
+    fn high_cpu_runner_uses_a_larger_motion_envelope() {
+        let changed_pixels = |cpu_pct: f32| {
+            let extended = make_runner_rgba(RunnerCharacter::Fox, cpu_pct, 0);
+            let airborne = make_runner_rgba(RunnerCharacter::Fox, cpu_pct, 3);
+            extended
+                .chunks_exact(4)
+                .zip(airborne.chunks_exact(4))
+                .filter(|(a, b)| a[3].abs_diff(b[3]) > 48)
+                .count()
+        };
+
+        let idle_motion = changed_pixels(5.0);
+        let sprint_motion = changed_pixels(95.0);
+        assert!(
+            sprint_motion > idle_motion,
+            "high load should enlarge the gait: idle={idle_motion}, sprint={sprint_motion}"
+        );
+        assert!(
+            sprint_motion >= 300,
+            "sprint key poses are too similar: {sprint_motion} changed pixels"
+        );
     }
 
     #[test]
