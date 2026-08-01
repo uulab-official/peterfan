@@ -10198,6 +10198,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn native_runner_tick_never_outpaces_the_fastest_visible_frame() {
         assert_eq!(RUNNER_NATIVE_TICK, RUNNER_MIN_INTERVAL);
         assert!(RUNNER_NATIVE_TICK <= runner_frame_interval(100.0));
