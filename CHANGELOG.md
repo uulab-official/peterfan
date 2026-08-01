@@ -6,6 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.77] — 필요한 순간에만 깨어나는 러너
+
+### Changed
+
+- macOS 상태바 러너를 고정 60ms 폴링에서 적응형 AppKit 타이머로
+  전환했습니다. CPU 속도가 안정되면 다음 실제 자세가 표시될 때까지
+  최대 약 480ms 동안 잠들고, CPU 샘플이 변하면 예약 시간을 즉시 60ms로
+  당겨 빠르게 가속·감속합니다.
+- 타이머에 작은 허용 오차를 지정해 macOS가 다른 백그라운드 작업과
+  깨우기를 합칠 수 있게 했습니다. 최고 부하에서는 기존 8프레임 질주
+  속도를 그대로 유지합니다.
+
+### Performance
+
+- 실제 Mac에서 팝오버를 닫은 채 60초 측정한 평균 CPU 사용량이 2.36%에서
+  1.45%로 약 39% 감소했습니다. 최대 CPU는 2.4%였고 RSS와 스레드 수는
+  증가하지 않았습니다.
+
+### Tests
+
+- 안정된 저부하·고부하·가속 중 상태의 다음 타이머 예약 간격과 최소
+  프레임 간격을 회귀 테스트로 검증했습니다.
+- 전체 워크스페이스 테스트 269개, Windows 타깃 컴파일, Clippy 경고
+  0개를 통과했습니다.
+
 ## [1.27.76] — 조용한 장애 알림과 가벼운 러너
 
 ### Changed
@@ -3686,7 +3711,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v1.27.76...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v1.27.77...HEAD
+[1.27.77]: https://github.com/uulab-official/peterfan/compare/v1.27.76...v1.27.77
 [1.27.76]: https://github.com/uulab-official/peterfan/compare/v1.27.75...v1.27.76
 [1.27.75]: https://github.com/uulab-official/peterfan/compare/v1.27.74...v1.27.75
 [0.27.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.27.1

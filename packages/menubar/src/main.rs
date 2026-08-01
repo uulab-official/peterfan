@@ -47,8 +47,8 @@ use objc2::AllocAnyThread;
 use objc2_app_kit::{NSCellImagePosition, NSEvent, NSImage, NSScreen, NSWindow, NSWorkspace};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{
-    MainThreadMarker, NSData, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
-    NSTimer,
+    MainThreadMarker, NSData, NSDate, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize,
+    NSString, NSTimer,
 };
 
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
@@ -89,6 +89,8 @@ const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(480);
 // The runner cannot display frames faster than RUNNER_MIN_INTERVAL. Waking the
 // AppKit run loop more often only burns energy while producing the same image.
 const RUNNER_NATIVE_TICK: Duration = RUNNER_MIN_INTERVAL;
+#[cfg(target_os = "macos")]
+const RUNNER_NATIVE_TOLERANCE: Duration = Duration::from_millis(8);
 #[cfg(target_os = "macos")]
 const MENUBAR_GRAPH_WIDTH: f64 = 36.0;
 #[cfg(target_os = "macos")]
@@ -716,6 +718,8 @@ struct App {
     runner_native_motion_cpu_bits: Arc<AtomicU32>,
     #[cfg(target_os = "macos")]
     runner_native_phase_us: Arc<AtomicU64>,
+    #[cfg(target_os = "macos")]
+    runner_native_tick_us: Arc<AtomicU64>,
     #[cfg(target_os = "macos")]
     runner_native_band: Arc<AtomicUsize>,
     #[cfg(target_os = "macos")]
@@ -1919,6 +1923,8 @@ fn main() {
         runner_native_motion_cpu_bits: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
         #[cfg(target_os = "macos")]
         runner_native_phase_us: Arc::new(AtomicU64::new(0)),
+        #[cfg(target_os = "macos")]
+        runner_native_tick_us: Arc::new(AtomicU64::new(RUNNER_NATIVE_TICK.as_micros() as u64)),
         #[cfg(target_os = "macos")]
         runner_native_band: Arc::new(AtomicUsize::new(0)),
         #[cfg(target_os = "macos")]
@@ -5249,6 +5255,23 @@ fn runner_phase_step(phase_us: u64, tick_us: u64, cpu_pct: f32, frame: u8) -> (u
     }
 }
 
+#[cfg(target_os = "macos")]
+fn runner_native_next_delay(
+    phase_us: u64,
+    motion_cpu_pct: f32,
+    target_cpu_pct: f32,
+    frame: u8,
+) -> Duration {
+    // Keep sampling at the fastest visible cadence only while speed is
+    // changing. Once the gait has settled, sleep until the next actual pose.
+    if (target_cpu_pct - motion_cpu_pct).abs() >= 0.1 {
+        return RUNNER_NATIVE_TICK;
+    }
+    let interval_us = runner_frame_interval_for_pose(motion_cpu_pct, frame).as_micros() as u64;
+    let remaining_us = interval_us.saturating_sub(phase_us.min(interval_us));
+    Duration::from_micros(remaining_us.max(RUNNER_NATIVE_TICK.as_micros() as u64))
+}
+
 fn ease_runner_motion_cpu(current: f32, target: f32, tick: Duration) -> f32 {
     let current = current.clamp(0.0, 100.0);
     let target = target.clamp(0.0, 100.0);
@@ -5367,6 +5390,8 @@ fn stop_native_runner_timer(app: &mut App) {
         timer.invalidate();
     }
     app.runner_native_phase_us.store(0, Ordering::Relaxed);
+    app.runner_native_tick_us
+        .store(RUNNER_NATIVE_TICK.as_micros() as u64, Ordering::Relaxed);
 }
 
 #[cfg(target_os = "macos")]
@@ -5378,11 +5403,18 @@ fn sync_native_runner_timer(app: &mut App) {
         return;
     }
 
-    if app
+    if let Some(timer) = app
         .runner_native_timer
         .as_ref()
-        .is_some_and(|timer| timer.isValid())
+        .filter(|timer| timer.isValid())
     {
+        let motion_cpu = f32::from_bits(app.runner_native_motion_cpu_bits.load(Ordering::Relaxed));
+        if (app.runner_cpu_pct - motion_cpu).abs() >= 0.1 {
+            app.runner_native_tick_us
+                .store(RUNNER_NATIVE_TICK.as_micros() as u64, Ordering::Relaxed);
+            let fire_date = NSDate::dateWithTimeIntervalSinceNow(RUNNER_NATIVE_TICK.as_secs_f64());
+            timer.setFireDate(&fire_date);
+        }
         return;
     }
 
@@ -5403,41 +5435,50 @@ fn sync_native_runner_timer(app: &mut App) {
     let cpu_bits = Arc::clone(&app.runner_native_cpu_bits);
     let motion_cpu_bits = Arc::clone(&app.runner_native_motion_cpu_bits);
     let phase_us = Arc::clone(&app.runner_native_phase_us);
+    let scheduled_tick_us = Arc::clone(&app.runner_native_tick_us);
     let band = Arc::clone(&app.runner_native_band);
     let applied_icon = Arc::clone(&app.runner_native_applied_icon);
     phase_us.store(0, Ordering::Relaxed);
     band.store(runner_load_band(app.runner_cpu_pct), Ordering::Relaxed);
-    let tick_us = RUNNER_NATIVE_TICK.as_micros() as u64;
-    let block = RcBlock::new(move |_timer: std::ptr::NonNull<NSTimer>| {
+    scheduled_tick_us.store(RUNNER_NATIVE_TICK.as_micros() as u64, Ordering::Relaxed);
+    let block = RcBlock::new(move |timer: std::ptr::NonNull<NSTimer>| {
         let target_cpu = f32::from_bits(cpu_bits.load(Ordering::Relaxed));
         let current_cpu = f32::from_bits(motion_cpu_bits.load(Ordering::Relaxed));
-        let cpu_pct = ease_runner_motion_cpu(current_cpu, target_cpu, RUNNER_NATIVE_TICK);
+        let elapsed_us = scheduled_tick_us.load(Ordering::Relaxed);
+        let elapsed = Duration::from_micros(elapsed_us);
+        let cpu_pct = ease_runner_motion_cpu(current_cpu, target_cpu, elapsed);
         motion_cpu_bits.store(cpu_pct.to_bits(), Ordering::Relaxed);
         let current_frame = frame.load(Ordering::Relaxed) as u8 % RUNNER_FRAME_COUNT;
         let (next_phase, should_advance) = runner_phase_step(
             phase_us.load(Ordering::Relaxed),
-            tick_us,
+            elapsed_us,
             cpu_pct,
             current_frame,
         );
         phase_us.store(next_phase, Ordering::Relaxed);
-        if !should_advance {
-            return;
+        let mut next_frame = current_frame;
+        if should_advance {
+            let current_band = band.load(Ordering::Relaxed);
+            let next_band = runner_load_band_with_hysteresis(cpu_pct, current_band);
+            band.store(next_band, Ordering::Relaxed);
+            let next = (frame.fetch_add(1, Ordering::Relaxed) + 1) % u64::from(RUNNER_FRAME_COUNT);
+            next_frame = next as u8;
+            let index = next_band * usize::from(RUNNER_FRAME_COUNT) + next as usize;
+            if let Some(image) = images.get(index) {
+                button.setImage(Some(&**image));
+                applied_icon.store(index, Ordering::Relaxed);
+            }
         }
 
-        let current_band = band.load(Ordering::Relaxed);
-        let next_band = runner_load_band_with_hysteresis(cpu_pct, current_band);
-        band.store(next_band, Ordering::Relaxed);
-        let next = (frame.fetch_add(1, Ordering::Relaxed) + 1) % u64::from(RUNNER_FRAME_COUNT);
-        let index = next_band * usize::from(RUNNER_FRAME_COUNT) + next as usize;
-        if let Some(image) = images.get(index) {
-            button.setImage(Some(&**image));
-            applied_icon.store(index, Ordering::Relaxed);
-        }
+        let next_delay = runner_native_next_delay(next_phase, cpu_pct, target_cpu, next_frame);
+        scheduled_tick_us.store(next_delay.as_micros() as u64, Ordering::Relaxed);
+        let fire_date = NSDate::dateWithTimeIntervalSinceNow(next_delay.as_secs_f64());
+        unsafe { timer.as_ref() }.setFireDate(&fire_date);
     });
     let timer = unsafe {
         NSTimer::timerWithTimeInterval_repeats_block(RUNNER_NATIVE_TICK.as_secs_f64(), true, &block)
     };
+    timer.setTolerance(RUNNER_NATIVE_TOLERANCE.as_secs_f64());
     unsafe {
         NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
     }
@@ -10202,6 +10243,25 @@ mod tests {
     fn native_runner_tick_never_outpaces_the_fastest_visible_frame() {
         assert_eq!(RUNNER_NATIVE_TICK, RUNNER_MIN_INTERVAL);
         assert!(RUNNER_NATIVE_TICK <= runner_frame_interval(100.0));
+        assert!(RUNNER_NATIVE_TOLERANCE < RUNNER_NATIVE_TICK);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn native_runner_sleeps_between_idle_frames_but_wakes_for_speed_changes() {
+        let settled_idle = runner_native_next_delay(0, 5.0, 5.0, 0);
+        let settled_busy = runner_native_next_delay(0, 100.0, 100.0, 0);
+        let accelerating = runner_native_next_delay(0, 5.0, 90.0, 0);
+
+        assert!(settled_idle > RUNNER_NATIVE_TICK * 6);
+        assert_eq!(settled_busy, RUNNER_NATIVE_TICK);
+        assert_eq!(accelerating, RUNNER_NATIVE_TICK);
+
+        let interval_us = runner_frame_interval_for_pose(5.0, 0).as_micros() as u64;
+        assert_eq!(
+            runner_native_next_delay(interval_us - 1, 5.0, 5.0, 0),
+            RUNNER_NATIVE_TICK
+        );
     }
 
     #[test]

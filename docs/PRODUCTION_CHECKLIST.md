@@ -38,6 +38,8 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Route CLI profile changes through the running daemon before direct SMC access.
 - [x] Keep Settings limited to preferences/safety and System limited to metrics.
 - [x] Drive the menu-bar runner cadence from CPU load with tested idle/busy bounds.
+- [x] Avoid fixed-rate runner polling at steady load; schedule only the next
+      visible frame while preserving fast CPU-change response.
 - [x] Persist and hot-swap four built-in runner characters without changing the
       status-item width or restarting the app.
 - [x] Provide a 6-hour macOS menu-bar soak test with bounded CPU, RSS, thread

@@ -125,6 +125,8 @@ These are the highest-leverage improvements before adding large new surfaces.
 ### v1.30 — Glanceable System Monitor
 
 - [x] Twenty selectable eight-frame menu-bar runners whose pace follows smoothed CPU usage
+- [x] Adaptive macOS runner timer that sleeps until the next visible pose at
+      steady load and wakes immediately when CPU speed changes
 - [x] Menu-bar temperature / runner / combined selector in Settings
 - [x] System quick facts for load average, power, network rate, and uptime
 - [x] Per-core CPU detail with Apple Silicon efficiency/performance grouping
