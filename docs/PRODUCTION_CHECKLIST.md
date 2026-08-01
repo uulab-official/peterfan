@@ -33,6 +33,8 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Enforce one menu-bar app instance.
 - [x] Keep the privileged daemon update path passwordless after first approval.
 - [x] Keep expensive system metrics out of fast refresh ticks.
+- [x] Keep fan-control notifications incident-based so repeated hardware retries
+      cannot flood Notification Center before a confirmed recovery.
 - [x] Route CLI profile changes through the running daemon before direct SMC access.
 - [x] Keep Settings limited to preferences/safety and System limited to metrics.
 - [x] Drive the menu-bar runner cadence from CPU load with tested idle/busy bounds.

@@ -6,6 +6,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.76] — 조용한 장애 알림과 가벼운 러너
+
+### Changed
+
+- macOS 러너 타이머의 30ms 폴링을 실제 최고 프레임 간격인 60ms에
+  맞췄습니다. 최고 질주 속도와 CPU 급상승 반응은 그대로 유지하면서
+  상태바가 표시할 수 없는 중간 깨우기를 절반으로 줄였습니다.
+- 팬 제어 실패 알림을 누적 실패 횟수가 아니라 장애 사건 단위로
+  처리합니다. 같은 장애를 데몬이 재시도하는 동안에는 한 번만 알리고,
+  fail-safe와 연속 실패가 정상으로 돌아온 뒤 새 장애가 생길 때 다시
+  알립니다.
+
+### Fixed
+
+- 팬 쓰기 또는 RPM 검증이 계속 실패할 때 `fan control needs attention`
+  알림이 반복해서 쌓일 수 있던 문제를 수정했습니다.
+- 앱을 실행했을 때 이미 진행 중이던 팬 장애가 이후 재시도될 때 새
+  장애처럼 다시 알리던 문제를 수정했습니다. 기존 장애는 팬 제어 상태
+  화면에 그대로 표시하되 알림 센터를 반복 점유하지 않습니다.
+
+### Tests
+
+- 최초 장애, 동일 장애 재시도, 정상 회복, 새 장애의 전체 알림 수명주기와
+  시작 시 이미 활성화된 장애를 회귀 테스트로 검증했습니다.
+- 전체 워크스페이스 테스트 268개와 Clippy 경고 0개를 통과했습니다.
+
 ## [1.27.75] — 자연스러운 러너와 즉시 준비되는 팝오버
 
 ### Added
@@ -3660,7 +3686,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v1.27.75...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v1.27.76...HEAD
+[1.27.76]: https://github.com/uulab-official/peterfan/compare/v1.27.75...v1.27.76
 [1.27.75]: https://github.com/uulab-official/peterfan/compare/v1.27.74...v1.27.75
 [0.27.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.27.1
 [0.27.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.27.0

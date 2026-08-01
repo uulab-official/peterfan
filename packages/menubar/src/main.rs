@@ -86,7 +86,9 @@ const RUNNER_PIXEL_HEIGHT: u32 = 32;
 const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(60);
 const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(480);
 #[cfg(target_os = "macos")]
-const RUNNER_NATIVE_TICK: Duration = Duration::from_millis(30);
+// The runner cannot display frames faster than RUNNER_MIN_INTERVAL. Waking the
+// AppKit run loop more often only burns energy while producing the same image.
+const RUNNER_NATIVE_TICK: Duration = RUNNER_MIN_INTERVAL;
 #[cfg(target_os = "macos")]
 const MENUBAR_GRAPH_WIDTH: f64 = 36.0;
 #[cfg(target_os = "macos")]
@@ -752,6 +754,7 @@ struct App {
 struct NotificationRuntime {
     temperature_warning_active: bool,
     fan_failure_baseline: Option<u64>,
+    fan_failure_warning_active: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -797,8 +800,11 @@ fn evaluate_notification_rules(
         let failures = write_failures
             .unwrap_or(0)
             .saturating_add(readback_failures.unwrap_or(0));
+        let failure_count_increased = runtime
+            .fan_failure_baseline
+            .is_some_and(|previous| failures > previous);
         if let Some(previous) = runtime.fan_failure_baseline {
-            if settings.fan_failures && failures > previous {
+            if settings.fan_failures && failures > previous && !runtime.fan_failure_warning_active {
                 let detail = control_health
                     .get("last_error")
                     .and_then(serde_json::Value::as_str)
@@ -809,6 +815,36 @@ fn evaluate_notification_rules(
                     body: detail.chars().take(180).collect(),
                 });
             }
+        }
+
+        let failsafe_active = control_health
+            .get("failsafe_active")
+            .and_then(serde_json::Value::as_bool);
+        let consecutive_writes = control_health
+            .get("consecutive_fan_write_failures")
+            .and_then(serde_json::Value::as_u64);
+        let consecutive_readbacks = control_health
+            .get("consecutive_fan_readback_failures")
+            .and_then(serde_json::Value::as_u64);
+        let stale_fans = control_health
+            .get("stale_fan_ids")
+            .and_then(serde_json::Value::as_array);
+        let has_incident_state = failsafe_active.is_some()
+            || consecutive_writes.is_some()
+            || consecutive_readbacks.is_some()
+            || stale_fans.is_some();
+        let incident_unhealthy = failsafe_active.unwrap_or(false)
+            || consecutive_writes.unwrap_or(0) > 0
+            || consecutive_readbacks.unwrap_or(0) > 0
+            || stale_fans.is_some_and(|fans| !fans.is_empty());
+
+        if failure_count_increased || incident_unhealthy {
+            // A retry may increment the lifetime counters repeatedly while the
+            // same hardware problem is active. Treat that as one incident.
+            runtime.fan_failure_warning_active = true;
+        } else if has_incident_state {
+            // Explicit healthy state rearms notifications for the next fault.
+            runtime.fan_failure_warning_active = false;
         }
         runtime.fan_failure_baseline = Some(failures);
     }
@@ -9556,6 +9592,100 @@ mod tests {
     }
 
     #[test]
+    fn notification_fan_rule_reports_once_per_failure_incident() {
+        let settings = NotificationConfig::default();
+        let mut runtime = NotificationRuntime::default();
+        let healthy = serde_json::json!({
+            "fan_write_failure_count": 0,
+            "fan_readback_failure_count": 0,
+            "failsafe_active": false,
+            "consecutive_fan_write_failures": 0,
+            "consecutive_fan_readback_failures": 0,
+            "stale_fan_ids": [],
+        });
+        assert!(evaluate_notification_rules(&settings, &mut runtime, None, &healthy).is_empty());
+
+        let first_failure = serde_json::json!({
+            "fan_write_failure_count": 1,
+            "fan_readback_failure_count": 0,
+            "failsafe_active": true,
+            "consecutive_fan_write_failures": 1,
+            "consecutive_fan_readback_failures": 0,
+            "stale_fan_ids": [],
+            "last_error": "write failed",
+        });
+        assert_eq!(
+            evaluate_notification_rules(&settings, &mut runtime, None, &first_failure).len(),
+            1
+        );
+
+        let same_incident_retry = serde_json::json!({
+            "fan_write_failure_count": 2,
+            "fan_readback_failure_count": 0,
+            "failsafe_active": true,
+            "consecutive_fan_write_failures": 2,
+            "consecutive_fan_readback_failures": 0,
+            "stale_fan_ids": [],
+            "last_error": "write failed again",
+        });
+        assert!(
+            evaluate_notification_rules(&settings, &mut runtime, None, &same_incident_retry)
+                .is_empty()
+        );
+
+        let recovered = serde_json::json!({
+            "fan_write_failure_count": 2,
+            "fan_readback_failure_count": 0,
+            "failsafe_active": false,
+            "consecutive_fan_write_failures": 0,
+            "consecutive_fan_readback_failures": 0,
+            "stale_fan_ids": [],
+        });
+        assert!(evaluate_notification_rules(&settings, &mut runtime, None, &recovered).is_empty());
+
+        let new_incident = serde_json::json!({
+            "fan_write_failure_count": 2,
+            "fan_readback_failure_count": 1,
+            "failsafe_active": true,
+            "consecutive_fan_write_failures": 0,
+            "consecutive_fan_readback_failures": 1,
+            "stale_fan_ids": ["fan.left"],
+            "last_error": "RPM verification timed out",
+        });
+        assert_eq!(
+            evaluate_notification_rules(&settings, &mut runtime, None, &new_incident).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn notification_fan_rule_does_not_repeat_an_incident_seen_at_startup() {
+        let settings = NotificationConfig::default();
+        let mut runtime = NotificationRuntime::default();
+        let already_failed = serde_json::json!({
+            "fan_write_failure_count": 7,
+            "fan_readback_failure_count": 2,
+            "failsafe_active": true,
+            "consecutive_fan_write_failures": 3,
+            "consecutive_fan_readback_failures": 1,
+            "stale_fan_ids": ["fan.left"],
+        });
+        assert!(
+            evaluate_notification_rules(&settings, &mut runtime, None, &already_failed).is_empty()
+        );
+
+        let retry = serde_json::json!({
+            "fan_write_failure_count": 8,
+            "fan_readback_failure_count": 2,
+            "failsafe_active": true,
+            "consecutive_fan_write_failures": 4,
+            "consecutive_fan_readback_failures": 1,
+            "stale_fan_ids": ["fan.left"],
+        });
+        assert!(evaluate_notification_rules(&settings, &mut runtime, None, &retry).is_empty());
+    }
+
+    #[test]
     fn notification_commands_validate_and_update_preferences() {
         let mut settings = NotificationConfig::default();
         apply_notification_command(&mut settings, "notifications:temperature:82").unwrap();
@@ -10065,6 +10195,12 @@ mod tests {
         assert_eq!(make_runner_icons(RunnerCharacter::Cat).len(), 32);
         assert_eq!(runner_load_band(10.0), 0);
         assert_eq!(runner_load_band(90.0), 3);
+    }
+
+    #[test]
+    fn native_runner_tick_never_outpaces_the_fastest_visible_frame() {
+        assert_eq!(RUNNER_NATIVE_TICK, RUNNER_MIN_INTERVAL);
+        assert!(RUNNER_NATIVE_TICK <= runner_frame_interval(100.0));
     }
 
     #[test]

@@ -76,6 +76,8 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] Document why macOS requires approval for first LaunchDaemon install
 - [x] Optimistic fan-control feedback with duplicate-command prevention
 - [x] Hardware-confirmed fan mode feedback with curve temperature and target duty
+- [x] Notify once per fan-control failure incident, suppress repeated retry
+      alerts, and rearm only after the daemon reports recovery
 - [x] Reject missing or non-physical control temperatures and immediately
       return every fan to macOS automatic control
 - [x] Watch fan writes, expose failure counters in the UI/CLI, and fall back to
@@ -122,7 +124,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 
 ### v1.30 — Glanceable System Monitor
 
-- [x] Four selectable eight-frame menu-bar runners whose pace follows smoothed CPU usage
+- [x] Twenty selectable eight-frame menu-bar runners whose pace follows smoothed CPU usage
 - [x] Menu-bar temperature / runner / combined selector in Settings
 - [x] System quick facts for load average, power, network rate, and uptime
 - [x] Per-core CPU detail with Apple Silicon efficiency/performance grouping
