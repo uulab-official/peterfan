@@ -6,6 +6,47 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.75] — 자연스러운 러너와 즉시 준비되는 팝오버
+
+### Added
+
+- 설정의 러너 선택기를 실제 메뉴바 실루엣 미리보기 목록으로 교체했습니다.
+  20개 캐릭터의 모양을 선택 전에 확인할 수 있고 키보드 탐색과 포커스
+  복귀도 지원합니다.
+- 러너 프레임의 수평 중심과 한 바퀴 재생 시간을 검증하는 테스트를
+  추가했습니다. 물고기 러너의 과한 좌우 무게 이동도 함께 보정했습니다.
+
+### Changed
+
+- macOS 상태바 러너는 CPU 샘플마다 `NSTimer`를 재생성하지 않고 30ms
+  고정 시계에서 누적 위상만 계산합니다. CPU 상승은 약 0.18초, 하강은
+  약 0.42초의 완충을 거쳐 자연스럽게 가속·감속합니다.
+- 저부하에서는 착지 자세를 조금 오래, 공중 자세를 짧게 보여 보행에
+  무게를 주고, CPU 80% 이상에서는 균일한 질주 박자로 전환합니다.
+  프레임별 가중치 평균은 1.0이라 기존 CPU별 한 바퀴 속도는 유지됩니다.
+- 팝오버가 닫혀 있을 때 팬 센서 읽기 주기를 3초로 낮추고 열리는 순간
+  온도·팬·데몬 상태를 즉시 비동기 갱신합니다. 팬 캐시 유효 시간은 8초로
+  늘려 일시적인 SMC 공백 때문에 팬 목록이 사라지지 않게 했습니다.
+- 상태바 온도와 툴팁은 문자열이 실제로 바뀔 때만 AppKit에 적용합니다.
+
+### Fixed
+
+- CPU 값이 바뀔 때 러너 박자가 첫 프레임으로 되감기거나 20/55/80%
+  경계에서 자세가 번쩍이던 문제를 연속 위상과 부하 구간 완충으로
+  수정했습니다.
+- 1초 상태 갱신과 네이티브 애니메이션이 같은 이미지를 중복 적용해
+  상태바가 미세하게 떨리던 문제를 수정했습니다.
+- 팝오버가 빈 막대와 자리표시자를 먼저 보여준 뒤 데이터를 채우던 순서를
+  바꿨습니다. 클릭 직후 숨겨진 WebView에 최신 payload를 먼저 주입하고
+  준비된 첫 화면을 표시합니다.
+
+### Tests
+
+- 메뉴바 테스트 130개, Clippy 경고 0개, 포맷·diff 무결성 검사를
+  통과했습니다.
+- 릴리스 앱을 `/Applications`에서 단일 프로세스로 실행하고 번들 서명과
+  로컬 빌드 해시가 일치하는지 확인했습니다.
+
 ## [1.27.74] — 스무 가지 CPU 러너 컬렉션
 
 ### Added
@@ -3619,7 +3660,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v0.27.1...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v1.27.75...HEAD
+[1.27.75]: https://github.com/uulab-official/peterfan/compare/v1.27.74...v1.27.75
 [0.27.1]: https://github.com/uulab-official/peterfan/releases/tag/v0.27.1
 [0.27.0]: https://github.com/uulab-official/peterfan/releases/tag/v0.27.0
 [0.26.2]: https://github.com/uulab-official/peterfan/releases/tag/v0.26.2
