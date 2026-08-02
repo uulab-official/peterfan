@@ -132,7 +132,8 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] Per-core CPU detail with Apple Silicon efficiency/performance grouping
 - [ ] GPU utilization backend where public platform APIs provide a stable value
 - [x] User-configurable CPU-average, fan-failure, and update notifications
-- [ ] Exportable diagnostics snapshot for comparing readings across monitors
+- [x] Exportable privacy-safe diagnostics snapshot for comparing readings
+      across monitors from the popover and detail window
 
 ### v1.29 — Distribution & Updates
 

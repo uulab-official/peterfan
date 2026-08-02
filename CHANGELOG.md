@@ -6,6 +6,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.27.78] — 한 번에 복사하는 안전한 진단 리포트
+
+### Added
+
+- 설정의 Fan Control Health에 `Copy Report` 버튼을 추가했습니다. 현재 앱과
+  플랫폼 버전, CPU 사용률·평균·최고 온도, 개별 센서 출처와 값, 팬 RPM과
+  목표, 데몬 모드·적용 리비전·안전 상태를 하나의 JSON으로 복사합니다.
+- 리포트는 호스트명, 사용자명, 시리얼 번호, IP 주소와 파일 경로를
+  포함하지 않는 명시적 허용 목록으로 생성합니다. 다른 모니터와 값을
+  비교하거나 이슈에 첨부해도 개인 환경 정보가 불필요하게 섞이지 않습니다.
+
+### Changed
+
+- macOS `pbcopy`와 Windows `clip` 호출을 백그라운드 작업으로 분리해
+  클립보드 복사가 팝오버 클릭, 지표 갱신, 러너 애니메이션을 막지 않습니다.
+- 복사 버튼은 네이티브 작업의 완료 리비전을 확인한 뒤에만 `Copied` 또는
+  실패 상태를 표시합니다. 팝오버와 상세 창이 같은 단일 복사 작업을
+  공유해 빠르게 여러 번 눌러도 중복 프로세스를 만들지 않습니다.
+
+### Tests
+
+- 개인정보 필드 배제, 센서·팬·데몬 상태 포함, 영문·한국어 버튼, 두 WebView
+  IPC 경로와 네이티브 완료 확인을 회귀 테스트로 검증했습니다.
+- 전체 워크스페이스 테스트 271개, Windows 타깃 컴파일, Clippy 경고
+  0개를 통과했습니다.
+
 ## [1.27.77] — 필요한 순간에만 깨어나는 러너
 
 ### Changed
@@ -3711,7 +3737,8 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v1.27.77...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v1.27.78...HEAD
+[1.27.78]: https://github.com/uulab-official/peterfan/compare/v1.27.77...v1.27.78
 [1.27.77]: https://github.com/uulab-official/peterfan/compare/v1.27.76...v1.27.77
 [1.27.76]: https://github.com/uulab-official/peterfan/compare/v1.27.75...v1.27.76
 [1.27.75]: https://github.com/uulab-official/peterfan/compare/v1.27.74...v1.27.75

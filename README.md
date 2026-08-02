@@ -62,6 +62,10 @@ The screenshot above shows the two surfaces PeterFan is built around: a quiet
 menu-bar dashboard for daily use, and a scriptable `peterfan doctor` path for
 debugging release, daemon, and hardware state.
 
+Fan Control Health also provides a privacy-safe `Copy Report` action for
+comparing CPU sensors and fan behavior without including hostnames, usernames,
+serial numbers, IP addresses, or local file paths.
+
 ![PeterFan popover visual QA: dark/light, English/Korean](./docs/images/peterfan-popover-qa.png)
 
 The visual QA sheet above is regenerated from

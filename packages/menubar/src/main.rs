@@ -391,6 +391,13 @@ static APP_UPDATE_STATE: Mutex<AppUpdateState> = Mutex::new(AppUpdateState {
 static CONTROL_REFRESH_REQUESTED: AtomicBool = AtomicBool::new(false);
 const FAN_ACTION_LOG_MAX: usize = 12;
 static FAN_ACTION_LOG: Mutex<VecDeque<serde_json::Value>> = Mutex::new(VecDeque::new());
+/// Privacy-safe support snapshot prepared from the latest dashboard sample.
+/// Clipboard writes happen on a worker because launching the platform helper
+/// must never delay a popover click or animation frame.
+static SUPPORT_REPORT: Mutex<String> = Mutex::new(String::new());
+static SUPPORT_REPORT_COPY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static SUPPORT_REPORT_COPY_REVISION: AtomicU64 = AtomicU64::new(0);
+static SUPPORT_REPORT_COPY_OK: AtomicBool = AtomicBool::new(false);
 /// Guards `install_fan_control()` process-wide. The popover and Detail
 /// Window each track their own "installing…" button state in per-webview JS
 /// (`FAN_CONTROL_FIX_PENDING`), which doesn't stop both windows from firing
@@ -1596,6 +1603,128 @@ fn open_menubar_log() {
     let _ = command.arg(path).spawn();
 }
 
+fn copy_support_report() {
+    if SUPPORT_REPORT_COPY_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let report = SUPPORT_REPORT
+        .lock()
+        .expect("support report poisoned")
+        .clone();
+    std::thread::spawn(move || {
+        let result = write_support_report_to_clipboard(&report);
+        SUPPORT_REPORT_COPY_OK.store(result.is_ok(), Ordering::Release);
+        SUPPORT_REPORT_COPY_REVISION.fetch_add(1, Ordering::AcqRel);
+        SUPPORT_REPORT_COPY_IN_FLIGHT.store(false, Ordering::Release);
+        match result {
+            Ok(()) => log_menubar_event("privacy-safe support report copied"),
+            Err(error) => log_menubar_event(&format!("support report copy failed: {error}")),
+        }
+    });
+}
+
+fn write_support_report_to_clipboard(report: &str) -> Result<(), String> {
+    if report.trim().is_empty() {
+        return Err("no dashboard sample is ready".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("/usr/bin/pbcopy");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd.exe");
+        command.args(["/C", "clip"]);
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    return Err("clipboard export is supported on macOS and Windows".to_string());
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let mut child = command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| "clipboard helper stdin unavailable".to_string())?
+            .write_all(report.as_bytes())
+            .map_err(|error| error.to_string())?;
+        let status = child.wait().map_err(|error| error.to_string())?;
+        status
+            .success()
+            .then_some(())
+            .ok_or_else(|| format!("clipboard helper exited with {status}"))
+    }
+}
+
+struct SupportReportInput<'a> {
+    cpu_pct: f32,
+    logical_cores: usize,
+    selected_average_c: Option<f32>,
+    core_hottest_c: Option<f32>,
+    safety_hottest_c: Option<f32>,
+    temperatures: &'a [TempSensor],
+    temperature_sampled_at_unix_ms: Option<u64>,
+    temperature_stale: bool,
+    fans: &'a [serde_json::Value],
+    daemon_version: Option<&'a str>,
+    daemon: Option<&'a serde_json::Value>,
+}
+
+fn support_report_json(input: SupportReportInput<'_>) -> serde_json::Value {
+    let daemon_field = |key: &str| input.daemon.and_then(|value| value.get(key)).cloned();
+    serde_json::json!({
+        "schema_version": 1,
+        "generated_at_unix_ms": now_unix_ms(),
+        "privacy": "no hostname, username, serial number, IP address, or file paths",
+        "app": {
+            "name": "PeterFan",
+            "version": env!("CARGO_PKG_VERSION"),
+            "bundle_id": "kr.co.uulab.peterfan",
+        },
+        "platform": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "logical_cores": input.logical_cores,
+        },
+        "cpu": {
+            "usage_percent": input.cpu_pct,
+            "core_average_c": input.selected_average_c,
+            "core_hottest_c": input.core_hottest_c,
+            "safety_hottest_c": input.safety_hottest_c,
+        },
+        "temperature_sample": {
+            "sampled_at_unix_ms": input.temperature_sampled_at_unix_ms,
+            "stale": input.temperature_stale,
+            "sensors": input.temperatures.iter().map(|sensor| serde_json::json!({
+                "id": sensor.id,
+                "label": sensor.label,
+                "kind": sensor.kind,
+                "source": sensor.source,
+                "value_c": sensor.value.0,
+            })).collect::<Vec<_>>(),
+        },
+        "fans": input.fans,
+        "daemon": {
+            "version": input.daemon_version,
+            "mode": daemon_field("mode"),
+            "backend": daemon_field("backend"),
+            "control_revision": daemon_field("control_revision"),
+            "applied_control_revision": daemon_field("applied_control_revision"),
+            "last_control_apply_unix_ms": daemon_field("last_control_apply_unix_ms"),
+            "fan_targets": daemon_field("fan_targets"),
+            "fan_readbacks": daemon_field("fan_readbacks"),
+            "control_health": daemon_field("control_health"),
+        },
+    })
+}
+
 fn sample_age(sampled_at: Option<Instant>, now: Instant) -> Option<Duration> {
     sampled_at.map(|sampled| now.saturating_duration_since(sampled))
 }
@@ -2777,6 +2906,8 @@ fn build_popover(
                 enqueue_pending("ready:popover");
             } else if body == "refresh" {
                 CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
+            } else if body == "copydiagnostics" {
+                copy_support_report();
             } else if body == "checkupdates"
                 || body == "installupdate"
                 || body == "toggle-login-item"
@@ -2893,6 +3024,8 @@ fn open_detail_window(
                 enqueue_pending("ready:detail");
             } else if body == "refresh" {
                 CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
+            } else if body == "copydiagnostics" {
+                copy_support_report();
             } else if body == "checkupdates"
                 || body == "installupdate"
                 || body == "toggle-login-item"
@@ -4056,6 +4189,26 @@ fn update(app: &mut App) {
     payload["power_text"] = serde_json::json!(power_text);
     payload["uptime_text"] = serde_json::json!(format_uptime(system_info.uptime_secs));
     payload["logical_cores"] = serde_json::json!(system_info.logical_cores);
+    let support_report = support_report_json(SupportReportInput {
+        cpu_pct: cpu.usage_percent,
+        logical_cores: system_info.logical_cores,
+        selected_average_c: display_temp,
+        core_hottest_c: core_hottest,
+        safety_hottest_c: safety_temp,
+        temperatures: &temps,
+        temperature_sampled_at_unix_ms: app.temperature_sampled_at_unix_ms,
+        temperature_stale,
+        fans: &fan_rows,
+        daemon_version: daemon_version.as_deref(),
+        daemon: daemon_json.as_ref(),
+    });
+    if let Ok(report) = serde_json::to_string_pretty(&support_report) {
+        *SUPPORT_REPORT.lock().expect("support report poisoned") = report;
+    }
+    payload["support_report_copy_revision"] =
+        serde_json::json!(SUPPORT_REPORT_COPY_REVISION.load(Ordering::Acquire));
+    payload["support_report_copy_ok"] =
+        serde_json::json!(SUPPORT_REPORT_COPY_OK.load(Ordering::Acquire));
     let script = format!(
         "window.__pf_pending={payload};window.__pf&&window.__pf.update(window.__pf_pending)"
     );
@@ -6994,6 +7147,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Critical Limit<", ">임계값<")
             .replace(">Helper<", ">도우미<")
             .replace(">Recent Fan Actions<", ">최근 팬 제어 이력<")
+            .replace(">Copy Report<", ">리포트 복사<")
             .replace(">Run Diagnostics<", ">진단 실행<")
             .replace(">No fan actions yet<", ">팬 제어 이력 없음<")
             .replace(">Detail<", ">상세<")
@@ -7319,6 +7473,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .health-value.ok{color:var(--g);}.health-value.warn{color:var(--y);}.health-value.info{color:var(--accent);}
 .health-action{background:var(--chip-bg);border:1px solid transparent;color:var(--accent);font:inherit;font-size:10px;font-weight:750;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;}
 .health-action:disabled{opacity:.5;cursor:default;}
+.health-actions{display:flex;align-items:center;gap:5px;}
 .health-details{margin-top:8px;padding-top:7px;border-top:1px solid var(--line);}
 .health-details summary{color:var(--accent);font-size:10px;font-weight:700;cursor:pointer;list-style-position:inside;}
 .health-details[open] summary{margin-bottom:7px;}
@@ -7551,7 +7706,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="health-row"><span class="health-label">Last Control Error</span><span class="health-value" id="health-control-error">—</span></div>
 </div></details>
 <div id="fan-action-log-card">
-<div class="health-head"><div class="health-title">Recent Fan Actions</div><button class="health-action" id="fan-diagnostic-button" disabled onclick="runFanDiagnostics(this)">Run Diagnostics</button></div>
+<div class="health-head"><div class="health-title">Recent Fan Actions</div><div class="health-actions"><button class="health-action" id="support-report-button" disabled onclick="copySupportReport(this)">Copy Report</button><button class="health-action" id="fan-diagnostic-button" disabled onclick="runFanDiagnostics(this)">Run Diagnostics</button></div></div>
 <div class="action-log" id="fan-action-log"><div class="action-log-empty">No fan actions yet</div></div>
 </div>
 </details>
@@ -8480,10 +8635,44 @@ function runFanDiagnostics(btn){
     }
   },10000);
 }
+var SUPPORT_REPORT_COPY_PENDING=false;
+var SUPPORT_REPORT_COPY_REVISION=0;
+var SUPPORT_REPORT_COPY_RESULT_UNTIL=0;
+function copySupportReport(btn){
+  if(SUPPORT_REPORT_COPY_PENDING||!window.__pf_pending)return;
+  SUPPORT_REPORT_COPY_PENDING=true;
+  SUPPORT_REPORT_COPY_REVISION=Number(window.__pf_pending.support_report_copy_revision||0);
+  if(btn){btn.disabled=true;btn.textContent=LANG==='ko'?'복사 중…':'Copying…';}
+  window.ipc.postMessage('copydiagnostics');
+  setTimeout(function(){
+    if(!SUPPORT_REPORT_COPY_PENDING)return;
+    SUPPORT_REPORT_COPY_PENDING=false;
+    SUPPORT_REPORT_COPY_RESULT_UNTIL=Date.now()+2500;
+    var current=document.getElementById('support-report-button');
+    if(current){current.disabled=false;current.textContent=LANG==='ko'?'시간 초과':'Timed out';}
+  },8000);
+}
+function renderSupportReportButton(d){
+  var button=document.getElementById('support-report-button');
+  if(!button)return;
+  var revision=Number(d.support_report_copy_revision||0);
+  if(SUPPORT_REPORT_COPY_PENDING&&revision>SUPPORT_REPORT_COPY_REVISION){
+    SUPPORT_REPORT_COPY_PENDING=false;
+    SUPPORT_REPORT_COPY_RESULT_UNTIL=Date.now()+2500;
+  }
+  var showingResult=!SUPPORT_REPORT_COPY_PENDING&&Date.now()<SUPPORT_REPORT_COPY_RESULT_UNTIL;
+  button.disabled=SUPPORT_REPORT_COPY_PENDING;
+  button.textContent=SUPPORT_REPORT_COPY_PENDING
+    ?(LANG==='ko'?'복사 중…':'Copying…')
+    :(showingResult
+      ?(d.support_report_copy_ok?(LANG==='ko'?'복사됨':'Copied'):(LANG==='ko'?'복사 실패':'Copy failed'))
+      :(LANG==='ko'?'리포트 복사':'Copy Report'));
+}
 function renderFanActionLog(d){
   var list=document.getElementById('fan-action-log');
   var button=document.getElementById('fan-diagnostic-button');
   var entries=Array.isArray(d.fan_action_log)?d.fan_action_log:[];
+  renderSupportReportButton(d);
   var diagnosticFinished=entries.some(function(entry){
     return entry&&entry.action==='diagnostic'&&Number(entry.at)>=FAN_DIAGNOSTIC_STARTED_AT-1;
   });
@@ -11372,6 +11561,89 @@ mod tests {
         assert!(en.contains("b.setAttribute('aria-pressed',active?'true':'false');"));
         assert!(en.contains(".prow:hover .pkill,.pkill:focus-visible{opacity:1;}"));
         assert!(en.contains(".rail-btn{height:44px"));
+    }
+
+    #[test]
+    fn support_report_is_complete_and_privacy_safe() {
+        let temperatures = vec![TempSensor {
+            id: "cpu.die".into(),
+            label: "CPU Core Average".into(),
+            kind: SensorKind::Cpu,
+            source: SensorSource::Smc,
+            value: Celsius(64.5),
+        }];
+        let fans = vec![serde_json::json!({
+            "id": "fan.0",
+            "l": "Left Fan",
+            "cur_rpm": 2400,
+            "target_pct": 45,
+            "readback_status": "settled",
+        })];
+        let daemon = serde_json::json!({
+            "mode": "manual:balanced",
+            "backend": "macos",
+            "control_revision": 8,
+            "applied_control_revision": 8,
+            "fan_targets": {"fan.0": 45},
+            "fan_readbacks": [{"id": "fan.0", "status": "settled"}],
+            "control_health": {"failsafe_active": false},
+            "hostname": "must-not-leak",
+        });
+
+        let report = support_report_json(SupportReportInput {
+            cpu_pct: 37.5,
+            logical_cores: 12,
+            selected_average_c: Some(64.5),
+            core_hottest_c: Some(68.0),
+            safety_hottest_c: Some(72.0),
+            temperatures: &temperatures,
+            temperature_sampled_at_unix_ms: Some(1_234),
+            temperature_stale: false,
+            fans: &fans,
+            daemon_version: Some("1.27.77"),
+            daemon: Some(&daemon),
+        });
+
+        assert_eq!(report["schema_version"], 1);
+        assert_eq!(report["cpu"]["core_average_c"], 64.5);
+        assert_eq!(report["temperature_sample"]["sensors"][0]["source"], "smc");
+        assert_eq!(report["fans"][0]["readback_status"], "settled");
+        assert_eq!(report["daemon"]["mode"], "manual:balanced");
+        assert_eq!(report["daemon"]["applied_control_revision"], 8);
+        let encoded = serde_json::to_string(&report).unwrap();
+        for forbidden_key in [
+            "hostname",
+            "username",
+            "serial_number",
+            "ip_address",
+            "file_path",
+        ] {
+            assert!(!encoded.contains(&format!(r#"\"{forbidden_key}\":"#)));
+        }
+    }
+
+    #[test]
+    fn support_report_button_waits_for_native_copy_confirmation() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+        let source = include_str!("main.rs");
+
+        assert!(en.contains(r#"id="support-report-button""#));
+        assert!(en.contains("function copySupportReport(btn)"));
+        assert!(en.contains("support_report_copy_revision"));
+        assert!(en.contains("d.support_report_copy_ok"));
+        assert!(ko.contains(">리포트 복사<"));
+        let product_source = source
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap_or(source);
+        assert_eq!(
+            product_source
+                .matches(r#"body == "copydiagnostics""#)
+                .count(),
+            2
+        );
+        assert!(write_support_report_to_clipboard(" ").is_err());
     }
 
     #[test]

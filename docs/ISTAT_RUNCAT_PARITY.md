@@ -29,6 +29,7 @@ Reference points:
 | Uptime and system identity | Live uptime; CLI exposes full identity | Ready |
 | GPU utilization history | Temperature only today | Research |
 | User notification rules | Native CPU-average threshold, fan failure, and signed update alerts; critical daemon safety remains independent | Ready |
+| Support diagnostics | One-click privacy-safe JSON with CPU sensors, fan targets/readback, daemon revisions, and safety health | Ready |
 | Weather, clocks, and calendar | Outside PeterFan's hardware-monitor focus | Out of scope |
 
 ## CPU Runner Contract
@@ -46,7 +47,7 @@ Reference points:
 
 ## Next Product Priorities
 
-1. Add an exportable comparison snapshot for sensor-source troubleshooting.
-2. Record the six-hour animation CPU and fan-control soak on release hardware.
+1. Record the six-hour animation CPU and fan-control soak on release hardware.
+2. Expand Apple Silicon core maps with privacy-safe M1 through M5 samples.
 3. Add reviewed third-party runner packs with strict size and CPU-cost limits.
 4. Research stable GPU utilization sources separately for macOS and Windows.
