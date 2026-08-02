@@ -11633,9 +11633,11 @@ mod tests {
         assert!(en.contains("support_report_copy_revision"));
         assert!(en.contains("d.support_report_copy_ok"));
         assert!(ko.contains(">리포트 복사<"));
+        // GitHub's Windows checkout may use CRLF, so do not make this source
+        // boundary assertion depend on a particular line-ending style.
         let product_source = source
-            .split("#[cfg(test)]\nmod tests {")
-            .next()
+            .rfind("mod tests {")
+            .map(|index| &source[..index])
             .unwrap_or(source);
         assert_eq!(
             product_source
