@@ -75,16 +75,19 @@ use peterfan_core::types::{Celsius, Fan, TempSensor};
 use peterfan_core::types::{SensorGroup, SensorKind};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 use runner::{
-    ease_motion_cpu as ease_runner_motion_cpu, enabled as runner_enabled,
-    frame_interval as runner_frame_interval,
+    build_or_fallback as build_runner_pack_or_fallback, ease_motion_cpu as ease_runner_motion_cpu,
+    enabled as runner_enabled, frame_interval as runner_frame_interval,
     frame_interval_for_pose as runner_frame_interval_for_pose, load_band as runner_load_band,
     load_band_with_hysteresis as runner_load_band_with_hysteresis, phase_step as runner_phase_step,
-    render_raw_frame, should_animate as runner_should_animate, smooth_cpu as smooth_runner_cpu,
+    should_animate as runner_should_animate, smooth_cpu as smooth_runner_cpu,
     uses_event_loop_timer as runner_uses_event_loop_timer, FRAME_COUNT as RUNNER_FRAME_COUNT,
     LOAD_BANDS as RUNNER_LOAD_BANDS, MAX_INTERVAL as RUNNER_MAX_INTERVAL,
     MIN_INTERVAL as RUNNER_MIN_INTERVAL, NATIVE_TICK as RUNNER_NATIVE_TICK,
-    PIXEL_HEIGHT as RUNNER_PIXEL_HEIGHT, PIXEL_WIDTH as RUNNER_PIXEL_WIDTH,
+    PIXEL_HEIGHT as RUNNER_PIXEL_HEIGHT, PIXEL_WIDTH as RUNNER_PIXEL_WIDTH, RunnerBuildError,
+    RunnerPack,
 };
+#[cfg(test)]
+use runner::render_raw_frame;
 #[cfg(target_os = "macos")]
 use runner::{
     native_next_delay as runner_native_next_delay, NATIVE_TOLERANCE as RUNNER_NATIVE_TOLERANCE,
@@ -97,7 +100,8 @@ const FAN_REFRESH_VISIBLE: Duration = Duration::from_secs(1);
 const FAN_REFRESH_BACKGROUND: Duration = Duration::from_secs(3);
 const FAN_STALE_AFTER: Duration = Duration::from_secs(8);
 const FAN_EMPTY_CONFIRMATIONS: u8 = 3;
-const RUNNER_LOAD_PRESET_CPUS: [f32; RUNNER_LOAD_BANDS] = [0.0, 30.0, 65.0, 90.0];
+const RUNNER_PREVIEW_BAND: usize = 1;
+const RUNNER_PREVIEW_POSE: u8 = 1;
 #[cfg(target_os = "macos")]
 const MENUBAR_GRAPH_WIDTH: f64 = 36.0;
 #[cfg(target_os = "macos")]
@@ -673,6 +677,13 @@ fn strings(lang: ResolvedLanguage) -> L10n {
     }
 }
 
+struct RunnerAssets {
+    pack: RunnerPack,
+    icons: Vec<Icon>,
+    #[cfg(target_os = "macos")]
+    native_images: Vec<Retained<NSImage>>,
+}
+
 struct App {
     monitor: Box<dyn SystemMonitor>,
     /// Shared (not owned) so control actions can run on a background thread
@@ -729,9 +740,7 @@ struct App {
     runner_cpu_pct: f32,
     runner_has_sample: bool,
     reduce_motion: bool,
-    runner_icons: Vec<Icon>,
-    #[cfg(target_os = "macos")]
-    runner_native_images: Vec<Retained<NSImage>>,
+    runner_assets: RunnerAssets,
     #[cfg(target_os = "macos")]
     runner_native_timer: Option<Retained<NSTimer>>,
     #[cfg(target_os = "macos")]
@@ -936,6 +945,54 @@ fn save_runner_character(character: RunnerCharacter) {
     let mut cfg = peterfan_platform::config::load();
     cfg.menubar.character = character;
     let _ = peterfan_platform::config::save(&cfg);
+}
+
+fn note_runner_build_failure(message: String) {
+    *STATUS.lock().expect("status poisoned") = message.clone();
+    log_menubar_event(&message);
+}
+
+fn runner_startup_failure_message(
+    requested: RunnerCharacter,
+    fallback: RunnerCharacter,
+    error: &RunnerBuildError,
+) -> String {
+    bounded_runner_message(
+        format!(
+            "runner '{}' failed; using '{}': {}",
+            requested.as_str(),
+            fallback.as_str(),
+            error
+        ),
+        180,
+    )
+}
+
+fn runner_switch_failure_message(requested: RunnerCharacter, error: &RunnerBuildError) -> String {
+    bounded_runner_message(
+        format!(
+            "runner '{}' unavailable; keeping current runner: {}",
+            requested.as_str(),
+            error
+        ),
+        180,
+    )
+}
+
+fn runner_preview_failure_message(requested: RunnerCharacter, error: &RunnerBuildError) -> String {
+    bounded_runner_message(
+        format!("runner '{}' preview fallback: {}", requested.as_str(), error),
+        180,
+    )
+}
+
+fn bounded_runner_message(message: String, limit: usize) -> String {
+    let mut bounded = message.chars().take(limit).collect::<String>();
+    if message.chars().count() > limit && limit > 0 {
+        bounded.pop();
+        bounded.push('…');
+    }
+    bounded
 }
 
 fn runner_character_label(lang: ResolvedLanguage, character: RunnerCharacter) -> &'static str {
@@ -2167,12 +2224,15 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|v| MenubarDisplay::parse(v))
         .unwrap_or(saved.display);
-    let runner_character = args
+    let requested_runner_character = args
         .iter()
         .position(|a| a == "--character")
         .and_then(|i| args.get(i + 1))
         .and_then(|v| RunnerCharacter::parse(v))
         .unwrap_or(saved.character);
+    let (runner_assets, runner_build_error) =
+        build_runner_assets_or_fallback(requested_runner_character);
+    let runner_character = runner_assets.pack.character();
     let temperature_source = saved.temperature_source;
     let update_channel = saved.update_channel;
     let language = saved.language;
@@ -2233,9 +2293,7 @@ fn main() {
         runner_cpu_pct: 0.0,
         runner_has_sample: false,
         reduce_motion: system_reduce_motion(),
-        runner_icons: make_runner_icons(runner_character),
-        #[cfg(target_os = "macos")]
-        runner_native_images: make_runner_native_images(runner_character),
+        runner_assets,
         #[cfg(target_os = "macos")]
         runner_native_timer: None,
         #[cfg(target_os = "macos")]
@@ -2279,6 +2337,13 @@ fn main() {
         next_update_result_refresh: Instant::now() + Duration::from_secs(1),
         control_confirm_until: None,
     };
+    if let Some(error) = runner_build_error {
+        note_runner_build_failure(runner_startup_failure_message(
+            requested_runner_character,
+            app.runner_character,
+            &error,
+        ));
+    }
 
     let mut next_metric_at = Instant::now();
     let mut next_runner_at = Instant::now();
@@ -3052,7 +3117,7 @@ fn build_tray(app: &mut App) {
 
     let initial_runner_icon = runner_enabled(app.display)
         .then(|| runner_icon_index(app.runner_cpu_pct, app.runner_frame));
-    let initial_icon = initial_runner_icon.and_then(|index| app.runner_icons.get(index).cloned());
+    let initial_icon = initial_runner_icon.and_then(|index| app.runner_assets.icons.get(index).cloned());
     match TrayIcon::new(tray_attributes(initial_icon, Box::new(menu))) {
         Ok(tray) => {
             #[cfg(target_os = "macos")]
@@ -5677,33 +5742,86 @@ fn runner_icon_index(cpu_pct: f32, frame: u8) -> usize {
         + usize::from(frame % RUNNER_FRAME_COUNT)
 }
 
-fn make_runner_icons(character: RunnerCharacter) -> Vec<Icon> {
-    RUNNER_LOAD_PRESET_CPUS
-        .into_iter()
-        .flat_map(|cpu| {
-            (0..RUNNER_FRAME_COUNT).map(move |frame| make_runner_icon(character, cpu, frame))
-        })
-        .collect()
+impl RunnerAssets {
+    fn from_pack(pack: RunnerPack) -> Self {
+        let icons = pack
+            .frames()
+            .iter()
+            .map(|rgba| runner_icon_from_rgba(rgba))
+            .collect();
+        #[cfg(target_os = "macos")]
+        let native_images = pack
+            .frames()
+            .iter()
+            .map(|rgba| make_runner_native_image_from_rgba(rgba))
+            .collect();
+        Self {
+            pack,
+            icons,
+            #[cfg(target_os = "macos")]
+            native_images,
+        }
+    }
 }
 
-#[cfg(target_os = "macos")]
-fn make_runner_native_images(character: RunnerCharacter) -> Vec<Retained<NSImage>> {
-    RUNNER_LOAD_PRESET_CPUS
-        .into_iter()
-        .flat_map(|cpu| {
-            (0..RUNNER_FRAME_COUNT)
-                .map(move |frame| make_runner_native_image(character, cpu, frame))
-        })
-        .collect()
+fn build_runner_assets(character: RunnerCharacter) -> Result<RunnerAssets, RunnerBuildError> {
+    build_runner_assets_with(character, RunnerPack::build)
 }
 
-#[cfg(target_os = "macos")]
-fn make_runner_native_image(
+fn build_runner_assets_with<F>(
     character: RunnerCharacter,
-    cpu_pct: f32,
-    frame: u8,
-) -> Retained<NSImage> {
-    let rgba = make_runner_rgba(character, cpu_pct, frame);
+    builder: F,
+) -> Result<RunnerAssets, RunnerBuildError>
+where
+    F: FnOnce(RunnerCharacter) -> Result<RunnerPack, RunnerBuildError>,
+{
+    builder(character).map(RunnerAssets::from_pack)
+}
+
+fn build_runner_assets_or_fallback(
+    character: RunnerCharacter,
+) -> (RunnerAssets, Option<RunnerBuildError>) {
+    let (pack, error) = build_runner_pack_or_fallback(character);
+    (RunnerAssets::from_pack(pack), error)
+}
+
+fn replace_runner_assets_with<F>(
+    current_character: &mut RunnerCharacter,
+    current_assets: &mut RunnerAssets,
+    requested: RunnerCharacter,
+    builder: F,
+) -> Result<(), RunnerBuildError>
+where
+    F: FnOnce(RunnerCharacter) -> Result<RunnerAssets, RunnerBuildError>,
+{
+    if *current_character == requested {
+        return Ok(());
+    }
+    let next_assets = builder(requested)?;
+    *current_character = requested;
+    *current_assets = next_assets;
+    Ok(())
+}
+
+#[cfg(test)]
+fn make_runner_icons(character: RunnerCharacter) -> Vec<Icon> {
+    build_runner_assets(character)
+        .expect("runner assets")
+        .icons
+}
+
+#[cfg(target_os = "macos")]
+fn runner_icon_from_rgba(rgba: &[u8]) -> Icon {
+    Icon::from_rgba(
+        rgba.to_vec(),
+        RUNNER_PIXEL_WIDTH,
+        RUNNER_PIXEL_HEIGHT,
+    )
+    .expect("valid icon")
+}
+
+#[cfg(target_os = "macos")]
+fn make_runner_native_image_from_rgba(rgba: &[u8]) -> Retained<NSImage> {
     let mut encoded = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut encoded, RUNNER_PIXEL_WIDTH, RUNNER_PIXEL_HEIGHT);
@@ -5711,7 +5829,7 @@ fn make_runner_native_image(
         encoder.set_depth(png::BitDepth::Eight);
         encoder
             .write_header()
-            .and_then(|mut writer| writer.write_image_data(&rgba))
+            .and_then(|mut writer| writer.write_image_data(rgba))
             .expect("runner frame must encode as PNG");
     }
     let data = NSData::from_vec(encoded);
@@ -5722,6 +5840,16 @@ fn make_runner_native_image(
     // both light and dark menu bars.
     image.setTemplate(true);
     image
+}
+
+#[cfg(not(target_os = "macos"))]
+fn runner_icon_from_rgba(rgba: &[u8]) -> Icon {
+    Icon::from_rgba(
+        rgba.to_vec(),
+        RUNNER_PIXEL_WIDTH,
+        RUNNER_PIXEL_HEIGHT,
+    )
+    .expect("valid icon")
 }
 
 #[cfg(target_os = "macos")]
@@ -5817,7 +5945,7 @@ fn sync_native_runner_timer(app: &mut App) {
         return;
     };
 
-    let images = app.runner_native_images.clone();
+    let images = app.runner_assets.native_images.clone();
     let frame = Arc::clone(&app.runner_native_frame);
     let cpu_bits = Arc::clone(&app.runner_native_cpu_bits);
     let motion_cpu_bits = Arc::clone(&app.runner_native_motion_cpu_bits);
@@ -5876,23 +6004,29 @@ fn set_runner_character(app: &mut App, character: RunnerCharacter) {
     if app.runner_character == character {
         return;
     }
+
+    if let Err(error) = replace_runner_assets_with(
+        &mut app.runner_character,
+        &mut app.runner_assets,
+        character,
+        build_runner_assets,
+    ) {
+        note_runner_build_failure(runner_switch_failure_message(character, &error));
+        return;
+    }
+
     #[cfg(target_os = "macos")]
     stop_native_runner_timer(app);
-    app.runner_character = character;
-    app.runner_icons = make_runner_icons(character);
     #[cfg(target_os = "macos")]
-    {
-        app.runner_native_images = make_runner_native_images(character);
-        app.runner_native_applied_icon
-            .store(usize::MAX, Ordering::Relaxed);
-    }
+    app.runner_native_applied_icon
+        .store(usize::MAX, Ordering::Relaxed);
     app.last_runner_icon = None;
     if let Some(ref tm) = app.tray_menu {
         for (candidate, item) in &tm.character_items {
-            item.set_checked(*candidate == character);
+            item.set_checked(*candidate == app.runner_character);
         }
     }
-    save_runner_character(character);
+    save_runner_character(app.runner_character);
     apply_runner_icon(app);
     #[cfg(target_os = "macos")]
     sync_native_runner_timer(app);
@@ -5929,7 +6063,7 @@ fn apply_runner_icon(app: &mut App) {
             };
             button.setImagePosition(native_status_item_image_position(app.display));
             let image = desired
-                .and_then(|index| app.runner_native_images.get(index))
+                .and_then(|index| app.runner_assets.native_images.get(index))
                 .map(|image| &**image);
             button.setImage(image);
             app.last_runner_icon = desired;
@@ -5938,7 +6072,7 @@ fn apply_runner_icon(app: &mut App) {
         }
 
         #[cfg(not(target_os = "macos"))]
-        let icon = desired.and_then(|index| app.runner_icons.get(index).cloned());
+        let icon = desired.and_then(|index| app.runner_assets.icons.get(index).cloned());
         #[cfg(not(target_os = "macos"))]
         if tray.set_icon_with_as_template(icon, false).is_ok() {
             app.last_runner_icon = desired;
@@ -5951,21 +6085,37 @@ fn menubar_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
     make_runner_icon(RunnerCharacter::Cat, cpu_pct, frame)
 }
 
+#[cfg(test)]
 fn make_runner_icon(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Icon {
-    let rgba = make_runner_rgba(character, cpu_pct, frame);
-    Icon::from_rgba(rgba, RUNNER_PIXEL_WIDTH, RUNNER_PIXEL_HEIGHT).expect("valid icon")
+    runner_icon_from_rgba(&make_runner_rgba(character, cpu_pct, frame))
 }
 
+#[cfg(test)]
 fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<u8> {
-    let rgba =
-        render_raw_frame(character, cpu_pct, frame).expect("runner frame must render as RGBA");
-    apply_white_runner_style(rgba)
+    apply_test_runner_style(
+        render_raw_frame(character, cpu_pct, frame).expect("runner frame must render as RGBA"),
+    )
 }
 
-fn apply_white_runner_style(mut rgba: Vec<u8>) -> Vec<u8> {
-    // Keep alpha coverage for crisp antialiased edges, but deliberately remove
-    // source/palette colours so every runner reads as one consistent menu-bar
-    // glyph.
+fn runner_cached_packs() -> &'static Vec<(RunnerCharacter, RunnerPack)> {
+    static PACKS: std::sync::OnceLock<Vec<(RunnerCharacter, RunnerPack)>> =
+        std::sync::OnceLock::new();
+    PACKS.get_or_init(|| {
+        RunnerCharacter::ALL
+            .into_iter()
+            .map(|character| {
+                let (pack, error) = build_runner_pack_or_fallback(character);
+                if let Some(error) = error {
+                    log_menubar_event(&runner_preview_failure_message(character, &error));
+                }
+                (character, pack)
+            })
+            .collect()
+    })
+}
+
+#[cfg(test)]
+fn apply_test_runner_style(mut rgba: Vec<u8>) -> Vec<u8> {
     for pixel in rgba.chunks_exact_mut(4) {
         if pixel[3] != 0 {
             pixel[0] = 255;
@@ -5987,44 +6137,47 @@ fn runner_character_values_json() -> String {
 
 fn runner_preview_alpha_json() -> &'static str {
     static PREVIEWS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    PREVIEWS.get_or_init(|| {
-        let entries = RunnerCharacter::ALL.map(|character| {
-            // The second gait pose keeps feet and facial details readable in a
-            // static picker thumbnail; airborne frames are more expressive in
-            // motion but can look ambiguous when frozen at 18 points.
-            let rgba = make_runner_rgba(character, 52.0, 1);
-            format!(r#""{}":"{}""#, character.as_str(), runner_alpha_hex(&rgba))
-        });
-        format!("{{{}}}", entries.join(","))
-    })
+    PREVIEWS.get_or_init(|| runner_preview_alpha_json_for(runner_cached_packs()))
 }
 
 fn runner_preview_frames_json() -> &'static str {
     static PREVIEWS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    PREVIEWS.get_or_init(|| {
-        let entries = RunnerCharacter::ALL.map(|character| {
+    PREVIEWS.get_or_init(|| runner_preview_frames_json_for(runner_cached_packs()))
+}
+
+fn runner_preview_alpha_json_for(packs: &[(RunnerCharacter, RunnerPack)]) -> String {
+    let entries = packs
+        .iter()
+        .map(|(character, pack)| {
+            format!(
+                r#""{}":"{}""#,
+                character.as_str(),
+                pack.preview_alpha_hex(RUNNER_PREVIEW_BAND, RUNNER_PREVIEW_POSE)
+                    .unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>();
+    format!("{{{}}}", entries.join(","))
+}
+
+fn runner_preview_frames_json_for(packs: &[(RunnerCharacter, RunnerPack)]) -> String {
+    let entries = packs
+        .iter()
+        .map(|(character, pack)| {
             let frames = (0..RUNNER_FRAME_COUNT)
                 .map(|frame| {
-                    let rgba = make_runner_rgba(character, 52.0, frame);
-                    format!(r#""{}""#, runner_alpha_hex(&rgba))
+                    format!(
+                        r#""{}""#,
+                        pack.preview_alpha_hex(RUNNER_PREVIEW_BAND, frame)
+                            .unwrap_or_default()
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join(",");
             format!(r#""{}":[{}]"#, character.as_str(), frames)
-        });
-        format!("{{{}}}", entries.join(","))
-    })
-}
-
-fn runner_alpha_hex(rgba: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut alpha = String::with_capacity((RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 2) as usize);
-    for pixel in rgba.chunks_exact(4) {
-        let value = pixel[3];
-        alpha.push(HEX[usize::from(value >> 4)] as char);
-        alpha.push(HEX[usize::from(value & 0x0f)] as char);
-    }
-    alpha
+        })
+        .collect::<Vec<_>>();
+    format!("{{{}}}", entries.join(","))
 }
 
 fn runner_picker_options(lang: ResolvedLanguage) -> String {
@@ -10225,6 +10378,88 @@ mod tests {
         assert!(html.contains("document.addEventListener('visibilitychange'"));
         assert!(html.contains("prefers-reduced-motion: reduce"));
         assert!(html.contains(r#".character-menu{display:none;position:fixed;"#));
+    }
+
+    #[test]
+    fn runner_preview_json_matches_shared_runner_pack_alpha() {
+        let packs = RunnerCharacter::ALL
+            .into_iter()
+            .map(|character| {
+                (
+                    character,
+                    runner::RunnerPack::build(character).expect("runner pack"),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let previews: serde_json::Value =
+            serde_json::from_str(&runner_preview_alpha_json_for(&packs))
+                .expect("valid preview JSON");
+        let previews = previews.as_object().expect("preview object");
+        let frames: serde_json::Value =
+            serde_json::from_str(&runner_preview_frames_json_for(&packs))
+                .expect("valid preview frames JSON");
+        let frames = frames.as_object().expect("preview frames object");
+
+        for (character, pack) in &packs {
+            assert_eq!(
+                previews
+                    .get(character.as_str())
+                    .and_then(serde_json::Value::as_str),
+                pack.preview_alpha_hex(1, 1).as_deref()
+            );
+
+            let expected = (0..RUNNER_FRAME_COUNT)
+                .map(|frame| pack.preview_alpha_hex(1, frame).expect("preview alpha"))
+                .collect::<Vec<_>>();
+            let actual = frames
+                .get(character.as_str())
+                .and_then(serde_json::Value::as_array)
+                .expect("character preview frames")
+                .iter()
+                .map(|frame| frame.as_str().expect("frame alpha").to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn runner_character_switch_keeps_previous_assets_on_build_failure() {
+        let mut character = RunnerCharacter::Cat;
+        let mut assets = build_runner_assets(RunnerCharacter::Cat).expect("cat assets");
+        let original_preview = assets
+            .pack
+            .preview_alpha_hex(1, 1)
+            .expect("original preview alpha");
+
+        let error = replace_runner_assets_with(
+            &mut character,
+            &mut assets,
+            RunnerCharacter::Fox,
+            |requested| {
+                if requested == RunnerCharacter::Fox {
+                    Err(runner::RunnerBuildError::InvalidFrame {
+                        character: requested,
+                        detail: "forced failure".to_string(),
+                    })
+                } else {
+                    build_runner_assets(requested)
+                }
+            },
+        )
+        .expect_err("switch should fail");
+
+        assert_eq!(character, RunnerCharacter::Cat);
+        assert_eq!(assets.pack.character(), RunnerCharacter::Cat);
+        assert_eq!(
+            assets.pack.preview_alpha_hex(1, 1).as_deref(),
+            Some(original_preview.as_str())
+        );
+        assert_eq!(
+            assets.icons.len(),
+            usize::from(RUNNER_FRAME_COUNT) * RUNNER_LOAD_BANDS
+        );
+        assert!(error.to_string().contains("forced failure"));
     }
 
     #[test]
