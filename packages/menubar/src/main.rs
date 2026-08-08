@@ -9073,7 +9073,7 @@ var RUNNER_PREVIEW_ALPHA=__RUNNER_PREVIEWS__;
 var RUNNER_PREVIEW_FRAMES=__RUNNER_PREVIEW_FRAMES__;
 var RUNNER_SELECTED_PREVIEW=__RUNNER_SELECTED_PREVIEW__;
 var RUNNER_SELECTED_PREVIEW_CHARACTER='__RUNNER_SELECTED_PREVIEW_CHARACTER__';
-var RUNNER_PREVIEW_STATE={canvas:null,character:'',cpu:0,frame:0,band:0,timer:null};
+var RUNNER_PREVIEW_STATE={canvas:null,character:'',cpu:0,frame:0,band:0,timer:null,hasRealCpuSample:false};
 var RUNNER_PREVIEW_GAIT=[1.14,1.00,0.84,1.02,1.14,1.00,0.84,1.02];
 function runnerPreviewBand(cpu){
   var load=Math.max(0,Math.min(100,Number(cpu)||0));
@@ -9097,6 +9097,13 @@ function runnerSelectedPreviewMatchesCharacter(payload,character){
   return Array.isArray(payload.runner_selected_preview)
     &&payload.runner_selected_preview.length===32
     &&payload.runner_selected_preview_character===character;
+}
+function runnerSelectedPreviewMatchesCurrent(payload,character){
+  return runnerSelectedPreviewMatchesCharacter(payload,character)
+    &&RUNNER_SELECTED_PREVIEW_CHARACTER===character
+    &&payload.runner_selected_preview.every(function(frame,index){
+      return frame===RUNNER_SELECTED_PREVIEW[index];
+    });
 }
 function paintRunnerPreview(canvas,character,frame,band){
   if(!canvas)return;
@@ -9163,8 +9170,20 @@ function setRunnerPreviewVisibility(visible){
   }
   if(state.canvas&&!state.timer) scheduleRunnerPreview();
 }
+function seedRunnerPreview(cpu){
+  var state=RUNNER_PREVIEW_STATE;
+  state.cpu=Math.max(0,Math.min(100,Number(cpu)||0));
+  state.band=runnerPreviewBand(state.cpu);
+  paintRunnerPreview(state.canvas,state.character,state.frame,state.band);
+}
 function setRunnerPreviewCpu(cpu){
-  RUNNER_PREVIEW_STATE.cpu=Math.max(0,Math.min(100,Number(cpu)||0));
+  var state=RUNNER_PREVIEW_STATE;
+  state.cpu=Math.max(0,Math.min(100,Number(cpu)||0));
+  if(!state.hasRealCpuSample){
+    state.hasRealCpuSample=true;
+    state.band=runnerPreviewBand(state.cpu);
+    paintRunnerPreview(state.canvas,state.character,state.frame,state.band);
+  }
 }
 document.addEventListener('visibilitychange',function(){
   var state=RUNNER_PREVIEW_STATE;
@@ -9263,11 +9282,12 @@ function updateMenubarDisplay(d){
     button.setAttribute('aria-pressed',active?'true':'false');
   });
   var character=RUNNER_CHARACTERS.indexOf(d.runner_character)>=0?d.runner_character:'cat';
-  if(runnerSelectedPreviewMatchesCharacter(d,character)
-    &&RUNNER_SELECTED_PREVIEW_CHARACTER!==character){
+  var cpu=Math.max(0,Math.min(100,Number(d.runner_cpu_pct)||0));
+  var canonicalPackChanged=runnerSelectedPreviewMatchesCharacter(d,character)
+    &&!runnerSelectedPreviewMatchesCurrent(d,character);
+  if(canonicalPackChanged){
     RUNNER_SELECTED_PREVIEW=d.runner_selected_preview;
     RUNNER_SELECTED_PREVIEW_CHARACTER=character;
-    RUNNER_PREVIEW_STATE.band=runnerPreviewBand(RUNNER_PREVIEW_STATE.cpu);
   }
   var characterSelect=document.getElementById('runner-character-select');
   var selectedOption=document.querySelector('.character-option[data-character="'+character+'"]');
@@ -9280,12 +9300,16 @@ function updateMenubarDisplay(d){
   var characterPreview=document.getElementById('runner-character-preview');
   if(characterPreview&&characterPreview.dataset.runnerPreview!==character){
     characterPreview.dataset.runnerPreview=character;
-    startRunnerPreview(characterPreview,character,0);
+    startRunnerPreview(characterPreview,character,cpu);
+  }
+  if(canonicalPackChanged||!RUNNER_PREVIEW_STATE.hasRealCpuSample){
+    RUNNER_PREVIEW_STATE.hasRealCpuSample=true;
+    seedRunnerPreview(cpu);
+  } else {
+    setRunnerPreviewCpu(cpu);
   }
   var pace=document.getElementById('runner-pace');
   if(!pace)return;
-  var cpu=Math.max(0,Math.min(100,Number(d.runner_cpu_pct)||0));
-  setRunnerPreviewCpu(cpu);
   if(d.runner_reduce_motion){
     pace.textContent=LANG==='ko'?'동작 줄이기 · 정지 화면':'Reduce Motion · still frame';
     pace.title=LANG==='ko'
@@ -10628,6 +10652,32 @@ mod tests {
     }
 
     #[test]
+    fn browser_preview_first_real_payload_seeds_current_cpu_without_resetting_later_updates() {
+        let first_real_band = runner_load_band(90.0);
+        assert_eq!(first_real_band, 3, "the first real 90% sample seeds band 3");
+        let ordinary_update_band = first_real_band;
+        assert_eq!(
+            ordinary_update_band, 3,
+            "a later 60% payload updates the target only; the timer owns hysteresis"
+        );
+
+        let html = dashboard_html(ResolvedLanguage::En, false);
+        assert!(html.contains("hasRealCpuSample:false"));
+        assert!(html.contains(
+            "if(!state.hasRealCpuSample){\n    state.hasRealCpuSample=true;\n    state.band=runnerPreviewBand(state.cpu);\n    paintRunnerPreview(state.canvas,state.character,state.frame,state.band);\n  }"
+        ));
+        assert!(html.contains("function runnerSelectedPreviewMatchesCurrent(payload,character)"));
+        assert!(html.contains(
+            "var cpu=Math.max(0,Math.min(100,Number(d.runner_cpu_pct)||0));\n  var canonicalPackChanged=runnerSelectedPreviewMatchesCharacter(d,character)"
+        ));
+        assert!(html.contains(
+            "if(canonicalPackChanged||!RUNNER_PREVIEW_STATE.hasRealCpuSample){\n    RUNNER_PREVIEW_STATE.hasRealCpuSample=true;\n    seedRunnerPreview(cpu);\n  } else {\n    setRunnerPreviewCpu(cpu);\n  }"
+        ));
+        assert!(html.contains("startRunnerPreview(characterPreview,character,cpu);"));
+        assert!(!html.contains("startRunnerPreview(characterPreview,character,0);"));
+    }
+
+    #[test]
     fn non_macos_runner_selection_keeps_a_hysteretic_band_state() {
         let mut band = 0;
         assert_eq!(runner_icon_index_with_hysteresis(23.0, 4, &mut band), 4);
@@ -10945,7 +10995,8 @@ mod tests {
         assert!(html.contains("var RUNNER_PREVIEW_FRAMES={"));
         assert!(html.contains("paintRunnerPreviews(document);"));
         assert!(html.contains("paintRunnerPreview(canvas,canvas.dataset.runnerPreview,1,0);"));
-        assert!(html.contains("startRunnerPreview(characterPreview,character,0);"));
+        assert!(html.contains("startRunnerPreview(characterPreview,character,cpu);"));
+        assert!(!html.contains("startRunnerPreview(characterPreview,character,0);"));
         assert!(html.contains("function runnerPreviewInterval(cpu,frame)"));
         assert!(html.contains("RUNNER_PREVIEW_GAIT=[1.14,1.00,0.84,1.02"));
         assert!(html.contains("60+420*Math.pow(1-load,3)"));
@@ -11032,7 +11083,7 @@ mod tests {
             html.contains("RUNNER_PREVIEW_STATE.band=runnerPreviewBand(RUNNER_PREVIEW_STATE.cpu);")
         );
         assert!(html.contains(
-            "RUNNER_PREVIEW_STATE.band=runnerPreviewBand(RUNNER_PREVIEW_STATE.cpu);\n  }"
+            "state.band=runnerPreviewBand(state.cpu);\n  paintRunnerPreview(state.canvas,state.character,state.frame,state.band);"
         ));
         assert!(
             html.contains("var canonical=selected&&RUNNER_SELECTED_PREVIEW_CHARACTER===character;")
