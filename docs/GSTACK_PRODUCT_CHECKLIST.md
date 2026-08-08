@@ -40,4 +40,5 @@ source-tree check cannot prove.
 - [ ] Sleep/wake and mixed-DPI multi-display run on release hardware.
 - [ ] Signed and notarized DMG installed from the public GitHub asset.
 - [ ] OTA update from the previous public release with rollback drill.
-- [ ] Signing and notarization from a second authorized Mac.
+- [ ] Signing and notarization from a second authorized Mac; the transfer
+      runbook and verification command are documented and ready to execute.

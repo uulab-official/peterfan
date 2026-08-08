@@ -12,6 +12,7 @@
 mod render;
 
 use std::borrow::Cow;
+use std::io::Read;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -23,13 +24,14 @@ use peterfan_core::error::CoreError;
 use peterfan_core::metrics::ProcSort;
 use peterfan_core::profile::Profile;
 use peterfan_core::thermals::{hottest_temperature_c, representative_temperature_c};
-use peterfan_core::types::{Fan, TempSensor};
+use peterfan_core::types::{Fan, SensorGroup, TempSensor};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 /// Delay between the two metric samples; usage % and network rates are deltas.
 /// 150 ms is the sweet spot: accurate enough for ≥1% CPU granularity, but
 /// fast enough to feel instant. Anything below 100 ms gives noisy readings.
 const SAMPLE_MS: u64 = 150;
+const MAX_API_BODY_BYTES: u64 = 64 * 1024;
 
 #[derive(Parser)]
 #[command(
@@ -949,6 +951,7 @@ h1{font-size:20px}code{background:#f3f4f6;padding:2px 6px;border-radius:5px}a{co
 <h3>GET</h3>
 <ul>
 <li><a href="/api/v1/status">/api/v1/status</a> — full snapshot</li>
+<li><a href="/api/v1/doctor">/api/v1/doctor</a> — support/automation health snapshot</li>
 <li><a href="/api/v1/cpu">/api/v1/cpu</a> · <a href="/api/v1/memory">/memory</a> · <a href="/api/v1/disks">/disks</a> · <a href="/api/v1/network">/network</a></li>
 <li><a href="/api/v1/battery">/api/v1/battery</a> · <a href="/api/v1/temps">/temps</a> · <a href="/api/v1/fans">/fans</a> · <a href="/api/v1/power">/power</a> · <a href="/api/v1/processes">/processes</a> · <a href="/api/v1/system">/system</a></li>
 </ul>
@@ -996,7 +999,25 @@ fn cmd_serve(mock: bool, port: u16) -> Result<()> {
         let path = req.url().split('?').next().unwrap_or("/").to_string();
         let mut body = String::new();
         if method == "POST" {
-            let _ = req.as_reader().read_to_string(&mut body);
+            let mut limited_reader = req.as_reader().take(MAX_API_BODY_BYTES + 1);
+            let _ = limited_reader.read_to_string(&mut body);
+            if body.len() as u64 > MAX_API_BODY_BYTES {
+                let resp = Response::from_string(
+                    serde_json::json!({"error":"request body too large","max_bytes":MAX_API_BODY_BYTES}).to_string(),
+                )
+                .with_status_code(413)
+                .with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+                )
+                .with_header(
+                    Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
+                )
+                .with_header(
+                    Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap(),
+                );
+                let _ = req.respond(resp);
+                continue;
+            }
         }
 
         // Human-friendly index page.
@@ -1008,6 +1029,17 @@ fn cmd_serve(mock: bool, port: u16) -> Result<()> {
                 )
                 .with_header(
                     Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+                )
+                .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+                .with_header(
+                    Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap(),
+                )
+                .with_header(
+                    Header::from_bytes(
+                        &b"Content-Security-Policy"[..],
+                        &b"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'"[..],
+                    )
+                    .unwrap(),
                 );
             let _ = req.respond(resp);
             continue;
@@ -1029,6 +1061,10 @@ fn cmd_serve(mock: bool, port: u16) -> Result<()> {
             )
             .with_header(
                 Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+            )
+            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+            .with_header(
+                Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap(),
             );
         let _ = req.respond(resp);
     }
@@ -1058,6 +1094,7 @@ fn route(
                 "power_watts": provider.power_watts(),
             }),
         ),
+        ("GET", "/api/v1/doctor") => (200, api_doctor_json(m, provider, allow_daemon)),
         ("GET", "/api/v1/system") => (200, serde_json::json!(m.system_info())),
         ("GET", "/api/v1/cpu") => (200, serde_json::json!(m.cpu())),
         ("GET", "/api/v1/memory") => (200, serde_json::json!(m.memory())),
@@ -1078,6 +1115,66 @@ fn route(
         ("OPTIONS", _) => (204, serde_json::Value::Null),
         _ => (404, serde_json::json!({ "error": "not found" })),
     }
+}
+
+fn api_doctor_json(
+    monitor: &dyn SystemMonitor,
+    provider: &dyn HardwareProvider,
+    allow_daemon: bool,
+) -> serde_json::Value {
+    let mcaps = monitor.capabilities();
+    let caps = provider.capabilities();
+    let daemon_reachable = allow_daemon && peterfan_platform::daemon_reachable();
+    let installed_daemon_version = peterfan_platform::installed_daemon_version();
+    let daemon_update_required = installed_daemon_version
+        .as_deref()
+        .is_some_and(peterfan_platform::daemon_update_required);
+    let elevated = is_elevated();
+    let readiness = fan_control_readiness(
+        caps.control_fans,
+        daemon_reachable,
+        daemon_update_required,
+        elevated,
+    );
+    let metrics_ready = mcaps.cpu && mcaps.memory;
+    let thermal_ready = caps.read_temps && caps.read_fans;
+    let mut issues = Vec::new();
+    if !metrics_ready {
+        issues.push("core_metrics_unavailable");
+    }
+    if !thermal_ready {
+        issues.push("thermal_reading_unavailable");
+    }
+    if matches!(readiness, FanControlReadiness::DaemonUpdateRequired) {
+        issues.push("daemon_update_required");
+    }
+    serde_json::json!({
+        "schema_version": 1,
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "health": if issues.is_empty() { "ok" } else { "degraded" },
+        "issues": issues,
+        "checks": {
+            "metrics_ready": metrics_ready,
+            "thermal_ready": thermal_ready,
+            "fan_control_readiness": fan_control_readiness_name(readiness),
+        },
+        "metrics_backend": monitor.name(),
+        "thermal_backend": provider.name(),
+        "fan_control": {
+            "readiness": fan_control_readiness_name(readiness),
+            "elevated": elevated,
+            "daemon_reachable": daemon_reachable,
+            "installed_daemon_version": installed_daemon_version,
+            "minimum_required_daemon_version": peterfan_platform::MIN_REQUIRED_DAEMON_VERSION,
+            "daemon_update_required": daemon_update_required,
+            "control_fans": caps.control_fans,
+        },
+        "support": {
+            "binary": std::env::current_exe().ok().map(|path| path.display().to_string()),
+            "expected_team_id": peterfan_platform::updater::EXPECTED_TEAM_ID,
+            "update_install_result": peterfan_platform::updater::read_update_install_result(),
+        },
+    })
 }
 
 fn api_apply_profile(
@@ -1354,6 +1451,8 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
                  alert.cooldown, alert.interval"
             ),
         }
+        cfg.validate_for_control()
+            .map_err(|error| anyhow::anyhow!("invalid fan-control config: {error}"))?;
         let p = peterfan_platform::config::save(&cfg)
             .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
         if !json {
@@ -2175,6 +2274,7 @@ fn temperature_rows_json_with_freshness(
         .iter()
         .filter_map(|temp| {
             let mut value = serde_json::to_value(temp).ok()?;
+            value["group"] = serde_json::to_value(SensorGroup::from_sensor(temp)).ok()?;
             value["sampled_at_unix_ms"] = serde_json::json!(sampled_at_unix_ms);
             value["age_ms"] = serde_json::json!(age_ms);
             value["stale"] = serde_json::json!(stale);
@@ -2846,6 +2946,16 @@ fn fan_control_readiness(
     }
 }
 
+fn fan_control_readiness_name(readiness: FanControlReadiness) -> &'static str {
+    match readiness {
+        FanControlReadiness::Unsupported => "unsupported",
+        FanControlReadiness::DaemonUpdateRequired => "daemon_update_required",
+        FanControlReadiness::DaemonReady => "daemon_ready",
+        FanControlReadiness::Elevated => "elevated_direct_control",
+        FanControlReadiness::NeedsSetup => "needs_setup",
+    }
+}
+
 fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     let provider = provider(mock);
     let monitor = instant_monitor(mock);
@@ -2859,6 +2969,24 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     let daemon_update_required = installed_daemon_version
         .as_deref()
         .is_some_and(peterfan_platform::daemon_update_required);
+    let fan_readiness = fan_control_readiness(
+        caps.control_fans,
+        daemon_reachable,
+        daemon_update_required,
+        elevated,
+    );
+    let metrics_ready = mcaps.cpu && mcaps.memory;
+    let thermal_ready = caps.read_temps && caps.read_fans;
+    let mut issues = Vec::new();
+    if !metrics_ready {
+        issues.push("core_metrics_unavailable");
+    }
+    if !thermal_ready {
+        issues.push("thermal_reading_unavailable");
+    }
+    if matches!(fan_readiness, FanControlReadiness::DaemonUpdateRequired) {
+        issues.push("daemon_update_required");
+    }
     #[cfg(target_os = "macos")]
     let cpu_temperature_probe = peterfan_platform::cpu_temperature_probe();
 
@@ -2871,6 +2999,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             "minimum_required_daemon_version": peterfan_platform::MIN_REQUIRED_DAEMON_VERSION,
             "daemon_update_required": daemon_update_required,
             "daemon_compatible": installed_daemon_version.is_some() && !daemon_update_required,
+            "readiness": fan_control_readiness_name(fan_readiness),
         });
         #[cfg(target_os = "macos")]
         if let Some(p) = peterfan_platform::fan_control_probe() {
@@ -2891,8 +3020,18 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             serde_json::to_string_pretty(&serde_json::json!({
                 "os": std::env::consts::OS,
                 "arch": std::env::consts::ARCH,
+                "schema_version": 1,
+                "app_version": env!("CARGO_PKG_VERSION"),
+                "mock": mock,
+                "health": if issues.is_empty() { "ok" } else { "degraded" },
+                "issues": issues,
                 "metrics_backend": monitor.name(),
                 "thermal_backend": provider.name(),
+                "checks": {
+                    "metrics_ready": metrics_ready,
+                    "thermal_ready": thermal_ready,
+                    "fan_control_readiness": fan_control_readiness_name(fan_readiness),
+                },
                 "elevated": elevated,
                 "metrics": {
                     "cpu": mcaps.cpu, "memory": mcaps.memory, "disks": mcaps.disks,
@@ -2904,6 +3043,11 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                     "cpu_temperature_probe": cpu_temperature,
                 },
                 "fan_control": fan_control,
+                "support": {
+                    "binary": std::env::current_exe().ok().map(|path| path.display().to_string()),
+                    "expected_team_id": peterfan_platform::updater::EXPECTED_TEAM_ID,
+                    "update_install_result": peterfan_platform::updater::read_update_install_result(),
+                },
             }))?
         );
         return Ok(());
@@ -4916,6 +5060,43 @@ mod tests {
     }
 
     #[test]
+    fn doctor_readiness_names_are_stable_for_support_tools() {
+        use super::FanControlReadiness;
+
+        assert_eq!(
+            super::fan_control_readiness_name(FanControlReadiness::DaemonReady),
+            "daemon_ready"
+        );
+        assert_eq!(
+            super::fan_control_readiness_name(FanControlReadiness::DaemonUpdateRequired),
+            "daemon_update_required"
+        );
+        assert_eq!(
+            super::fan_control_readiness_name(FanControlReadiness::Unsupported),
+            "unsupported"
+        );
+    }
+
+    #[test]
+    fn local_api_doctor_has_a_stable_support_schema() {
+        let monitor = super::instant_monitor(true);
+        let provider = super::provider(true);
+        let (status, value) = super::route(
+            "GET",
+            "/api/v1/doctor",
+            "",
+            monitor.as_ref(),
+            provider.as_ref(),
+            false,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["health"], "ok");
+        assert!(value["checks"]["metrics_ready"].as_bool().unwrap_or(false));
+        assert!(value["support"]["expected_team_id"].is_string());
+    }
+
+    #[test]
     fn temperature_json_rows_include_freshness_without_changing_array_shape() {
         let sensors = super::Sensors {
             temps: vec![temp("cpu.die", "CPU", SensorKind::Cpu, 64.0)],
@@ -4934,6 +5115,7 @@ mod tests {
         let rows = super::temperature_rows_json(&sensors);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["id"], "cpu.die");
+        assert_eq!(rows[0]["group"], "cpu_average");
         assert_eq!(rows[0]["sampled_at_unix_ms"], 1_000);
         assert_eq!(rows[0]["age_ms"], 7_000);
         assert_eq!(rows[0]["stale"], true);
@@ -4950,6 +5132,7 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["id"], "cpu.core.0");
+        assert_eq!(rows[0]["group"], "cpu_core");
         assert_eq!(rows[0]["sampled_at_unix_ms"], 2_000);
         assert_eq!(rows[0]["age_ms"], 0);
         assert_eq!(rows[0]["stale"], false);

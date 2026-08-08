@@ -12,12 +12,12 @@
 // and that payload has grown past the default limit (128) over the course of
 // many feature additions. Bumping this is the standard fix (recommended by
 // rustc's own error message), not a workaround for a real problem.
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(any(not(target_os = "macos"), test))]
 use tao::dpi::PhysicalPosition;
+#[cfg(not(target_os = "macos"))]
+use tao::dpi::PhysicalSize;
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
@@ -58,17 +60,17 @@ use tray_icon::{
 use wry::{WebView, WebViewBuilder, RGBA};
 
 use peterfan_core::config::{
-    CustomCurveConfig, Language, MenubarDisplay, NotificationConfig, ResolvedLanguage,
-    RunnerCharacter, TemperatureSource,
+    Config, CustomCurveConfig, Language, MenubarDisplay, NotificationConfig, ResolvedLanguage,
+    Rule, RunnerCharacter, TemperatureSource, UpdateChannel,
 };
 use peterfan_core::error::CoreError;
 use peterfan_core::metrics::{DiskInfo, ProcSort};
 use peterfan_core::profile::Profile;
 use peterfan_core::thermals::{representative_temperature_c, safety_temperature_c};
-use peterfan_core::types::SensorKind;
 #[cfg(test)]
 use peterfan_core::types::SensorSource;
 use peterfan_core::types::{Celsius, Fan, TempSensor};
+use peterfan_core::types::{SensorGroup, SensorKind};
 use peterfan_core::{HardwareProvider, SystemMonitor};
 
 const REFRESH: Duration = Duration::from_secs(1);
@@ -83,6 +85,87 @@ const FAN_EMPTY_CONFIRMATIONS: u8 = 3;
 const RUNNER_FRAME_COUNT: u8 = 8;
 const RUNNER_PIXEL_WIDTH: u32 = 48;
 const RUNNER_PIXEL_HEIGHT: u32 = 32;
+// Keep the procedural characters legible after macOS reduces the 48x32 source
+// image to the 27x18 menu-bar slot. A lighter stroke exposes the joints and
+// facial cut-outs instead of turning every pose into one white blob.
+const RUNNER_STROKE_SCALE: f32 = 0.82;
+const HUMAN_RUN_FRAME_WIDTH: u32 = 32;
+const HUMAN_RUN_FRAME_HEIGHT: u32 = 32;
+const HUMAN_RUN_DRAW_WIDTH: u32 = 30;
+const HUMAN_RUN_SHEET: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/runner/caveman.png"
+));
+const CAT_RUN_FRAME_WIDTH: u32 = 66;
+const CAT_RUN_FRAME_HEIGHT: u32 = 66;
+const CAT_RUN_FRAME_COUNT: u32 = 5;
+const CAT_RUN_SHEET: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/runner/cat-run-cc0.png"
+));
+const FOX_RUN_FRAME_WIDTH: u32 = 64;
+const FOX_RUN_FRAME_HEIGHT: u32 = 36;
+const FOX_RUN_FRAME_COUNT: u32 = 6;
+const FOX_RUN_SHEET: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/runner/fox-run-cc0.png"
+));
+const DOG_RUN_FRAME_WIDTH: u32 = 60;
+const DOG_RUN_FRAME_HEIGHT: u32 = 38;
+const DOG_RUN_FRAME_COUNT: u32 = 6;
+const DOG_RUN_SHEET_ROW: u32 = 2;
+const DOG_RUN_SHEET: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/runner/dog-run-cc0.png"
+));
+const RABBIT_RUN_FRAME_WIDTH: u32 = 32;
+const RABBIT_RUN_FRAME_HEIGHT: u32 = 26;
+const RABBIT_RUN_FRAME_COUNT: u32 = 6;
+const RABBIT_RUN_SHEET: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/runner/rabbit-run-cc0.png"
+));
+const GHOST_RUN_FRAME_WIDTH: u32 = 32;
+const GHOST_RUN_FRAME_HEIGHT: u32 = 32;
+const GHOST_RUN_FRAME_COUNT: u32 = 6;
+const GHOST_RUN_SHEET: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/runner/ghost-run-cc0.png"
+));
+const DINO_RUN_FRAMES: &[&[u8]] = &[
+    include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/runner/dino-run-1-cc0.png"
+    )),
+    include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/runner/dino-run-2-cc0.png"
+    )),
+    include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/runner/dino-run-3-cc0.png"
+    )),
+    include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/runner/dino-run-4-cc0.png"
+    )),
+    include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/runner/dino-run-5-cc0.png"
+    )),
+    include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/runner/dino-run-6-cc0.png"
+    )),
+    include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/runner/dino-run-7-cc0.png"
+    )),
+    include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/runner/dino-run-8-cc0.png"
+    )),
+];
 const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(60);
 const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(480);
 #[cfg(target_os = "macos")]
@@ -398,6 +481,10 @@ static SUPPORT_REPORT: Mutex<String> = Mutex::new(String::new());
 static SUPPORT_REPORT_COPY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static SUPPORT_REPORT_COPY_REVISION: AtomicU64 = AtomicU64::new(0);
 static SUPPORT_REPORT_COPY_OK: AtomicBool = AtomicBool::new(false);
+/// Monotonic completion signal for copying the current TOML configuration.
+static CONFIG_COPY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static CONFIG_COPY_REVISION: AtomicU64 = AtomicU64::new(0);
+static CONFIG_COPY_OK: AtomicBool = AtomicBool::new(false);
 /// Guards `install_fan_control()` process-wide. The popover and Detail
 /// Window each track their own "installing…" button state in per-webview JS
 /// (`FAN_CONTROL_FIX_PENDING`), which doesn't stop both windows from firing
@@ -671,10 +758,12 @@ struct App {
     display: MenubarDisplay,
     runner_character: RunnerCharacter,
     temperature_source: TemperatureSource,
+    update_channel: UpdateChannel,
     critical_temp_c: f32,
     notifications: NotificationConfig,
     notification_runtime: NotificationRuntime,
     language: Language,
+    show_cpu_core_graph: bool,
     tray: Option<TrayIcon>,
     tray_menu: Option<TrayMenu>,
     window: Option<Window>,
@@ -699,6 +788,8 @@ struct App {
     fan_hist: VecDeque<f32>,
     /// Multi-range history (2m/1h/1d) for the popover's own charts.
     cpu_h: RangedHistory,
+    /// Per-core short history used by the compact overview graph.
+    per_core_h: Vec<RangedHistory>,
     mem_h: RangedHistory,
     temp_h: RangedHistory,
     /// Combined rx+tx throughput (bytes/sec) — the chart only ever shows the
@@ -911,6 +1002,12 @@ fn save_menubar_display(display: MenubarDisplay) {
     let _ = peterfan_platform::config::save(&cfg);
 }
 
+fn save_cpu_core_graph(show: bool) {
+    let mut cfg = peterfan_platform::config::load();
+    cfg.menubar.show_cpu_core_graph = show;
+    let _ = peterfan_platform::config::save(&cfg);
+}
+
 fn save_runner_character(character: RunnerCharacter) {
     let mut cfg = peterfan_platform::config::load();
     cfg.menubar.character = character;
@@ -968,6 +1065,20 @@ fn save_temperature_source(source: TemperatureSource) {
     let _ = peterfan_platform::config::save(&cfg);
 }
 
+fn save_update_channel(channel: UpdateChannel) {
+    let mut cfg = peterfan_platform::config::load();
+    cfg.menubar.update_channel = channel;
+    let _ = peterfan_platform::config::save(&cfg);
+}
+
+fn configured_update_channel() -> UpdateChannel {
+    peterfan_platform::config::load().menubar.update_channel
+}
+
+fn fetch_configured_release() -> Result<peterfan_platform::updater::ReleaseInfo, String> {
+    peterfan_platform::updater::fetch_release_for_channel(configured_update_channel())
+}
+
 /// Persist the UI language choice so it survives a relaunch.
 fn save_language(language: Language) {
     let mut cfg = peterfan_platform::config::load();
@@ -1016,6 +1127,132 @@ fn save_notification_settings(settings: &NotificationConfig) -> Result<(), Strin
         .map(|_| ())
         .map_err(|error| format!("could not save notifications: {error}"))
 }
+
+/// Parse, validate, persist, and reload the automation rules edited in the
+/// detail window. The daemon validates the same config again before applying
+/// it, but validating here gives the user an immediate error without touching
+/// the on-disk file.
+fn parse_automation_rules(rules_json: &str) -> Result<Vec<Rule>, String> {
+    let rules: Vec<Rule> = match serde_json::from_str(rules_json) {
+        Ok(rules) => rules,
+        Err(error) => return Err(format!("invalid rule data ({error})")),
+    };
+    let validation = Config {
+        rules: rules.clone(),
+        ..Config::default()
+    };
+    validation.validate_for_control()?;
+    Ok(rules)
+}
+
+fn save_automation_rules(rules_json: &str) -> String {
+    let rules = match parse_automation_rules(rules_json) {
+        Ok(rules) => rules,
+        Err(error) => return format!("rules save failed: {error}"),
+    };
+    let mut cfg = peterfan_platform::config::load();
+    cfg.rules = rules;
+    let count = cfg.rules.len();
+    if let Err(error) = peterfan_platform::config::save(&cfg) {
+        return format!("rules save failed: {error}");
+    }
+    #[cfg(unix)]
+    if peterfan_platform::ipc::send_command("reload").is_none() {
+        return format!("rules saved ({count}); daemon reload pending");
+    }
+    format!("rules saved ({count})")
+}
+
+fn parse_imported_config(config_text: &str) -> Result<Config, String> {
+    let config = match Config::from_toml(config_text) {
+        Ok(config) => config,
+        Err(error) => return Err(format!("invalid TOML ({error})")),
+    };
+    config.validate_for_control()?;
+    Ok(config)
+}
+
+fn import_config(config_text: &str) -> String {
+    let config = match parse_imported_config(config_text) {
+        Ok(config) => config,
+        Err(error) => return format!("config import failed: {error}"),
+    };
+    let rules = config.rules.len();
+    if let Err(error) = peterfan_platform::config::save(&config) {
+        return format!("config import failed: {error}");
+    }
+    #[cfg(unix)]
+    if peterfan_platform::ipc::send_command("reload").is_none() {
+        return format!("config imported ({rules} rules); daemon reload pending");
+    }
+    format!("config imported ({rules} rules)")
+}
+
+fn copy_config_export() {
+    if CONFIG_COPY_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let config = peterfan_platform::config::load().to_toml();
+    std::thread::spawn(move || {
+        let result = write_support_report_to_clipboard(&config);
+        CONFIG_COPY_OK.store(result.is_ok(), Ordering::Release);
+        CONFIG_COPY_REVISION.fetch_add(1, Ordering::AcqRel);
+        CONFIG_COPY_IN_FLIGHT.store(false, Ordering::Release);
+        match result {
+            Ok(()) => log_menubar_event("configuration copied"),
+            Err(error) => log_menubar_event(&format!("configuration copy failed: {error}")),
+        }
+    });
+}
+
+fn daemon_supports_user_config(reply: Option<&str>) -> bool {
+    reply.is_some_and(|reply| reply.starts_with("ok logged-in-user"))
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_daemon_user_config_sync() {
+    let probe = peterfan_platform::ipc::send_command("config-source");
+    if !daemon_supports_user_config(probe.as_deref()) {
+        let installed = peterfan_platform::installed_daemon_version();
+        // A helper that is already too old for general control is handled by
+        // the regular stale-daemon updater running alongside this task. Only
+        // self-reinstall here when the sole missing capability is config sync.
+        if installed.as_deref().is_some_and(|version| {
+            !peterfan_platform::daemon_update_required(version)
+                && peterfan_platform::daemon_self_reinstall_supported(version)
+        }) {
+            match peterfan_platform::daemon_install::reinstall_via_running_daemon(false) {
+                Ok(_) => log_menubar_event("daemon updated for user config sync"),
+                Err(error) => {
+                    log_menubar_event(&format!("daemon config sync update skipped: {error}"))
+                }
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < deadline {
+            let probe = peterfan_platform::ipc::send_command("config-source");
+            if daemon_supports_user_config(probe.as_deref()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+    if let Some(reply) = peterfan_platform::ipc::send_command("reload") {
+        log_menubar_event(&format!("daemon config sync: {reply}"));
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn ensure_daemon_user_config_sync() {
+    let _ = peterfan_platform::ipc::send_command("reload");
+}
+
+#[cfg(not(unix))]
+fn ensure_daemon_user_config_sync() {}
 
 fn hottest_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
     temps.iter().max_by(|a, b| {
@@ -1313,6 +1550,7 @@ fn raw_temperature_row_label(sensor: &TempSensor) -> String {
     format!("{} · {}", sensor.label, sensor.id)
 }
 
+#[cfg(test)]
 fn sensor_group_label(lang: ResolvedLanguage, kind: SensorKind) -> &'static str {
     match (lang, kind) {
         (_, SensorKind::Cpu) => "CPU",
@@ -1327,6 +1565,29 @@ fn sensor_group_label(lang: ResolvedLanguage, kind: SensorKind) -> &'static str 
         (ResolvedLanguage::En, SensorKind::Mainboard) => "Mainboard",
         (ResolvedLanguage::En, SensorKind::Battery) => "Battery",
         (ResolvedLanguage::En, SensorKind::Other) => "Other",
+    }
+}
+
+fn sensor_group_label_for_sensor(lang: ResolvedLanguage, sensor: &TempSensor) -> &'static str {
+    match (lang, SensorGroup::from_sensor(sensor)) {
+        (_, SensorGroup::CpuAverage) => "CPU average",
+        (_, SensorGroup::CpuHottest) => "CPU hottest",
+        (_, SensorGroup::CpuCore) => "CPU cores",
+        (ResolvedLanguage::Ko, SensorGroup::CpuDie) => "CPU 다이",
+        (ResolvedLanguage::En, SensorGroup::CpuDie) => "CPU die",
+        (ResolvedLanguage::Ko, SensorGroup::GpuDie) => "GPU 다이",
+        (ResolvedLanguage::En, SensorGroup::GpuDie) => "GPU die",
+        (_, SensorGroup::Gpu) => "GPU",
+        (ResolvedLanguage::Ko, SensorGroup::Memory) => "메모리",
+        (ResolvedLanguage::En, SensorGroup::Memory) => "Memory",
+        (ResolvedLanguage::Ko, SensorGroup::Storage) => "저장장치",
+        (ResolvedLanguage::En, SensorGroup::Storage) => "Storage",
+        (ResolvedLanguage::Ko, SensorGroup::Battery) => "배터리",
+        (ResolvedLanguage::En, SensorGroup::Battery) => "Battery",
+        (ResolvedLanguage::Ko, SensorGroup::Mainboard) => "메인보드",
+        (ResolvedLanguage::En, SensorGroup::Mainboard) => "Mainboard",
+        (ResolvedLanguage::Ko, SensorGroup::Other) => "기타",
+        (ResolvedLanguage::En, SensorGroup::Other) => "Other",
     }
 }
 
@@ -1706,6 +1967,7 @@ fn support_report_json(input: SupportReportInput<'_>) -> serde_json::Value {
                 "id": sensor.id,
                 "label": sensor.label,
                 "kind": sensor.kind,
+                "group": SensorGroup::from_sensor(sensor),
                 "source": sensor.source,
                 "value_c": sensor.value.0,
             })).collect::<Vec<_>>(),
@@ -1761,6 +2023,7 @@ fn recover_after_pause(app: &mut App, now: Instant) {
     app.dashboard_slow_cache = DashboardSlowCache::default();
     app.fan_hist.clear();
     app.cpu_h.clear();
+    app.per_core_h.clear();
     app.mem_h.clear();
     app.temp_h.clear();
     app.net_h.clear();
@@ -1987,7 +2250,9 @@ fn main() {
         .and_then(|v| RunnerCharacter::parse(v))
         .unwrap_or(saved.character);
     let temperature_source = saved.temperature_source;
+    let update_channel = saved.update_channel;
     let language = saved.language;
+    let show_cpu_core_graph = saved.show_cpu_core_graph;
 
     let (monitor, provider): (Box<dyn SystemMonitor>, std::sync::Arc<dyn HardwareProvider>) =
         if use_mock {
@@ -2013,10 +2278,12 @@ fn main() {
         display,
         runner_character,
         temperature_source,
+        update_channel,
         critical_temp_c,
         notifications,
         notification_runtime: NotificationRuntime::default(),
         language,
+        show_cpu_core_graph,
         tray: None,
         tray_menu: None,
         window: None,
@@ -2031,6 +2298,7 @@ fn main() {
         detail_webview_ready: false,
         fan_hist: VecDeque::with_capacity(HIST_CAP),
         cpu_h: RangedHistory::new(),
+        per_core_h: Vec::new(),
         mem_h: RangedHistory::new(),
         temp_h: RangedHistory::new(),
         net_h: RangedHistory::new(),
@@ -2137,6 +2405,10 @@ fn main() {
                     // newly bundled daemon themselves. Keep required helper
                     // updates silent after the one initial macOS approval.
                     std::thread::spawn(maybe_silently_update_stale_daemon);
+                    // A system LaunchDaemon can start before any GUI user has
+                    // logged in. Reload now that the menu-bar app knows which
+                    // user's settings should drive rules and custom curves.
+                    std::thread::spawn(ensure_daemon_user_config_sync);
                     std::thread::spawn(check_for_updates_on_launch);
                 }
             }
@@ -2179,6 +2451,13 @@ fn main() {
                 w.set_focus();
                 app.popover_visible = true;
                 log_menubar_event("popover shown");
+                if let Some(wv) = &app.webview {
+                    evaluate_dashboard_script(
+                        wv,
+                        "window.setRunnerPreviewVisibility&&window.setRunnerPreviewVisibility(true);",
+                        "popover",
+                    );
+                }
                 defer_dashboard_io_after_open(&mut app);
             }
             app.popover_show_at = None;
@@ -2276,6 +2555,14 @@ fn main() {
                 } else if c == "installupdate" {
                     std::thread::spawn(install_update_interactive);
                     refresh_after_pending = true;
+                } else if let Some(value) = c.strip_prefix("updatechannel:") {
+                    if let Some(channel) = UpdateChannel::parse(value) {
+                        app.update_channel = channel;
+                        save_update_channel(channel);
+                        *STATUS.lock().expect("status poisoned") =
+                            format!("update channel set to {}", channel.as_str());
+                    }
+                    refresh_after_pending = true;
                 } else if c == "toggle-login-item" || c == "togglelogin" {
                     std::thread::spawn(move || {
                         let status = toggle_login_item();
@@ -2302,12 +2589,25 @@ fn main() {
                         save_menubar_display(display);
                         refresh_after_pending = true;
                     }
+                } else if let Some(value) = c.strip_prefix("cpu-core-graph:") {
+                    let show = value == "1";
+                    app.show_cpu_core_graph = show;
+                    save_cpu_core_graph(show);
+                    refresh_after_pending = true;
                 } else if let Some(value) = c.strip_prefix("character:") {
                     if let Some(character) = RunnerCharacter::parse(value) {
                         set_runner_character(&mut app, character);
                         next_runner_at = now;
                         refresh_after_pending = true;
                     }
+                } else if let Some(json) = c.strip_prefix("rules:") {
+                    let status = save_automation_rules(json);
+                    *STATUS.lock().expect("status poisoned") = status;
+                    refresh_after_pending = true;
+                } else if let Some(config_text) = c.strip_prefix("importconfig:") {
+                    let status = import_config(config_text);
+                    *STATUS.lock().expect("status poisoned") = status;
+                    refresh_after_pending = true;
                 } else if c.starts_with("notifications:") {
                     match apply_notification_command(&mut app.notifications, c) {
                         Ok(()) => {
@@ -2499,11 +2799,22 @@ fn main() {
                 // visible immediately instead of needing a relaunch.
                 build_tray(&mut app);
                 let was_visible = app.popover_visible;
+                let popover_geometry = app
+                    .window
+                    .as_ref()
+                    .and_then(capture_window_geometry);
                 if app.window.is_some() {
+                    if let Some(window) = app.window.as_ref() {
+                        window.set_visible(false);
+                    }
                     app.window = None;
                     app.webview = None;
                     app.webview_ready = false;
                     let _ = build_popover(&mut app, target, &event_proxy);
+                    if let (Some(window), Some(geometry)) = (app.window.as_ref(), popover_geometry)
+                    {
+                        restore_window_geometry(window, geometry);
+                    }
                     if was_visible {
                         if let Some(w) = &app.window {
                             w.set_visible(true);
@@ -2514,11 +2825,23 @@ fn main() {
                 if app.detail_window.is_some() {
                     let was_detail_visible =
                         app.detail_window.as_ref().is_some_and(Window::is_visible);
+                    let detail_geometry = app
+                        .detail_window
+                        .as_ref()
+                        .and_then(capture_window_geometry);
+                    if let Some(window) = app.detail_window.as_ref() {
+                        window.set_visible(false);
+                    }
                     app.detail_window = None;
                     app.detail_webview = None;
                     app.detail_webview_ready = false;
                     if was_detail_visible {
                         open_detail_window(&mut app, target, &event_proxy);
+                        if let (Some(window), Some(geometry)) =
+                            (app.detail_window.as_ref(), detail_geometry)
+                        {
+                            restore_window_geometry(window, geometry);
+                        }
                     }
                 }
                 update(&mut app);
@@ -2908,12 +3231,17 @@ fn build_popover(
                 CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
             } else if body == "copydiagnostics" {
                 copy_support_report();
+            } else if body == "copyconfig" {
+                copy_config_export();
             } else if body == "checkupdates"
                 || body == "installupdate"
                 || body == "toggle-login-item"
                 || body == "togglelogin"
+                || body.starts_with("updatechannel:")
                 || body.starts_with("display:")
                 || body.starts_with("character:")
+                || body.starts_with("rules:")
+                || body.starts_with("importconfig:")
                 || body.starts_with("notifications:")
             {
                 enqueue_pending(body);
@@ -2974,6 +3302,70 @@ fn build_popover(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct WindowGeometry {
+    #[cfg(target_os = "macos")]
+    frame: NSRect,
+    #[cfg(not(target_os = "macos"))]
+    position: PhysicalPosition<i32>,
+    #[cfg(not(target_os = "macos"))]
+    size: PhysicalSize<u32>,
+}
+
+fn capture_window_geometry(window: &Window) -> Option<WindowGeometry> {
+    #[cfg(target_os = "macos")]
+    {
+        // The Tao position is not reliable across mixed-DPI macOS displays;
+        // retain the actual AppKit frame so a WebView rebuild cannot move the
+        // popover to the window manager's default (usually screen center).
+        let raw = window.ns_window().cast::<NSWindow>();
+        if raw.is_null() {
+            return None;
+        }
+        let native_window = unsafe { &*raw };
+        Some(WindowGeometry {
+            frame: native_window.frame(),
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Some(WindowGeometry {
+            position: window.outer_position().ok()?,
+            size: window.inner_size(),
+        })
+    }
+}
+
+fn restore_window_geometry(window: &Window, geometry: WindowGeometry) {
+    #[cfg(target_os = "macos")]
+    {
+        let raw = window.ns_window().cast::<NSWindow>();
+        if raw.is_null() {
+            return;
+        }
+        let native_window = unsafe { &*raw };
+        native_window.setContentSize(NSSize::new(
+            geometry.frame.size.width,
+            geometry.frame.size.height,
+        ));
+        native_window.setFrameTopLeftPoint(NSPoint::new(
+            geometry.frame.origin.x,
+            geometry.frame.origin.y + geometry.frame.size.height,
+        ));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let scale = window.scale_factor();
+        window.set_inner_size(LogicalSize::new(
+            geometry.size.width as f64 / scale,
+            geometry.size.height as f64 / scale,
+        ));
+        window.set_outer_position(geometry.position);
+    }
+}
+
 /// Opens (or, if already created, shows) the persistent detail
 /// window — same dashboard content as the popover, in an ordinary decorated,
 /// resizable, user-positioned window that stays open regardless of focus.
@@ -3026,12 +3418,17 @@ fn open_detail_window(
                 CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
             } else if body == "copydiagnostics" {
                 copy_support_report();
+            } else if body == "copyconfig" {
+                copy_config_export();
             } else if body == "checkupdates"
                 || body == "installupdate"
                 || body == "toggle-login-item"
                 || body == "togglelogin"
+                || body.starts_with("updatechannel:")
                 || body.starts_with("display:")
                 || body.starts_with("character:")
+                || body.starts_with("rules:")
+                || body.starts_with("importconfig:")
                 || body.starts_with("notifications:")
             {
                 enqueue_pending(body);
@@ -3394,6 +3791,13 @@ fn toggle_popover(
 
 fn hide_popover(app: &mut App) {
     app.popover_show_at = None;
+    if let Some(wv) = &app.webview {
+        evaluate_dashboard_script(
+            wv,
+            "window.setRunnerPreviewVisibility&&window.setRunnerPreviewVisibility(false);",
+            "popover",
+        );
+    }
     if let Some(w) = &app.window {
         w.set_visible(false);
     }
@@ -3419,6 +3823,7 @@ fn default_curve_points() -> Vec<[f32; 2]> {
 }
 
 fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
+    let config = peterfan_platform::config::load();
     let disks = app.monitor.disks();
     let disk = primary_disk(&disks);
     let disk_io_present = disk.is_some_and(|d| d.read_bytes_per_sec + d.write_bytes_per_sec > 0.0);
@@ -3471,8 +3876,9 @@ fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
         })
         .unwrap_or_else(|| (false, 0.0, String::new(), String::new()));
 
-    let curve_points = peterfan_platform::config::load()
+    let curve_points = config
         .custom_curve
+        .as_ref()
         .and_then(|c| c.to_fan_curve())
         .map(|curve| {
             curve
@@ -3605,7 +4011,7 @@ fn refresh_all_temperature_cache(app: &mut App, now: Instant, dashboard_visible:
                     "l": raw_temperature_row_label(temp),
                     "c": format!("{:.0}°C", temp.value.0),
                     "cls": temp_cls(temp.value),
-                    "group": sensor_group_label(app.language.resolve(), temp.kind),
+                    "group": sensor_group_label_for_sensor(app.language.resolve(), temp),
                     "source": temp.source.short(),
                 })
             })
@@ -3644,6 +4050,10 @@ fn dashboard_render_requested(
 
 fn update(app: &mut App) {
     let now = Instant::now();
+    // Re-read the small user config so CLI edits and the detail-window rule
+    // editor converge without an app restart. The privileged daemon still
+    // validates the same file before applying rules.
+    let config = peterfan_platform::config::load();
     app.monitor.refresh_quick();
     let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
     let popover_scheduled = app.popover_show_at.is_some();
@@ -3728,6 +4138,14 @@ fn update(app: &mut App) {
 
     push_hist(&mut app.fan_hist, fastest_pct);
     app.cpu_h.push(cpu.usage_percent);
+    if app.per_core_h.len() != cpu.per_core.len() {
+        app.per_core_h = (0..cpu.per_core.len())
+            .map(|_| RangedHistory::new())
+            .collect();
+    }
+    for (history, usage) in app.per_core_h.iter_mut().zip(&cpu.per_core) {
+        history.push(*usage);
+    }
     app.mem_h.push(mem.used_percent);
     if let Some(temp) = display_temp {
         app.temp_h.push(temp);
@@ -4073,6 +4491,11 @@ fn update(app: &mut App) {
         }
     };
     let cpu_core_groups = dashboard_cpu_core_groups(&cpu.per_core);
+    let core_hist: Vec<Vec<f32>> = app
+        .per_core_h
+        .iter()
+        .map(|history| to_vec(history.range(ChartRange::TwoMin)))
+        .collect();
 
     let mut payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
@@ -4088,6 +4511,7 @@ fn update(app: &mut App) {
         ),
         "cores": &cpu.per_core,
         "core_groups": cpu_core_groups,
+        "core_hist": core_hist,
         "mem_pct": mem.used_percent,
         "mem_text": format!("{:.1}%", mem.used_percent),
         "mem_sub": format!(
@@ -4168,7 +4592,10 @@ fn update(app: &mut App) {
             "fan_failures": app.notifications.fan_failures,
             "updates": app.notifications.updates,
         },
+        "rules": &config.rules,
         "app_version": env!("CARGO_PKG_VERSION"),
+        "update_channel": app.update_channel.as_str(),
+        "show_cpu_core_graph": app.show_cpu_core_graph,
         "app_update_status": app_update_status,
         "update_install_result": &app.update_install_result,
         "setup_tone": setup_tone(!daemon_st.is_empty(), daemon_update_needed),
@@ -4177,6 +4604,7 @@ fn update(app: &mut App) {
         "curve_points": &app.dashboard_slow_cache.curve_points,
         "last_cmd_status": STATUS.lock().expect("status poisoned").clone(),
     });
+    payload["config_toml"] = serde_json::json!(config.to_toml());
     payload["menubar_display"] = serde_json::json!(app.display.as_str());
     payload["runner_character"] = serde_json::json!(app.runner_character.as_str());
     payload["runner_cpu_pct"] = serde_json::json!(app.runner_cpu_pct);
@@ -4209,6 +4637,9 @@ fn update(app: &mut App) {
         serde_json::json!(SUPPORT_REPORT_COPY_REVISION.load(Ordering::Acquire));
     payload["support_report_copy_ok"] =
         serde_json::json!(SUPPORT_REPORT_COPY_OK.load(Ordering::Acquire));
+    payload["config_copy_revision"] =
+        serde_json::json!(CONFIG_COPY_REVISION.load(Ordering::Acquire));
+    payload["config_copy_ok"] = serde_json::json!(CONFIG_COPY_OK.load(Ordering::Acquire));
     let script = format!(
         "window.__pf_pending={payload};window.__pf&&window.__pf.update(window.__pf_pending)"
     );
@@ -5092,7 +5523,7 @@ fn check_for_updates_on_launch() {
     if APP_UPDATE_IN_FLIGHT.load(Ordering::Acquire) {
         return;
     }
-    if let Ok(release) = peterfan_platform::updater::fetch_latest_release() {
+    if let Ok(release) = fetch_configured_release() {
         if APP_UPDATE_IN_FLIGHT.load(Ordering::Acquire) {
             return;
         }
@@ -5143,7 +5574,7 @@ fn run_update_interactive(install: bool) {
     } else {
         "app update check started"
     });
-    match peterfan_platform::updater::fetch_latest_release() {
+    match fetch_configured_release() {
         Ok(release)
             if !peterfan_platform::updater::is_newer(
                 env!("CARGO_PKG_VERSION"),
@@ -5486,6 +5917,8 @@ fn make_runner_native_image(
     let image = NSImage::initWithData(NSImage::alloc(), &data)
         .expect("encoded runner frame must decode as NSImage");
     image.setSize(NSSize::new(27.0, 18.0));
+    // Template mode keeps every runner as the same white status-item glyph on
+    // both light and dark menu bars.
     image.setTemplate(true);
     image
 }
@@ -5723,30 +6156,635 @@ fn make_runner_icon(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Icon
 }
 
 fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<u8> {
-    match character {
-        RunnerCharacter::Cat
-        | RunnerCharacter::Dog
-        | RunnerCharacter::Rabbit
-        | RunnerCharacter::Fox => make_quadruped_runner_rgba(character, cpu_pct, frame),
+    let rgba = match character {
+        RunnerCharacter::Cat => make_cat_asset_runner_rgba(cpu_pct, frame),
+        RunnerCharacter::Dog => make_dog_asset_runner_rgba(cpu_pct, frame),
+        RunnerCharacter::Rabbit => make_rabbit_asset_runner_rgba(cpu_pct, frame),
+        RunnerCharacter::Fox => make_fox_asset_runner_rgba(cpu_pct, frame),
         RunnerCharacter::Penguin => make_penguin_runner_rgba(cpu_pct, frame),
-        RunnerCharacter::Dinosaur => make_dinosaur_runner_rgba(cpu_pct, frame),
+        RunnerCharacter::Dinosaur => make_dinosaur_asset_runner_rgba(cpu_pct, frame),
         RunnerCharacter::Robot => make_robot_runner_rgba(cpu_pct, frame),
-        RunnerCharacter::Ghost => make_ghost_runner_rgba(cpu_pct, frame),
+        RunnerCharacter::Ghost => make_ghost_asset_runner_rgba(cpu_pct, frame),
+        RunnerCharacter::Human => make_human_runner_rgba(frame),
         RunnerCharacter::Bird
         | RunnerCharacter::Duck
         | RunnerCharacter::Sheep
         | RunnerCharacter::Fish
         | RunnerCharacter::Slime
-        | RunnerCharacter::Human
         | RunnerCharacter::Pushup
         | RunnerCharacter::Orbit
         | RunnerCharacter::Sushi
         | RunnerCharacter::City
         | RunnerCharacter::Sausage
         | RunnerCharacter::Party => make_novelty_runner_rgba(character, cpu_pct, frame),
+    };
+
+    apply_white_runner_style(rgba)
+}
+
+fn apply_white_runner_style(mut rgba: Vec<u8>) -> Vec<u8> {
+    // Keep alpha coverage for crisp antialiased edges, but deliberately remove
+    // source/palette colours so every runner reads as one consistent menu-bar
+    // glyph.
+    for pixel in rgba.chunks_exact_mut(4) {
+        if pixel[3] != 0 {
+            pixel[0] = 255;
+            pixel[1] = 255;
+            pixel[2] = 255;
+        }
+    }
+    rgba
+}
+
+fn make_cat_asset_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
+    static FRAMES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+
+    let frames = FRAMES.get_or_init(|| {
+        let decoder = png::Decoder::new(Cursor::new(CAT_RUN_SHEET));
+        let mut reader = decoder
+            .read_info()
+            .expect("cat runner sheet must have valid PNG metadata");
+        let mut source = vec![
+            0;
+            reader
+                .output_buffer_size()
+                .expect("cat runner sheet must expose a decoded buffer size")
+        ];
+        let info = reader
+            .next_frame(&mut source)
+            .expect("cat runner sheet must decode");
+        assert_eq!(info.width, CAT_RUN_FRAME_WIDTH * CAT_RUN_FRAME_COUNT);
+        assert_eq!(info.height, CAT_RUN_FRAME_HEIGHT);
+        assert_eq!(info.color_type, png::ColorType::Rgba);
+
+        let source = &source[..info.buffer_size()];
+        let mut frames = (0..RUNNER_FRAME_COUNT)
+            .map(|frame| {
+                let mut rgba = vec![0u8; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize];
+                let frame_position =
+                    f32::from(frame) * CAT_RUN_FRAME_COUNT as f32 / f32::from(RUNNER_FRAME_COUNT);
+                let frame_a = frame_position.floor() as u32 % CAT_RUN_FRAME_COUNT;
+                let frame_b = (frame_a + 1) % CAT_RUN_FRAME_COUNT;
+                let frame_mix = frame_position.fract();
+                let draw_left = 0;
+                let draw_top = 0.0;
+                let draw_width = 48;
+                let draw_height = 32;
+
+                let sample_alpha = |source_frame: u32, source_x: u32, source_y: u32| {
+                    let frame_x = source_frame * CAT_RUN_FRAME_WIDTH;
+                    let source_index = ((source_y * info.width + frame_x + source_x) as usize) * 4;
+                    let red = source[source_index];
+                    let green = source[source_index + 1];
+                    let blue = source[source_index + 2];
+                    let source_alpha = source[source_index + 3];
+                    let is_blue_background = blue > red.saturating_add(35)
+                        && blue > green.saturating_add(10)
+                        && blue > 100;
+                    if is_blue_background {
+                        0
+                    } else {
+                        source_alpha
+                    }
+                };
+
+                for draw_y in 0..draw_height {
+                    for draw_x in 0..draw_width {
+                        let target_x = draw_left + draw_x;
+                        let target_y = (draw_top + draw_y as f32).round() as i32;
+                        if !(0..RUNNER_PIXEL_HEIGHT as i32).contains(&target_y) {
+                            continue;
+                        }
+                        // The public sheet has a small matte margin around
+                        // the cat. Crop it before downsampling so the glyph
+                        // reads as a deliberate menu-bar runner instead of a
+                        // tiny sprite floating in a large cell.
+                        let source_x = 1 + draw_x * (CAT_RUN_FRAME_WIDTH - 2) / draw_width;
+                        let source_y = 4 + draw_y * (CAT_RUN_FRAME_HEIGHT - 8) / draw_height;
+                        let alpha_a = sample_alpha(frame_a, source_x, source_y);
+                        let alpha_b = sample_alpha(frame_b, source_x, source_y);
+                        let target_index =
+                            ((target_y as u32 * RUNNER_PIXEL_WIDTH + target_x) as usize) * 4;
+                        rgba[target_index + 3] = (f32::from(alpha_a) * (1.0 - frame_mix)
+                            + f32::from(alpha_b) * frame_mix)
+                            .round() as u8;
+                    }
+                }
+
+                rgba
+            })
+            .collect::<Vec<_>>();
+        normalize_runner_asset_frames(&mut frames);
+        frames
+    });
+
+    // Apply the load-sensitive vertical envelope after the source frames are
+    // cached. Keeping the cache CPU-independent is important: otherwise the
+    // first observed load would permanently determine every later pose.
+    const BOUNCE: [f32; 8] = [1.0, 0.2, -1.0, -2.2, -1.3, 0.2, 0.9, -0.8];
+    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
+    let motion = 0.55 + load.sqrt() * 0.70;
+    let vertical_shift = (0.5 + BOUNCE[usize::from(frame)] * motion).round() as i32;
+    let base = &frames[usize::from(frame) % frames.len()];
+    let mut rgba = vec![0u8; base.len()];
+    for y in 0..RUNNER_PIXEL_HEIGHT as i32 {
+        let target_y = y + vertical_shift;
+        if !(0..RUNNER_PIXEL_HEIGHT as i32).contains(&target_y) {
+            continue;
+        }
+        for x in 0..RUNNER_PIXEL_WIDTH as i32 {
+            let source_index = ((y as u32 * RUNNER_PIXEL_WIDTH + x as u32) as usize) * 4;
+            let target_index = ((target_y as u32 * RUNNER_PIXEL_WIDTH + x as u32) as usize) * 4;
+            rgba[target_index..target_index + 4]
+                .copy_from_slice(&base[source_index..source_index + 4]);
+        }
+    }
+    rgba
+}
+
+struct RunnerAssetLayout {
+    frame_width: u32,
+    frame_height: u32,
+    frame_count: u32,
+    sheet_row: u32,
+    crop_left: u32,
+    crop_top: u32,
+    crop_width: u32,
+    crop_height: u32,
+}
+
+fn decode_runner_asset_frames(sheet: &[u8], layout: RunnerAssetLayout) -> Vec<Vec<u8>> {
+    let RunnerAssetLayout {
+        frame_width,
+        frame_height,
+        frame_count,
+        sheet_row,
+        crop_left,
+        crop_top,
+        crop_width,
+        crop_height,
+    } = layout;
+    let mut decoder = png::Decoder::new(Cursor::new(sheet));
+    decoder.set_transformations(png::Transformations::EXPAND);
+    let mut reader = decoder
+        .read_info()
+        .expect("runner asset must have valid PNG metadata");
+    let mut source = vec![
+        0;
+        reader
+            .output_buffer_size()
+            .expect("runner asset must expose a decoded buffer size")
+    ];
+    let info = reader
+        .next_frame(&mut source)
+        .expect("runner asset must decode");
+    assert_eq!(info.width, frame_width * frame_count);
+    assert!(info.height >= frame_height * (sheet_row + 1));
+
+    let channels = match info.color_type {
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
+        png::ColorType::Grayscale => 1,
+        png::ColorType::GrayscaleAlpha => 2,
+        color_type => panic!("unsupported runner asset color type: {color_type:?}"),
+    };
+    let has_alpha = matches!(
+        info.color_type,
+        png::ColorType::Rgba | png::ColorType::GrayscaleAlpha
+    );
+    let source = &source[..info.buffer_size()];
+
+    let mut frames = (0..RUNNER_FRAME_COUNT)
+        .map(|frame| {
+            let mut rgba = vec![0u8; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize];
+            let frame_position =
+                f32::from(frame) * frame_count as f32 / f32::from(RUNNER_FRAME_COUNT);
+            let frame_a = frame_position.floor() as u32 % frame_count;
+            let frame_b = (frame_a + 1) % frame_count;
+            let frame_mix = frame_position.fract();
+
+            let sample_alpha = |source_frame: u32, source_x: u32, source_y: u32| {
+                let source_index = (((sheet_row * frame_height + source_y) * info.width
+                    + source_frame * frame_width
+                    + source_x) as usize)
+                    * channels;
+                let alpha = if has_alpha {
+                    if channels == 4 {
+                        source[source_index + 3]
+                    } else {
+                        source[source_index + 1]
+                    }
+                } else {
+                    255
+                };
+                // A few palette exports flatten the transparent matte. Keep
+                // it out even when the PNG has no tRNS chunk.
+                let is_matte = match info.color_type {
+                    // Preserve real black outlines in RGBA artwork. Flattened
+                    // RGB exports still need the legacy dark-matte removal.
+                    png::ColorType::Rgb => {
+                        let red = source[source_index];
+                        let green = source[source_index + 1];
+                        let blue = source[source_index + 2];
+                        red < 35 && green < 35 && blue < 35
+                    }
+                    png::ColorType::Grayscale => source[source_index] < 35,
+                    png::ColorType::Rgba | png::ColorType::GrayscaleAlpha => false,
+                    _ => false,
+                };
+                if is_matte {
+                    0
+                } else {
+                    alpha
+                }
+            };
+
+            for draw_y in 0..RUNNER_PIXEL_HEIGHT {
+                for draw_x in 0..RUNNER_PIXEL_WIDTH {
+                    let source_x = crop_left + draw_x.min(47) * crop_width.saturating_sub(1) / 47;
+                    let source_y = crop_top + draw_y.min(31) * crop_height.saturating_sub(1) / 31;
+                    let alpha_a = sample_alpha(frame_a, source_x, source_y);
+                    let alpha_b = sample_alpha(frame_b, source_x, source_y);
+                    let target_index = ((draw_y * RUNNER_PIXEL_WIDTH + draw_x) as usize) * 4;
+                    rgba[target_index + 3] = (f32::from(alpha_a) * (1.0 - frame_mix)
+                        + f32::from(alpha_b) * frame_mix)
+                        .round() as u8;
+                }
+            }
+
+            rgba
+        })
+        .collect::<Vec<_>>();
+    normalize_runner_asset_frames(&mut frames);
+    frames
+}
+
+fn apply_asset_runner_motion(frames: &[Vec<u8>], cpu_pct: f32, frame: u8) -> Vec<u8> {
+    const BOUNCE: [f32; 8] = [1.0, 0.2, -1.0, -2.2, -1.3, 0.2, 0.9, -0.8];
+    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
+    let motion = 0.55 + load.sqrt() * 0.70;
+    let vertical_shift = (0.5 + BOUNCE[usize::from(frame)] * motion).round() as i32;
+    let base = &frames[usize::from(frame) % frames.len()];
+    let mut rgba = vec![0u8; base.len()];
+
+    for y in 0..RUNNER_PIXEL_HEIGHT as i32 {
+        let target_y = y + vertical_shift;
+        if !(0..RUNNER_PIXEL_HEIGHT as i32).contains(&target_y) {
+            continue;
+        }
+        for x in 0..RUNNER_PIXEL_WIDTH as i32 {
+            let source_index = ((y as u32 * RUNNER_PIXEL_WIDTH + x as u32) as usize) * 4;
+            let target_index = ((target_y as u32 * RUNNER_PIXEL_WIDTH + x as u32) as usize) * 4;
+            rgba[target_index..target_index + 4]
+                .copy_from_slice(&base[source_index..source_index + 4]);
+        }
+    }
+    rgba
+}
+
+fn make_fox_asset_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
+    static FRAMES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+    let frames = FRAMES.get_or_init(|| {
+        decode_runner_asset_frames(
+            FOX_RUN_SHEET,
+            RunnerAssetLayout {
+                frame_width: FOX_RUN_FRAME_WIDTH,
+                frame_height: FOX_RUN_FRAME_HEIGHT,
+                frame_count: FOX_RUN_FRAME_COUNT,
+                sheet_row: 0,
+                crop_left: 1,
+                crop_top: 0,
+                crop_width: FOX_RUN_FRAME_WIDTH - 2,
+                crop_height: FOX_RUN_FRAME_HEIGHT,
+            },
+        )
+    });
+    apply_asset_runner_motion(frames, cpu_pct, frame)
+}
+
+fn make_rabbit_asset_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
+    static FRAMES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+    let frames = FRAMES.get_or_init(|| {
+        decode_runner_asset_frames(
+            RABBIT_RUN_SHEET,
+            RunnerAssetLayout {
+                frame_width: RABBIT_RUN_FRAME_WIDTH,
+                frame_height: RABBIT_RUN_FRAME_HEIGHT,
+                frame_count: RABBIT_RUN_FRAME_COUNT,
+                sheet_row: 0,
+                crop_left: 2,
+                crop_top: 1,
+                crop_width: RABBIT_RUN_FRAME_WIDTH - 4,
+                crop_height: RABBIT_RUN_FRAME_HEIGHT - 2,
+            },
+        )
+    });
+    apply_asset_runner_motion(frames, cpu_pct, frame)
+}
+
+fn make_dog_asset_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
+    static FRAMES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+    let frames = FRAMES.get_or_init(|| {
+        decode_runner_asset_frames(
+            DOG_RUN_SHEET,
+            RunnerAssetLayout {
+                frame_width: DOG_RUN_FRAME_WIDTH,
+                frame_height: DOG_RUN_FRAME_HEIGHT,
+                frame_count: DOG_RUN_FRAME_COUNT,
+                sheet_row: DOG_RUN_SHEET_ROW,
+                crop_left: 0,
+                crop_top: 0,
+                crop_width: DOG_RUN_FRAME_WIDTH,
+                crop_height: DOG_RUN_FRAME_HEIGHT,
+            },
+        )
+    });
+    apply_asset_runner_motion(frames, cpu_pct, frame)
+}
+
+fn make_ghost_asset_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
+    static FRAMES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+    let frames = FRAMES.get_or_init(|| {
+        decode_runner_asset_frames(
+            GHOST_RUN_SHEET,
+            RunnerAssetLayout {
+                frame_width: GHOST_RUN_FRAME_WIDTH,
+                frame_height: GHOST_RUN_FRAME_HEIGHT,
+                frame_count: GHOST_RUN_FRAME_COUNT,
+                sheet_row: 0,
+                crop_left: 1,
+                crop_top: 0,
+                crop_width: GHOST_RUN_FRAME_WIDTH - 2,
+                crop_height: GHOST_RUN_FRAME_HEIGHT,
+            },
+        )
+    });
+    apply_asset_runner_motion(frames, cpu_pct, frame)
+}
+
+fn decode_runner_asset_sequence_frames(
+    sheets: &[&[u8]],
+    source_width: u32,
+    source_height: u32,
+    crop_left: u32,
+    crop_top: u32,
+    crop_width: u32,
+    crop_height: u32,
+) -> Vec<Vec<u8>> {
+    let mut frames = sheets
+        .iter()
+        .map(|sheet| {
+            let decoder = png::Decoder::new(Cursor::new(*sheet));
+            let mut reader = decoder
+                .read_info()
+                .expect("runner sequence frame must have valid PNG metadata");
+            let mut source = vec![
+                0;
+                reader.output_buffer_size().expect(
+                    "runner sequence frame must expose a decoded buffer size"
+                )
+            ];
+            let info = reader
+                .next_frame(&mut source)
+                .expect("runner sequence frame must decode");
+            assert_eq!(info.width, source_width);
+            assert_eq!(info.height, source_height);
+            assert_eq!(info.color_type, png::ColorType::Rgba);
+            let source = &source[..info.buffer_size()];
+            let mut rgba = vec![0u8; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize];
+
+            for draw_y in 0..RUNNER_PIXEL_HEIGHT {
+                for draw_x in 0..RUNNER_PIXEL_WIDTH {
+                    let source_x = crop_left + draw_x * crop_width.saturating_sub(1) / 47;
+                    let source_y = crop_top + draw_y * crop_height.saturating_sub(1) / 31;
+                    let source_index = ((source_y * source_width + source_x) as usize) * 4;
+                    let target_index = ((draw_y * RUNNER_PIXEL_WIDTH + draw_x) as usize) * 4;
+                    rgba[target_index + 3] = source[source_index + 3];
+                }
+            }
+            rgba
+        })
+        .collect::<Vec<_>>();
+    normalize_runner_asset_frames(&mut frames);
+    frames
+}
+
+/// Keep the source animation's pose changes, but remove accidental per-frame
+/// drift introduced by inconsistent transparent margins in public sprite
+/// sheets. The native runner already adds its own CPU-sensitive bounce, so a
+/// shared baseline here makes the feet/hem stay visually anchored while the
+/// intentional gait remains intact.
+fn normalize_runner_asset_frames(frames: &mut [Vec<u8>]) {
+    #[derive(Clone, Copy)]
+    struct Bounds {
+        min_x: u32,
+        max_x: u32,
+        min_y: u32,
+        max_y: u32,
+        weighted_x: f32,
+        alpha_sum: f32,
+    }
+
+    let bounds_for = |rgba: &[u8]| -> Option<Bounds> {
+        let mut bounds = Bounds {
+            min_x: RUNNER_PIXEL_WIDTH,
+            max_x: 0,
+            min_y: RUNNER_PIXEL_HEIGHT,
+            max_y: 0,
+            weighted_x: 0.0,
+            alpha_sum: 0.0,
+        };
+        let mut found = false;
+        for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+            let alpha = f32::from(pixel[3]);
+            if alpha < 8.0 {
+                continue;
+            }
+            let x = (index as u32) % RUNNER_PIXEL_WIDTH;
+            let y = (index as u32) / RUNNER_PIXEL_WIDTH;
+            bounds.min_x = bounds.min_x.min(x);
+            bounds.max_x = bounds.max_x.max(x);
+            bounds.min_y = bounds.min_y.min(y);
+            bounds.max_y = bounds.max_y.max(y);
+            bounds.weighted_x += x as f32 * alpha;
+            bounds.alpha_sum += alpha;
+            found = true;
+        }
+        found.then_some(bounds)
+    };
+
+    let Some(bounds) = frames.iter().filter_map(|frame| bounds_for(frame)).next() else {
+        return;
+    };
+    let all_bounds = frames
+        .iter()
+        .filter_map(|frame| bounds_for(frame))
+        .collect::<Vec<_>>();
+    if all_bounds.is_empty() {
+        return;
+    }
+
+    let target_center = all_bounds
+        .iter()
+        .map(|frame| frame.weighted_x / frame.alpha_sum.max(1.0))
+        .sum::<f32>()
+        / all_bounds.len() as f32;
+    let target_bottom = all_bounds
+        .iter()
+        .map(|frame| frame.max_y)
+        .max()
+        .unwrap_or(bounds.max_y);
+
+    for frame in frames.iter_mut() {
+        let Some(frame_bounds) = bounds_for(frame) else {
+            continue;
+        };
+        let center = frame_bounds.weighted_x / frame_bounds.alpha_sum.max(1.0);
+        let shift_x = (target_center - center).round() as i32;
+        // A small clamp prevents an unusually tall source pose from being
+        // teleported into another pose while still correcting matte margins.
+        let shift_y = (i32::try_from(target_bottom).unwrap_or(0)
+            - i32::try_from(frame_bounds.max_y).unwrap_or(0))
+        .clamp(-3, 3);
+        if shift_x == 0 && shift_y == 0 {
+            continue;
+        }
+
+        let source = frame.clone();
+        frame.fill(0);
+        for y in 0..RUNNER_PIXEL_HEIGHT as i32 {
+            for x in 0..RUNNER_PIXEL_WIDTH as i32 {
+                let target_x = x + shift_x;
+                let target_y = y + shift_y;
+                if !(0..RUNNER_PIXEL_WIDTH as i32).contains(&target_x)
+                    || !(0..RUNNER_PIXEL_HEIGHT as i32).contains(&target_y)
+                {
+                    continue;
+                }
+                let source_index = ((y as u32 * RUNNER_PIXEL_WIDTH + x as u32) as usize) * 4;
+                let target_index =
+                    ((target_y as u32 * RUNNER_PIXEL_WIDTH + target_x as u32) as usize) * 4;
+                frame[target_index..target_index + 4]
+                    .copy_from_slice(&source[source_index..source_index + 4]);
+            }
+        }
     }
 }
 
+fn make_dinosaur_asset_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
+    static FRAMES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+    let frames = FRAMES.get_or_init(|| {
+        decode_runner_asset_sequence_frames(DINO_RUN_FRAMES, 680, 472, 20, 45, 640, 400)
+    });
+    apply_asset_runner_motion(frames, cpu_pct, frame)
+}
+
+fn make_human_runner_rgba(frame: u8) -> Vec<u8> {
+    static FRAMES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+
+    let frames = FRAMES.get_or_init(|| {
+        let decoder = png::Decoder::new(Cursor::new(HUMAN_RUN_SHEET));
+        let mut reader = decoder
+            .read_info()
+            .expect("human runner sheet must have valid PNG metadata");
+        let mut source = vec![
+            0;
+            reader
+                .output_buffer_size()
+                .expect("human runner sheet must expose a decoded buffer size")
+        ];
+        let info = reader
+            .next_frame(&mut source)
+            .expect("human runner sheet must decode");
+        assert_eq!(info.width, 128, "human runner sheet width changed");
+        assert_eq!(info.height, 128, "human runner sheet height changed");
+        assert_eq!(info.color_type, png::ColorType::Rgba);
+
+        let source = &source[..info.buffer_size()];
+        (0..RUNNER_FRAME_COUNT)
+            .map(|frame| {
+                let mut rgba = vec![0u8; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize];
+
+                // The caveman sheet is a transparent 4x4 grid. The first
+                // eight cells form the complete run cycle. Keep nearest
+                // neighbour sampling so its deliberately chunky pixel edges
+                // remain crisp in the 27x18 native menu-bar image.
+                let frame_x = u32::from(frame % 4) * HUMAN_RUN_FRAME_WIDTH;
+                let frame_y = u32::from(frame / 4) * HUMAN_RUN_FRAME_HEIGHT;
+                let draw_left = (RUNNER_PIXEL_WIDTH - HUMAN_RUN_DRAW_WIDTH) / 2;
+
+                for y in 0..RUNNER_PIXEL_HEIGHT {
+                    for x in 0..RUNNER_PIXEL_WIDTH {
+                        if x < draw_left || x >= draw_left + HUMAN_RUN_DRAW_WIDTH {
+                            continue;
+                        }
+                        let draw_x = x - draw_left;
+                        let source_x = draw_x * HUMAN_RUN_FRAME_WIDTH / HUMAN_RUN_DRAW_WIDTH;
+                        let source_index =
+                            ((frame_y + y) * info.width + frame_x + source_x) as usize * 4;
+                        let target_index = ((y * RUNNER_PIXEL_WIDTH + x) * 4) as usize;
+                        rgba[target_index] = source[source_index];
+                        rgba[target_index + 1] = source[source_index + 1];
+                        rgba[target_index + 2] = source[source_index + 2];
+                        let source_alpha = source[source_index + 3];
+                        let is_dark_outline = source[source_index] < 48
+                            && source[source_index + 1] < 48
+                            && source[source_index + 2] < 48;
+                        // The source has a dark pixel outline. When it is
+                        // converted to one white glyph, keeping that outline
+                        // fully opaque joins the limbs into a blob. Keep a
+                        // light trace of it for edge definition instead.
+                        rgba[target_index + 3] = if is_dark_outline {
+                            source_alpha / 3
+                        } else {
+                            source_alpha
+                        };
+                    }
+                }
+
+                // Some source cells leave more transparent room on one side
+                // than another. Normalize the alpha-weighted center so a
+                // good run cycle does not look like it slides sideways when
+                // reduced to menu-bar size.
+                let (weighted_x, alpha_sum) = rgba.chunks_exact(4).enumerate().fold(
+                    (0.0_f32, 0.0_f32),
+                    |(weighted_x, alpha_sum), (index, pixel)| {
+                        let alpha = f32::from(pixel[3]);
+                        (
+                            weighted_x + (index as u32 % RUNNER_PIXEL_WIDTH) as f32 * alpha,
+                            alpha_sum + alpha,
+                        )
+                    },
+                );
+                let center = weighted_x / alpha_sum.max(1.0);
+                let shift = (((RUNNER_PIXEL_WIDTH - 1) as f32 / 2.0) - center).round() as i32;
+                if shift != 0 {
+                    let original = rgba.clone();
+                    rgba.fill(0);
+                    for y in 0..RUNNER_PIXEL_HEIGHT {
+                        for x in 0..RUNNER_PIXEL_WIDTH {
+                            let target_x = x as i32 + shift;
+                            if !(0..RUNNER_PIXEL_WIDTH as i32).contains(&target_x) {
+                                continue;
+                            }
+                            let source_index = ((y * RUNNER_PIXEL_WIDTH + x) * 4) as usize;
+                            let target_index =
+                                ((y * RUNNER_PIXEL_WIDTH + target_x as u32) * 4) as usize;
+                            rgba[target_index..target_index + 4]
+                                .copy_from_slice(&original[source_index..source_index + 4]);
+                        }
+                    }
+                }
+
+                rgba
+            })
+            .collect()
+    });
+
+    frames[usize::from(frame % RUNNER_FRAME_COUNT)].clone()
+}
+
+#[allow(dead_code)]
 fn make_quadruped_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<u8> {
     const W: u32 = RUNNER_PIXEL_WIDTH;
     const H: u32 = RUNNER_PIXEL_HEIGHT;
@@ -6110,6 +7148,7 @@ fn make_penguin_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
     rgba
 }
 
+#[allow(dead_code)]
 fn make_dinosaur_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
     const W: u32 = RUNNER_PIXEL_WIDTH;
     const H: u32 = RUNNER_PIXEL_HEIGHT;
@@ -6261,6 +7300,7 @@ fn make_robot_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
     rgba
 }
 
+#[allow(dead_code)]
 fn make_ghost_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
     const W: u32 = RUNNER_PIXEL_WIDTH;
     const H: u32 = RUNNER_PIXEL_HEIGHT;
@@ -6939,6 +7979,7 @@ fn draw_line(
     thickness: f32,
     color: (u8, u8, u8, u8),
 ) {
+    let thickness = (thickness * RUNNER_STROKE_SCALE).max(1.0);
     let steps = ((to.x - from.x).abs().max((to.y - from.y).abs()) * 2.0)
         .ceil()
         .max(1.0) as u32;
@@ -6976,23 +8017,43 @@ fn runner_character_values_json() -> String {
 fn runner_preview_alpha_json() -> &'static str {
     static PREVIEWS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     PREVIEWS.get_or_init(|| {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
         let entries = RunnerCharacter::ALL.map(|character| {
             // The second gait pose keeps feet and facial details readable in a
             // static picker thumbnail; airborne frames are more expressive in
             // motion but can look ambiguous when frozen at 18 points.
             let rgba = make_runner_rgba(character, 52.0, 1);
-            let mut alpha =
-                String::with_capacity((RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 2) as usize);
-            for pixel in rgba.chunks_exact(4) {
-                let value = pixel[3];
-                alpha.push(HEX[usize::from(value >> 4)] as char);
-                alpha.push(HEX[usize::from(value & 0x0f)] as char);
-            }
-            format!(r#""{}":"{}""#, character.as_str(), alpha)
+            format!(r#""{}":"{}""#, character.as_str(), runner_alpha_hex(&rgba))
         });
         format!("{{{}}}", entries.join(","))
     })
+}
+
+fn runner_preview_frames_json() -> &'static str {
+    static PREVIEWS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PREVIEWS.get_or_init(|| {
+        let entries = RunnerCharacter::ALL.map(|character| {
+            let frames = (0..RUNNER_FRAME_COUNT)
+                .map(|frame| {
+                    let rgba = make_runner_rgba(character, 52.0, frame);
+                    format!(r#""{}""#, runner_alpha_hex(&rgba))
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(r#""{}":[{}]"#, character.as_str(), frames)
+        });
+        format!("{{{}}}", entries.join(","))
+    })
+}
+
+fn runner_alpha_hex(rgba: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut alpha = String::with_capacity((RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 2) as usize);
+    for pixel in rgba.chunks_exact(4) {
+        let value = pixel[3];
+        alpha.push(HEX[usize::from(value >> 4)] as char);
+        alpha.push(HEX[usize::from(value & 0x0f)] as char);
+    }
+    alpha
 }
 
 fn runner_picker_options(lang: ResolvedLanguage) -> String {
@@ -7045,6 +8106,13 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">App Preferences<", ">앱 설정<")
             .replace(">Menu bar<", ">메뉴 막대<")
             .replace(">Character<", ">캐릭터<")
+            .replace(">CPU core graph<", ">코어별 CPU 그래프<")
+            .replace(
+                "Show live per-core CPU activity in the overview.",
+                "상단에 코어별 CPU 사용률을 표시합니다.",
+            )
+            .replace(">On<", ">켜짐<")
+            .replace(">Off<", ">꺼짐<")
             .replace(">Runner<", ">러너<")
             .replace(">Number<", ">숫자<")
             .replace(">Cat<", ">고양이<")
@@ -7070,6 +8138,21 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Both<", ">둘 다<")
             .replace("CPU runner · waiting", "CPU 러너 · 대기 중")
             .replace(">Notifications<", ">알림<")
+            .replace(">Automation Rules<", ">자동화 규칙<")
+            .replace(
+                "Rules run in order; the first matching condition selects its fan profile.",
+                "규칙은 위에서부터 평가되며, 처음 일치한 조건의 팬 프로파일을 적용합니다.",
+            )
+            .replace(">Add Rule<", ">규칙 추가<")
+            .replace(">Quiet Battery / Performance AC<", ">배터리 저소음 / AC 고성능<")
+            .replace(">Save Rules<", ">규칙 저장<")
+            .replace(">Configuration Transfer<", ">설정 가져오기 및 내보내기<")
+            .replace(
+                "Copy the current TOML or paste a previously exported PeterFan config, then import it after validation.",
+                "현재 TOML 설정을 복사하거나 이전에 내보낸 PeterFan 설정을 붙여넣은 뒤 검증하고 가져옵니다.",
+            )
+            .replace(">Copy Current Config<", ">현재 설정 복사<")
+            .replace(">Import Config<", ">설정 가져오기<")
             .replace(">CPU temperature warning<", ">CPU 온도 경고<")
             .replace(
                 "CPU Core Average · separate from the 90°C safety alert",
@@ -7209,6 +8292,7 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
     html.replace("__RUNNER_OPTIONS__", &runner_picker_options(lang))
         .replace("__RUNNER_CHARACTERS__", &runner_character_values_json())
         .replace("__RUNNER_PREVIEWS__", runner_preview_alpha_json())
+        .replace("__RUNNER_PREVIEW_FRAMES__", runner_preview_frames_json())
 }
 
 const DASHBOARD_HTML_EN: &str = r##"<!doctype html><html lang="__LANG__"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">
@@ -7238,6 +8322,8 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .summary-label{display:block;color:var(--dim);font-size:10px;font-weight:750;letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .summary-value{display:block;margin-top:3px;color:var(--text);font-size:13px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .summary-value.g{color:var(--g);}.summary-value.y{color:var(--y);}.summary-value.r{color:var(--r);}.summary-value.info{color:var(--accent);}
+.summary-core-chart{display:block;width:100%;height:24px;margin-top:6px;opacity:.92;}
+.summary-core-chart[hidden]{display:none;}
 .action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;contain:layout paint;}
 .rail-btn{height:50px;width:100%;display:flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;border-radius:7px;color:var(--dim);font:inherit;cursor:pointer;color-scheme:inherit;}
 .rail-btn:hover{background:var(--chip-hover);border-color:var(--accent-border);}
@@ -7415,17 +8501,17 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .display-segment button:hover{background:var(--track-hover);color:var(--text);}
 .display-segment button.active{background:var(--surface-raised);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.15);}
 .character-picker{position:relative;width:184px;}
-.character-select{display:grid;grid-template-columns:52px minmax(0,1fr) 10px;align-items:center;gap:7px;width:100%;height:40px;padding:3px 8px 3px 5px;border:1px solid var(--line);border-radius:7px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10px;font-weight:700;text-align:left;cursor:pointer;color-scheme:inherit;}
+.character-select{display:grid;grid-template-columns:38px minmax(0,1fr) 10px;align-items:center;gap:7px;width:100%;height:40px;padding:3px 8px 3px 5px;border:1px solid var(--line);border-radius:7px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10px;font-weight:700;text-align:left;cursor:pointer;color-scheme:inherit;}
 .character-select:hover,.character-select[aria-expanded="true"]{border-color:var(--accent-border);background-color:var(--track-hover);}
 .character-select:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
-.runner-preview{display:block;width:48px;height:32px;opacity:.92;pointer-events:none;}
-.character-select .runner-preview{width:48px;height:30px;}
+.runner-preview{display:block;width:33px;height:22px;opacity:.92;image-rendering:auto;pointer-events:none;}
+.character-select .runner-preview{width:33px;height:22px;}
 .character-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .character-chevron{width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);color:var(--dim);transition:transform .12s ease;}
 .character-select[aria-expanded="true"] .character-chevron{transform:translateY(2px) rotate(225deg);}
-.character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:274px;overflow-y:auto;padding:5px;border:1px solid var(--panel-border);border-radius:8px;background:var(--surface-raised);box-shadow:var(--shadow);scrollbar-width:thin;overscroll-behavior:contain;}
+.character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:260px;overflow-y:auto;padding:5px;border:1px solid var(--panel-border);border-radius:8px;background:var(--surface-raised);box-shadow:var(--shadow);scrollbar-width:thin;overscroll-behavior:contain;}
 .character-menu.show{display:block;}
-.character-option{display:grid;grid-template-columns:52px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:38px;padding:2px 7px 2px 4px;border:0;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-size:10.5px;font-weight:650;text-align:left;cursor:pointer;}
+.character-option{display:grid;grid-template-columns:38px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:34px;padding:1px 7px 1px 4px;border:0;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-size:10.5px;font-weight:650;text-align:left;cursor:pointer;}
 .character-option:hover,.character-option:focus-visible{background:var(--chip-hover);outline:none;}
 .character-option[aria-selected="true"]{background:var(--accent-soft);color:var(--accent);}
 .character-option-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -7452,6 +8538,31 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .notification-title{color:var(--text);font-size:10.5px;font-weight:700;}
 .notification-copy{margin-top:2px;color:var(--dim);font-size:9px;line-height:1.35;}
 .notification-control{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex:0 0 auto;}
+.automation-copy{margin:0 0 8px;color:var(--dim);font-size:10px;line-height:1.4;}
+.automation-list{display:flex;flex-direction:column;gap:7px;}
+.automation-rule{padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--chip-bg);}
+.automation-rule-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;color:var(--dim);font-size:9.5px;font-weight:750;}
+.automation-rule-number{font-variant-numeric:tabular-nums;}
+.automation-rule-remove{border:0;background:transparent;color:var(--dim);font:inherit;font-size:14px;line-height:1;cursor:pointer;padding:0 2px;}
+.automation-rule-remove:hover{color:var(--r);}
+.automation-rule-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px;}
+.automation-rule-field{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.automation-rule-field>span{color:var(--dim);font-size:9px;font-weight:700;}
+.automation-rule-field select,.automation-rule-field input{width:100%;min-width:0;box-sizing:border-box;padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:var(--surface-raised);color:var(--text);font:inherit;font-size:10px;font-variant-numeric:tabular-nums;color-scheme:inherit;}
+.automation-rule-field select:focus,.automation-rule-field input:focus{border-color:var(--accent);outline:2px solid var(--accent-soft);}
+.automation-rule-extra{display:flex;align-items:center;gap:5px;margin-top:6px;color:var(--dim);font-size:9.5px;}
+.automation-rule-extra input{width:42px!important;text-align:center;}
+.automation-actions{display:flex;gap:7px;margin-top:9px;}
+.automation-actions button{flex:1;}
+.automation-status{min-height:15px;margin-top:6px;color:var(--dim);font-size:10px;line-height:1.4;}
+.automation-status.ok{color:var(--g);}.automation-status.warn{color:var(--y);}
+.config-transfer-copy{margin:0 0 8px;color:var(--dim);font-size:10px;line-height:1.4;}
+.config-transfer-text{box-sizing:border-box;width:100%;min-height:132px;resize:vertical;border:1px solid var(--line);border-radius:8px;background:var(--input);color:var(--text);padding:8px;font:10px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;}
+.config-transfer-text:focus{border-color:var(--accent);}
+.config-transfer-actions{display:flex;gap:7px;margin-top:8px;}
+.config-transfer-actions button{flex:1;}
+.config-transfer-status{min-height:15px;margin-top:6px;color:var(--dim);font-size:10px;line-height:1.4;}
+.config-transfer-status.ok{color:var(--g);}.config-transfer-status.warn{color:var(--y);}
 .notification-threshold{width:50px;height:25px;padding:3px 4px;border:1px solid var(--line);border-radius:5px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;}
 .notification-threshold:disabled{opacity:.45;}
 .notification-threshold:focus{outline:2px solid var(--accent);outline-offset:1px;}
@@ -7470,6 +8581,8 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .health-row:first-child{border-top:0;padding-top:0;}
 .health-label{color:var(--dim);font-weight:650;}
 .health-value{font-weight:650;text-align:right;font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere;}
+.update-channel-select{max-width:150px;border:1px solid var(--line);border-radius:6px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10px;padding:4px 6px;color-scheme:inherit;}
+.update-channel-select:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
 .health-value.ok{color:var(--g);}.health-value.warn{color:var(--y);}.health-value.info{color:var(--accent);}
 .health-action{background:var(--chip-bg);border:1px solid transparent;color:var(--accent);font:inherit;font-size:10px;font-weight:750;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;}
 .health-action:disabled{opacity:.5;cursor:default;}
@@ -7525,6 +8638,7 @@ body:not([data-rail-view="overview"]) .range-tabs .range-tab{display:none;}
 .summary-value{margin-top:5px;font-size:17px;line-height:1.05;font-weight:750;letter-spacing:0;}
 .summary-meter{display:block;height:3px;margin-top:8px;border-radius:99px;background:var(--track);overflow:hidden;}
 .summary-meter .bar-fill{display:block;}
+.summary-cell.cpu.core-graph-enabled{min-height:82px;}
 .row{grid-template-columns:21px minmax(0,1fr);gap:13px;padding:var(--section-y) var(--content-x);}
 .ic{opacity:.82;}
 .name{font-size:11.5px;font-weight:700;letter-spacing:0;}
@@ -7616,7 +8730,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 </div>
 
 <div class="summary-strip" id="summary-strip" aria-label="Live summary">
-<div class="summary-cell cpu"><span class="summary-label" id="summary-cpu-label">CPU</span><span class="summary-value" id="summary-cpu">—</span><span class="summary-meter"><span class="bar-fill" id="summary-cpu-bar"></span></span></div>
+<div class="summary-cell cpu"><span class="summary-label" id="summary-cpu-label">CPU</span><span class="summary-value" id="summary-cpu">—</span><span class="summary-meter"><span class="bar-fill" id="summary-cpu-bar"></span></span><canvas class="summary-core-chart" id="summary-cpu-core-chart" aria-label="Per-core CPU usage" role="img"></canvas></div>
 <div class="summary-cell memory"><span class="summary-label" id="summary-mem-label">Memory</span><span class="summary-value" id="summary-mem">—</span><span class="summary-meter"><span class="bar-fill" id="summary-mem-bar"></span></span></div>
 <div class="summary-cell temperature"><span class="summary-label" id="summary-temp-label">CPU temp</span><span class="summary-value" id="summary-temp">—</span><span class="summary-meter"><span class="bar-fill" id="summary-temp-bar"></span></span></div>
 <div class="summary-cell fan"><span class="summary-label" id="summary-fan-label">Fans</span><span class="summary-value" id="summary-fan">—</span><span class="summary-meter"><span class="bar-fill info" id="summary-fan-bar"></span></span></div>
@@ -7657,6 +8771,10 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="runner-pace" id="runner-pace">CPU runner · waiting</div>
 </div>
 </div>
+<div class="settings-item" id="show-core-graph-setting">
+<div><div class="settings-item-title">CPU core graph</div><div class="settings-item-copy">Show live per-core CPU activity in the overview.</div></div>
+<button id="cpu-core-graph-toggle" class="panel-action secondary" aria-pressed="true" onclick="toggleCpuCoreGraph(this)">On</button>
+</div>
 <div class="settings-item" id="runner-character-setting">
 <div><div class="settings-item-title">Character</div><div class="settings-item-copy">Choose your CPU-responsive runner.</div></div>
 <div class="character-picker">
@@ -7679,6 +8797,20 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <input class="notification-toggle" id="notification-update-toggle" type="checkbox" aria-label="App updates" checked onchange="setNotificationBoolean('updates',this.checked)">
 </div>
 </div>
+</details>
+<details class="settings-details" id="automation-settings">
+<summary><span>Automation Rules</span><span class="panel-pill info" id="automation-pill">0 rules</span></summary>
+<div class="automation-copy">Rules run in order; the first matching condition selects its fan profile.</div>
+<div class="automation-list" id="automation-rules"></div>
+<div class="automation-actions"><button class="panel-action secondary" id="automation-add" onclick="addAutomationRule()">Add Rule</button><button class="panel-action secondary" id="automation-preset" onclick="applyQuietAcPreset()">Quiet Battery / Performance AC</button><button class="panel-action" id="automation-save" onclick="saveAutomationRules()">Save Rules</button></div>
+<div class="automation-status" id="automation-status" role="status" aria-live="polite"></div>
+</details>
+<details class="settings-details" id="config-transfer-settings">
+<summary><span>Configuration Transfer</span><span class="panel-pill info" id="config-transfer-pill">Ready</span></summary>
+<div class="config-transfer-copy">Copy the current TOML or paste a previously exported PeterFan config, then import it after validation.</div>
+<textarea class="config-transfer-text" id="config-transfer-text" spellcheck="false" aria-label="PeterFan configuration" oninput="markConfigImportDirty()"></textarea>
+<div class="config-transfer-actions"><button class="panel-action secondary" id="config-copy" onclick="copyConfigExport()">Copy Current Config</button><button class="panel-action" id="config-import" onclick="importConfig()">Import Config</button></div>
+<div class="config-transfer-status" id="config-transfer-status" role="status" aria-live="polite"></div>
 </details>
 <details class="settings-details" id="fan-health-card">
 <summary><span>Fan Control Health</span><span class="panel-pill info" id="health-pill">Ready</span></summary>
@@ -7720,6 +8852,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="health-row"><span class="health-label">Installed app</span><span class="health-value" id="update-current-version">—</span></div>
 <div class="health-row"><span class="health-label">Latest signed</span><span class="health-value" id="update-latest-version">—</span></div>
 <div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result">—</span></div>
+<div class="health-row"><span class="health-label">Update channel</span><select class="update-channel-select" id="update-channel" aria-label="Update channel" onchange="changeUpdateChannel(this.value)"><option value="stable">Stable releases</option><option value="pre-release">Pre-release builds</option></select></div>
 </div>
 <div class="release-notes-card" id="update-release-notes-card" style="display:none"><div class="release-notes-title">Release Notes</div><div class="release-notes-body" id="update-release-notes">—</div></div>
 <div class="panel-actions" style="margin-top:10px"><button class="panel-action secondary" id="rail-update-check" disabled onclick="checkAppUpdates(this)">Check for Updates</button><button class="panel-action" id="rail-update-install" disabled onclick="installAppUpdate(this)">Install Update</button><button class="panel-action secondary" id="update-release-link" onclick="openLatestRelease()" style="display:none">View Release</button></div>
@@ -7855,6 +8988,7 @@ var FAN_DIAGNOSTIC_STARTED_AT=0;
 var LOGIN_ITEM_TOGGLE_PENDING=false;
 var APP_UPDATE_CHECK_PENDING=false;
 var APP_UPDATE_STATUS=null;
+var APP_UPDATE_STATUS_STORAGE_KEY='pf.update.status.v1';
 var APP_PERSISTED_UPDATE_KEY='';
 var FAN_CONTROL_PENDING=null;
 var FAN_CONTROL_RESULT=null;
@@ -7875,6 +9009,27 @@ function storageGet(k){
 function storageSet(k,v){
   try{localStorage.setItem(k,v);}catch(e){}
 }
+function loadUpdateStatusSnapshot(){
+  var raw=storageGet(APP_UPDATE_STATUS_STORAGE_KEY);
+  if(!raw)return null;
+  try{
+    var saved=JSON.parse(raw),savedAt=Number(saved&&saved.saved_at||0);
+    if(!savedAt||Date.now()-savedAt>15*60*1000)return null;
+    delete saved.saved_at;
+    return saved;
+  }catch(e){return null;}
+}
+function rememberUpdateStatus(status){
+  if(!status)return;
+  var phase=String(status.phase||'');
+  if(phase==='checking'||phase==='downloading'||phase==='queued')return;
+  if(!status.latest&&phase!=='failed'&&phase!=='current')return;
+  var snapshot={};
+  Object.keys(status).forEach(function(key){snapshot[key]=status[key];});
+  snapshot.saved_at=Date.now();
+  storageSet(APP_UPDATE_STATUS_STORAGE_KEY,JSON.stringify(snapshot));
+}
+APP_UPDATE_STATUS=loadUpdateStatusSnapshot();
 var RAIL_VIEW=storageGet('pf.rail.view')||'overview';
 if(RAIL_VIEW==='update'||RAIL_VIEW==='more')RAIL_VIEW='system';
 if(!/^(overview|fan|settings|system)$/.test(RAIL_VIEW))RAIL_VIEW='overview';
@@ -8076,14 +9231,14 @@ function renderUpdateStatus(status){
     var newer=comparison<0,ahead=comparison>0;
     msg=ahead
       ?(LANG==='ko'
-        ?'설치된 앱이 최신 서명 릴리스보다 앞선 개발 빌드입니다.'
-        :'The installed app is a development build ahead of the latest signed release.')
+        ?'현재 버전이 공개 서명 릴리스보다 최신입니다. 공식 릴리스가 공개되면 업데이트할 수 있습니다.'
+        :'The current version is newer than the public signed release. An update will appear when the official release is published.')
       :(s.message||(newer
         ?(LANG==='ko'?'새 서명 릴리스를 사용할 수 있습니다.':'A newer signed PeterFan release is available.')
         :(LANG==='ko'?'최신 서명 릴리스를 사용 중입니다.':'You are running the latest signed release.')));
     pillText=newer
       ?(LANG==='ko'?'업데이트 있음':'Update')
-      :(ahead?(LANG==='ko'?'개발 빌드':'Dev build'):(LANG==='ko'?'최신':'Current'));
+      :(ahead?(LANG==='ko'?'공식 릴리스 대기':'Awaiting Signed Release'):(LANG==='ko'?'최신':'Current'));
     pillTone=newer?'warn':(ahead?'info':'ok');
     setText('update-check-result',newer
       ?(LANG==='ko'?'업데이트 가능':'update available')
@@ -8101,12 +9256,15 @@ function renderUpdateStatus(status){
   if(install){
     var comparison=s.latest?compareVersions(current,s.latest):0;
     var updateKnown=!!s.latest&&comparison<0;
+    var checking=!!s.checking||phase==='checking';
     var installing=phase==='downloading'||phase==='queued';
     var canInstall=updateKnown&&s.install_ready===true&&!s.checking&&phase!=='checking'&&!installing;
     install.style.display='';
     install.disabled=!canInstall;
     install.textContent=installing
       ?(LANG==='ko'?'설치 중…':'Installing…')
+      :(checking
+        ?(LANG==='ko'?'확인 중…':'Checking…')
         :(updateKnown
           ?(s.install_ready===true
             ?(LANG==='ko'?'지금 업데이트':'Install Update')
@@ -8114,9 +9272,10 @@ function renderUpdateStatus(status){
           :(s.latest&&comparison===0
             ?(LANG==='ko'?'최신 버전':'Up to Date')
             :(s.latest&&comparison>0
-              ?(LANG==='ko'?'개발 빌드':'Development Build')
-              :(LANG==='ko'?'지금 업데이트':'Install Update'))));
+              ?(LANG==='ko'?'공식 릴리스 대기':'Awaiting Signed Release')
+              :(LANG==='ko'?'확인 전':'Not checked')))));
   }
+  rememberUpdateStatus(APP_UPDATE_STATUS);
 }
 function openLatestRelease(){
   var link=document.getElementById('update-release-link');
@@ -8274,6 +9433,9 @@ window.__pf={
  CHART_RANGE_LABEL=d.chart_range;
  updateRail(d);
  updateNotificationSettings(d);
+ updateAutomationRules(d);
+ updateConfigTransfer(d);
+ updateCoreGraphSetting(d);
  if(view==='overview'){
    updateHealthVerdict(d);
    set('summary-cpu',d.cpu_text||'—');
@@ -8294,6 +9456,7 @@ window.__pf={
    if(summaryTemp)summaryTemp.className='summary-value '+(d.temp_stale?'info':(d.temp_cls||''));
    var summaryFan=document.getElementById('summary-fan');
    if(summaryFan)summaryFan.className='summary-value '+(d.fan_avg_rpm>0?'info':'');
+   renderCoreGraph(d);
    set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
    var cc=document.getElementById('cores');if(cc){var coreMeta=coreMetadata(d.core_groups);cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span'),meta=coreMeta[i];s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title=(meta&&meta.label?meta.label:('Core '+(i+1)))+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
    renderCoreDetails(d);
@@ -8754,6 +9917,23 @@ function startAppUpdate(mode,btn){
 }
 function checkAppUpdates(btn){startAppUpdate('check',btn);}
 function installAppUpdate(btn){startAppUpdate('install',btn);}
+function changeUpdateChannel(value){
+  if(value!=='stable'&&value!=='pre-release')return;
+  var select=document.getElementById('update-channel');
+  if(select)select.disabled=true;
+  window.ipc.postMessage('updatechannel:'+value);
+}
+function updateUpdateChannel(d){
+  var select=document.getElementById('update-channel');
+  if(!select)return;
+  select.value=d.update_channel==='pre-release'?'pre-release':'stable';
+  select.disabled=APP_UPDATE_CHECK_PENDING;
+  var options=select.options;
+  if(options.length>=2){
+    options[0].textContent=LANG==='ko'?'안정 릴리스':'Stable releases';
+    options[1].textContent=LANG==='ko'?'프리릴리스 빌드':'Pre-release builds';
+  }
+}
 function toggleStartupItem(btn){
   if(LOGIN_ITEM_TOGGLE_PENDING||!window.__pf_pending||!window.__pf_pending.login_item_supported)return;
   LOGIN_ITEM_TOGGLE_PENDING=true;
@@ -8812,6 +9992,179 @@ function updateNotificationSettings(d){
   if(updateToggle)updateToggle.checked=settings.updates!==false;
   var enabled=(temperatureEnabled?1:0)+(settings.fan_failures!==false?1:0)+(settings.updates!==false?1:0);
   setPanelPill('notification-pill',LANG==='ko'?(enabled+'개 켬'):(enabled+' on'),enabled?'info':'');
+}
+var AUTOMATION_RULES=null;
+var AUTOMATION_RULES_RENDERED='';
+var AUTOMATION_RULES_DIRTY=false;
+var AUTOMATION_RULES_SAVE_PENDING=false;
+function automationRuleFromData(rule){
+  var when=String((rule&&rule.when)||'on_battery').toLowerCase();
+  var profile=String((rule&&rule.profile)||'balanced').toLowerCase();
+  if(when==='on_battery')return {kind:'on_battery',profile:profile};
+  if(when==='on_ac')return {kind:'on_ac',profile:profile};
+  if(when.indexOf('cpu_above:')===0){
+    var temp=Number(when.slice(10));
+    return {kind:'cpu_above',temp:isFinite(temp)?Math.max(0,Math.min(120,Math.round(temp))):85,profile:profile};
+  }
+  if(when.indexOf('time:')===0){
+    var pieces=when.slice(5).split('-');
+    var start=Number(pieces[0]),end=Number(pieces[1]);
+    return {kind:'time',start:isFinite(start)?Math.max(0,Math.min(23,Math.round(start))):22,end:isFinite(end)?Math.max(0,Math.min(23,Math.round(end))):7,profile:profile};
+  }
+  return {kind:'on_battery',profile:profile};
+}
+function automationRuleWhen(rule){
+  if(rule.kind==='on_ac'||rule.kind==='on_battery')return rule.kind;
+  if(rule.kind==='cpu_above')return 'cpu_above:'+Math.max(0,Math.min(120,Math.round(Number(rule.temp)||85)));
+  return 'time:'+Math.max(0,Math.min(23,Math.round(Number(rule.start)||0)))+'-'+Math.max(0,Math.min(23,Math.round(Number(rule.end)||0)));
+}
+function automationRulesPayload(){
+  return (AUTOMATION_RULES||[]).map(function(rule){return {when:automationRuleWhen(rule),profile:rule.profile||'balanced'};});
+}
+function automationRulesSignature(rules){return JSON.stringify(rules||[]);}
+function automationRuleLabel(kind){
+  if(LANG==='ko')return {on_battery:'배터리 사용 중',on_ac:'전원 연결 중',time:'시간 범위',cpu_above:'CPU 온도 초과'}[kind]||kind;
+  return {on_battery:'On battery',on_ac:'On AC power',time:'Time window',cpu_above:'CPU temperature above'}[kind]||kind;
+}
+function automationProfileLabel(profile){
+  if(LANG==='ko')return {silent:'무음',balanced:'균형',gaming:'게이밍',performance:'고성능',maximum:'최대',custom:'사용자 곡선'}[profile]||profile;
+  return {silent:'Silent',balanced:'Balanced',gaming:'Gaming',performance:'Performance',maximum:'Maximum',custom:'Custom'}[profile]||profile;
+}
+function automationSetStatus(text,tone){
+  var status=document.getElementById('automation-status');
+  if(status){status.textContent=text||'';status.className='automation-status '+(tone||'');}
+}
+function automationMarkDirty(){
+  AUTOMATION_RULES_DIRTY=true;
+  AUTOMATION_RULES_SAVE_PENDING=false;
+  automationSetStatus(LANG==='ko'?'변경사항이 저장되지 않았습니다':'Unsaved changes','warn');
+}
+function renderAutomationRules(d){
+  var incoming=(d.rules||[]).map(automationRuleFromData);
+  var incomingSignature=automationRulesSignature(incoming);
+  var lastStatus=String(d.last_cmd_status||'');
+  if(AUTOMATION_RULES_SAVE_PENDING&&lastStatus.indexOf('rules saved')===0){
+    AUTOMATION_RULES_SAVE_PENDING=false;
+    AUTOMATION_RULES_DIRTY=false;
+    automationSetStatus(LANG==='ko'?'규칙을 저장하고 데몬에 다시 적용했습니다':'Rules saved and daemon reloaded','ok');
+  } else if(AUTOMATION_RULES_SAVE_PENDING&&lastStatus.indexOf('rules save failed:')===0){
+    AUTOMATION_RULES_SAVE_PENDING=false;
+    automationSetStatus(lastStatus.slice('rules save failed:'.length), 'warn');
+  }
+  if(AUTOMATION_RULES===null||(!AUTOMATION_RULES_DIRTY&&!AUTOMATION_RULES_SAVE_PENDING)){
+    if(AUTOMATION_RULES===null||(!AUTOMATION_RULES_DIRTY&&incomingSignature!==automationRulesSignature(AUTOMATION_RULES))){
+      AUTOMATION_RULES=incoming;
+      AUTOMATION_RULES_RENDERED='';
+    }
+  }
+  var list=document.getElementById('automation-rules');
+  if(!list)return;
+  var signature=automationRulesSignature(AUTOMATION_RULES);
+  setPanelPill('automation-pill',LANG==='ko'?((AUTOMATION_RULES||[]).length+'개 규칙'):((AUTOMATION_RULES||[]).length+' rules'),(AUTOMATION_RULES||[]).length?'info':'');
+  var add=document.getElementById('automation-add'),save=document.getElementById('automation-save');
+  if(add)add.disabled=AUTOMATION_RULES_SAVE_PENDING||(AUTOMATION_RULES||[]).length>=32;
+  if(save)save.disabled=AUTOMATION_RULES_SAVE_PENDING;
+  if(signature===AUTOMATION_RULES_RENDERED)return;
+  AUTOMATION_RULES_RENDERED=signature;
+  list.innerHTML='';
+  if(!AUTOMATION_RULES.length){
+    var empty=document.createElement('div');empty.className='automation-copy';empty.textContent=LANG==='ko'?'아직 규칙이 없습니다.':'No rules yet.';list.appendChild(empty);return;
+  }
+  AUTOMATION_RULES.forEach(function(rule,index){
+    var row=document.createElement('div');row.className='automation-rule';
+    var head=document.createElement('div');head.className='automation-rule-head';
+    var number=document.createElement('span');number.className='automation-rule-number';number.textContent=(LANG==='ko'?'규칙 ':'Rule ')+(index+1);head.appendChild(number);
+    var remove=document.createElement('button');remove.className='automation-rule-remove';remove.type='button';remove.textContent='×';remove.title=LANG==='ko'?'규칙 삭제':'Remove rule';remove.onclick=function(){AUTOMATION_RULES.splice(index,1);automationMarkDirty();AUTOMATION_RULES_RENDERED='';renderAutomationRules(d);};head.appendChild(remove);row.appendChild(head);
+    var grid=document.createElement('div');grid.className='automation-rule-grid';
+    var conditionField=document.createElement('label');conditionField.className='automation-rule-field';var conditionLabel=document.createElement('span');conditionLabel.textContent=LANG==='ko'?'조건':'Condition';conditionField.appendChild(conditionLabel);
+    var condition=document.createElement('select');['on_battery','on_ac','time','cpu_above'].forEach(function(kind){var option=document.createElement('option');option.value=kind;option.textContent=automationRuleLabel(kind);option.selected=rule.kind===kind;condition.appendChild(option);});
+    condition.onchange=function(){rule.kind=condition.value; if(rule.kind==='time'){rule.start=rule.start==null?22:rule.start;rule.end=rule.end==null?7:rule.end;} if(rule.kind==='cpu_above'&&rule.temp==null)rule.temp=85;automationMarkDirty();AUTOMATION_RULES_RENDERED='';renderAutomationRules(d);};conditionField.appendChild(condition);grid.appendChild(conditionField);
+    var profileField=document.createElement('label');profileField.className='automation-rule-field';var profileLabel=document.createElement('span');profileLabel.textContent=LANG==='ko'?'프로파일':'Profile';profileField.appendChild(profileLabel);
+    var profile=document.createElement('select');['silent','balanced','gaming','performance','maximum','custom'].forEach(function(name){var option=document.createElement('option');option.value=name;option.textContent=automationProfileLabel(name);option.selected=rule.profile===name;profile.appendChild(option);});profile.onchange=function(){rule.profile=profile.value;automationMarkDirty();};profileField.appendChild(profile);grid.appendChild(profileField);row.appendChild(grid);
+    if(rule.kind==='time'||rule.kind==='cpu_above'){
+      var extra=document.createElement('div');extra.className='automation-rule-extra';
+      if(rule.kind==='time'){
+        extra.appendChild(document.createTextNode(LANG==='ko'?'시작':'From'));
+        var start=document.createElement('input');start.type='number';start.min='0';start.max='23';start.value=String(rule.start==null?22:rule.start);start.setAttribute('aria-label',LANG==='ko'?'시작 시간':'Start hour');start.onchange=function(){rule.start=Math.max(0,Math.min(23,Number(start.value)||0));automationMarkDirty();};extra.appendChild(start);
+        extra.appendChild(document.createTextNode(LANG==='ko'?'시':'h  '));extra.appendChild(document.createTextNode(LANG==='ko'?'종료':'to'));
+        var end=document.createElement('input');end.type='number';end.min='0';end.max='23';end.value=String(rule.end==null?7:rule.end);end.setAttribute('aria-label',LANG==='ko'?'종료 시간':'End hour');end.onchange=function(){rule.end=Math.max(0,Math.min(23,Number(end.value)||0));automationMarkDirty();};extra.appendChild(end);extra.appendChild(document.createTextNode(LANG==='ko'?'시':'h'));
+      } else {
+        extra.appendChild(document.createTextNode(LANG==='ko'?'기준 온도':'Threshold'));
+        var temp=document.createElement('input');temp.type='number';temp.min='0';temp.max='120';temp.step='1';temp.value=String(rule.temp==null?85:rule.temp);temp.setAttribute('aria-label',LANG==='ko'?'CPU 기준 온도':'CPU temperature threshold');temp.onchange=function(){rule.temp=Math.max(0,Math.min(120,Number(temp.value)||85));automationMarkDirty();};extra.appendChild(temp);extra.appendChild(document.createTextNode('°C'));
+      }
+      row.appendChild(extra);
+    }
+    list.appendChild(row);
+  });
+}
+function updateAutomationRules(d){renderAutomationRules(d);}
+function addAutomationRule(){
+  if(!AUTOMATION_RULES)AUTOMATION_RULES=[];
+  if(AUTOMATION_RULES.length>=32)return;
+  AUTOMATION_RULES.push({kind:'on_battery',profile:'silent'});
+  automationMarkDirty();AUTOMATION_RULES_RENDERED='';renderAutomationRules({rules:AUTOMATION_RULES});
+}
+function applyQuietAcPreset(){
+  if(AUTOMATION_RULES_SAVE_PENDING)return;
+  AUTOMATION_RULES=[{kind:'on_battery',profile:'silent'},{kind:'on_ac',profile:'performance'}];
+  automationMarkDirty();
+  AUTOMATION_RULES_RENDERED='';
+  renderAutomationRules({rules:AUTOMATION_RULES});
+  automationSetStatus(LANG==='ko'?'배터리 저소음 / AC 고성능 프리셋을 준비했습니다. 저장을 눌러 적용하세요':'Quiet on battery / performance on AC preset ready. Save to apply','warn');
+}
+function saveAutomationRules(){
+  if(AUTOMATION_RULES_SAVE_PENDING)return;
+  AUTOMATION_RULES_SAVE_PENDING=true;
+  automationSetStatus(LANG==='ko'?'규칙을 저장하고 데몬에 다시 적용하는 중…':'Saving rules and reloading the daemon…','');
+  var save=document.getElementById('automation-save');if(save)save.disabled=true;
+  window.ipc.postMessage('rules:'+JSON.stringify(automationRulesPayload()));
+}
+var CONFIG_IMPORT_DIRTY=false;
+var CONFIG_IMPORT_PENDING=false;
+var CONFIG_COPY_REVISION_SEEN=0;
+function configTransferSetStatus(text,tone){
+  var status=document.getElementById('config-transfer-status');
+  if(status){status.textContent=text||'';status.className='config-transfer-status '+(tone||'');}
+}
+function markConfigImportDirty(){
+  CONFIG_IMPORT_DIRTY=true;
+  configTransferSetStatus(LANG==='ko'?'가져올 설정이 변경되었습니다':'Config text changed','warn');
+}
+function updateConfigTransfer(d){
+  var textarea=document.getElementById('config-transfer-text');
+  var copy=document.getElementById('config-copy');
+  var importer=document.getElementById('config-import');
+  var lastStatus=String(d.last_cmd_status||'');
+  if(textarea&&!CONFIG_IMPORT_DIRTY&&!CONFIG_IMPORT_PENDING&&typeof d.config_toml==='string'&&document.activeElement!==textarea&&textarea.value!==d.config_toml)textarea.value=d.config_toml;
+  if(CONFIG_IMPORT_PENDING&&lastStatus.indexOf('config imported')===0){
+    CONFIG_IMPORT_PENDING=false;CONFIG_IMPORT_DIRTY=false;
+    configTransferSetStatus(LANG==='ko'?'설정을 가져오고 데몬에 다시 적용했습니다':'Config imported and daemon reloaded','ok');
+  } else if(CONFIG_IMPORT_PENDING&&lastStatus.indexOf('config import failed:')===0){
+    CONFIG_IMPORT_PENDING=false;
+    configTransferSetStatus(lastStatus.slice('config import failed:'.length),'warn');
+  }
+  var revision=Number(d.config_copy_revision||0);
+  if(revision>CONFIG_COPY_REVISION_SEEN){
+    CONFIG_COPY_REVISION_SEEN=revision;
+    configTransferSetStatus(d.config_copy_ok?(LANG==='ko'?'현재 설정을 클립보드에 복사했습니다':'Current config copied to clipboard'):(LANG==='ko'?'설정 복사 실패':'Config copy failed'),d.config_copy_ok?'ok':'warn');
+  }
+  setPanelPill('config-transfer-pill',CONFIG_IMPORT_PENDING?(LANG==='ko'?'적용 중':'Applying'):(CONFIG_IMPORT_DIRTY?(LANG==='ko'?'변경됨':'Edited'):(LANG==='ko'?'준비됨':'Ready')),CONFIG_IMPORT_PENDING?'warn':(CONFIG_IMPORT_DIRTY?'info':''));
+  if(copy)copy.disabled=CONFIG_IMPORT_PENDING;
+  if(importer)importer.disabled=CONFIG_IMPORT_PENDING;
+}
+function copyConfigExport(){
+  if(CONFIG_IMPORT_PENDING)return;
+  configTransferSetStatus(LANG==='ko'?'현재 설정을 클립보드에 복사하는 중…':'Copying current config…','');
+  window.ipc.postMessage('copyconfig');
+}
+function importConfig(){
+  if(CONFIG_IMPORT_PENDING)return;
+  var textarea=document.getElementById('config-transfer-text');
+  var value=textarea?textarea.value.trim():'';
+  if(!value){configTransferSetStatus(LANG==='ko'?'가져올 TOML을 붙여넣으세요':'Paste a TOML config first','warn');return;}
+  CONFIG_IMPORT_PENDING=true;
+  configTransferSetStatus(LANG==='ko'?'설정을 검증하고 데몬에 다시 적용하는 중…':'Validating config and reloading the daemon…','');
+  window.ipc.postMessage('importconfig:'+value);
 }
 function setSetupMenuOpen(open){
   var menu=document.getElementById('setup-menu');
@@ -9156,11 +10509,30 @@ function setMenubarDisplay(style){
   updateMenubarDisplay(data);
   if(window.ipc)window.ipc.postMessage('display:'+style);
 }
+function toggleCpuCoreGraph(btn){
+  var enabled=btn.getAttribute('aria-pressed')!=='true';
+  var data=window.__pf_pending||{};
+  data.show_cpu_core_graph=enabled;
+  updateCoreGraphSetting(data);
+  if(window.ipc)window.ipc.postMessage('cpu-core-graph:'+(enabled?'1':'0'));
+}
+function updateCoreGraphSetting(d){
+  var btn=document.getElementById('cpu-core-graph-toggle');
+  if(!btn)return;
+  var enabled=d.show_cpu_core_graph!==false;
+  btn.setAttribute('aria-pressed',enabled?'true':'false');
+  btn.classList.toggle('active',enabled);
+  btn.textContent=enabled?(LANG==='ko'?'켜짐':'On'):(LANG==='ko'?'꺼짐':'Off');
+}
 var RUNNER_CHARACTERS=__RUNNER_CHARACTERS__;
 var RUNNER_PREVIEW_ALPHA=__RUNNER_PREVIEWS__;
-function paintRunnerPreview(canvas,character){
+var RUNNER_PREVIEW_FRAMES=__RUNNER_PREVIEW_FRAMES__;
+var RUNNER_PREVIEW_STATE={canvas:null,character:'',cpu:0,frame:0,timer:null};
+var RUNNER_PREVIEW_GAIT=[1.14,1.00,0.84,1.02,1.14,1.00,0.84,1.02];
+function paintRunnerPreview(canvas,character,frame){
   if(!canvas)return;
-  var alpha=RUNNER_PREVIEW_ALPHA[character];
+  var frames=RUNNER_PREVIEW_FRAMES[character];
+  var alpha=frames&&frames.length?frames[(Number(frame)||0)%frames.length]:RUNNER_PREVIEW_ALPHA[character];
   if(!alpha)return;
   var ctx=canvas.getContext('2d');
   if(!ctx)return;
@@ -9172,14 +10544,67 @@ function paintRunnerPreview(canvas,character){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.putImageData(image,0,0);
   ctx.globalCompositeOperation='source-in';
-  ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--text').trim()||'#f3f4f6';
+  ctx.fillStyle='#ffffff';
   ctx.fillRect(0,0,canvas.width,canvas.height);
   ctx.globalCompositeOperation='source-over';
 }
+function runnerPreviewInterval(cpu,frame){
+  var load=Math.max(0,Math.min(100,Number(cpu)||0))/100;
+  var base=60+420*Math.pow(1-load,3);
+  var influence=Math.max(0,1-load/0.8);
+  var gait=RUNNER_PREVIEW_GAIT[(Number(frame)||0)%RUNNER_PREVIEW_GAIT.length];
+  return Math.round(base*(1+(gait-1)*influence));
+}
+function scheduleRunnerPreview(){
+  var state=RUNNER_PREVIEW_STATE;
+  if(!state.canvas)return;
+  var reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(reduced||document.hidden)return;
+  state.timer=setTimeout(function(){
+    state.frame=(state.frame+1)%8;
+    paintRunnerPreview(state.canvas,state.character,state.frame);
+    scheduleRunnerPreview();
+  },runnerPreviewInterval(state.cpu,state.frame));
+}
+function startRunnerPreview(canvas,character,cpu){
+  if(RUNNER_PREVIEW_STATE.timer){
+    clearTimeout(RUNNER_PREVIEW_STATE.timer);
+    RUNNER_PREVIEW_STATE.timer=null;
+  }
+  RUNNER_PREVIEW_STATE.canvas=canvas;
+  RUNNER_PREVIEW_STATE.character=character;
+  RUNNER_PREVIEW_STATE.cpu=Math.max(0,Math.min(100,Number(cpu)||0));
+  RUNNER_PREVIEW_STATE.frame=0;
+  paintRunnerPreview(canvas,character,0);
+  var reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(reduced)return;
+  scheduleRunnerPreview();
+}
+function setRunnerPreviewVisibility(visible){
+  var state=RUNNER_PREVIEW_STATE;
+  if(!visible){
+    if(state.timer){clearTimeout(state.timer);state.timer=null;}
+    return;
+  }
+  if(state.canvas&&!state.timer) scheduleRunnerPreview();
+}
+function setRunnerPreviewCpu(cpu){
+  RUNNER_PREVIEW_STATE.cpu=Math.max(0,Math.min(100,Number(cpu)||0));
+}
+document.addEventListener('visibilitychange',function(){
+  var state=RUNNER_PREVIEW_STATE;
+  if(document.hidden){
+    if(state.timer){clearTimeout(state.timer);state.timer=null;}
+    return;
+  }
+  if(state.canvas&&!state.timer) scheduleRunnerPreview();
+});
 function paintRunnerPreviews(root){
   (root||document).querySelectorAll('canvas[data-runner-preview]').forEach(function(canvas){
-    paintRunnerPreview(canvas,canvas.dataset.runnerPreview);
+    paintRunnerPreview(canvas,canvas.dataset.runnerPreview,1);
   });
+  var selected=document.getElementById('runner-character-preview');
+  if(selected)startRunnerPreview(selected,selected.dataset.runnerPreview,0);
 }
 function positionRunnerCharacterMenu(){
   var trigger=document.getElementById('runner-character-select');
@@ -9189,7 +10614,7 @@ function positionRunnerCharacterMenu(){
   var width=Math.min(224,window.innerWidth-16);
   menu.style.width=width+'px';
   var left=Math.max(8,Math.min(window.innerWidth-width-8,rect.right-width));
-  var menuHeight=Math.min(274,menu.scrollHeight);
+  var menuHeight=Math.min(260,menu.scrollHeight);
   var below=window.innerHeight-rect.bottom-8;
   var top=below>=Math.min(180,menuHeight)?rect.bottom+5:Math.max(8,rect.top-menuHeight-5);
   menu.style.left=Math.round(left)+'px';
@@ -9274,11 +10699,12 @@ function updateMenubarDisplay(d){
   var characterPreview=document.getElementById('runner-character-preview');
   if(characterPreview&&characterPreview.dataset.runnerPreview!==character){
     characterPreview.dataset.runnerPreview=character;
-    paintRunnerPreview(characterPreview,character);
+    startRunnerPreview(characterPreview,character,0);
   }
   var pace=document.getElementById('runner-pace');
   if(!pace)return;
   var cpu=Math.max(0,Math.min(100,Number(d.runner_cpu_pct)||0));
+  setRunnerPreviewCpu(cpu);
   if(d.runner_reduce_motion){
     pace.textContent=LANG==='ko'?'동작 줄이기 · 정지 화면':'Reduce Motion · still frame';
     pace.title=LANG==='ko'
@@ -9414,6 +10840,7 @@ function updateRail(d){
   var nativePhase=nativeUpdate.phase||'idle';
   var nativePending=nativePhase==='checking'||nativePhase==='downloading'||nativePhase==='queued';
   APP_UPDATE_CHECK_PENDING=nativePending;
+  updateUpdateChannel(d);
   if(view==='settings'){
     var persisted=d.update_install_result;
     if(nativePhase!=='idle'){
@@ -9599,6 +11026,45 @@ function drawChart(id,data,color,fixedMax,fmt){
     var peakLabel=LANG==='ko'?'최고':'peak';
     stats.textContent=avgLabel+' '+cv._fmt(avgV)+'   ·   '+peakLabel+' '+cv._fmt(peakV);
   }
+}
+function renderCoreGraph(d){
+  var cv=document.getElementById('summary-cpu-core-chart');
+  if(!cv)return;
+  var enabled=d.show_cpu_core_graph!==false;
+  var cell=cv.closest('.summary-cell.cpu');
+  if(cell)cell.classList.toggle('core-graph-enabled',enabled);
+  cv.hidden=!enabled;
+  if(!enabled)return;
+  var series=d.core_hist||[];
+  var width=Math.max(1,cv.clientWidth||80),height=Math.max(1,cv.clientHeight||24),ratio=window.devicePixelRatio||1;
+  var pixelWidth=Math.max(1,Math.round(width*ratio)),pixelHeight=Math.max(1,Math.round(height*ratio));
+  if(cv.width!==pixelWidth||cv.height!==pixelHeight){cv.width=pixelWidth;cv.height=pixelHeight;}
+  var ctx=cv.getContext('2d');
+  if(!ctx)return;
+  ctx.setTransform(ratio,0,0,ratio,0,0);
+  ctx.clearRect(0,0,width,height);
+  ctx.strokeStyle=cssColor('--track','rgba(255,255,255,.09)');
+  ctx.lineWidth=1;
+  [0.25,0.5,0.75].forEach(function(level){
+    var y=Math.round(height*(1-level))+.5;
+    ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(width,y);ctx.stroke();
+  });
+  series.forEach(function(values,index){
+    if(!values||values.length<2)return;
+    var n=values.length;
+    ctx.beginPath();
+    for(var i=0;i<n;i++){
+      var value=Math.max(0,Math.min(100,Number(values[i])||0));
+      var x=n>1?(i/(n-1))*width:width;
+      var y=height-(value/100)*height;
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+    }
+    ctx.strokeStyle=cssColor('--accent','#6ea8ff');
+    ctx.globalAlpha=Math.min(.78,.28+index*.035);
+    ctx.lineWidth=1.05;
+    ctx.stroke();
+  });
+  ctx.globalAlpha=1;
 }
 // Which range's samples are on screen right now, so hover labels know the
 // per-sample time step (2m = 1s/sample raw history, 1h = 1min/sample,
@@ -10308,7 +11774,7 @@ mod tests {
     }
 
     #[test]
-    fn runner_gait_has_eight_distinct_contact_and_flight_poses() {
+    fn runner_gait_has_distinct_contact_and_flight_poses() {
         for character in RunnerCharacter::ALL {
             let frames = (0..RUNNER_FRAME_COUNT)
                 .map(|frame| make_runner_rgba(character, 50.0, frame))
@@ -10422,7 +11888,10 @@ mod tests {
         assert!(!runner_enabled(MenubarDisplay::Number));
         assert!(runner_enabled(MenubarDisplay::Graph));
         assert!(runner_enabled(MenubarDisplay::Both));
-        assert_eq!(make_runner_icons(RunnerCharacter::Cat).len(), 32);
+        assert_eq!(
+            make_runner_icons(RunnerCharacter::Cat).len(),
+            usize::from(RUNNER_FRAME_COUNT) * 4
+        );
         assert_eq!(runner_load_band(10.0), 0);
         assert_eq!(runner_load_band(90.0), 3);
     }
@@ -10560,12 +12029,61 @@ mod tests {
 
             let width = max_x.saturating_sub(min_x) + 1;
             let height = max_y.saturating_sub(min_y) + 1;
-            assert!(width >= 40, "{character:?} is too narrow: {width}px");
-            assert!(
-                width as f32 / height as f32 >= 1.40,
-                "{character:?} is not recognizably horizontal: {width}x{height}"
-            );
+            if character == RunnerCharacter::Human {
+                assert!(width >= 14, "{character:?} is too narrow: {width}px");
+                assert!(height >= 24, "{character:?} is too short: {height}px");
+            } else if matches!(
+                character,
+                RunnerCharacter::Dinosaur | RunnerCharacter::Ghost
+            ) {
+                // The asset is a deliberately tall side-view T-rex: its
+                // head and short arms make a 1.40 horizontal ratio an
+                // incorrect quality gate even though the running direction
+                // is unambiguous. Ghosts also retain a narrow floating cloak
+                // silhouette so their black/white contour does not get
+                // artificially stretched just to satisfy this test.
+                assert!(width >= 30, "{character:?} is too narrow: {width}px");
+                assert!(width as f32 / height as f32 >= 1.0);
+            } else {
+                assert!(width >= 36, "{character:?} is too narrow: {width}px");
+                assert!(
+                    width as f32 / height as f32 >= 1.40,
+                    "{character:?} is not recognizably horizontal: {width}x{height}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn human_runner_has_eight_distinct_run_frames() {
+        let frames: Vec<Vec<u8>> = (0..RUNNER_FRAME_COUNT)
+            .map(|frame| make_runner_rgba(RunnerCharacter::Human, 50.0, frame))
+            .collect();
+        let unique: std::collections::HashSet<Vec<u8>> = frames.into_iter().collect();
+        assert_eq!(unique.len(), usize::from(RUNNER_FRAME_COUNT));
+    }
+
+    #[test]
+    fn all_runners_use_a_white_glyph_and_compact_picker_preview() {
+        for character in RunnerCharacter::ALL {
+            for frame in [0, 3, 7] {
+                let rgba = make_runner_rgba(character, 55.0, frame);
+                for pixel in rgba.chunks_exact(4).filter(|pixel| pixel[3] != 0) {
+                    assert_eq!(&pixel[..3], &[255, 255, 255], "{character:?} is not white");
+                }
+            }
+        }
+
+        let html = dashboard_html(ResolvedLanguage::En, false);
+        assert!(html.contains(".runner-preview{display:block;width:33px;height:22px"));
+        assert!(html.contains(".character-select .runner-preview{width:33px;height:22px"));
+        assert!(html.contains(
+            ".character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:260px"
+        ));
+        assert!(html.contains(".character-option{display:grid;grid-template-columns:38px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:34px"));
+        assert!(html.contains("image-rendering:auto"));
+        assert!(html.contains("ctx.fillStyle='#ffffff'"));
+        assert!(!html.contains("__RUNNER_COLORS__"));
     }
 
     #[test]
@@ -10701,14 +12219,40 @@ mod tests {
         }
         assert_eq!(unique.len(), RunnerCharacter::ALL.len());
 
+        let frames: serde_json::Value =
+            serde_json::from_str(runner_preview_frames_json()).expect("valid preview frames JSON");
+        let frames = frames.as_object().expect("preview frames object");
+        assert_eq!(frames.len(), RunnerCharacter::ALL.len());
+        for character in RunnerCharacter::ALL {
+            let character_frames = frames
+                .get(character.as_str())
+                .and_then(serde_json::Value::as_array)
+                .expect("character preview frames");
+            assert_eq!(character_frames.len(), usize::from(RUNNER_FRAME_COUNT));
+            assert!(character_frames.iter().all(|frame| {
+                frame.as_str().is_some_and(|alpha| {
+                    alpha.len() == (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 2) as usize
+                })
+            }));
+        }
+
         let html = dashboard_html(ResolvedLanguage::En, false);
         assert!(html.contains(&format!(
             "var RUNNER_CHARACTERS={};",
             runner_character_values_json()
         )));
         assert!(html.contains("var RUNNER_PREVIEW_ALPHA={"));
+        assert!(html.contains("var RUNNER_PREVIEW_FRAMES={"));
         assert!(html.contains("paintRunnerPreviews(document);"));
-        assert!(html.contains("paintRunnerPreview(characterPreview,character);"));
+        assert!(html.contains("paintRunnerPreview(canvas,canvas.dataset.runnerPreview,1);"));
+        assert!(html.contains("startRunnerPreview(characterPreview,character,0);"));
+        assert!(html.contains("function runnerPreviewInterval(cpu,frame)"));
+        assert!(html.contains("RUNNER_PREVIEW_GAIT=[1.14,1.00,0.84,1.02"));
+        assert!(html.contains("60+420*Math.pow(1-load,3)"));
+        assert!(html.contains("function setRunnerPreviewCpu(cpu)"));
+        assert!(html.contains("function setRunnerPreviewVisibility(visible)"));
+        assert!(html.contains("document.addEventListener('visibilitychange'"));
+        assert!(html.contains("prefers-reduced-motion: reduce"));
         assert!(html.contains(r#".character-menu{display:none;position:fixed;"#));
     }
 
@@ -10764,6 +12308,11 @@ mod tests {
         }
         assert!(en.contains(r#"id="summary-temp-label">CPU temp<"#));
         assert!(en.contains(r#"id="summary-fan-label">Fans<"#));
+        assert!(en.contains(r#"id="summary-cpu-core-chart"#));
+        assert!(en.contains(r#"id="show-core-graph-setting"#));
+        assert!(en.contains(r#"id="cpu-core-graph-toggle"#));
+        assert!(en.contains("function renderCoreGraph(d)"));
+        assert!(en.contains("d.core_hist"));
         assert!(en.contains("d.fan_avg_rpm_text"));
         assert!(en.contains("fan_avg_rpm"));
         assert!(source.contains("\"fan_avg_rpm_text\": fan_avg_rpm_text"));
@@ -10775,6 +12324,7 @@ mod tests {
         assert!(en.contains("function coreGroupName(kind)"));
         assert!(en.contains("d.core_groups"));
         assert!(source.contains("\"core_groups\": cpu_core_groups"));
+        assert!(source.contains("\"core_hist\": core_hist"));
     }
 
     #[test]
@@ -10890,6 +12440,43 @@ mod tests {
         assert!(ko.contains(">CPU 온도 경고<"));
         assert!(ko.contains(">팬 제어 실패<"));
         assert!(ko.contains(">앱 업데이트<"));
+    }
+
+    #[test]
+    fn settings_panel_exposes_automation_rule_editor() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+        for html in [&en, &ko] {
+            assert!(html.contains(r#"id="automation-settings""#));
+            assert!(html.contains(r#"id="automation-rules""#));
+            assert!(html.contains(r#"id="automation-add""#));
+            assert!(html.contains(r#"id="automation-preset""#));
+            assert!(html.contains(r#"id="automation-save""#));
+            assert!(html.contains(r#"id="config-transfer-settings""#));
+            assert!(html.contains(r#"id="config-transfer-text""#));
+            assert!(html.contains(r#"id="config-copy""#));
+            assert!(html.contains(r#"id="config-import""#));
+            assert!(html.contains("function updateAutomationRules(d)"));
+            assert!(html.contains("function applyQuietAcPreset()"));
+            assert!(html.contains("function updateConfigTransfer(d)"));
+            assert!(html.contains("window.ipc.postMessage('copyconfig')"));
+            assert!(html.contains("window.ipc.postMessage('importconfig:'+value)"));
+            assert!(html.contains(
+                "window.ipc.postMessage('rules:'+JSON.stringify(automationRulesPayload()))"
+            ));
+            assert!(html.contains("d.rules"));
+            assert!(html.contains("d.config_toml"));
+        }
+        assert!(en.contains(">Automation Rules<"));
+        assert!(ko.contains(">자동화 규칙<"));
+        assert!(ko.contains(">규칙 추가<"));
+        assert!(ko.contains(">배터리 저소음 / AC 고성능<"));
+        assert!(ko.contains(">규칙 저장<"));
+        assert!(!ko.contains(">Automation Rules<"));
+        assert!(en.contains(">Configuration Transfer<"));
+        assert!(ko.contains(">설정 가져오기 및 내보내기<"));
+        assert!(en.contains("CPU temperature above"));
+        assert!(ko.contains("CPU 온도 초과"));
     }
 
     #[test]
@@ -11101,6 +12688,9 @@ mod tests {
         assert!(en.contains(r#"id="update-current-version""#));
         assert!(en.contains(r#"id="update-latest-version""#));
         assert!(en.contains(r#"id="update-check-result""#));
+        assert!(en.contains(r#"id="update-channel""#));
+        assert!(en.contains("changeUpdateChannel(this.value)"));
+        assert!(include_str!("main.rs").contains("fetch_release_for_channel"));
         assert!(en.contains(r#"id="rail-update-check""#));
         assert!(en.contains(r#"id="rail-update-install""#));
         assert!(en.contains(r#"id="update-release-link""#));
@@ -11109,6 +12699,11 @@ mod tests {
         assert!(en.contains("function compareVersions(a,b)"));
         assert!(en.contains("function formatReleaseNotes(body)"));
         assert!(en.contains("function renderUpdateStatus(status)"));
+        assert!(en.contains("function loadUpdateStatusSnapshot()"));
+        assert!(en.contains("function rememberUpdateStatus(status)"));
+        assert!(en.contains("pf.update.status.v1"));
+        assert!(en.contains("15*60*1000"));
+        assert!(en.contains("APP_UPDATE_STATUS=loadUpdateStatusSnapshot();"));
         assert!(en.contains("if(RAIL_VIEW!=='settings')setRailView('settings');"));
         assert!(!en.contains("function fetchLatestReleaseStatus()"));
         assert!(!en.contains("api.github.com/repos/uulab-official/peterfan/releases/latest"));
@@ -11121,8 +12716,9 @@ mod tests {
         assert!(en.contains("s.install_ready===true"));
         assert!(en.contains("install_ready:!!nativeUpdate.install_ready"));
         assert!(en.contains("Preparing Update"));
+        assert!(en.contains("var checking=!!s.checking||phase==='checking';"));
+        assert!(en.contains("Awaiting Signed Release"));
         assert!(en.contains("Up to Date"));
-        assert!(en.contains("Development Build"));
         assert!(!en.contains(
             r#"id="rail-update-install" disabled onclick="installAppUpdate(this)" style="display:none""#
         ));
@@ -11167,6 +12763,26 @@ mod tests {
             assert_eq!(sensor_group_label(ResolvedLanguage::En, kind), en);
             assert_eq!(sensor_group_label(ResolvedLanguage::Ko, kind), ko);
         }
+    }
+
+    #[test]
+    fn sensor_group_labels_distinguish_cpu_and_gpu_die_roles() {
+        let cpu_average = temp("cpu.die", SensorKind::Cpu, 52.0);
+        let cpu_hot = temp("cpu.die.hot", SensorKind::Cpu, 67.0);
+        let gpu_die = temp("gpu.die", SensorKind::Gpu, 58.0);
+
+        assert_eq!(
+            sensor_group_label_for_sensor(ResolvedLanguage::En, &cpu_average),
+            "CPU average"
+        );
+        assert_eq!(
+            sensor_group_label_for_sensor(ResolvedLanguage::En, &cpu_hot),
+            "CPU hottest"
+        );
+        assert_eq!(
+            sensor_group_label_for_sensor(ResolvedLanguage::Ko, &gpu_die),
+            "GPU 다이"
+        );
     }
 
     #[test]
@@ -11550,7 +13166,7 @@ mod tests {
         assert!(en.contains("CPU avg "));
         assert!(en.contains("macOS safety fallback"));
         assert!(en.contains("Latest signed"));
-        assert!(en.contains("ahead of the latest signed release"));
+        assert!(en.contains("newer than the public signed release"));
         assert!(ko.contains("최신 서명 릴리스"));
         assert!(ko.contains("Mac 상태 확인 중"));
         assert!(en.contains(
@@ -11733,6 +13349,15 @@ mod tests {
         );
         assert_eq!(active_control_mode_from_mode("hold:45%"), "hold");
         assert_eq!(active_control_mode_from_mode(""), "");
+    }
+
+    #[test]
+    fn daemon_config_capability_requires_an_explicit_success_reply() {
+        assert!(daemon_supports_user_config(Some(
+            "ok logged-in-user (macos)"
+        )));
+        assert!(!daemon_supports_user_config(Some("error: unknown command")));
+        assert!(!daemon_supports_user_config(None));
     }
 
     #[test]
@@ -12345,6 +13970,57 @@ mod tests {
             parse_curve_points("not json").unwrap_err(),
             "invalid curve data"
         );
+    }
+
+    #[test]
+    fn parse_automation_rules_accepts_supported_conditions_in_order() {
+        let rules = parse_automation_rules(
+            r#"[
+                {"when":"on_battery","profile":"silent"},
+                {"when":"on_ac","profile":"balanced"},
+                {"when":"time:22-7","profile":"gaming"},
+                {"when":"cpu_above:85","profile":"maximum"}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(rules.len(), 4);
+        assert_eq!(rules[2].when, "time:22-7");
+        assert_eq!(rules[3].profile, Profile::Maximum);
+    }
+
+    #[test]
+    fn parse_automation_rules_rejects_invalid_or_oversized_rules() {
+        assert!(parse_automation_rules(r#"[{"when":"time:24-7","profile":"silent"}]"#).is_err());
+        assert!(
+            parse_automation_rules(r#"[{"when":"cpu_above:NaN","profile":"silent"}]"#).is_err()
+        );
+        let oversized = (0..33)
+            .map(|_| serde_json::json!({"when":"on_ac","profile":"balanced"}))
+            .collect::<Vec<_>>();
+        assert!(parse_automation_rules(&serde_json::to_string(&oversized).unwrap()).is_err());
+    }
+
+    #[test]
+    fn parse_imported_config_accepts_defaults_and_rules() {
+        let config = parse_imported_config(
+            r#"
+profile = "performance"
+rules = [{ when = "on_ac", profile = "maximum" }]
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.profile, Profile::Performance);
+        assert_eq!(config.rules.len(), 1);
+        assert_eq!(config.interval_secs, 2);
+    }
+
+    #[test]
+    fn parse_imported_config_rejects_invalid_control_settings() {
+        assert!(parse_imported_config("interval_secs = 0").is_err());
+        assert!(parse_imported_config(
+            "rules = [{ when = \"cpu_above:NaN\", profile = \"silent\" }]"
+        )
+        .is_err());
     }
 
     #[test]

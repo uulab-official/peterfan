@@ -3,6 +3,46 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
+## Current Release Verification — 2026-08-05
+
+### Public artifact already deployed
+
+- [x] Public latest release identified as `v1.27.78`:
+      https://github.com/uulab-official/peterfan/releases/tag/v1.27.78
+- [x] Public DMG downloaded and SHA-256 matched GitHub `checksums.txt`:
+      `d3308bc93293f4e27102723b68973577d615e18f317f89ccce750dd6844fe9d8`
+- [x] Public DMG code signature valid.
+- [x] Public DMG stapled notarization ticket valid.
+- [x] Gatekeeper accepted the public DMG and the embedded `PeterFan.app`.
+- [x] DMG volume, filesystem, bundle ID, and bundled `peterfand` verified.
+
+### Current source build
+
+- [x] Workspace source version is `v1.31.31`.
+- [x] `cargo test --workspace`: 293 passed, 0 failed, 6 ignored.
+- [x] `cargo clippy --workspace --all-targets -- -D warnings`: 0 warnings.
+- [x] `cargo fmt --all -- --check`, `scripts/check-docs.sh`, and `git diff --check` pass.
+- [x] Local menu-bar bundle builds and launches; startup and WebView readiness
+      were observed in `~/Library/Logs/PeterFan/menubar.log`.
+- [x] Replace the installed LaunchDaemon with the v1.31.30 helper;
+      `/usr/local/bin/peterfand --version` is `v1.31.30` and
+      `launchctl print system/kr.co.uulab.peterfan.daemon` reports `running`.
+- [ ] Publish `v1.31.31` as a new official release.
+- [ ] Sign the new release with a Developer ID identity on an authorized Mac.
+- [ ] Notarize/staple the new DMG and rerun the artifact gate.
+- [ ] Upload the new DMG, universal archive, and `checksums.txt` to GitHub.
+
+### Current release-machine blockers
+
+- [ ] Developer ID identity available in the current Keychain — current check:
+      `0 valid identities found`.
+- [ ] `peterfan-notary` profile or App Store Connect credentials available.
+- [ ] `gh` authenticated for release upload.
+
+The public v1.27.78 release is production-trusted. The local v1.31.31 bundle
+is a development/ad-hoc build until the unchecked release-machine items above
+are completed; it must not replace the public DMG in distribution links.
+
 ## P0 - Hardware Safety
 
 - [x] Reject missing, non-finite, and non-physical control temperatures.
@@ -26,7 +66,7 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Keep the previous app until the replacement passes an execution health check.
 - [x] Roll back automatically when copy, signature validation, launch, or startup fails.
 - [x] Persist a user-visible update result after the updater process exits.
-- [ ] Add stable and prerelease update channels.
+- [x] Add stable and prerelease update channels.
 
 ## P1 - Reliability And Performance
 
@@ -36,6 +76,14 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Keep fan-control notifications incident-based so repeated hardware retries
       cannot flood Notification Center before a confirmed recovery.
 - [x] Route CLI profile changes through the running daemon before direct SMC access.
+- [x] Keep the root daemon synchronized with the logged-in user's validated
+      automation rules, base profile, and custom fan curve.
+- [x] Edit, validate, save, and daemon-reload ordered automation rules from the
+      detail window for battery, AC power, time windows, and CPU temperature.
+- [x] Copy the current TOML config and import a validated TOML config from the
+      detail window with daemon reload confirmation.
+- [x] Offer a non-destructive quiet-on-battery / performance-on-AC automation
+      preset that remains pending until the user explicitly saves it.
 - [x] Keep Settings limited to preferences/safety and System limited to metrics.
 - [x] Drive the menu-bar runner cadence from CPU load with tested idle/busy bounds.
 - [x] Avoid fixed-rate runner polling at steady load; schedule only the next
@@ -76,9 +124,12 @@ by an automated test, a release-script check, or a recorded real-Mac result.
       then publish macOS and Windows assets with one shared `checksums.txt`.
 - [x] Select the Windows ZIP for Windows update checks and verify its GitHub
       digest, checksum manifest, and embedded CLI version before reinstalling.
+- [x] Keep the Homebrew cask pinned to the official DMG URL and release SHA-256;
+      update it from the exact notarized DMG before publishing a new version.
 - [x] Never substitute mock temperatures or fans on a production backend.
 - [x] Enforce RustSec policy in CI and remove or isolate allowed warnings.
-- [ ] Test release signing and notarization from a second authorized Mac.
+- [ ] Run the credentialed signing/notarization test on a second authorized
+      release Mac; the transfer runbook and verification command are ready.
 
 ## Release Evidence
 
@@ -92,3 +143,4 @@ For every public release, record these results in the release task or changelog:
 - App/daemon process counts
 - Sensor count, fan count, and `control_health` state
 - OTA current/latest version and artifact SHA-256
+- Homebrew cask version, DMG URL, and SHA-256

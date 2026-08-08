@@ -26,7 +26,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
-use peterfan_core::config::RuleContext;
+use peterfan_core::config::{Config, RuleContext};
 use peterfan_core::profile::Profile;
 use peterfan_core::thermals::{
     representative_temperature_c, safety_temperature_c, valid_control_temperature_c,
@@ -47,12 +47,57 @@ static CONTROL_THREAD: std::sync::LazyLock<Mutex<Option<thread::Thread>>> =
 static FAN_WRITE_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 const FAN_WRITE_RETRY_BASE_SECS: u64 = 5;
 const FAN_WRITE_RETRY_MAX_SECS: u64 = 60;
+const FAN_DUTY_RAMP_UP_PER_SEC: u64 = 4;
+const FAN_DUTY_RAMP_DOWN_PER_SEC: u64 = 3;
 const FAN_READBACK_SETTLE_GRACE_MS: u64 = 10_000;
 const FAN_READBACK_PROGRESS_GRACE_MS: u64 = 6_000;
 const FAN_READBACK_MIN_PROGRESS_RPM: u32 = 50;
 const FAN_READBACK_STALE_CONFIRMATIONS: u32 = 3;
 const FAN_READBACK_RETRY_SECS: u64 = 15;
 const SENSOR_STALE_MIN_MS: u64 = 6_000;
+
+/// Move a requested fan duty toward its target at a bounded rate. The control
+/// loop can observe a temperature spike in one sample, but the hardware does
+/// not need to jump there in one write. Critical temperatures bypass the ramp
+/// so the safety override remains immediate.
+fn slew_fan_duty(current: u8, target: u8, elapsed_ms: u64, immediate: bool) -> u8 {
+    if immediate || current == target {
+        return target;
+    }
+
+    let rate_per_sec = if target > current {
+        FAN_DUTY_RAMP_UP_PER_SEC
+    } else {
+        FAN_DUTY_RAMP_DOWN_PER_SEC
+    };
+    let max_delta = rate_per_sec
+        .saturating_mul(elapsed_ms)
+        .saturating_add(999)
+        .checked_div(1_000)
+        .unwrap_or(u64::MAX)
+        .clamp(1, 100) as u8;
+
+    if target > current {
+        current.saturating_add(max_delta).min(target)
+    } else {
+        current.saturating_sub(max_delta).max(target)
+    }
+}
+
+fn previous_fan_duty(state: &State, fan_id: &str, fallback: u8) -> u8 {
+    state
+        .fan_targets
+        .get(fan_id)
+        .copied()
+        .or_else(|| {
+            state
+                .last_fans
+                .iter()
+                .find(|fan| fan.id == fan_id)
+                .and_then(|fan| fan.duty_percent)
+        })
+        .unwrap_or(fallback)
+}
 
 // ── State persistence ────────────────────────────────────────────────────────
 
@@ -116,6 +161,77 @@ fn load_saved_state() -> Option<SavedState> {
 
 fn fresh_daemon_starts_in_auto(profile_was_explicit: bool) -> bool {
     !profile_was_explicit
+}
+
+#[cfg(target_os = "macos")]
+fn macos_user_config_path(home: &std::path::Path) -> PathBuf {
+    home.join("Library/Application Support/peterfan/config.toml")
+}
+
+#[cfg(target_os = "macos")]
+fn logged_in_user_config_path() -> Option<PathBuf> {
+    use std::ffi::CStr;
+    use std::os::unix::fs::MetadataExt;
+
+    let uid = std::fs::metadata("/dev/console").ok()?.uid();
+    if uid == 0 {
+        return None;
+    }
+    // SAFETY: getpwuid returns a process-owned passwd record. We copy pw_dir
+    // into an owned PathBuf before leaving this block and check every pointer.
+    let home = unsafe {
+        let passwd = libc::getpwuid(uid);
+        if passwd.is_null() || (*passwd).pw_dir.is_null() {
+            return None;
+        }
+        CStr::from_ptr((*passwd).pw_dir)
+            .to_string_lossy()
+            .into_owned()
+    };
+    let home = PathBuf::from(home);
+    home.is_absolute().then(|| macos_user_config_path(&home))
+}
+
+fn load_valid_config_file(path: &std::path::Path) -> Result<Config, String> {
+    const MAX_CONFIG_BYTES: u64 = 256 * 1024;
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("could not read config metadata: {error}"))?;
+    if !metadata.file_type().is_file() {
+        return Err("config must be a regular file".to_string());
+    }
+    if metadata.len() > MAX_CONFIG_BYTES {
+        return Err("config is larger than 256 KiB".to_string());
+    }
+    let text =
+        std::fs::read_to_string(path).map_err(|error| format!("could not read config: {error}"))?;
+    let config = Config::from_toml(&text).map_err(|error| format!("invalid config: {error}"))?;
+    config.validate_for_control()?;
+    Ok(config)
+}
+
+/// A system LaunchDaemon has HOME=/var/root. On macOS, fan preferences belong
+/// to the user at the console, so explicitly read that user's config. At the
+/// login window (or on other platforms), retain the normal platform fallback.
+fn load_daemon_config() -> Config {
+    #[cfg(target_os = "macos")]
+    if let Some(path) = logged_in_user_config_path() {
+        match load_valid_config_file(&path) {
+            Ok(config) => return config,
+            Err(error) if path.exists() => {
+                eprintln!("peterfand: user config rejected: {error}; using safe defaults");
+                return Config::default();
+            }
+            Err(_) => {}
+        }
+    }
+
+    let config = peterfan_platform::config::load();
+    if let Err(error) = config.validate_for_control() {
+        eprintln!("peterfand: daemon config rejected: {error}; using safe defaults");
+        Config::default()
+    } else {
+        config
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -246,7 +362,7 @@ fn run(cli: Cli) -> Result<()> {
 
     // Resolve settings: explicit flags win, otherwise fall back to the config
     // file, otherwise the built-in defaults.
-    let cfg = peterfan_platform::config::load();
+    let cfg = load_daemon_config();
 
     let profile = match &cli.profile {
         Some(name) => {
@@ -402,7 +518,6 @@ fn run(cli: Cli) -> Result<()> {
         control_loop(
             provider.as_ref(),
             monitor.as_mut(),
-            profile,
             &fan_ids,
             cli.once,
             &shared,
@@ -717,10 +832,20 @@ fn publish_effective_rule_profile(
     }
 }
 
+fn selected_profile(state: &State, context: &RuleContext) -> Profile {
+    if state.manual {
+        state.profile
+    } else {
+        state
+            .config
+            .active_profile(context)
+            .unwrap_or(state.config.profile)
+    }
+}
+
 fn control_loop(
     provider: &dyn HardwareProvider,
     monitor: &mut dyn SystemMonitor,
-    base: Profile,
     fan_ids: &[String],
     once: bool,
     shared: &Arc<Mutex<State>>,
@@ -859,6 +984,11 @@ fn control_loop(
 
         let mut write_errors = Vec::new();
         let mut requested_targets = std::collections::HashMap::new();
+        let now_ms = unix_now_ms();
+        let elapsed_ms = state
+            .last_control_apply_unix_ms
+            .map(|last| now_ms.saturating_sub(last))
+            .unwrap_or(0);
 
         if auto {
             // Per-fan overrides still apply on top of the global "auto" mode
@@ -869,7 +999,9 @@ fn control_loop(
             for id in fan_ids {
                 let has_override = state.fan_overrides.contains_key(id);
                 let result = if has_override {
-                    let effective = effective_duty(&state.fan_overrides, id, 100, critical_now);
+                    let target = effective_duty(&state.fan_overrides, id, 100, critical_now);
+                    let current = previous_fan_duty(&state, id, target);
+                    let effective = slew_fan_duty(current, target, elapsed_ms, critical_now);
                     requested_targets.insert(id.clone(), effective);
                     provider.set_fan_duty(id, effective)
                 } else {
@@ -897,11 +1029,7 @@ fn control_loop(
                 cpu_temp_c: representative_temp,
                 hour: local_hour(),
             };
-            let profile = if state.manual {
-                state.profile
-            } else {
-                state.config.active_profile(&ctx).unwrap_or(base)
-            };
+            let profile = selected_profile(&state, &ctx);
             // Reflect a rule-selected profile only if no newer command arrived
             // while the slow sensor scan was in progress. Manual profiles are
             // already stored by the command handler and must never be replaced
@@ -923,7 +1051,9 @@ fn control_loop(
             };
             let critical_now = safety_temp >= critical;
             for id in fan_ids {
-                let effective = effective_duty(&state.fan_overrides, id, duty, critical_now);
+                let target = effective_duty(&state.fan_overrides, id, duty, critical_now);
+                let current = previous_fan_duty(&state, id, target);
+                let effective = slew_fan_duty(current, target, elapsed_ms, critical_now);
                 requested_targets.insert(id.clone(), effective);
                 if let Err(e) = provider.set_fan_duty(id, effective) {
                     write_errors.push(format!("{id}: {e}"));
@@ -1063,11 +1193,18 @@ fn apply_cached_control_request(
 
     let mut write_errors = Vec::new();
     let mut requested_targets = std::collections::HashMap::new();
+    let now_ms = unix_now_ms();
+    let elapsed_ms = state
+        .last_control_apply_unix_ms
+        .map(|last| now_ms.saturating_sub(last))
+        .unwrap_or(0);
     for id in fan_ids {
         let result = if state.auto && !state.fan_overrides.contains_key(id) {
             provider.set_fan_auto(id)
         } else {
-            let effective = effective_duty(&state.fan_overrides, id, duty, critical_now);
+            let target = effective_duty(&state.fan_overrides, id, duty, critical_now);
+            let current = previous_fan_duty(&state, id, target);
+            let effective = slew_fan_duty(current, target, elapsed_ms, critical_now);
             requested_targets.insert(id.clone(), effective);
             provider.set_fan_duty(id, effective)
         };
@@ -1356,13 +1493,16 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 Err(_) => "error: serialization failed".into(),
             }
         }
+        // Capability probe used by newer menu-bar apps. Older daemons return
+        // "unknown command", which lets the signed app replace the helper
+        // through its already-approved self-reinstall path without prompting.
+        Some("config-source") => format!("ok logged-in-user ({backend})"),
         Some("reload") => {
-            let new_cfg = peterfan_platform::config::load();
+            let new_cfg = load_daemon_config();
             let rules = new_cfg.rules.len();
-            {
-                let mut s = shared.lock().expect("state poisoned");
-                s.config = new_cfg;
-            }
+            let mut s = shared.lock().expect("state poisoned");
+            s.config = new_cfg;
+            mark_control_requested(&mut s);
             format!("ok reloaded ({rules} rules) ({backend})")
         }
         Some("stop") => {
@@ -1562,6 +1702,32 @@ mod tests {
         assert!(!fresh_daemon_starts_in_auto(true));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_daemon_uses_the_console_users_application_support_config() {
+        assert_eq!(
+            macos_user_config_path(std::path::Path::new("/Users/example")),
+            std::path::Path::new("/Users/example/Library/Application Support/peterfan/config.toml")
+        );
+    }
+
+    #[test]
+    fn daemon_config_loader_validates_control_settings() {
+        let path = std::env::temp_dir().join(format!(
+            "peterfan-daemon-config-test-{}-{}.toml",
+            std::process::id(),
+            unix_now_ms()
+        ));
+        std::fs::write(&path, "profile = \"gaming\"\ncritical_temp_c = 90\n")
+            .expect("write valid config");
+        let valid = load_valid_config_file(&path).expect("load valid config");
+        assert_eq!(valid.profile, Profile::Gaming);
+
+        std::fs::write(&path, "critical_temp_c = 200\n").expect("write invalid config");
+        assert!(load_valid_config_file(&path).is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
     fn test_state() -> Arc<Mutex<State>> {
         Arc::new(Mutex::new(State {
             profile: Profile::Balanced,
@@ -1583,6 +1749,30 @@ mod tests {
             fan_readbacks: Vec::new(),
             fan_readback_trackers: std::collections::HashMap::new(),
         }))
+    }
+
+    #[test]
+    fn rules_mode_uses_the_reloaded_base_profile() {
+        let shared = test_state();
+        let context = RuleContext {
+            on_ac: true,
+            cpu_temp_c: 50.0,
+            hour: 12,
+        };
+        let mut state = shared.lock().unwrap();
+        state.profile = Profile::Balanced;
+        state.config.profile = Profile::Gaming;
+        assert_eq!(selected_profile(&state, &context), Profile::Gaming);
+
+        state.manual = true;
+        state.profile = Profile::Silent;
+        assert_eq!(selected_profile(&state, &context), Profile::Silent);
+    }
+
+    #[test]
+    fn daemon_advertises_logged_in_user_config_support() {
+        let reply = handle_command("config-source", &test_state());
+        assert_eq!(reply, "ok logged-in-user (mock)");
     }
 
     struct FaultProvider {
@@ -1736,7 +1926,6 @@ mod tests {
         control_loop(
             &provider,
             monitor.as_mut(),
-            Profile::Balanced,
             &["fan.test".into()],
             true,
             &shared,
@@ -1769,7 +1958,6 @@ mod tests {
         control_loop(
             &provider,
             monitor.as_mut(),
-            Profile::Balanced,
             &["fan.test".into()],
             true,
             &shared,
@@ -1804,6 +1992,20 @@ mod tests {
     }
 
     #[test]
+    fn fan_duty_ramp_limits_upward_step_by_elapsed_time() {
+        assert_eq!(slew_fan_duty(30, 80, 1_000, false), 34);
+        assert_eq!(slew_fan_duty(30, 80, 250, false), 31);
+        assert_eq!(slew_fan_duty(30, 80, 20_000, false), 80);
+    }
+
+    #[test]
+    fn fan_duty_ramp_limits_downward_step_but_critical_is_immediate() {
+        assert_eq!(slew_fan_duty(80, 30, 1_000, false), 77);
+        assert_eq!(slew_fan_duty(80, 30, 20_000, false), 30);
+        assert_eq!(slew_fan_duty(30, 100, 0, true), 100);
+    }
+
+    #[test]
     fn active_fan_write_cooldown_skips_hardware_writes() {
         STOP.store(false, Ordering::Relaxed);
         let provider = FaultProvider::new(false, false);
@@ -1819,7 +2021,6 @@ mod tests {
         control_loop(
             &provider,
             monitor.as_mut(),
-            Profile::Balanced,
             &["fan.test".into()],
             true,
             &shared,
@@ -2044,7 +2245,6 @@ mod tests {
         control_loop(
             &provider,
             monitor.as_mut(),
-            Profile::Balanced,
             &["fan.test".into()],
             true,
             &shared,

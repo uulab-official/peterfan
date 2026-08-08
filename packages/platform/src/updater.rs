@@ -10,6 +10,8 @@ pub const REPO: &str = "uulab-official/peterfan";
 pub const EXPECTED_BUNDLE_ID: &str = "kr.co.uulab.peterfan";
 pub const EXPECTED_TEAM_ID: &str = "N99FMBQ662";
 
+use peterfan_core::config::UpdateChannel;
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UpdateInstallResult {
     /// `pending`, `installed`, `rolled_back`, or `failed`.
@@ -289,6 +291,23 @@ pub fn fetch_latest_release() -> Result<ReleaseInfo, String> {
     ))
 }
 
+/// Fetch the release selected by the user's update-channel preference.
+///
+/// GitHub's `/releases/latest` endpoint intentionally excludes prereleases,
+/// so the preview channel uses the ordered releases endpoint and ignores
+/// drafts while retaining the newest published release.
+pub fn fetch_release_for_channel(channel: UpdateChannel) -> Result<ReleaseInfo, String> {
+    match channel {
+        UpdateChannel::Stable => fetch_latest_release(),
+        UpdateChannel::PreRelease => {
+            let body = fetch_release_body(&format!(
+                "https://api.github.com/repos/{REPO}/releases?per_page=20"
+            ))?;
+            parse_release_list_response(&body)
+        }
+    }
+}
+
 pub fn fetch_release_by_tag(tag: &str) -> Result<ReleaseInfo, String> {
     let tag = if tag.starts_with('v') {
         tag.to_string()
@@ -301,6 +320,11 @@ pub fn fetch_release_by_tag(tag: &str) -> Result<ReleaseInfo, String> {
 }
 
 fn fetch_release_api(url: &str) -> Result<ReleaseInfo, String> {
+    let body = fetch_release_body(url)?;
+    parse_release_response(&body)
+}
+
+fn fetch_release_body(url: &str) -> Result<Vec<u8>, String> {
     let mut command = std::process::Command::new("curl");
     command.args([
         "-sS",
@@ -326,7 +350,7 @@ fn fetch_release_api(url: &str) -> Result<ReleaseInfo, String> {
             String::from_utf8_lossy(&out.stderr)
         ));
     }
-    parse_release_response(&out.stdout)
+    Ok(out.stdout)
 }
 
 fn github_api_token() -> Option<String> {
@@ -341,6 +365,21 @@ fn github_api_token() -> Option<String> {
 fn parse_release_response(body: &[u8]) -> Result<ReleaseInfo, String> {
     let val: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| format!("unexpected GitHub response: {e}"))?;
+    parse_release_value(&val)
+}
+
+fn parse_release_list_response(body: &[u8]) -> Result<ReleaseInfo, String> {
+    let val: serde_json::Value =
+        serde_json::from_slice(body).map_err(|e| format!("unexpected GitHub response: {e}"))?;
+    let releases = val.as_array().ok_or("response has no release list")?;
+    let release = releases
+        .iter()
+        .find(|release| !release["draft"].as_bool().unwrap_or(false))
+        .ok_or_else(|| "release list has no published releases".to_string())?;
+    parse_release_value(release)
+}
+
+fn parse_release_value(val: &serde_json::Value) -> Result<ReleaseInfo, String> {
     let tag = val["tag_name"]
         .as_str()
         .ok_or("response has no tag_name")?
@@ -2237,6 +2276,18 @@ mod tests {
         assert!(info.checksum_url.is_none());
         assert!(info.asset_digest.is_none());
         assert!(info.checksum_digest.is_none());
+    }
+
+    #[test]
+    fn prerelease_channel_uses_newest_published_release_and_skips_drafts() {
+        let body = br#"[
+            {"tag_name":"v3.0.0-draft","draft":true,"html_url":"https://example.com/draft","assets":[]},
+            {"tag_name":"v2.9.0-beta.1","prerelease":true,"html_url":"https://example.com/beta","assets":[]},
+            {"tag_name":"v2.8.0","prerelease":false,"html_url":"https://example.com/stable","assets":[]}
+        ]"#;
+        let info = parse_release_list_response(body).unwrap();
+        assert_eq!(info.version, "2.9.0-beta.1");
+        assert_eq!(info.tag, "v2.9.0-beta.1");
     }
 
     #[test]

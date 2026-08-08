@@ -159,6 +159,14 @@ else
   fail "macOS six-hour soak gate is incomplete"
 fi
 
+if grep -q 'import-p12' "$ROOT/scripts/setup-macos-signing.sh" && \
+   grep -q 'setup-macos-signing.sh verify' "$ROOT/docs/MACOS_DISTRIBUTION.md" && \
+   grep -q 'Move the existing certificate to another Mac' "$ROOT/docs/MACOS_DISTRIBUTION.md"; then
+  ok "second-Mac signing transfer and verification runbook is present"
+else
+  fail "second-Mac signing transfer runbook is incomplete"
+fi
+
 echo
 if [[ "$FAILED" -eq 0 ]]; then
   ok "docs are ready"
