@@ -39,6 +39,8 @@ use tao::window::{Window, WindowBuilder};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
+mod runner;
+
 #[cfg(target_os = "macos")]
 use block2::RcBlock;
 #[cfg(target_os = "macos")]
@@ -72,6 +74,19 @@ use peterfan_core::types::SensorSource;
 use peterfan_core::types::{Celsius, Fan, TempSensor};
 use peterfan_core::types::{SensorGroup, SensorKind};
 use peterfan_core::{HardwareProvider, SystemMonitor};
+use runner::{
+    enabled as runner_enabled, ease_motion_cpu as ease_runner_motion_cpu,
+    frame_interval as runner_frame_interval, frame_interval_for_pose as runner_frame_interval_for_pose,
+    load_band as runner_load_band, load_band_with_hysteresis as runner_load_band_with_hysteresis,
+    phase_step as runner_phase_step, should_animate as runner_should_animate,
+    smooth_cpu as smooth_runner_cpu, uses_event_loop_timer as runner_uses_event_loop_timer,
+    FRAME_COUNT as RUNNER_FRAME_COUNT, MAX_INTERVAL as RUNNER_MAX_INTERVAL,
+    MIN_INTERVAL as RUNNER_MIN_INTERVAL, NATIVE_TICK as RUNNER_NATIVE_TICK,
+};
+#[cfg(target_os = "macos")]
+use runner::{
+    native_next_delay as runner_native_next_delay, NATIVE_TOLERANCE as RUNNER_NATIVE_TOLERANCE,
+};
 
 const REFRESH: Duration = Duration::from_secs(1);
 const TEMPERATURE_REFRESH_VISIBLE: Duration = Duration::from_secs(2);
@@ -82,7 +97,6 @@ const FAN_STALE_AFTER: Duration = Duration::from_secs(8);
 const FAN_EMPTY_CONFIRMATIONS: u8 = 3;
 // The runner should jog legibly at idle and sprint at the display refresh limit.
 // Frames are pre-rendered, so each tick only swaps a cached status-item image.
-const RUNNER_FRAME_COUNT: u8 = 8;
 const RUNNER_PIXEL_WIDTH: u32 = 48;
 const RUNNER_PIXEL_HEIGHT: u32 = 32;
 // Keep the procedural characters legible after macOS reduces the 48x32 source
@@ -166,14 +180,6 @@ const DINO_RUN_FRAMES: &[&[u8]] = &[
         "/../../assets/runner/dino-run-8-cc0.png"
     )),
 ];
-const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(60);
-const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(480);
-#[cfg(target_os = "macos")]
-// The runner cannot display frames faster than RUNNER_MIN_INTERVAL. Waking the
-// AppKit run loop more often only burns energy while producing the same image.
-const RUNNER_NATIVE_TICK: Duration = RUNNER_MIN_INTERVAL;
-#[cfg(target_os = "macos")]
-const RUNNER_NATIVE_TOLERANCE: Duration = Duration::from_millis(8);
 #[cfg(target_os = "macos")]
 const MENUBAR_GRAPH_WIDTH: f64 = 36.0;
 #[cfg(target_os = "macos")]
@@ -5738,61 +5744,6 @@ fn to_vec(hist: &VecDeque<f32>) -> Vec<f32> {
     hist.iter().copied().collect()
 }
 
-fn runner_frame_interval(cpu_pct: f32) -> Duration {
-    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let min_ms = RUNNER_MIN_INTERVAL.as_millis() as f32;
-    let max_ms = RUNNER_MAX_INTERVAL.as_millis() as f32;
-    // A cubic curve makes ordinary work visibly quicker and gives sustained
-    // load a sevenfold sprint without making icon compositing create its own
-    // artificial CPU load.
-    let ms = min_ms + (max_ms - min_ms) * (1.0 - load).powi(3);
-    Duration::from_millis(ms.round() as u64)
-}
-
-fn runner_frame_interval_for_pose(cpu_pct: f32, frame: u8) -> Duration {
-    // Contact poses carry a touch more weight while flight poses pass more
-    // quickly. The weights average to 1.0, preserving the CPU-to-lap-speed
-    // mapping, and fade out by 80% load for an even sprint cadence.
-    const GAIT_WEIGHTS: [f32; 8] = [1.14, 1.00, 0.84, 1.02, 1.14, 1.00, 0.84, 1.02];
-    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let influence = (1.0 - load / 0.8).clamp(0.0, 1.0);
-    let weight = 1.0 + (GAIT_WEIGHTS[usize::from(frame % RUNNER_FRAME_COUNT)] - 1.0) * influence;
-    let millis = runner_frame_interval(cpu_pct).as_secs_f32() * 1000.0 * weight;
-    Duration::from_millis((millis.round() as u64).max(RUNNER_MIN_INTERVAL.as_millis() as u64))
-}
-
-fn smooth_runner_cpu(previous: f32, sample: f32, has_sample: bool) -> f32 {
-    let sample = sample.clamp(0.0, 100.0);
-    if !has_sample {
-        return sample;
-    }
-    // Workload spikes should be visible immediately. Decay is deliberately
-    // slower so a single quiet sample cannot make the cat stutter between
-    // sprinting and walking.
-    let alpha = if sample >= previous { 0.82 } else { 0.22 };
-    (previous + (sample - previous) * alpha).clamp(0.0, 100.0)
-}
-
-fn runner_enabled(display: MenubarDisplay) -> bool {
-    matches!(display, MenubarDisplay::Graph | MenubarDisplay::Both)
-}
-
-fn runner_should_animate(display: MenubarDisplay, reduce_motion: bool) -> bool {
-    runner_enabled(display) && !reduce_motion
-}
-
-fn runner_uses_event_loop_timer(display: MenubarDisplay, reduce_motion: bool) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = (display, reduce_motion);
-        false
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        runner_should_animate(display, reduce_motion)
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn system_reduce_motion() -> bool {
     NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
@@ -5801,74 +5752,6 @@ fn system_reduce_motion() -> bool {
 #[cfg(not(target_os = "macos"))]
 fn system_reduce_motion() -> bool {
     false
-}
-
-fn runner_load_band(cpu_pct: f32) -> usize {
-    match cpu_pct.clamp(0.0, 100.0) {
-        x if x < 20.0 => 0,
-        x if x < 55.0 => 1,
-        x if x < 80.0 => 2,
-        _ => 3,
-    }
-}
-
-fn runner_load_band_with_hysteresis(cpu_pct: f32, current: usize) -> usize {
-    let load = cpu_pct.clamp(0.0, 100.0);
-    match current {
-        0 if load >= 24.0 => 1,
-        0 => 0,
-        1 if load < 16.0 => 0,
-        1 if load >= 59.0 => 2,
-        1 => 1,
-        2 if load < 51.0 => 1,
-        2 if load >= 84.0 => 3,
-        2 => 2,
-        3 if load < 76.0 => 2,
-        3 => 3,
-        _ => runner_load_band(load),
-    }
-}
-
-fn runner_phase_step(phase_us: u64, tick_us: u64, cpu_pct: f32, frame: u8) -> (u64, bool) {
-    let interval_us = runner_frame_interval_for_pose(cpu_pct, frame).as_micros() as u64;
-    let next = phase_us.saturating_add(tick_us);
-    if next >= interval_us {
-        (next % interval_us, true)
-    } else {
-        (next, false)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn runner_native_next_delay(
-    phase_us: u64,
-    motion_cpu_pct: f32,
-    target_cpu_pct: f32,
-    frame: u8,
-) -> Duration {
-    // Keep sampling at the fastest visible cadence only while speed is
-    // changing. Once the gait has settled, sleep until the next actual pose.
-    if (target_cpu_pct - motion_cpu_pct).abs() >= 0.1 {
-        return RUNNER_NATIVE_TICK;
-    }
-    let interval_us = runner_frame_interval_for_pose(motion_cpu_pct, frame).as_micros() as u64;
-    let remaining_us = interval_us.saturating_sub(phase_us.min(interval_us));
-    Duration::from_micros(remaining_us.max(RUNNER_NATIVE_TICK.as_micros() as u64))
-}
-
-fn ease_runner_motion_cpu(current: f32, target: f32, tick: Duration) -> f32 {
-    let current = current.clamp(0.0, 100.0);
-    let target = target.clamp(0.0, 100.0);
-    let delta = target - current;
-    if delta.abs() < 0.1 {
-        return target;
-    }
-
-    // A short acceleration feels responsive while the gentler deceleration
-    // prevents a one-sample dip from making the gait visibly hesitate.
-    let response_seconds = if delta > 0.0 { 0.18 } else { 0.42 };
-    let alpha = 1.0 - (-tick.as_secs_f32() / response_seconds).exp();
-    (current + delta * alpha).clamp(0.0, 100.0)
 }
 
 fn runner_icon_index(cpu_pct: f32, frame: u8) -> usize {
