@@ -4,10 +4,19 @@ use super::{
 };
 use crate::runner::quality::{validate_frame_len, CHANNELS_PER_PIXEL};
 
+#[derive(Debug, Clone, Copy)]
+struct CycleTransform {
+    scale: f32,
+    translate_x: f32,
+    translate_y: f32,
+}
+
 pub(crate) fn normalize_cycle(
     manifest: &RunnerManifest,
     source: [RgbaFrame; 8],
 ) -> Result<[RgbaFrame; 8], RunnerBuildError> {
+    validate_manifest_pose_indices(manifest, "normalize_cycle")?;
+
     let source = source
         .into_iter()
         .enumerate()
@@ -71,12 +80,12 @@ pub(crate) fn normalize_cycle(
         ));
     }
 
-    let center_x = (PIXEL_WIDTH as f32 - 1.0) * 0.5;
+    let transform = cycle_transform(manifest, &frame_bounds, union, scale)?;
     let normalized = source
         .iter()
         .enumerate()
         .map(|(pose, frame)| {
-            resample_place_white(manifest, pose, frame, frame_bounds[pose], scale, center_x)
+            resample_place_white(manifest, pose, frame, frame_bounds[pose], transform)
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -93,6 +102,8 @@ pub(crate) fn validate_cycle(
     manifest: &RunnerManifest,
     cycle: &[RgbaFrame; 8],
 ) -> Result<CycleMetrics, RunnerBuildError> {
+    validate_manifest_pose_indices(manifest, "validate_cycle")?;
+
     for (index, frame) in cycle.iter().enumerate() {
         validate_frame_len(frame).map_err(|error| {
             stage_error(
@@ -306,17 +317,12 @@ fn resample_place_white(
     pose: usize,
     frame: &RgbaFrame,
     bounds: Bounds,
-    scale: f32,
-    center_x: f32,
+    transform: CycleTransform,
 ) -> Result<RgbaFrame, RunnerBuildError> {
-    let source_center_x = (bounds.min_x + bounds.max_x) as f32 * 0.5;
-    let translate_x = center_x - source_center_x * scale;
-    let translate_y = manifest.baseline_y as f32 - bounds.max_y as f32 * scale;
-
-    let destination_min_x = bounds.min_x as f32 * scale + translate_x;
-    let destination_max_x = bounds.max_x as f32 * scale + translate_x;
-    let destination_min_y = bounds.min_y as f32 * scale + translate_y;
-    let destination_max_y = bounds.max_y as f32 * scale + translate_y;
+    let destination_min_x = bounds.min_x as f32 * transform.scale + transform.translate_x;
+    let destination_max_x = bounds.max_x as f32 * transform.scale + transform.translate_x;
+    let destination_min_y = bounds.min_y as f32 * transform.scale + transform.translate_y;
+    let destination_max_y = bounds.max_y as f32 * transform.scale + transform.translate_y;
     if destination_min_x < 0.0
         || destination_max_x > (PIXEL_WIDTH - 1) as f32
         || destination_min_y < 0.0
@@ -334,9 +340,9 @@ fn resample_place_white(
 
     let mut normalized = vec![0; frame.len()];
     for y in 0..PIXEL_HEIGHT {
-        let source_y = (y as f32 - translate_y) / scale;
+        let source_y = (y as f32 - transform.translate_y) / transform.scale;
         for x in 0..PIXEL_WIDTH {
-            let source_x = (x as f32 - translate_x) / scale;
+            let source_x = (x as f32 - transform.translate_x) / transform.scale;
             let alpha = bilinear_alpha(frame, source_x, source_y);
             if alpha == 0 {
                 continue;
@@ -363,6 +369,33 @@ fn resample_place_white(
     }
 
     Ok(normalized)
+}
+
+fn cycle_transform(
+    manifest: &RunnerManifest,
+    frame_bounds: &[Bounds],
+    union: Bounds,
+    scale: f32,
+) -> Result<CycleTransform, RunnerBuildError> {
+    let source_center_x = (union.min_x + union.max_x) as f32 * 0.5;
+    let source_contact_baseline = manifest
+        .contact_frames
+        .iter()
+        .map(|&index| frame_bounds[usize::from(index)].max_y)
+        .max()
+        .ok_or_else(|| {
+            stage_error(
+                manifest.character,
+                "normalize_cycle[contact_frames]",
+                "contact frame list was empty".to_string(),
+            )
+        })?;
+
+    Ok(CycleTransform {
+        scale,
+        translate_x: (PIXEL_WIDTH as f32 - 1.0) * 0.5 - source_center_x * scale,
+        translate_y: manifest.baseline_y as f32 - source_contact_baseline as f32 * scale,
+    })
 }
 
 fn bilinear_alpha(frame: &RgbaFrame, source_x: f32, source_y: f32) -> u8 {
@@ -433,6 +466,43 @@ fn stage_error(
     }
 }
 
+fn validate_manifest_pose_indices(
+    manifest: &RunnerManifest,
+    stage_prefix: &str,
+) -> Result<(), RunnerBuildError> {
+    validate_pose_index_array(
+        manifest.character,
+        stage_prefix,
+        "contact_frames",
+        &manifest.contact_frames,
+    )?;
+    validate_pose_index_array(
+        manifest.character,
+        stage_prefix,
+        "flight_frames",
+        &manifest.flight_frames,
+    )?;
+    Ok(())
+}
+
+fn validate_pose_index_array(
+    character: peterfan_core::config::RunnerCharacter,
+    stage_prefix: &str,
+    label: &str,
+    indices: &[u8],
+) -> Result<(), RunnerBuildError> {
+    for (slot, &index) in indices.iter().enumerate() {
+        if usize::from(index) >= 8 {
+            return Err(stage_error(
+                character,
+                &format!("{stage_prefix}[{label}]"),
+                format!("{}[{}]={} exceeds last frame index 7", label, slot, index),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn error_detail(error: &RunnerBuildError) -> &str {
     match error {
         RunnerBuildError::Decode { detail, .. } | RunnerBuildError::InvalidFrame { detail, .. } => {
@@ -451,7 +521,7 @@ mod tests {
 
     use super::{mirror_alpha, normalize_cycle, validate_cycle};
     use crate::runner::{
-        measure_cycle, Direction, RgbaFrame, RunnerManifest, PIXEL_HEIGHT, PIXEL_WIDTH,
+        measure_cycle, Bounds, Direction, RgbaFrame, RunnerManifest, PIXEL_HEIGHT, PIXEL_WIDTH,
     };
 
     fn alpha_at(frame: &[u8], x: u32, y: u32) -> u8 {
@@ -496,6 +566,27 @@ mod tests {
         })
     }
 
+    fn drifting_bouncing_cycle() -> [RgbaFrame; 8] {
+        let lefts = [8, 10, 12, 10, 8, 9, 11, 9];
+        let tops = [12, 11, 8, 9, 12, 11, 8, 9];
+        std::array::from_fn(|pose| synthetic_pose(lefts[pose], tops[pose], 12, 8))
+    }
+
+    fn union_from_cycle(cycle: &[RgbaFrame; 8]) -> Bounds {
+        let metrics = measure_cycle(cycle).expect("cycle metrics");
+        metrics
+            .frames
+            .iter()
+            .map(|frame| frame.bounds)
+            .reduce(|left, right| Bounds {
+                min_x: left.min_x.min(right.min_x),
+                min_y: left.min_y.min(right.min_y),
+                max_x: left.max_x.max(right.max_x),
+                max_y: left.max_y.max(right.max_y),
+            })
+            .expect("union bounds")
+    }
+
     fn test_manifest(
         width: u32,
         height: u32,
@@ -532,6 +623,41 @@ mod tests {
             if pixel[3] != 0 {
                 assert_eq!(&pixel[..3], &[255, 255, 255]);
             }
+        }
+    }
+
+    #[test]
+    fn normalization_preserves_relative_centroid_and_baseline_motion_across_poses() {
+        let manifest = test_manifest(24, 18, 27, false);
+        let source = drifting_bouncing_cycle();
+        let source_metrics = measure_cycle(&source).expect("source metrics");
+        let source_union = union_from_cycle(&source);
+        let scale = (manifest.target_width as f32 / source_union.width() as f32)
+            .min(manifest.target_height as f32 / source_union.height() as f32);
+
+        let normalized = normalize_cycle(&manifest, source).expect("normalized cycle");
+        let normalized_metrics = measure_cycle(&normalized).expect("normalized metrics");
+
+        for pose in 0..normalized_metrics.frames.len() {
+            let expected_centroid_delta = (source_metrics.frames[pose].centroid_x
+                - source_metrics.frames[0].centroid_x)
+                * scale;
+            let actual_centroid_delta = normalized_metrics.frames[pose].centroid_x
+                - normalized_metrics.frames[0].centroid_x;
+            assert!(
+                (actual_centroid_delta - expected_centroid_delta).abs() <= 0.75,
+                "pose {pose} centroid drift changed: expected {expected_centroid_delta:.2}, got {actual_centroid_delta:.2}"
+            );
+
+            let expected_baseline_delta = (source_metrics.frames[pose].baseline_y as f32
+                - source_metrics.frames[0].baseline_y as f32)
+                * scale;
+            let actual_baseline_delta = normalized_metrics.frames[pose].baseline_y as f32
+                - normalized_metrics.frames[0].baseline_y as f32;
+            assert!(
+                (actual_baseline_delta - expected_baseline_delta).abs() <= 1.0,
+                "pose {pose} baseline bounce changed: expected {expected_baseline_delta:.2}, got {actual_baseline_delta:.2}"
+            );
         }
     }
 
@@ -656,6 +782,34 @@ mod tests {
         assert!(error
             .to_string()
             .contains("validate_cycle[contact_baseline]"));
+    }
+
+    #[test]
+    fn validation_rejects_out_of_range_contact_frame_indices() {
+        let valid_manifest = test_manifest(20, 12, 27, false);
+        let source = std::array::from_fn(|pose| synthetic_pose(4 + pose as u32 % 2, 6, 10, 8));
+        let cycle = normalize_cycle(&valid_manifest, source).expect("normalized cycle");
+        let mut manifest = valid_manifest;
+        manifest.contact_frames = [0, 8];
+
+        let error =
+            validate_cycle(&manifest, &cycle).expect_err("out-of-range contact frame must fail");
+
+        assert!(error.to_string().contains("validate_cycle[contact_frames]"));
+    }
+
+    #[test]
+    fn validation_rejects_out_of_range_flight_frame_indices() {
+        let valid_manifest = test_manifest(20, 12, 27, false);
+        let source = std::array::from_fn(|pose| synthetic_pose(4 + pose as u32 % 2, 6, 10, 8));
+        let cycle = normalize_cycle(&valid_manifest, source).expect("normalized cycle");
+        let mut manifest = valid_manifest;
+        manifest.flight_frames = [2, 8];
+
+        let error =
+            validate_cycle(&manifest, &cycle).expect_err("out-of-range flight frame must fail");
+
+        assert!(error.to_string().contains("validate_cycle[flight_frames]"));
     }
 
     #[test]
