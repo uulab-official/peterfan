@@ -1,5 +1,6 @@
 use peterfan_core::config::RunnerCharacter;
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Direction {
     Right,
@@ -8,6 +9,7 @@ pub(crate) enum Direction {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RunnerManifest {
     pub character: RunnerCharacter,
+    #[cfg(test)]
     pub output_direction: Direction,
     pub mirror_source: bool,
     pub target_width: u32,
@@ -54,6 +56,7 @@ const fn runner_manifest(
 ) -> RunnerManifest {
     RunnerManifest {
         character,
+        #[cfg(test)]
         output_direction: Direction::Right,
         mirror_source,
         target_width,

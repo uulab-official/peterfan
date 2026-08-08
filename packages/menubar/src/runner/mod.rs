@@ -10,14 +10,14 @@ use std::fmt;
 
 use peterfan_core::config::RunnerCharacter;
 
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use {manifest::Direction, quality::build_quality_report_json};
 #[allow(unused_imports)]
 pub(crate) use {
-    manifest::{manifest, Direction, RunnerManifest},
+    manifest::{manifest, RunnerManifest},
     normalize::{normalize_cycle, validate_cycle},
-    quality::{
-        build_quality_report, build_quality_report_json, measure_cycle, measure_frame, Bounds,
-        CycleMetrics, FrameMetrics, RunnerBandReport, RunnerCharacterReport, RunnerQualityReport,
-    },
+    quality::{measure_cycle, measure_frame, Bounds, CycleMetrics, FrameMetrics},
     timing::*,
 };
 
@@ -102,7 +102,10 @@ impl RunnerPack {
         Self::build_with(character, build_normalized_cycle)
     }
 
-    fn build_with<F>(character: RunnerCharacter, mut cycle_builder: F) -> Result<Self, RunnerBuildError>
+    fn build_with<F>(
+        character: RunnerCharacter,
+        mut cycle_builder: F,
+    ) -> Result<Self, RunnerBuildError>
     where
         F: FnMut(RunnerCharacter, f32) -> Result<[RgbaFrame; 8], RunnerBuildError>,
     {
@@ -123,6 +126,7 @@ impl RunnerPack {
         Ok(Self { character, frames })
     }
 
+    #[cfg(test)]
     pub(crate) fn frame(&self, cpu_pct: f32, pose: u8) -> &[u8] {
         &self.frames[load_band(cpu_pct) * FRAME_COUNT as usize + usize::from(pose % FRAME_COUNT)]
     }
@@ -131,6 +135,7 @@ impl RunnerPack {
         self.character
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.frames.len()
     }
@@ -149,7 +154,9 @@ impl RunnerPack {
     }
 }
 
-pub(crate) fn build_or_fallback(character: RunnerCharacter) -> (RunnerPack, Option<RunnerBuildError>) {
+pub(crate) fn build_or_fallback(
+    character: RunnerCharacter,
+) -> (RunnerPack, Option<RunnerBuildError>) {
     build_or_fallback_with(character, RunnerPack::build)
 }
 
@@ -191,6 +198,7 @@ fn style_template_frame(mut rgba: RgbaFrame) -> RgbaFrame {
     rgba
 }
 
+#[cfg(test)]
 pub(crate) fn render_raw_frame(
     character: RunnerCharacter,
     cpu_pct: f32,
@@ -316,7 +324,9 @@ mod tests {
                 let cycle = build_normalized_cycle(character, cpu_pct)
                     .unwrap_or_else(|error| panic!("{character:?} at {cpu_pct}%: {error}"));
                 assert_eq!(cycle.len(), usize::from(FRAME_COUNT));
-                assert!(cycle.iter().all(|frame| frame.len() == (PIXEL_WIDTH * PIXEL_HEIGHT * 4) as usize));
+                assert!(cycle
+                    .iter()
+                    .all(|frame| frame.len() == (PIXEL_WIDTH * PIXEL_HEIGHT * 4) as usize));
             }
         }
     }

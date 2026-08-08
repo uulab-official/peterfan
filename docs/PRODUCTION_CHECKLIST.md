@@ -3,9 +3,9 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
-## Current Release Verification — 2026-08-05
+## Current Release Verification — 2026-08-08
 
-### Public artifact already deployed
+### Public artifact status carried forward from 2026-08-05 verification
 
 - [x] Public latest release identified as `v1.27.78`:
       https://github.com/uulab-official/peterfan/releases/tag/v1.27.78
@@ -18,16 +18,31 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 
 ### Current source build
 
-- [x] Workspace source version is `v1.31.31`.
-- [x] `cargo test --workspace`: 293 passed, 0 failed, 6 ignored.
+- [x] Workspace source version is `v1.31.32`.
+- [x] `cargo fmt --all -- --check`, `./scripts/check-runner-quality.sh`,
+      `./scripts/check-docs.sh`, and `git diff --check` pass.
+- [x] `cargo test --workspace`: 341 passed, 0 failed, 6 ignored.
 - [x] `cargo clippy --workspace --all-targets -- -D warnings`: 0 warnings.
-- [x] `cargo fmt --all -- --check`, `scripts/check-docs.sh`, and `git diff --check` pass.
-- [x] Local menu-bar bundle builds and launches; startup and WebView readiness
-      were observed in `~/Library/Logs/PeterFan/menubar.log`.
-- [x] Replace the installed LaunchDaemon with the v1.31.30 helper;
-      `/usr/local/bin/peterfand --version` is `v1.31.30` and
-      `launchctl print system/kr.co.uulab.peterfan.daemon` reports `running`.
-- [ ] Publish `v1.31.31` as a new official release.
+- [x] `cargo build --release --workspace` succeeded.
+- [x] The staged bundle and canonical
+      `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app`
+      both report `peterfan-menubar 1.31.32`,
+      `CFBundleShortVersionString=1.31.32`, and `CFBundleVersion=1.31.32`.
+- [x] `codesign --verify --deep --strict` succeeds for the canonical local
+      bundle. The signature is local/ad-hoc only
+      (`Signature=adhoc`, `TeamIdentifier=not set`), so this build is neither
+      Developer ID signed nor notarized.
+- [x] The previous canonical bundle was preserved recoverably at
+      `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app.backup-task9-20260808-232526`
+      before replacement.
+- [x] The canonical app relaunch was verified with exactly one live PID from
+      `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app/Contents/MacOS/PeterFan`,
+      and `~/Library/Logs/PeterFan/menubar.log` recorded `startup mock=false`,
+      `tray created`, `popover webview created`, and `popover webview ready`.
+- [x] The release bundle includes `peterfand`, but this local-install task did
+      not replace the system LaunchDaemon; production daemon rollout remains a
+      separate release-machine step.
+- [ ] Publish `v1.31.32` as a new official release.
 - [ ] Sign the new release with a Developer ID identity on an authorized Mac.
 - [ ] Notarize/staple the new DMG and rerun the artifact gate.
 - [ ] Upload the new DMG, universal archive, and `checksums.txt` to GitHub.
@@ -39,7 +54,7 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [ ] `peterfan-notary` profile or App Store Connect credentials available.
 - [ ] `gh` authenticated for release upload.
 
-The public v1.27.78 release is production-trusted. The local v1.31.31 bundle
+The public v1.27.78 release is production-trusted. The local v1.31.32 bundle
 is a development/ad-hoc build until the unchecked release-machine items above
 are completed; it must not replace the public DMG in distribution links.
 

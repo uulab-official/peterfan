@@ -6,8 +6,11 @@ use super::draw::{
     draw_disc, draw_line, draw_rect, draw_rotated_ellipse, draw_runner_leg, draw_triangle,
     erase_disc, Pt, RunnerCanvas,
 };
-use super::{manifest, normalize_cycle, RgbaFrame, RunnerBuildError, FRAME_COUNT, PIXEL_HEIGHT, PIXEL_WIDTH};
+use super::{
+    manifest, normalize_cycle, RgbaFrame, RunnerBuildError, FRAME_COUNT, PIXEL_HEIGHT, PIXEL_WIDTH,
+};
 
+#[cfg(test)]
 pub(crate) fn render(
     character: RunnerCharacter,
     cpu_pct: f32,
@@ -437,7 +440,11 @@ fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8)
             let elbow = Pt::new(ELBOW_X[pose], ELBOW_Y[pose] * stretch);
             let hand = Pt::new(40.5, 27.0);
             canvas.line(hip, shoulder, 4.3, solid);
-            canvas.disc(Pt::new(41.5, (SHOULDER_Y[pose] - 1.9) * stretch), 3.8, solid);
+            canvas.disc(
+                Pt::new(41.5, (SHOULDER_Y[pose] - 1.9) * stretch),
+                3.8,
+                solid,
+            );
             canvas.line(shoulder, elbow, 3.0, detail);
             canvas.line(elbow, hand, 3.0, solid);
             canvas.line(hip, Pt::new(2.0, 25.5), 3.2, detail);
@@ -446,23 +453,9 @@ fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8)
         }
         RunnerCharacter::Orbit => {
             let theta = pose as f32 / FRAME_COUNT as f32 * TAU;
-            canvas.line(
-                Pt::new(6.0, 16.0),
-                Pt::new(44.0, 16.0),
-                2.0,
-                detail,
-            );
-            canvas.line(
-                Pt::new(14.0, 8.0),
-                Pt::new(36.0, 24.0),
-                1.8,
-                detail,
-            );
-            canvas.disc(
-                Pt::new(25.0, 16.0),
-                6.0,
-                solid,
-            );
+            canvas.line(Pt::new(6.0, 16.0), Pt::new(44.0, 16.0), 2.0, detail);
+            canvas.line(Pt::new(14.0, 8.0), Pt::new(36.0, 24.0), 1.8, detail);
+            canvas.disc(Pt::new(25.0, 16.0), 6.0, solid);
             canvas.disc(
                 Pt::new(25.0 + theta.cos() * 16.0, 16.0 + theta.sin() * 7.0),
                 2.4,

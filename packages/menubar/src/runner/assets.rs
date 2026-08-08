@@ -4,9 +4,8 @@ use std::sync::OnceLock;
 use peterfan_core::config::RunnerCharacter;
 
 use super::{
-    manifest, normalize_cycle, validate_cycle,
-    timing::load_band,
-    RgbaFrame, RunnerBuildError, FRAME_COUNT, LOAD_BANDS, PIXEL_HEIGHT, PIXEL_WIDTH,
+    manifest, normalize_cycle, timing::load_band, validate_cycle, RgbaFrame, RunnerBuildError,
+    FRAME_COUNT, LOAD_BANDS, PIXEL_HEIGHT, PIXEL_WIDTH,
 };
 
 const HUMAN_RUN_FRAME_WIDTH: u32 = 32;
@@ -142,6 +141,7 @@ struct DecodedPng {
     pixels: Vec<u8>,
 }
 
+#[cfg(test)]
 pub(crate) fn render(
     character: RunnerCharacter,
     cpu_pct: f32,
@@ -231,11 +231,17 @@ fn cached_source_cycle(
     match character {
         RunnerCharacter::Cat => {
             static FRAMES: OnceLock<Result<[RgbaFrame; 8], RunnerBuildError>> = OnceLock::new();
-            FRAMES.get_or_init(decode_cat_source_cycle).as_ref().map_err(Clone::clone)
+            FRAMES
+                .get_or_init(decode_cat_source_cycle)
+                .as_ref()
+                .map_err(Clone::clone)
         }
         RunnerCharacter::Dog => {
             static FRAMES: OnceLock<Result<[RgbaFrame; 8], RunnerBuildError>> = OnceLock::new();
-            FRAMES.get_or_init(decode_dog_source_cycle).as_ref().map_err(Clone::clone)
+            FRAMES
+                .get_or_init(decode_dog_source_cycle)
+                .as_ref()
+                .map_err(Clone::clone)
         }
         RunnerCharacter::Rabbit => {
             static FRAMES: OnceLock<Result<[RgbaFrame; 8], RunnerBuildError>> = OnceLock::new();
@@ -246,7 +252,10 @@ fn cached_source_cycle(
         }
         RunnerCharacter::Fox => {
             static FRAMES: OnceLock<Result<[RgbaFrame; 8], RunnerBuildError>> = OnceLock::new();
-            FRAMES.get_or_init(decode_fox_source_cycle).as_ref().map_err(Clone::clone)
+            FRAMES
+                .get_or_init(decode_fox_source_cycle)
+                .as_ref()
+                .map_err(Clone::clone)
         }
         RunnerCharacter::Dinosaur => {
             static FRAMES: OnceLock<Result<[RgbaFrame; 8], RunnerBuildError>> = OnceLock::new();
@@ -429,7 +438,11 @@ fn decode_dinosaur_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
 }
 
 fn decode_human_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
-    let decoded = decode_png(RunnerCharacter::Human, HUMAN_RUN_SHEET, "decode_human_source_cycle")?;
+    let decoded = decode_png(
+        RunnerCharacter::Human,
+        HUMAN_RUN_SHEET,
+        "decode_human_source_cycle",
+    )?;
     if decoded.width != 128 {
         return Err(decode_error(
             RunnerCharacter::Human,
@@ -452,12 +465,7 @@ fn decode_human_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
     Ok(std::array::from_fn(|pose| {
         let frame_x = u32::try_from(pose % 4).unwrap_or(0) * HUMAN_RUN_FRAME_WIDTH;
         let frame_y = u32::try_from(pose / 4).unwrap_or(0) * HUMAN_RUN_FRAME_HEIGHT;
-        extract_human_frame(
-            &decoded,
-            RunnerCharacter::Human,
-            frame_x,
-            frame_y,
-        )
+        extract_human_frame(&decoded, RunnerCharacter::Human, frame_x, frame_y)
     }))
 }
 
@@ -466,7 +474,13 @@ fn decode_sheet_cycle(
     sheet: &[u8],
     layout: SheetLayout,
 ) -> Result<[RgbaFrame; 8], RunnerBuildError> {
-    validate_crop(character, "decode_sheet_cycle[crop]", layout.frame_width, layout.frame_height, layout.crop)?;
+    validate_crop(
+        character,
+        "decode_sheet_cycle[crop]",
+        layout.frame_width,
+        layout.frame_height,
+        layout.crop,
+    )?;
     let decoded = decode_png(character, sheet, "decode_sheet_cycle[png]")?;
     let expected_width = layout.frame_width * layout.sheet_columns;
     if decoded.width != expected_width {
@@ -512,7 +526,11 @@ fn decode_sequence_cycle(
         .iter()
         .enumerate()
         .map(|(index, sheet)| {
-            let decoded = decode_png(character, sheet, &format!("decode_sequence_cycle[png:{index}]"))?;
+            let decoded = decode_png(
+                character,
+                sheet,
+                &format!("decode_sequence_cycle[png:{index}]"),
+            )?;
             if decoded.width != layout.source_width {
                 return Err(decode_error(
                     character,
@@ -591,11 +609,7 @@ fn resample_source_cycle(
             if alpha_delta_ratio(&source_frames[left_index], &source_frames[right_index])
                 > NEAREST_POSE_VISIBLE_DELTA_RATIO
             {
-                let source_index = if mix < 0.5 {
-                    left_index
-                } else {
-                    right_index
-                };
+                let source_index = if mix < 0.5 { left_index } else { right_index };
                 source_frames[source_index].clone()
             } else {
                 interpolate_frames(&source_frames[left_index], &source_frames[right_index], mix)
@@ -648,8 +662,7 @@ fn shift_frame(frame: &RgbaFrame, vertical_shift: i32) -> RgbaFrame {
         }
         for x in 0..PIXEL_WIDTH {
             let source_index = ((y as u32 * PIXEL_WIDTH + x) as usize) * CHANNELS_PER_PIXEL;
-            let target_index =
-                ((target_y as u32 * PIXEL_WIDTH + x) as usize) * CHANNELS_PER_PIXEL;
+            let target_index = ((target_y as u32 * PIXEL_WIDTH + x) as usize) * CHANNELS_PER_PIXEL;
             shifted[target_index..target_index + CHANNELS_PER_PIXEL]
                 .copy_from_slice(&frame[source_index..source_index + CHANNELS_PER_PIXEL]);
         }
@@ -670,7 +683,10 @@ fn decode_png(
     let mut pixels = vec![
         0;
         reader.output_buffer_size().ok_or_else(|| {
-            decode_error(character, format!("{stage}: PNG metadata omitted output buffer size"))
+            decode_error(
+                character,
+                format!("{stage}: PNG metadata omitted output buffer size"),
+            )
         })?
     ];
     let info = reader
@@ -771,7 +787,8 @@ fn extract_cropped_frame(
     draw_width: u32,
     draw_height: u32,
 ) -> Result<RgbaFrame, RunnerBuildError> {
-    if draw_width == 0 || draw_width > PIXEL_WIDTH || draw_height == 0 || draw_height > PIXEL_HEIGHT {
+    if draw_width == 0 || draw_width > PIXEL_WIDTH || draw_height == 0 || draw_height > PIXEL_HEIGHT
+    {
         return Err(decode_error(
             character,
             format!(
@@ -798,9 +815,8 @@ fn extract_cropped_frame(
             if alpha == 0 {
                 continue;
             }
-            let target_index =
-                (((draw_top + draw_y) * PIXEL_WIDTH + draw_left + draw_x) as usize)
-                    * CHANNELS_PER_PIXEL;
+            let target_index = (((draw_top + draw_y) * PIXEL_WIDTH + draw_left + draw_x) as usize)
+                * CHANNELS_PER_PIXEL;
             frame[target_index + 3] = alpha;
         }
     }
@@ -832,9 +848,8 @@ fn extract_human_frame(
             if alpha == 0 {
                 continue;
             }
-            let target_index =
-                (((draw_top + draw_y) * PIXEL_WIDTH + draw_left + draw_x) as usize)
-                    * CHANNELS_PER_PIXEL;
+            let target_index = (((draw_top + draw_y) * PIXEL_WIDTH + draw_left + draw_x) as usize)
+                * CHANNELS_PER_PIXEL;
             frame[target_index + 3] = alpha;
         }
     }
@@ -868,10 +883,14 @@ fn sample_alpha(
                 && pixel.blue > pixel.green.saturating_add(10)
                 && pixel.blue > CAT_BLUE_MATTE_MIN
         }
-        MatteKey::DarkBackground => matches!(decoded.color_type, png::ColorType::Rgb | png::ColorType::Grayscale)
-            && pixel.red < MATTE_DARK_THRESHOLD
-            && pixel.green < MATTE_DARK_THRESHOLD
-            && pixel.blue < MATTE_DARK_THRESHOLD,
+        MatteKey::DarkBackground => {
+            matches!(
+                decoded.color_type,
+                png::ColorType::Rgb | png::ColorType::Grayscale
+            ) && pixel.red < MATTE_DARK_THRESHOLD
+                && pixel.green < MATTE_DARK_THRESHOLD
+                && pixel.blue < MATTE_DARK_THRESHOLD
+        }
     };
 
     Ok(if masked { 0 } else { pixel.alpha })
@@ -932,7 +951,8 @@ fn alpha_delta_ratio(left: &RgbaFrame, right: &RgbaFrame) -> f32 {
     {
         let left_alpha = left[3];
         let right_alpha = right[3];
-        if left_alpha >= VISIBLE_SOURCE_ALPHA_THRESHOLD || right_alpha >= VISIBLE_SOURCE_ALPHA_THRESHOLD
+        if left_alpha >= VISIBLE_SOURCE_ALPHA_THRESHOLD
+            || right_alpha >= VISIBLE_SOURCE_ALPHA_THRESHOLD
         {
             visible += 1;
             if left_alpha.abs_diff(right_alpha) > ALPHA_DELTA_THRESHOLD {
@@ -961,6 +981,7 @@ fn interpolate_frames(left: &RgbaFrame, right: &RgbaFrame, mix: f32) -> RgbaFram
     frame
 }
 
+#[cfg(test)]
 fn frame_at(
     frames: &[RgbaFrame; 8],
     character: RunnerCharacter,
@@ -987,9 +1008,7 @@ fn decode_error(character: RunnerCharacter, detail: String) -> RunnerBuildError 
 mod tests {
     use peterfan_core::config::RunnerCharacter;
 
-    use super::{
-        build_cycle, render, resample_source_cycle, sample_alpha, DecodedPng, MatteKey,
-    };
+    use super::{build_cycle, render, resample_source_cycle, sample_alpha, DecodedPng, MatteKey};
     use crate::runner::{manifest, validate_cycle, FRAME_COUNT};
 
     fn asset_characters() -> [RunnerCharacter; 7] {
@@ -1005,7 +1024,8 @@ mod tests {
     }
 
     fn constant_alpha_frame(alpha: u8) -> Vec<u8> {
-        let mut frame = vec![0; (crate::runner::PIXEL_WIDTH * crate::runner::PIXEL_HEIGHT * 4) as usize];
+        let mut frame =
+            vec![0; (crate::runner::PIXEL_WIDTH * crate::runner::PIXEL_HEIGHT * 4) as usize];
         for pixel in frame.chunks_exact_mut(4) {
             pixel[3] = alpha;
         }
@@ -1070,8 +1090,7 @@ mod tests {
         let expected_order = [0_usize, 1, 1, 2, 3, 3, 4, 4];
         for (pose, expected_source) in expected_order.into_iter().enumerate() {
             assert_eq!(
-                resampled[pose],
-                source_frames[expected_source],
+                resampled[pose], source_frames[expected_source],
                 "pose {pose} should select source frame {expected_source}"
             );
         }

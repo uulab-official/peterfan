@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.32] — RunCat급 러너 품질 시스템
+
+### Changed
+
+- 20종 러너를 공통 48×32 정규화 파이프라인과 품질 게이트로 통합했습니다.
+- 메뉴바와 설정 미리보기가 동일한 캐시 프레임을 사용하도록 정리했습니다.
+- 프레임 중심, 바닥선, 방향, 형태 인식도와 CPU 비용을 자동 검증합니다.
+
 ## [1.31.31] — 상단 코어별 CPU 그래프
 
 ### Added
@@ -4113,6 +4121,7 @@ ship a control that does nothing, PeterFan now says so.
 
 [Unreleased]: https://github.com/uulab-official/peterfan/compare/v1.31.22...HEAD
 [1.31.31]: https://github.com/uulab-official/peterfan/compare/v1.31.30...v1.31.31
+[1.31.32]: https://github.com/uulab-official/peterfan/compare/v1.31.31...v1.31.32
 [1.31.30]: https://github.com/uulab-official/peterfan/compare/v1.31.29...v1.31.30
 [1.31.29]: https://github.com/uulab-official/peterfan/compare/v1.31.28...v1.31.29
 [1.31.28]: https://github.com/uulab-official/peterfan/compare/v1.31.27...v1.31.28

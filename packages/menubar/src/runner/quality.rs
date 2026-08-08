@@ -1,7 +1,10 @@
 use peterfan_core::config::RunnerCharacter;
+#[cfg(test)]
 use serde::{Deserialize, Serialize};
 
-use super::{manifest, RgbaFrame, RunnerBuildError, RunnerPack, LOAD_BANDS, PIXEL_HEIGHT, PIXEL_WIDTH};
+#[cfg(test)]
+use super::{manifest, RunnerPack, LOAD_BANDS};
+use super::{RgbaFrame, RunnerBuildError, PIXEL_HEIGHT, PIXEL_WIDTH};
 
 pub(crate) const CHANNELS_PER_PIXEL: usize = 4;
 pub(crate) const VISIBLE_ALPHA_THRESHOLD: u8 = 96;
@@ -30,6 +33,7 @@ pub(crate) struct FrameMetrics {
     pub bounds: Bounds,
     pub centroid_x: f32,
     pub baseline_y: u32,
+    #[cfg(test)]
     pub opaque_pixels: usize,
     pub clipped: bool,
 }
@@ -38,10 +42,12 @@ pub(crate) struct FrameMetrics {
 pub(crate) struct CycleMetrics {
     pub frames: [FrameMetrics; 8],
     pub max_centroid_drift: f32,
+    #[cfg(test)]
     pub baseline_variance: u32,
     pub minimum_frame_delta: usize,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RunnerBandReport {
     pub cpu_pct: f32,
@@ -52,17 +58,20 @@ pub(crate) struct RunnerBandReport {
     pub clipped: bool,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RunnerCharacterReport {
     pub name: String,
     pub bands: Vec<RunnerBandReport>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RunnerQualityReport {
     pub characters: Vec<RunnerCharacterReport>,
 }
 
+#[cfg(test)]
 pub(crate) const LOAD_PRESET_CPUS: [f32; LOAD_BANDS] = [0.0, 30.0, 65.0, 90.0];
 
 pub(crate) fn measure_frame(frame: &RgbaFrame) -> Result<FrameMetrics, RunnerBuildError> {
@@ -105,6 +114,7 @@ pub(crate) fn measure_frame(frame: &RgbaFrame) -> Result<FrameMetrics, RunnerBui
         bounds,
         centroid_x: centroid_sum_x / opaque_pixels as f32,
         baseline_y: max_y,
+        #[cfg(test)]
         opaque_pixels,
         clipped: min_x == 0 || min_y == 0 || max_x + 1 == PIXEL_WIDTH || max_y + 1 == PIXEL_HEIGHT,
     })
@@ -127,10 +137,12 @@ pub(crate) fn measure_cycle(cycle: &[RgbaFrame; 8]) -> Result<CycleMetrics, Runn
         .iter()
         .map(|frame| frame.centroid_x)
         .fold(f32::NEG_INFINITY, f32::max);
+    #[cfg(test)]
     let min_baseline = frames
         .iter()
         .map(|frame| frame.baseline_y)
         .fold(u32::MAX, u32::min);
+    #[cfg(test)]
     let max_baseline = frames
         .iter()
         .map(|frame| frame.baseline_y)
@@ -146,11 +158,13 @@ pub(crate) fn measure_cycle(cycle: &[RgbaFrame; 8]) -> Result<CycleMetrics, Runn
     Ok(CycleMetrics {
         frames,
         max_centroid_drift: max_centroid - min_centroid,
+        #[cfg(test)]
         baseline_variance: max_baseline.saturating_sub(min_baseline),
         minimum_frame_delta,
     })
 }
 
+#[cfg(test)]
 pub(crate) fn build_quality_report() -> Result<RunnerQualityReport, RunnerBuildError> {
     let characters = RunnerCharacter::ALL
         .into_iter()
@@ -159,17 +173,19 @@ pub(crate) fn build_quality_report() -> Result<RunnerQualityReport, RunnerBuildE
     Ok(RunnerQualityReport { characters })
 }
 
+#[cfg(test)]
 pub(crate) fn build_quality_report_json() -> Result<String, RunnerBuildError> {
     let report = build_quality_report()?;
-    serde_json::to_string_pretty(&report).map_err(|error| {
-        RunnerBuildError::InvalidFrame {
-            character: RunnerCharacter::default(),
-            detail: format!("quality report JSON failed: {error}"),
-        }
+    serde_json::to_string_pretty(&report).map_err(|error| RunnerBuildError::InvalidFrame {
+        character: RunnerCharacter::default(),
+        detail: format!("quality report JSON failed: {error}"),
     })
 }
 
-fn build_character_report(character: RunnerCharacter) -> Result<RunnerCharacterReport, RunnerBuildError> {
+#[cfg(test)]
+fn build_character_report(
+    character: RunnerCharacter,
+) -> Result<RunnerCharacterReport, RunnerBuildError> {
     let pack = RunnerPack::build(character)?;
     let manifest = manifest(character);
     let bands = LOAD_PRESET_CPUS
@@ -344,17 +360,19 @@ mod tests {
     fn quality_report_covers_every_character_and_load_band() {
         let report = build_quality_report().expect("quality report");
         assert_eq!(report.characters.len(), RunnerCharacter::ALL.len());
-        assert!(
-            report
-                .characters
-                .iter()
-                .all(|entry| entry.bands.len() == LOAD_BANDS)
-        );
-        assert!(report.characters.iter().flat_map(|entry| &entry.bands).all(|band| {
-            band.max_centroid_drift <= band.allowed_centroid_drift
-                && band.minimum_frame_delta >= 24
-                && !band.clipped
-        }));
+        assert!(report
+            .characters
+            .iter()
+            .all(|entry| entry.bands.len() == LOAD_BANDS));
+        assert!(report
+            .characters
+            .iter()
+            .flat_map(|entry| &entry.bands)
+            .all(|band| {
+                band.max_centroid_drift <= band.allowed_centroid_drift
+                    && band.minimum_frame_delta >= 24
+                    && !band.clipped
+            }));
     }
 
     #[test]
@@ -378,10 +396,17 @@ mod tests {
                 .map(|character| character.as_str())
                 .to_vec()
         );
-        for (character, entry) in RunnerCharacter::ALL.into_iter().zip(report.characters.iter()) {
+        for (character, entry) in RunnerCharacter::ALL
+            .into_iter()
+            .zip(report.characters.iter())
+        {
             assert_eq!(entry.name, character.as_str());
             assert_eq!(entry.bands.len(), LOAD_BANDS);
-            let band_cpus = entry.bands.iter().map(|band| band.cpu_pct).collect::<Vec<_>>();
+            let band_cpus = entry
+                .bands
+                .iter()
+                .map(|band| band.cpu_pct)
+                .collect::<Vec<_>>();
             assert_eq!(band_cpus, LOAD_PRESET_CPUS.to_vec());
         }
     }
