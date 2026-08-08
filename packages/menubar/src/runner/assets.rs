@@ -4,14 +4,15 @@ use std::sync::OnceLock;
 use peterfan_core::config::RunnerCharacter;
 
 use super::{
-    manifest, normalize_cycle,
+    manifest, normalize_cycle, validate_cycle,
     timing::load_band,
-    RgbaFrame, RunnerBuildError, FRAME_COUNT, PIXEL_HEIGHT, PIXEL_WIDTH,
+    RgbaFrame, RunnerBuildError, FRAME_COUNT, LOAD_BANDS, PIXEL_HEIGHT, PIXEL_WIDTH,
 };
 
 const HUMAN_RUN_FRAME_WIDTH: u32 = 32;
 const HUMAN_RUN_FRAME_HEIGHT: u32 = 32;
 const HUMAN_RUN_DRAW_WIDTH: u32 = 30;
+const HUMAN_RUN_DRAW_HEIGHT: u32 = 28;
 const HUMAN_RUN_SHEET: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/runner/caveman.png"
@@ -121,6 +122,7 @@ struct SheetLayout {
 struct SequenceLayout {
     source_width: u32,
     source_height: u32,
+    draw_width: u32,
     draw_height: u32,
     crop: Crop,
 }
@@ -146,28 +148,81 @@ pub(crate) fn render(
     frame: u8,
 ) -> Result<RgbaFrame, RunnerBuildError> {
     let cycle = build_cycle(character, cpu_pct)?;
-    let base = frame_at(&cycle, character, frame)?;
-    Ok(shift_frame(&base, motion_shift(cpu_pct, frame)))
+    frame_at(&cycle, character, frame)
 }
 
 pub(crate) fn build_cycle(
     character: RunnerCharacter,
     cpu_pct: f32,
 ) -> Result<[RgbaFrame; 8], RunnerBuildError> {
-    let raw = source_cycle(character, cpu_pct)?;
-    let normalized = normalize_cycle(manifest(character), raw)?;
-    Ok(match character {
-        RunnerCharacter::Dinosaur => stretch_cycle_x(&normalized, 1.12),
-        RunnerCharacter::Ghost => apply_pose_offsets(&normalized, [1, 0, -1, -2, 1, 0, -1, -2]),
-        _ => normalized,
-    })
+    cached_final_cycle(character, load_band(cpu_pct)).map(clone_cycle)
 }
 
-pub(crate) fn source_cycle(
-    character: RunnerCharacter,
-    _cpu_pct: f32,
-) -> Result<[RgbaFrame; 8], RunnerBuildError> {
+pub(crate) fn source_cycle(character: RunnerCharacter) -> Result<[RgbaFrame; 8], RunnerBuildError> {
     cached_source_cycle(character).map(clone_cycle)
+}
+
+fn cached_final_cycle(
+    character: RunnerCharacter,
+    band_index: usize,
+) -> Result<&'static [RgbaFrame; 8], RunnerBuildError> {
+    let band_index = band_index.min(LOAD_BANDS.saturating_sub(1));
+    match character {
+        RunnerCharacter::Cat => {
+            static CYCLES: OnceLock<[Result<[RgbaFrame; 8], RunnerBuildError>; LOAD_BANDS]> =
+                OnceLock::new();
+            CYCLES.get_or_init(|| build_final_cycles(RunnerCharacter::Cat))[band_index]
+                .as_ref()
+                .map_err(Clone::clone)
+        }
+        RunnerCharacter::Dog => {
+            static CYCLES: OnceLock<[Result<[RgbaFrame; 8], RunnerBuildError>; LOAD_BANDS]> =
+                OnceLock::new();
+            CYCLES.get_or_init(|| build_final_cycles(RunnerCharacter::Dog))[band_index]
+                .as_ref()
+                .map_err(Clone::clone)
+        }
+        RunnerCharacter::Rabbit => {
+            static CYCLES: OnceLock<[Result<[RgbaFrame; 8], RunnerBuildError>; LOAD_BANDS]> =
+                OnceLock::new();
+            CYCLES.get_or_init(|| build_final_cycles(RunnerCharacter::Rabbit))[band_index]
+                .as_ref()
+                .map_err(Clone::clone)
+        }
+        RunnerCharacter::Fox => {
+            static CYCLES: OnceLock<[Result<[RgbaFrame; 8], RunnerBuildError>; LOAD_BANDS]> =
+                OnceLock::new();
+            CYCLES.get_or_init(|| build_final_cycles(RunnerCharacter::Fox))[band_index]
+                .as_ref()
+                .map_err(Clone::clone)
+        }
+        RunnerCharacter::Dinosaur => {
+            static CYCLES: OnceLock<[Result<[RgbaFrame; 8], RunnerBuildError>; LOAD_BANDS]> =
+                OnceLock::new();
+            CYCLES.get_or_init(|| build_final_cycles(RunnerCharacter::Dinosaur))[band_index]
+                .as_ref()
+                .map_err(Clone::clone)
+        }
+        RunnerCharacter::Ghost => {
+            static CYCLES: OnceLock<[Result<[RgbaFrame; 8], RunnerBuildError>; LOAD_BANDS]> =
+                OnceLock::new();
+            CYCLES.get_or_init(|| build_final_cycles(RunnerCharacter::Ghost))[band_index]
+                .as_ref()
+                .map_err(Clone::clone)
+        }
+        RunnerCharacter::Human => {
+            static CYCLES: OnceLock<[Result<[RgbaFrame; 8], RunnerBuildError>; LOAD_BANDS]> =
+                OnceLock::new();
+            CYCLES.get_or_init(|| build_final_cycles(RunnerCharacter::Human))[band_index]
+                .as_ref()
+                .map_err(Clone::clone)
+        }
+        _ => Err(decode_error(
+            character,
+            "cached_final_cycle[unsupported]: character does not use asset-backed runner"
+                .to_string(),
+        )),
+    }
 }
 
 fn cached_source_cycle(
@@ -214,8 +269,29 @@ fn cached_source_cycle(
                 .as_ref()
                 .map_err(Clone::clone)
         }
-        _ => unreachable!("non-asset runner reached asset source cycle"),
+        _ => Err(decode_error(
+            character,
+            "cached_source_cycle[unsupported]: character does not use asset-backed runner"
+                .to_string(),
+        )),
     }
+}
+
+fn build_final_cycles(
+    character: RunnerCharacter,
+) -> [Result<[RgbaFrame; 8], RunnerBuildError>; LOAD_BANDS] {
+    std::array::from_fn(|band_index| finalize_cycle(character, LOAD_PRESET_CPUS[band_index]))
+}
+
+fn finalize_cycle(
+    character: RunnerCharacter,
+    cpu_pct: f32,
+) -> Result<[RgbaFrame; 8], RunnerBuildError> {
+    let raw = source_cycle(character)?;
+    let motion_input = apply_motion_cycle(&raw, cpu_pct);
+    let normalized = normalize_cycle(manifest(character), motion_input)?;
+    validate_cycle(manifest(character), &normalized)?;
+    Ok(normalized)
 }
 
 fn decode_cat_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
@@ -252,7 +328,7 @@ fn decode_dog_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
             source_pose_count: DOG_RUN_FRAME_COUNT,
             sheet_row: DOG_RUN_SHEET_ROW,
             phase_offset: 0.0,
-            draw_height: 20,
+            draw_height: 18,
             crop: Crop {
                 left: 0,
                 top: 0,
@@ -298,7 +374,7 @@ fn decode_fox_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
             source_pose_count: FOX_RUN_FRAME_COUNT,
             sheet_row: 0,
             phase_offset: 0.0,
-            draw_height: 30,
+            draw_height: 18,
             crop: Crop {
                 left: 1,
                 top: 0,
@@ -340,7 +416,8 @@ fn decode_dinosaur_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
         SequenceLayout {
             source_width: DINO_RUN_FRAME_WIDTH,
             source_height: DINO_RUN_FRAME_HEIGHT,
-            draw_height: PIXEL_HEIGHT,
+            draw_width: 45,
+            draw_height: 19,
             crop: Crop {
                 left: 20,
                 top: 45,
@@ -454,7 +531,13 @@ fn decode_sequence_cycle(
                     ),
                 ));
             }
-            extract_sequence_frame(&decoded, character, layout.crop, layout.draw_height)
+            extract_sequence_frame(
+                &decoded,
+                character,
+                layout.crop,
+                layout.draw_width,
+                layout.draw_height,
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
     source_frames.try_into().map_err(|frames: Vec<RgbaFrame>| {
@@ -494,37 +577,27 @@ fn resample_source_cycle(
             });
     }
 
-    let mut previous_source_index = None;
     let frames = (0..usize::from(FRAME_COUNT))
         .map(|pose| {
-        let position =
-            phase_offset + pose as f32 * source_frames.len() as f32 / f32::from(FRAME_COUNT);
-        let left_index = position.floor() as usize % source_frames.len();
-        let right_index = (left_index + 1) % source_frames.len();
-        let mix = position.fract();
-        if mix == 0.0 {
-                previous_source_index = Some(left_index);
+            let position =
+                phase_offset + pose as f32 * source_frames.len() as f32 / f32::from(FRAME_COUNT);
+            let left_index = position.floor() as usize % source_frames.len();
+            let right_index = (left_index + 1) % source_frames.len();
+            let mix = position.fract();
+            if mix == 0.0 {
                 return source_frames[left_index].clone();
-        }
+            }
 
-        if alpha_delta_ratio(&source_frames[left_index], &source_frames[right_index])
-            > NEAREST_POSE_VISIBLE_DELTA_RATIO
-        {
-                let preferred = if mix < 0.5 { left_index } else { right_index };
-                let alternate = if preferred == left_index {
-                    right_index
-                } else {
+            if alpha_delta_ratio(&source_frames[left_index], &source_frames[right_index])
+                > NEAREST_POSE_VISIBLE_DELTA_RATIO
+            {
+                let source_index = if mix < 0.5 {
                     left_index
-                };
-                let chosen = if previous_source_index == Some(preferred) {
-                    alternate
                 } else {
-                    preferred
+                    right_index
                 };
-                previous_source_index = Some(chosen);
-                source_frames[chosen].clone()
+                source_frames[source_index].clone()
             } else {
-                previous_source_index = None;
                 interpolate_frames(&source_frames[left_index], &source_frames[right_index], mix)
             }
         })
@@ -540,44 +613,26 @@ fn resample_source_cycle(
     })
 }
 
-fn motion_shift(cpu_pct: f32, frame: u8) -> i32 {
-    const BOUNCE: [f32; 8] = [1.0, 0.3, -1.1, -2.4, 1.0, 0.2, -1.1, -0.3];
+fn apply_motion_cycle(base: &[RgbaFrame; 8], cpu_pct: f32) -> [RgbaFrame; 8] {
+    std::array::from_fn(|pose| {
+        let shift = motion_shift(cpu_pct, u8::try_from(pose).unwrap_or(0));
+        shift_frame(&base[pose], shift)
+    })
+}
 
-    let load = band_cpu(cpu_pct).clamp(0.0, 100.0) / 100.0;
-    let motion = 0.7 + load.sqrt() * 0.65;
-    (0.5 + BOUNCE[usize::from(frame % FRAME_COUNT)] * motion).round() as i32
+fn motion_shift(cpu_pct: f32, frame: u8) -> i32 {
+    const BAND_SHIFTS: [[i32; 8]; LOAD_BANDS] = [
+        [1, 0, -1, -2, 1, 0, -1, 0],
+        [2, 0, -1, -2, 2, 0, -1, 0],
+        [2, 0, -1, -2, 2, 0, -1, 0],
+        [2, 0, -1, -3, 2, 0, -1, 0],
+    ];
+
+    BAND_SHIFTS[load_band(cpu_pct)][usize::from(frame % FRAME_COUNT)]
 }
 
 fn clone_cycle(base: &[RgbaFrame; 8]) -> [RgbaFrame; 8] {
     std::array::from_fn(|pose| base[pose].clone())
-}
-
-fn apply_pose_offsets(base: &[RgbaFrame; 8], offsets: [i32; 8]) -> [RgbaFrame; 8] {
-    std::array::from_fn(|pose| shift_frame(&base[pose], offsets[pose]))
-}
-
-fn stretch_cycle_x(base: &[RgbaFrame; 8], scale_x: f32) -> [RgbaFrame; 8] {
-    std::array::from_fn(|pose| stretch_frame_x(&base[pose], scale_x))
-}
-
-fn stretch_frame_x(frame: &RgbaFrame, scale_x: f32) -> RgbaFrame {
-    if !scale_x.is_finite() || scale_x <= 0.0 || (scale_x - 1.0).abs() < f32::EPSILON {
-        return frame.clone();
-    }
-
-    let center_x = (PIXEL_WIDTH as f32 - 1.0) * 0.5;
-    let mut stretched = vec![0; frame.len()];
-    for y in 0..PIXEL_HEIGHT {
-        for x in 0..PIXEL_WIDTH {
-            let source_x = center_x + (x as f32 - center_x) / scale_x;
-            let source_x = source_x.round().clamp(0.0, (PIXEL_WIDTH - 1) as f32) as u32;
-            let source_index = ((y * PIXEL_WIDTH + source_x) as usize) * CHANNELS_PER_PIXEL;
-            let target_index = ((y * PIXEL_WIDTH + x) as usize) * CHANNELS_PER_PIXEL;
-            stretched[target_index..target_index + CHANNELS_PER_PIXEL]
-                .copy_from_slice(&frame[source_index..source_index + CHANNELS_PER_PIXEL]);
-        }
-    }
-    stretched
 }
 
 fn shift_frame(frame: &RgbaFrame, vertical_shift: i32) -> RgbaFrame {
@@ -687,6 +742,7 @@ fn extract_sequence_frame(
     decoded: &DecodedPng,
     character: RunnerCharacter,
     crop: Crop,
+    draw_width: u32,
     draw_height: u32,
 ) -> Result<RgbaFrame, RunnerBuildError> {
     extract_cropped_frame(
@@ -695,7 +751,7 @@ fn extract_sequence_frame(
         SheetFrameOrigin { x: 0, y: 0 },
         crop,
         MatteKey::None,
-        PIXEL_WIDTH,
+        draw_width,
         draw_height,
     )
 }
@@ -732,7 +788,13 @@ fn extract_cropped_frame(
         let source_y = crop.top + sample_axis(draw_y, draw_height, crop.height);
         for draw_x in 0..draw_width {
             let source_x = crop.left + sample_axis(draw_x, draw_width, crop.width);
-            let alpha = sample_alpha(decoded, origin.x + source_x, origin.y + source_y, matte)?;
+            let alpha = sample_alpha(
+                decoded,
+                character,
+                origin.x + source_x,
+                origin.y + source_y,
+                matte,
+            )?;
             if alpha == 0 {
                 continue;
             }
@@ -753,11 +815,13 @@ fn extract_human_frame(
 ) -> RgbaFrame {
     let mut frame = vec![0u8; (PIXEL_WIDTH * PIXEL_HEIGHT * CHANNELS_PER_PIXEL as u32) as usize];
     let draw_left = (PIXEL_WIDTH - HUMAN_RUN_DRAW_WIDTH) / 2;
+    let draw_top = (PIXEL_HEIGHT - HUMAN_RUN_DRAW_HEIGHT) / 2;
 
-    for y in 0..PIXEL_HEIGHT {
+    for draw_y in 0..HUMAN_RUN_DRAW_HEIGHT {
+        let source_y = draw_y * HUMAN_RUN_FRAME_HEIGHT / HUMAN_RUN_DRAW_HEIGHT;
         for draw_x in 0..HUMAN_RUN_DRAW_WIDTH {
             let source_x = draw_x * HUMAN_RUN_FRAME_WIDTH / HUMAN_RUN_DRAW_WIDTH;
-            let pixel = read_pixel(decoded, frame_x + source_x, frame_y + y);
+            let pixel = read_pixel(decoded, frame_x + source_x, frame_y + source_y);
             let alpha = if pixel.alpha == 0 {
                 0
             } else if pixel.red < 48 && pixel.green < 48 && pixel.blue < 48 {
@@ -769,7 +833,8 @@ fn extract_human_frame(
                 continue;
             }
             let target_index =
-                ((y * PIXEL_WIDTH + draw_left + draw_x) as usize) * CHANNELS_PER_PIXEL;
+                (((draw_top + draw_y) * PIXEL_WIDTH + draw_left + draw_x) as usize)
+                    * CHANNELS_PER_PIXEL;
             frame[target_index + 3] = alpha;
         }
     }
@@ -780,13 +845,14 @@ fn extract_human_frame(
 
 fn sample_alpha(
     decoded: &DecodedPng,
+    character: RunnerCharacter,
     x: u32,
     y: u32,
     matte: MatteKey,
 ) -> Result<u8, RunnerBuildError> {
     if x >= decoded.width || y >= decoded.height {
         return Err(RunnerBuildError::InvalidFrame {
-            character: RunnerCharacter::default(),
+            character,
             detail: format!(
                 "sample_alpha[out_of_bounds]: requested source pixel ({x}, {y}) outside {}x{}",
                 decoded.width, decoded.height
@@ -895,10 +961,6 @@ fn interpolate_frames(left: &RgbaFrame, right: &RgbaFrame, mix: f32) -> RgbaFram
     frame
 }
 
-fn band_cpu(cpu_pct: f32) -> f32 {
-    LOAD_PRESET_CPUS[load_band(cpu_pct)]
-}
-
 fn frame_at(
     frames: &[RgbaFrame; 8],
     character: RunnerCharacter,
@@ -925,12 +987,13 @@ fn decode_error(character: RunnerCharacter, detail: String) -> RunnerBuildError 
 mod tests {
     use peterfan_core::config::RunnerCharacter;
 
-    use super::build_cycle;
+    use super::{
+        build_cycle, render, resample_source_cycle, sample_alpha, DecodedPng, MatteKey,
+    };
     use crate::runner::{manifest, validate_cycle, FRAME_COUNT};
 
-    #[test]
-    fn asset_backed_characters_pass_the_shared_quality_gate() {
-        let characters = [
+    fn asset_characters() -> [RunnerCharacter; 7] {
+        [
             RunnerCharacter::Cat,
             RunnerCharacter::Dog,
             RunnerCharacter::Rabbit,
@@ -938,12 +1001,23 @@ mod tests {
             RunnerCharacter::Dinosaur,
             RunnerCharacter::Ghost,
             RunnerCharacter::Human,
-        ];
+        ]
+    }
 
+    fn constant_alpha_frame(alpha: u8) -> Vec<u8> {
+        let mut frame = vec![0; (crate::runner::PIXEL_WIDTH * crate::runner::PIXEL_HEIGHT * 4) as usize];
+        for pixel in frame.chunks_exact_mut(4) {
+            pixel[3] = alpha;
+        }
+        frame
+    }
+
+    #[test]
+    fn asset_backed_characters_pass_the_shared_quality_gate() {
         assert_eq!(FRAME_COUNT, 8);
 
         let mut failures = Vec::new();
-        for character in characters {
+        for character in asset_characters() {
             for cpu_pct in [0.0, 30.0, 65.0, 90.0] {
                 match build_cycle(character, cpu_pct) {
                     Ok(cycle) => {
@@ -960,6 +1034,75 @@ mod tests {
             failures.is_empty(),
             "asset-backed quality failures:\n{}",
             failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn render_matches_build_cycle_frames_for_all_asset_characters_and_bands() {
+        let mut mismatches = Vec::new();
+        for character in asset_characters() {
+            for cpu_pct in [0.0, 30.0, 65.0, 90.0] {
+                let cycle = build_cycle(character, cpu_pct).expect("build cycle");
+                for frame in 0..FRAME_COUNT {
+                    let rendered = render(character, cpu_pct, frame).expect("rendered frame");
+                    if rendered != cycle[usize::from(frame)] {
+                        mismatches.push(format!(
+                            "{character:?} at {cpu_pct}% frame {frame}: render output differed from build_cycle"
+                        ));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "render/build mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
+    fn five_pose_resampling_uses_nearest_pose_when_alpha_delta_is_large() {
+        let source_frames = [10_u8, 70, 130, 190, 250].map(constant_alpha_frame);
+        let resampled = resample_source_cycle(RunnerCharacter::Cat, &source_frames, 0.0)
+            .expect("resampled cycle");
+
+        let expected_order = [0_usize, 1, 1, 2, 3, 3, 4, 4];
+        for (pose, expected_source) in expected_order.into_iter().enumerate() {
+            assert_eq!(
+                resampled[pose],
+                source_frames[expected_source],
+                "pose {pose} should select source frame {expected_source}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_asset_characters_return_runner_build_error() {
+        let error = build_cycle(RunnerCharacter::Robot, 30.0).expect_err("unsupported asset");
+        let detail = error.to_string();
+        assert!(
+            detail.contains("robot"),
+            "expected character in error, got: {detail}"
+        );
+    }
+
+    #[test]
+    fn sample_alpha_out_of_bounds_reports_the_actual_character() {
+        let decoded = DecodedPng {
+            width: 1,
+            height: 1,
+            color_type: png::ColorType::Grayscale,
+            channels: 1,
+            pixels: vec![255],
+        };
+
+        let error = sample_alpha(&decoded, RunnerCharacter::Dog, 1, 0, MatteKey::None)
+            .expect_err("out of bounds");
+        let detail = error.to_string();
+        assert!(
+            detail.contains("runner 'dog'"),
+            "expected dog diagnostic, got: {detail}"
         );
     }
 }
