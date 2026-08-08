@@ -638,8 +638,8 @@ fn motion_shift(cpu_pct: f32, frame: u8) -> i32 {
     const BAND_SHIFTS: [[i32; 8]; LOAD_BANDS] = [
         [1, 0, -1, -2, 1, 0, -1, 0],
         [2, 0, -1, -2, 2, 0, -1, 0],
-        [2, 0, -1, -2, 2, 0, -1, 0],
-        [2, 0, -1, -3, 2, 0, -1, 0],
+        [3, 0, -2, -3, 3, 0, -2, 0],
+        [4, 0, -2, -4, 4, 0, -2, 0],
     ];
 
     BAND_SHIFTS[load_band(cpu_pct)][usize::from(frame % FRAME_COUNT)]

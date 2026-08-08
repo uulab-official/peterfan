@@ -154,12 +154,7 @@ impl RunnerPack {
     }
 }
 
-pub(crate) fn build_or_fallback(
-    character: RunnerCharacter,
-) -> (RunnerPack, Option<RunnerBuildError>) {
-    build_or_fallback_with(character, RunnerPack::build)
-}
-
+#[cfg(test)]
 pub(crate) fn build_or_fallback_with<F>(
     character: RunnerCharacter,
     builder: F,
@@ -196,6 +191,16 @@ fn style_template_frame(mut rgba: RgbaFrame) -> RgbaFrame {
         }
     }
     rgba
+}
+
+#[cfg(test)]
+fn rendered_direction_signature(frames: &[RgbaFrame]) -> u64 {
+    frames
+        .iter()
+        .flat_map(|frame| frame.iter())
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
 }
 
 #[cfg(test)]
@@ -304,6 +309,57 @@ mod tests {
         assert!(pack.frame_by_index(0, FRAME_COUNT).is_none());
         assert!(pack.preview_alpha_hex(LOAD_BANDS, 0).is_none());
         assert!(pack.preview_alpha_hex(0, FRAME_COUNT).is_none());
+    }
+
+    #[test]
+    fn every_load_band_is_an_intentional_canonical_cycle_variant() {
+        for character in RunnerCharacter::ALL {
+            let pack = RunnerPack::build(character).expect("runner pack");
+            for band in 0..LOAD_BANDS - 1 {
+                let start = band * usize::from(FRAME_COUNT);
+                let next_start = (band + 1) * usize::from(FRAME_COUNT);
+                assert!(
+                    pack.frames()[start..start + usize::from(FRAME_COUNT)]
+                        .iter()
+                        .zip(&pack.frames()[next_start..next_start + usize::from(FRAME_COUNT)])
+                        .any(|(frame, next)| frame != next),
+                    "{character:?} repeats bands {band} and {}",
+                    band + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rendered_direction_has_hand_approved_signatures_for_every_character() {
+        let expected = [
+            (RunnerCharacter::Cat, 12262543254071429894_u64),
+            (RunnerCharacter::Dog, 10443859613551489847),
+            (RunnerCharacter::Rabbit, 18176194792516756046),
+            (RunnerCharacter::Fox, 14998204077595277992),
+            (RunnerCharacter::Penguin, 11917221229586655539),
+            (RunnerCharacter::Dinosaur, 3683395265801644717),
+            (RunnerCharacter::Robot, 4679401743605925042),
+            (RunnerCharacter::Ghost, 10318755370732219639),
+            (RunnerCharacter::Bird, 8119060861408304317),
+            (RunnerCharacter::Duck, 9215540427510077264),
+            (RunnerCharacter::Sheep, 15344927357810802816),
+            (RunnerCharacter::Fish, 1454683525211696439),
+            (RunnerCharacter::Slime, 5109980211131495317),
+            (RunnerCharacter::Human, 13784596778891480520),
+            (RunnerCharacter::Pushup, 4841904377113988709),
+            (RunnerCharacter::Orbit, 15157006937146022838),
+            (RunnerCharacter::Sushi, 9384635045786117440),
+            (RunnerCharacter::City, 8667612527342811797),
+            (RunnerCharacter::Sausage, 17288445996476175593),
+            (RunnerCharacter::Party, 13745339646856667859),
+        ];
+
+        let actual = expected.map(|(character, _)| {
+            let pack = RunnerPack::build(character).expect("runner pack");
+            (character, rendered_direction_signature(pack.frames()))
+        });
+        assert_eq!(actual, expected, "rendered direction signatures changed");
     }
 
     #[test]

@@ -453,16 +453,24 @@ fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8)
         }
         RunnerCharacter::Orbit => {
             let theta = pose as f32 / FRAME_COUNT as f32 * TAU;
+            let primary_orbit_radius = 14.5 + load * 1.5;
+            let secondary_orbit_radius = 9.5 + load * 1.5;
             canvas.line(Pt::new(6.0, 16.0), Pt::new(44.0, 16.0), 2.0, detail);
             canvas.line(Pt::new(14.0, 8.0), Pt::new(36.0, 24.0), 1.8, detail);
             canvas.disc(Pt::new(25.0, 16.0), 6.0, solid);
             canvas.disc(
-                Pt::new(25.0 + theta.cos() * 16.0, 16.0 + theta.sin() * 7.0),
+                Pt::new(
+                    25.0 + theta.cos() * primary_orbit_radius,
+                    16.0 + theta.sin() * 7.0,
+                ),
                 2.4,
                 solid,
             );
             canvas.disc(
-                Pt::new(25.0 - theta.sin() * 11.0, 16.0 + theta.cos() * 8.0),
+                Pt::new(
+                    25.0 - theta.sin() * secondary_orbit_radius,
+                    16.0 + theta.cos() * 8.0,
+                ),
                 1.8,
                 detail,
             );
@@ -485,6 +493,7 @@ fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8)
             canvas.erase_disc(Pt::new(26.0, 17.0 + bob), 2.0);
         }
         RunnerCharacter::City => {
+            let window_phase = (load * 3.0).round() as usize;
             canvas.rect(3.0, 14.0, 11.0, 27.0, solid);
             canvas.rect(12.0, 8.0, 20.0, 27.0, solid);
             canvas.rect(21.0, 12.0, 29.0, 27.0, solid);
@@ -511,7 +520,7 @@ fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8)
                 0b1001_1100,
             ];
             for (index, (left, top, right, bottom)) in WINDOWS.into_iter().enumerate() {
-                if (WINDOW_MASKS[pose] >> index) & 1 == 1 {
+                if (WINDOW_MASKS[(pose + window_phase) % FRAME_COUNT as usize] >> index) & 1 == 1 {
                     canvas.erase_rect(left, top, right, bottom);
                 }
             }

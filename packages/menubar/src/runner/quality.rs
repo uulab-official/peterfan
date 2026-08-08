@@ -10,6 +10,7 @@ pub(crate) const CHANNELS_PER_PIXEL: usize = 4;
 pub(crate) const VISIBLE_ALPHA_THRESHOLD: u8 = 96;
 const DELTA_ALPHA_THRESHOLD: u8 = 48;
 
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Bounds {
     pub min_x: u32,
@@ -51,6 +52,11 @@ pub(crate) struct CycleMetrics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RunnerBandReport {
     pub cpu_pct: f32,
+    pub bounds: Bounds,
+    pub min_occupancy: usize,
+    pub max_occupancy: usize,
+    pub contact_flight_delta: usize,
+    pub cross_band_delta: usize,
     pub max_centroid_drift: f32,
     pub allowed_centroid_drift: f32,
     pub baseline_variance: u32,
@@ -198,8 +204,40 @@ fn build_character_report(
                     .to_vec()
             });
             let metrics = measure_cycle(&cycle)?;
+            let bounds = cycle_bounds(&metrics.frames);
+            let occupancies = metrics.frames.iter().map(|frame| frame.opaque_pixels);
+            let min_occupancy = occupancies.clone().min().unwrap_or(0);
+            let max_occupancy = occupancies.max().unwrap_or(0);
+            let contact_flight_delta = manifest
+                .contact_frames
+                .into_iter()
+                .zip(manifest.flight_frames)
+                .map(|(contact, flight)| {
+                    frame_delta(&cycle[usize::from(contact)], &cycle[usize::from(flight)])
+                })
+                .min()
+                .unwrap_or(0);
+            let cross_band_delta = if band > 0 {
+                (0..8)
+                    .map(|frame| {
+                        frame_change_count(
+                            pack.frame_by_index(band - 1, frame)
+                                .expect("previous pack frame"),
+                            &cycle[frame as usize],
+                        )
+                    })
+                    .max()
+                    .unwrap_or(0)
+            } else {
+                0
+            };
             Ok(RunnerBandReport {
                 cpu_pct,
+                bounds,
+                min_occupancy,
+                max_occupancy,
+                contact_flight_delta,
+                cross_band_delta,
                 max_centroid_drift: metrics.max_centroid_drift,
                 allowed_centroid_drift: manifest.max_centroid_drift,
                 baseline_variance: metrics.baseline_variance,
@@ -213,6 +251,32 @@ fn build_character_report(
         name: character.as_str().to_string(),
         bands,
     })
+}
+
+#[cfg(test)]
+fn cycle_bounds(frames: &[FrameMetrics; 8]) -> Bounds {
+    Bounds {
+        min_x: frames
+            .iter()
+            .map(|frame| frame.bounds.min_x)
+            .min()
+            .unwrap_or(0),
+        min_y: frames
+            .iter()
+            .map(|frame| frame.bounds.min_y)
+            .min()
+            .unwrap_or(0),
+        max_x: frames
+            .iter()
+            .map(|frame| frame.bounds.max_x)
+            .max()
+            .unwrap_or(0),
+        max_y: frames
+            .iter()
+            .map(|frame| frame.bounds.max_y)
+            .max()
+            .unwrap_or(0),
+    }
 }
 
 pub(crate) fn validate_frame_len(frame: &RgbaFrame) -> Result<(), RunnerBuildError> {
@@ -234,10 +298,18 @@ fn invalid_frame_error(detail: impl Into<String>) -> RunnerBuildError {
     }
 }
 
-fn frame_delta(left: &RgbaFrame, right: &RgbaFrame) -> usize {
+fn frame_delta(left: &[u8], right: &[u8]) -> usize {
     left.chunks_exact(CHANNELS_PER_PIXEL)
         .zip(right.chunks_exact(CHANNELS_PER_PIXEL))
         .filter(|(left, right)| left[3].abs_diff(right[3]) > DELTA_ALPHA_THRESHOLD)
+        .count()
+}
+
+#[cfg(test)]
+fn frame_change_count(left: &[u8], right: &[u8]) -> usize {
+    left.chunks_exact(CHANNELS_PER_PIXEL)
+        .zip(right.chunks_exact(CHANNELS_PER_PIXEL))
+        .filter(|(left, right)| left[3] != right[3])
         .count()
 }
 
@@ -364,15 +436,35 @@ mod tests {
             .characters
             .iter()
             .all(|entry| entry.bands.len() == LOAD_BANDS));
-        assert!(report
-            .characters
-            .iter()
-            .flat_map(|entry| &entry.bands)
-            .all(|band| {
-                band.max_centroid_drift <= band.allowed_centroid_drift
-                    && band.minimum_frame_delta >= 24
-                    && !band.clipped
-            }));
+        for entry in &report.characters {
+            for band in &entry.bands {
+                assert!(
+                    band.max_centroid_drift <= band.allowed_centroid_drift
+                        && band.minimum_frame_delta >= 24
+                        && band.bounds.min_x > 0
+                        && band.bounds.min_y > 0
+                        && band.bounds.max_x + 1 < PIXEL_WIDTH
+                        && band.bounds.max_y + 1 < PIXEL_HEIGHT
+                        && band.min_occupancy > 0
+                        && band.max_occupancy >= band.min_occupancy
+                        && band.contact_flight_delta >= 24
+                        && !band.clipped,
+                    "{} at {}: {:?}",
+                    entry.name,
+                    band.cpu_pct,
+                    band
+                );
+            }
+        }
+        for entry in &report.characters {
+            for (index, band) in entry.bands.iter().enumerate() {
+                assert!(
+                    index == 0 || band.cross_band_delta >= 1,
+                    "{} band {index} has no cross-band motion delta",
+                    entry.name
+                );
+            }
+        }
     }
 
     #[test]

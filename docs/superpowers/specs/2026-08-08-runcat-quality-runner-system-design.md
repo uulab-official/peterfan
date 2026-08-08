@@ -184,6 +184,19 @@ for local visual QA. A small report lists each character's bounds, occupancy,
 centroid drift, baseline variance, and frame-difference score so weak characters
 are visible without subjective guesswork.
 
+## Approved Manifest Target Tuning Amendment
+
+Task 6 measurements approved the final manifest targets for the procedural
+silhouettes: Penguin 40×28, Robot 38×27, Bird 42×26, Sausage 42×23, and Party
+40×26. These replace the earlier narrower planning targets because the rendered
+48×32 alpha bounds showed that those characters lost their recognizable limbs,
+wings, or head/body separation at the native 27×18 display footprint. The
+tuning remains bounded before normalization: identity dimensions stay fixed per
+cycle, only the documented gait cue moves, contact frames retain their baseline,
+and centroid drift remains at or below each manifest limit. The generated QA
+report is the approval record: it includes per-band bounds, occupancy range,
+contact-to-flight delta, and cross-band delta for every character.
+
 ## Verification and Release
 
 Completion requires:
