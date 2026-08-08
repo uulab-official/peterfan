@@ -88,6 +88,18 @@ impl RunnerCanvas {
         );
     }
 
+    pub(crate) fn erase_rect(&mut self, left: f32, top: f32, right: f32, bottom: f32) {
+        erase_rect(
+            &mut self.rgba,
+            PIXEL_WIDTH,
+            PIXEL_HEIGHT,
+            left,
+            top,
+            right,
+            bottom,
+        );
+    }
+
     pub(crate) fn erase_disc(&mut self, center: Pt, radius: f32) {
         erase_disc(&mut self.rgba, PIXEL_WIDTH, PIXEL_HEIGHT, center, radius);
     }
@@ -157,6 +169,32 @@ pub(crate) fn erase_disc(rgba: &mut [u8], w: u32, h: u32, center: Pt, radius: f3
             let dy = y as f32 - center.y;
             let distance = (dx * dx + dy * dy).sqrt();
             let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
+            if coverage > 0.0 {
+                let index = ((y * w + x) * 4) as usize;
+                rgba[index + 3] = (f32::from(rgba[index + 3]) * (1.0 - coverage)).round() as u8;
+            }
+        }
+    }
+}
+
+pub(crate) fn erase_rect(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+) {
+    let min_x = left.floor().max(0.0) as u32;
+    let max_x = right.ceil().min((w - 1) as f32) as u32;
+    let min_y = top.floor().max(0.0) as u32;
+    let max_y = bottom.ceil().min((h - 1) as f32) as u32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let edge_x = (x as f32 + 0.5 - left).min(right - (x as f32 + 0.5));
+            let edge_y = (y as f32 + 0.5 - top).min(bottom - (y as f32 + 0.5));
+            let coverage = edge_x.min(edge_y).clamp(0.0, 1.0);
             if coverage > 0.0 {
                 let index = ((y * w + x) * 4) as usize;
                 rgba[index + 3] = (f32::from(rgba[index + 3]) * (1.0 - coverage)).round() as u8;

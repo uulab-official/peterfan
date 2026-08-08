@@ -1,12 +1,59 @@
+use std::f32::consts::TAU;
+
 use peterfan_core::config::RunnerCharacter;
 
 use super::draw::{
     draw_disc, draw_line, draw_rect, draw_rotated_ellipse, draw_runner_leg, draw_triangle,
     erase_disc, Pt, RunnerCanvas,
 };
-use super::{RgbaFrame, FRAME_COUNT, PIXEL_HEIGHT, PIXEL_WIDTH};
+use super::{manifest, normalize_cycle, RgbaFrame, RunnerBuildError, FRAME_COUNT, PIXEL_HEIGHT, PIXEL_WIDTH};
 
-pub(crate) fn render(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> RgbaFrame {
+pub(crate) fn render(
+    character: RunnerCharacter,
+    cpu_pct: f32,
+    frame: u8,
+) -> Result<RgbaFrame, RunnerBuildError> {
+    let cycle = build_cycle(character, cpu_pct)?;
+    Ok(cycle[usize::from(frame % FRAME_COUNT)].clone())
+}
+
+pub(crate) fn source_cycle(
+    character: RunnerCharacter,
+    cpu_pct: f32,
+) -> Result<[RgbaFrame; 8], RunnerBuildError> {
+    if is_asset_backed(character) {
+        return Err(RunnerBuildError::InvalidFrame {
+            character,
+            detail: "not a procedural runner".to_string(),
+        });
+    }
+
+    Ok(std::array::from_fn(|pose| {
+        render_pose(character, cpu_pct, pose as u8)
+    }))
+}
+
+pub(crate) fn build_cycle(
+    character: RunnerCharacter,
+    cpu_pct: f32,
+) -> Result<[RgbaFrame; 8], RunnerBuildError> {
+    normalize_cycle(manifest(character), source_cycle(character, cpu_pct)?)
+}
+
+fn is_asset_backed(character: RunnerCharacter) -> bool {
+    matches!(
+        character,
+        RunnerCharacter::Cat
+            | RunnerCharacter::Dog
+            | RunnerCharacter::Rabbit
+            | RunnerCharacter::Fox
+            | RunnerCharacter::Dinosaur
+            | RunnerCharacter::Ghost
+            | RunnerCharacter::Human
+    )
+}
+
+fn render_pose(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> RgbaFrame {
     match character {
         RunnerCharacter::Penguin => make_penguin_runner_rgba(cpu_pct, frame),
         RunnerCharacter::Robot => make_robot_runner_rgba(cpu_pct, frame),
@@ -21,7 +68,7 @@ pub(crate) fn render(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Rgb
         | RunnerCharacter::City
         | RunnerCharacter::Sausage
         | RunnerCharacter::Party => make_novelty_runner_rgba(character, cpu_pct, frame),
-        _ => unreachable!("asset-backed runner reached procedural renderer"),
+        _ => unreachable!("asset-backed runner reached procedural pose renderer"),
     }
 }
 
@@ -296,98 +343,137 @@ fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8)
             canvas.erase_disc(Pt::new(41.0, 13.8 + bob), 0.9);
         }
         RunnerCharacter::Fish => {
-            let tail_wave = wave * 0.70;
+            const TAIL_TOP: [f32; 8] = [-2.8, 0.4, 3.0, 1.0, -2.6, -0.4, 2.4, -1.8];
+            const TAIL_BOTTOM: [f32; 8] = [2.4, -0.4, -2.8, -1.0, 2.2, 0.6, -2.0, 1.4];
+            let tail_top = TAIL_TOP[pose] * (0.86 + load * 0.08);
+            let tail_bottom = TAIL_BOTTOM[pose] * (0.86 + load * 0.08);
             canvas.triangle(
-                Pt::new(16.0, 14.0 + bob),
-                Pt::new(2.0, 6.0 + bob + tail_wave),
-                Pt::new(3.0, 23.0 + bob - tail_wave * 0.45),
+                Pt::new(16.0, 14.5),
+                Pt::new(2.5, 8.5 + tail_top),
+                Pt::new(4.0, 20.5 + tail_bottom),
                 detail,
             );
-            canvas.ellipse(Pt::new(28.0, 14.5 + bob), 14.0 + load, 7.5, solid);
+            canvas.ellipse(Pt::new(28.0, 14.5), 14.0, 7.5, solid);
             canvas.triangle(
-                Pt::new(25.0, 15.0 + bob),
-                Pt::new(21.0 + swing * 0.25, 27.0 + bob),
-                Pt::new(32.0, 18.0 + bob),
+                Pt::new(24.0, 11.6),
+                Pt::new(19.5, 4.8 + tail_top * 1.35),
+                Pt::new(32.5, 14.0),
                 detail,
             );
-            canvas.disc(Pt::new(44.0, 6.0 + wave * 0.25), 1.8, detail);
-            canvas.disc(Pt::new(47.0, 2.5 + wave * 0.18), 1.1, detail);
-            canvas.erase_disc(Pt::new(39.5, 12.0 + bob), 1.0);
+            canvas.triangle(
+                Pt::new(22.0, 16.2),
+                Pt::new(27.5 + tail_bottom * 1.35, 24.6),
+                Pt::new(33.0, 16.8),
+                detail,
+            );
+            canvas.line(
+                Pt::new(23.0, 18.0),
+                Pt::new(18.0 + tail_bottom * 0.5, 22.0),
+                1.8,
+                detail,
+            );
+            canvas.triangle(
+                Pt::new(30.5, 14.0),
+                Pt::new(39.5, 8.0 - tail_top * 1.2),
+                Pt::new(36.5, 18.5),
+                detail,
+            );
+            canvas.triangle(
+                Pt::new(31.0, 16.4),
+                Pt::new(39.0, 22.4 + tail_bottom * 0.95),
+                Pt::new(35.8, 18.6),
+                detail,
+            );
+            canvas.erase_disc(Pt::new(39.5, 12.2), 1.0);
         }
         RunnerCharacter::Slime => {
+            const SQUASH: [f32; 8] = [-3.2, -2.0, -0.4, 1.5, 3.0, 1.8, 0.2, -1.9];
+            let squash = SQUASH[pose] * (0.82 + load * 0.26);
+            let body_ry = 8.8 - squash * 0.52;
+            let body_rx = 14.4 + squash * 0.72;
+            let body_center_y = 27.0 - body_ry;
             canvas.line(
-                Pt::new(14.0, 18.0 + bob),
-                Pt::new(3.0, 14.0 + bob + swing * 0.45),
-                4.0,
+                Pt::new(12.5, 17.0 - squash * 0.08),
+                Pt::new(5.0, 13.2 - squash * 0.32),
+                3.0,
                 detail,
             );
             canvas.line(
-                Pt::new(37.0, 18.0 + bob),
-                Pt::new(48.0, 14.0 + bob - swing * 0.45),
-                4.0,
+                Pt::new(39.5, 17.0 - squash * 0.08),
+                Pt::new(47.0, 13.2 + squash * 0.32),
+                3.0,
                 detail,
             );
-            canvas.ellipse(Pt::new(26.0, 17.0 + bob), 15.5 + load, 9.4, solid);
+            canvas.ellipse(Pt::new(26.0, body_center_y), body_rx, body_ry, solid);
             canvas.triangle(
-                Pt::new(12.0, 20.0 + bob),
-                Pt::new(17.0, 28.0 + bob + wave * 0.2),
-                Pt::new(22.0, 20.0 + bob),
+                Pt::new(12.5, 20.0),
+                Pt::new(17.0, 27.0),
+                Pt::new(21.5, 20.0),
                 solid,
             );
             canvas.triangle(
-                Pt::new(22.0, 20.0 + bob),
-                Pt::new(28.0, 27.0 + bob - wave * 0.18),
-                Pt::new(34.0, 20.0 + bob),
+                Pt::new(21.0, 20.0),
+                Pt::new(27.0, 27.0),
+                Pt::new(33.0, 20.0),
                 solid,
             );
             canvas.triangle(
-                Pt::new(33.0, 20.0 + bob),
-                Pt::new(39.0, 27.0 + bob + wave * 0.15),
-                Pt::new(42.0, 19.0 + bob),
+                Pt::new(32.5, 20.0),
+                Pt::new(38.0, 27.0),
+                Pt::new(42.5, 20.0),
                 solid,
             );
-            canvas.erase_disc(Pt::new(22.0, 14.5 + bob), 1.15);
-            canvas.erase_disc(Pt::new(31.0, 14.5 + bob), 1.15);
+            canvas.erase_disc(Pt::new(22.0, body_center_y - 2.2), 1.1);
+            canvas.erase_disc(Pt::new(31.0, body_center_y - 2.2), 1.1);
         }
         RunnerCharacter::Pushup => {
-            let flex = (((pose as f32 - 3.5).abs() - 1.75) * motion).clamp(-2.2, 3.2);
-            let hip = Pt::new(11.0, 12.0 + flex);
-            let shoulder = Pt::new(35.0, 14.0 + flex * 0.72);
-            let elbow = Pt::new(31.0 + swing * 0.18, 21.5 + flex * 0.45);
-            let hand = Pt::new(39.0 + swing * 0.12, 27.0);
+            const SHOULDER_Y: [f32; 8] = [13.4, 14.1, 15.3, 16.6, 17.2, 16.0, 14.6, 13.8];
+            const ELBOW_X: [f32; 8] = [34.0, 33.0, 31.6, 29.8, 28.4, 29.7, 31.3, 33.1];
+            const ELBOW_Y: [f32; 8] = [16.8, 18.5, 20.7, 22.8, 24.2, 22.1, 19.5, 17.5];
+            const HIP_Y: [f32; 8] = [12.0, 12.2, 12.8, 13.3, 13.6, 13.2, 12.6, 12.1];
+            let stretch = 0.88 + load * 0.2;
+            let hip = Pt::new(10.5, HIP_Y[pose] * stretch);
+            let shoulder = Pt::new(34.5, SHOULDER_Y[pose] * stretch);
+            let elbow = Pt::new(ELBOW_X[pose], ELBOW_Y[pose] * stretch);
+            let hand = Pt::new(40.5, 27.0);
             canvas.line(hip, shoulder, 4.3, solid);
-            canvas.disc(Pt::new(41.0, 12.5 + flex * 0.72), 3.8, solid);
+            canvas.disc(Pt::new(41.5, (SHOULDER_Y[pose] - 1.9) * stretch), 3.8, solid);
             canvas.line(shoulder, elbow, 3.0, detail);
             canvas.line(elbow, hand, 3.0, solid);
             canvas.line(hip, Pt::new(2.0, 25.5), 3.2, detail);
             canvas.line(Pt::new(3.0, 25.5), Pt::new(9.0, 26.0), 2.3, detail);
-            canvas.erase_disc(Pt::new(42.2, 11.5 + flex * 0.72), 0.8);
+            canvas.erase_disc(Pt::new(42.5, (SHOULDER_Y[pose] - 2.9) * stretch), 0.8);
         }
         RunnerCharacter::Orbit => {
+            let theta = pose as f32 / FRAME_COUNT as f32 * TAU;
             canvas.line(
-                Pt::new(3.0, 16.0 + wave * 0.25),
-                Pt::new(45.0, 16.0 - wave * 0.25),
+                Pt::new(6.0, 16.0),
+                Pt::new(44.0, 16.0),
                 2.0,
                 detail,
             );
             canvas.line(
-                Pt::new(8.0, 7.0 - wave * 0.2),
-                Pt::new(41.0, 25.0 + wave * 0.2),
+                Pt::new(14.0, 8.0),
+                Pt::new(36.0, 24.0),
                 1.8,
                 detail,
             );
-            canvas.disc(Pt::new(25.0, 16.0 + bob), 6.0 + load, solid);
             canvas.disc(
-                Pt::new(7.0 + (pose as f32 * 5.1) % 38.0, 8.0 + wave),
-                2.5,
+                Pt::new(25.0, 16.0),
+                6.0,
                 solid,
             );
             canvas.disc(
-                Pt::new(43.0 - (pose as f32 * 4.2) % 35.0, 24.0 - wave * 0.7),
-                2.0,
+                Pt::new(25.0 + theta.cos() * 16.0, 16.0 + theta.sin() * 7.0),
+                2.4,
+                solid,
+            );
+            canvas.disc(
+                Pt::new(25.0 - theta.sin() * 11.0, 16.0 + theta.cos() * 8.0),
+                1.8,
                 detail,
             );
-            canvas.erase_disc(Pt::new(25.0, 16.0 + bob), 2.3);
+            canvas.erase_disc(Pt::new(25.0, 16.0), 2.3);
         }
         RunnerCharacter::Sushi => {
             canvas.line(Pt::new(2.0, 25.0), Pt::new(48.0, 25.0), 3.2, detail);
@@ -407,20 +493,44 @@ fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8)
         }
         RunnerCharacter::City => {
             canvas.rect(3.0, 14.0, 11.0, 27.0, solid);
-            canvas.rect(12.0, 8.0 + bob * 0.2, 20.0, 27.0, solid);
+            canvas.rect(12.0, 8.0, 20.0, 27.0, solid);
             canvas.rect(21.0, 12.0, 29.0, 27.0, solid);
             canvas.rect(30.0, 5.0, 39.0, 27.0, solid);
             canvas.rect(40.0, 16.0, 48.0, 27.0, solid);
-            for (x, y) in [
-                (7.0, 18.0),
-                (16.0, 12.0),
-                (25.0, 16.0),
-                (34.5, 9.0),
-                (44.0, 20.0),
-            ] {
-                canvas.erase_disc(Pt::new(x, y), 1.1);
+            const WINDOWS: [(f32, f32, f32, f32); 8] = [
+                (5.0, 17.0, 7.5, 20.0),
+                (14.0, 11.0, 16.5, 14.0),
+                (14.0, 18.0, 16.5, 21.0),
+                (23.0, 15.0, 25.5, 18.0),
+                (32.0, 9.0, 34.5, 12.0),
+                (32.0, 16.0, 34.5, 19.0),
+                (42.0, 18.0, 44.5, 21.0),
+                (35.5, 22.0, 38.0, 25.0),
+            ];
+            const WINDOW_MASKS: [u8; 8] = [
+                0b0011_1001,
+                0b0110_0110,
+                0b1100_0011,
+                0b1011_1100,
+                0b0101_1010,
+                0b0011_0111,
+                0b1110_0101,
+                0b1001_1100,
+            ];
+            for (index, (left, top, right, bottom)) in WINDOWS.into_iter().enumerate() {
+                if (WINDOW_MASKS[pose] >> index) & 1 == 1 {
+                    canvas.erase_rect(left, top, right, bottom);
+                }
             }
-            canvas.disc(Pt::new(35.0 + swing * 0.35, 2.0 + wave * 0.2), 2.0, detail);
+            for (x, y) in [
+                (9.5, 14.0),
+                (18.0, 8.0),
+                (27.0, 12.0),
+                (39.0, 5.0),
+                (46.0, 16.0),
+            ] {
+                canvas.line(Pt::new(x, y), Pt::new(x, y - 2.0), 1.0, detail);
+            }
         }
         RunnerCharacter::Sausage => {
             canvas.ellipse(Pt::new(25.0, 14.5 + bob), 17.0 + load, 6.2, solid);
@@ -505,4 +615,105 @@ fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8)
     }
 
     canvas.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use peterfan_core::config::RunnerCharacter;
+
+    use super::{build_cycle, render, source_cycle};
+    use crate::runner::{manifest, validate_cycle};
+
+    fn procedural_characters() -> [RunnerCharacter; 13] {
+        [
+            RunnerCharacter::Penguin,
+            RunnerCharacter::Robot,
+            RunnerCharacter::Bird,
+            RunnerCharacter::Duck,
+            RunnerCharacter::Sheep,
+            RunnerCharacter::Fish,
+            RunnerCharacter::Slime,
+            RunnerCharacter::Pushup,
+            RunnerCharacter::Orbit,
+            RunnerCharacter::Sushi,
+            RunnerCharacter::City,
+            RunnerCharacter::Sausage,
+            RunnerCharacter::Party,
+        ]
+    }
+
+    #[test]
+    fn procedural_characters_pass_the_shared_quality_gate() {
+        let mut failures = Vec::new();
+
+        for character in procedural_characters() {
+            for cpu_pct in [0.0, 30.0, 65.0, 90.0] {
+                match build_cycle(character, cpu_pct) {
+                    Ok(cycle) => {
+                        if let Err(error) = validate_cycle(manifest(character), &cycle) {
+                            failures.push(format!("{character:?} at {cpu_pct}%: {error}"));
+                        }
+                    }
+                    Err(error) => failures.push(format!("{character:?} at {cpu_pct}%: {error}")),
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "procedural quality failures:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn build_cycle_matches_rendered_frames_for_all_procedural_characters_and_bands() {
+        let mut mismatches = Vec::new();
+        for character in procedural_characters() {
+            for cpu_pct in [0.0, 30.0, 65.0, 90.0] {
+                let cycle = build_cycle(character, cpu_pct).expect("procedural build cycle");
+                for frame in 0..8 {
+                    let rendered = render(character, cpu_pct, frame).expect("procedural render");
+                    if rendered != cycle[usize::from(frame)] {
+                        mismatches.push(format!(
+                            "{character:?} at {cpu_pct}% frame {frame}: render output differed from build_cycle"
+                        ));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "procedural render/build mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
+    fn asset_backed_characters_are_rejected_by_procedural_builders() {
+        for character in [
+            RunnerCharacter::Cat,
+            RunnerCharacter::Dog,
+            RunnerCharacter::Rabbit,
+            RunnerCharacter::Fox,
+            RunnerCharacter::Dinosaur,
+            RunnerCharacter::Ghost,
+            RunnerCharacter::Human,
+        ] {
+            let source_error =
+                source_cycle(character, 30.0).expect_err("asset-backed source cycle rejected");
+            assert!(
+                source_error.to_string().contains("not a procedural runner"),
+                "{character:?}: {source_error}"
+            );
+
+            let build_error =
+                build_cycle(character, 30.0).expect_err("asset-backed build cycle rejected");
+            assert!(
+                build_error.to_string().contains("not a procedural runner"),
+                "{character:?}: {build_error}"
+            );
+        }
+    }
 }
