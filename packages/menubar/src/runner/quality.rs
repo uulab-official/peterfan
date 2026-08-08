@@ -9,6 +9,18 @@ use super::{RgbaFrame, RunnerBuildError, PIXEL_HEIGHT, PIXEL_WIDTH};
 pub(crate) const CHANNELS_PER_PIXEL: usize = 4;
 pub(crate) const VISIBLE_ALPHA_THRESHOLD: u8 = 96;
 const DELTA_ALPHA_THRESHOLD: u8 = 48;
+#[cfg(test)]
+const MIN_VISIBLE_OCCUPANCY: usize = 150;
+#[cfg(test)]
+const MAX_VISIBLE_OCCUPANCY: usize = 520;
+#[cfg(test)]
+const MIN_CROSS_BAND_VISIBLE_DELTA_TOTAL: usize = 48;
+#[cfg(test)]
+const MAX_CROSS_BAND_VISIBLE_DELTA_TOTAL: usize = 3_000;
+#[cfg(test)]
+const MIN_CROSS_BAND_CHANGED_POSES: usize = 3;
+#[cfg(test)]
+const MAX_CROSS_BAND_VISIBLE_DELTA_PER_POSE: usize = 400;
 
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +68,9 @@ pub(crate) struct RunnerBandReport {
     pub min_occupancy: usize,
     pub max_occupancy: usize,
     pub contact_flight_delta: usize,
-    pub cross_band_delta: usize,
+    pub cross_band_visible_deltas: Vec<usize>,
+    pub cross_band_visible_delta_total: usize,
+    pub cross_band_changed_poses: usize,
     pub max_centroid_drift: f32,
     pub allowed_centroid_drift: f32,
     pub baseline_variance: u32,
@@ -217,27 +231,33 @@ fn build_character_report(
                 })
                 .min()
                 .unwrap_or(0);
-            let cross_band_delta = if band > 0 {
+            let cross_band_visible_deltas = if band > 0 {
                 (0..8)
                     .map(|frame| {
-                        frame_change_count(
+                        visible_alpha_frame_delta(
                             pack.frame_by_index(band - 1, frame)
                                 .expect("previous pack frame"),
                             &cycle[frame as usize],
                         )
                     })
-                    .max()
-                    .unwrap_or(0)
+                    .collect::<Vec<_>>()
             } else {
-                0
+                Vec::new()
             };
+            let cross_band_visible_delta_total = cross_band_visible_deltas.iter().sum();
+            let cross_band_changed_poses = cross_band_visible_deltas
+                .iter()
+                .filter(|&&delta| delta > 0)
+                .count();
             Ok(RunnerBandReport {
                 cpu_pct,
                 bounds,
                 min_occupancy,
                 max_occupancy,
                 contact_flight_delta,
-                cross_band_delta,
+                cross_band_visible_deltas,
+                cross_band_visible_delta_total,
+                cross_band_changed_poses,
                 max_centroid_drift: metrics.max_centroid_drift,
                 allowed_centroid_drift: manifest.max_centroid_drift,
                 baseline_variance: metrics.baseline_variance,
@@ -306,10 +326,12 @@ fn frame_delta(left: &[u8], right: &[u8]) -> usize {
 }
 
 #[cfg(test)]
-fn frame_change_count(left: &[u8], right: &[u8]) -> usize {
+fn visible_alpha_frame_delta(left: &[u8], right: &[u8]) -> usize {
     left.chunks_exact(CHANNELS_PER_PIXEL)
         .zip(right.chunks_exact(CHANNELS_PER_PIXEL))
-        .filter(|(left, right)| left[3] != right[3])
+        .filter(|(left, right)| {
+            left[3] != right[3] && left[3].max(right[3]) > VISIBLE_ALPHA_THRESHOLD
+        })
         .count()
 }
 
@@ -445,8 +467,8 @@ mod tests {
                         && band.bounds.min_y > 0
                         && band.bounds.max_x + 1 < PIXEL_WIDTH
                         && band.bounds.max_y + 1 < PIXEL_HEIGHT
-                        && band.min_occupancy > 0
-                        && band.max_occupancy >= band.min_occupancy
+                        && band.min_occupancy >= MIN_VISIBLE_OCCUPANCY
+                        && band.max_occupancy <= MAX_VISIBLE_OCCUPANCY
                         && band.contact_flight_delta >= 24
                         && !band.clipped,
                     "{} at {}: {:?}",
@@ -458,10 +480,21 @@ mod tests {
         }
         for entry in &report.characters {
             for (index, band) in entry.bands.iter().enumerate() {
+                if index == 0 {
+                    continue;
+                }
+                assert_eq!(band.cross_band_visible_deltas.len(), 8);
                 assert!(
-                    index == 0 || band.cross_band_delta >= 1,
-                    "{} band {index} has no cross-band motion delta",
-                    entry.name
+                    (MIN_CROSS_BAND_VISIBLE_DELTA_TOTAL..=MAX_CROSS_BAND_VISIBLE_DELTA_TOTAL)
+                        .contains(&band.cross_band_visible_delta_total)
+                        && band.cross_band_changed_poses >= MIN_CROSS_BAND_CHANGED_POSES
+                        && band
+                            .cross_band_visible_deltas
+                            .iter()
+                            .all(|delta| *delta <= MAX_CROSS_BAND_VISIBLE_DELTA_PER_POSE),
+                    "{} band {index} has an out-of-bounds visible cross-band delta: {:?}",
+                    entry.name,
+                    band
                 );
             }
         }

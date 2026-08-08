@@ -4672,6 +4672,8 @@ fn update(app: &mut App) {
             &app.runner_assets.selected_preview_frames_json()
         )
         .expect("runner preview JSON is serialized from canonical frames"));
+    payload["runner_selected_preview_character"] =
+        serde_json::json!(app.runner_assets.pack.character().as_str());
     payload["runner_cpu_pct"] = serde_json::json!(app.runner_cpu_pct);
     payload["runner_reduce_motion"] = serde_json::json!(app.reduce_motion);
     payload["runner_interval_ms"] = serde_json::json!(
@@ -6474,28 +6476,33 @@ fn runner_preview_packs_with<F>(mut builder: F) -> Vec<(RunnerCharacter, RunnerP
 where
     F: FnMut(RunnerCharacter) -> Result<RunnerPack, RunnerBuildError>,
 {
+    let cat_fallback = builder(RunnerCharacter::Cat);
     RunnerCharacter::ALL
         .into_iter()
-        .filter_map(|character| match builder(character) {
-            Ok(pack) => Some((character, pack)),
-            Err(error) if character != RunnerCharacter::Cat => {
-                match builder(RunnerCharacter::Cat) {
+        .filter_map(|character| {
+            match if character == RunnerCharacter::Cat {
+                cat_fallback.clone()
+            } else {
+                builder(character)
+            } {
+                Ok(pack) => Some((character, pack)),
+                Err(error) if character != RunnerCharacter::Cat => match &cat_fallback {
                     Ok(pack) => {
                         log_menubar_event(&runner_preview_failure_message(character, &error));
-                        Some((character, pack))
+                        Some((character, pack.clone()))
                     }
                     Err(fallback_error) => {
                         log_menubar_event(&runner_preview_failure_message(
                             character,
-                            &fallback_error,
+                            fallback_error,
                         ));
                         None
                     }
+                },
+                Err(error) => {
+                    log_menubar_event(&runner_preview_failure_message(character, &error));
+                    None
                 }
-            }
-            Err(error) => {
-                log_menubar_event(&runner_preview_failure_message(character, &error));
-                None
             }
         })
         .collect()
@@ -6825,6 +6832,10 @@ fn dashboard_html_with_runner_pack(
         .replace(
             "__RUNNER_SELECTED_PREVIEW__",
             &runner_selected_preview_frames_json(selected_pack),
+        )
+        .replace(
+            "__RUNNER_SELECTED_PREVIEW_CHARACTER__",
+            selected_pack.character().as_str(),
         )
 }
 
@@ -9061,8 +9072,13 @@ var RUNNER_CHARACTERS=__RUNNER_CHARACTERS__;
 var RUNNER_PREVIEW_ALPHA=__RUNNER_PREVIEWS__;
 var RUNNER_PREVIEW_FRAMES=__RUNNER_PREVIEW_FRAMES__;
 var RUNNER_SELECTED_PREVIEW=__RUNNER_SELECTED_PREVIEW__;
+var RUNNER_SELECTED_PREVIEW_CHARACTER='__RUNNER_SELECTED_PREVIEW_CHARACTER__';
 var RUNNER_PREVIEW_STATE={canvas:null,character:'',cpu:0,frame:0,band:0,timer:null};
 var RUNNER_PREVIEW_GAIT=[1.14,1.00,0.84,1.02,1.14,1.00,0.84,1.02];
+function runnerPreviewBand(cpu){
+  var load=Math.max(0,Math.min(100,Number(cpu)||0));
+  return load<20?0:(load<55?1:(load<80?2:3));
+}
 function runnerPreviewBandWithHysteresis(cpu,current){
   var load=Math.max(0,Math.min(100,Number(cpu)||0));
   if(current===0&&load>=24)return 1;
@@ -9077,12 +9093,18 @@ function runnerPreviewBandWithHysteresis(cpu,current){
   if(current===3)return 3;
   return load<20?0:(load<55?1:(load<80?2:3));
 }
+function runnerSelectedPreviewMatchesCharacter(payload,character){
+  return Array.isArray(payload.runner_selected_preview)
+    &&payload.runner_selected_preview.length===32
+    &&payload.runner_selected_preview_character===character;
+}
 function paintRunnerPreview(canvas,character,frame,band){
   if(!canvas)return;
   var selected=canvas.id==='runner-character-preview';
-  var frames=selected?RUNNER_SELECTED_PREVIEW:RUNNER_PREVIEW_FRAMES[character];
+  var canonical=selected&&RUNNER_SELECTED_PREVIEW_CHARACTER===character;
+  var frames=canonical?RUNNER_SELECTED_PREVIEW:RUNNER_PREVIEW_FRAMES[character];
   var pose=(Number(frame)||0)%8;
-  var index=selected?(Math.max(0,Math.min(3,Number(band)||0))*8+pose):pose;
+  var index=canonical?(Math.max(0,Math.min(3,Number(band)||0))*8+pose):pose;
   var alpha=frames&&frames.length?frames[index]:RUNNER_PREVIEW_ALPHA[character];
   if(!alpha)return;
   var ctx=canvas.getContext('2d');
@@ -9127,7 +9149,7 @@ function startRunnerPreview(canvas,character,cpu){
   RUNNER_PREVIEW_STATE.character=character;
   RUNNER_PREVIEW_STATE.cpu=Math.max(0,Math.min(100,Number(cpu)||0));
   RUNNER_PREVIEW_STATE.frame=0;
-  RUNNER_PREVIEW_STATE.band=runnerPreviewBandWithHysteresis(RUNNER_PREVIEW_STATE.cpu,0);
+  RUNNER_PREVIEW_STATE.band=runnerPreviewBand(RUNNER_PREVIEW_STATE.cpu);
   paintRunnerPreview(canvas,character,0,RUNNER_PREVIEW_STATE.band);
   var reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if(reduced)return;
@@ -9241,9 +9263,11 @@ function updateMenubarDisplay(d){
     button.setAttribute('aria-pressed',active?'true':'false');
   });
   var character=RUNNER_CHARACTERS.indexOf(d.runner_character)>=0?d.runner_character:'cat';
-  if(Array.isArray(d.runner_selected_preview)&&d.runner_selected_preview.length===32){
+  if(runnerSelectedPreviewMatchesCharacter(d,character)
+    &&RUNNER_SELECTED_PREVIEW_CHARACTER!==character){
     RUNNER_SELECTED_PREVIEW=d.runner_selected_preview;
-    RUNNER_PREVIEW_STATE.band=0;
+    RUNNER_SELECTED_PREVIEW_CHARACTER=character;
+    RUNNER_PREVIEW_STATE.band=runnerPreviewBand(RUNNER_PREVIEW_STATE.cpu);
   }
   var characterSelect=document.getElementById('runner-character-select');
   var selectedOption=document.querySelector('.character-option[data-character="'+character+'"]');
@@ -10574,6 +10598,36 @@ mod tests {
     }
 
     #[test]
+    fn browser_preview_band_lifecycle_matches_native_seed_and_tick_sequence() {
+        let mut band = runner_load_band(65.0);
+        assert_eq!(
+            band, 2,
+            "a canonical pack starts from direct load_band thresholds"
+        );
+
+        for (cpu, expected) in [
+            (60.0, 2), // ordinary update retains band 2 instead of reseeding to 1
+            (50.0, 1), // timer tick crosses 2 -> 1 hysteresis threshold
+            (52.0, 1), // timer tick remains in band 1 inside hysteresis
+            (59.0, 2), // timer tick crosses 1 -> 2 hysteresis threshold
+            (83.0, 2), // timer tick remains in band 2 inside hysteresis
+            (84.0, 3), // timer tick crosses 2 -> 3 hysteresis threshold
+            (76.0, 3), // timer tick remains in band 3 at its inclusive lower edge
+            (75.0, 2), // timer tick crosses 3 -> 2 hysteresis threshold
+        ] {
+            band = runner_load_band_with_hysteresis(cpu, band);
+            assert_eq!(band, expected, "cpu {cpu}");
+        }
+
+        let html = dashboard_html(ResolvedLanguage::En, false);
+        assert!(
+            html.contains("RUNNER_PREVIEW_STATE.band=runnerPreviewBand(RUNNER_PREVIEW_STATE.cpu);")
+        );
+        assert!(html.contains("state.band=runnerPreviewBandWithHysteresis(state.cpu,state.band);"));
+        assert!(!html.contains("RUNNER_PREVIEW_STATE.band=0;"));
+    }
+
+    #[test]
     fn non_macos_runner_selection_keeps_a_hysteretic_band_state() {
         let mut band = 0;
         assert_eq!(runner_icon_index_with_hysteresis(23.0, 4, &mut band), 4);
@@ -10970,6 +11024,25 @@ mod tests {
 
         let html = dashboard_html_with_runner_pack(ResolvedLanguage::En, false, &pack);
         assert!(html.contains("var RUNNER_SELECTED_PREVIEW=["));
+        assert!(html.contains("function runnerPreviewBand(cpu)"));
+        assert!(html.contains("function runnerSelectedPreviewMatchesCharacter(payload,character)"));
+        assert!(html.contains("payload.runner_selected_preview_character===character"));
+        assert!(html.contains("RUNNER_SELECTED_PREVIEW_CHARACTER=character"));
+        assert!(
+            html.contains("RUNNER_PREVIEW_STATE.band=runnerPreviewBand(RUNNER_PREVIEW_STATE.cpu);")
+        );
+        assert!(html.contains(
+            "RUNNER_PREVIEW_STATE.band=runnerPreviewBand(RUNNER_PREVIEW_STATE.cpu);\n  }"
+        ));
+        assert!(
+            html.contains("var canonical=selected&&RUNNER_SELECTED_PREVIEW_CHARACTER===character;")
+        );
+        assert!(html.contains(
+            "var frames=canonical?RUNNER_SELECTED_PREVIEW:RUNNER_PREVIEW_FRAMES[character];"
+        ));
+        assert!(html.contains(
+            "var index=canonical?(Math.max(0,Math.min(3,Number(band)||0))*8+pose):pose;"
+        ));
         assert!(html.contains("function runnerPreviewBandWithHysteresis(cpu,current)"));
         for threshold in [
             "current===0&&load>=24",
@@ -10987,7 +11060,25 @@ mod tests {
     }
 
     #[test]
-    fn preview_omits_a_character_when_selected_and_fallback_pack_builds_fail() {
+    fn selected_preview_payload_has_matching_character_provenance() {
+        let pack = RunnerPack::build(RunnerCharacter::Fox).expect("runner pack");
+        let payload = serde_json::json!({
+            "runner_character": RunnerCharacter::Fox.as_str(),
+            "runner_selected_preview": serde_json::from_str::<serde_json::Value>(
+                &runner_selected_preview_frames_json(&pack)
+            ).expect("selected preview JSON"),
+            "runner_selected_preview_character": RunnerCharacter::Fox.as_str(),
+        });
+
+        assert_eq!(
+            payload["runner_selected_preview_character"].as_str(),
+            payload["runner_character"].as_str(),
+            "the canonical payload must identify the character it renders"
+        );
+    }
+
+    #[test]
+    fn preview_omits_failed_characters_after_one_failed_cat_fallback_attempt() {
         let attempts = std::cell::RefCell::new(Vec::new());
         let packs = runner_preview_packs_with(|character| {
             attempts.borrow_mut().push(character);
@@ -11019,8 +11110,46 @@ mod tests {
                 .iter()
                 .filter(|&&character| character == RunnerCharacter::Cat)
                 .count(),
-            2,
-            "Fox gets one Cat fallback attempt; the failed Cat entry is omitted"
+            1,
+            "one prewarm must memoize a failed Cat fallback instead of retrying it"
+        );
+    }
+
+    #[test]
+    fn preview_reuses_one_successful_cat_fallback_with_requested_character_keys() {
+        let attempts = std::cell::RefCell::new(Vec::new());
+        let packs = runner_preview_packs_with(|character| {
+            attempts.borrow_mut().push(character);
+            if character == RunnerCharacter::Cat {
+                RunnerPack::build(character)
+            } else {
+                Err(RunnerBuildError::InvalidFrame {
+                    character,
+                    detail: "forced preview failure".to_string(),
+                })
+            }
+        });
+
+        assert_eq!(packs.len(), RunnerCharacter::ALL.len());
+        assert!(packs
+            .iter()
+            .all(|(_, pack)| pack.character() == RunnerCharacter::Cat));
+        assert_eq!(
+            packs
+                .iter()
+                .map(|(character, _)| *character)
+                .collect::<Vec<_>>(),
+            RunnerCharacter::ALL.to_vec(),
+            "fallback previews retain their requested payload keys"
+        );
+        assert_eq!(
+            attempts
+                .borrow()
+                .iter()
+                .filter(|&&character| character == RunnerCharacter::Cat)
+                .count(),
+            1,
+            "one prewarm must build Cat once and reuse it for every failed character"
         );
     }
 

@@ -186,16 +186,22 @@ are visible without subjective guesswork.
 
 ## Approved Manifest Target Tuning Amendment
 
-Task 6 measurements approved the final manifest targets for the procedural
-silhouettes: Penguin 40×28, Robot 38×27, Bird 42×26, Sausage 42×23, and Party
-40×26. These replace the earlier narrower planning targets because the rendered
-48×32 alpha bounds showed that those characters lost their recognizable limbs,
-wings, or head/body separation at the native 27×18 display footprint. The
-tuning remains bounded before normalization: identity dimensions stay fixed per
-cycle, only the documented gait cue moves, contact frames retain their baseline,
-and centroid drift remains at or below each manifest limit. The generated QA
-report is the approval record: it includes per-band bounds, occupancy range,
-contact-to-flight delta, and cross-band delta for every character.
+Task 6 measurements approved eight final procedural manifest deviations from
+the planning table: Penguin 26×28→40×28, Robot 30×27→38×27, Bird
+38×20→42×26, Duck 38×20→40×22, Fish 40×18→40×21, Slime 34×18→36×18,
+Sausage 42×18→42×23, and Party 40×24→40×26. The rendered 48×32
+visible-alpha bounds showed that the narrower targets made the affected
+silhouettes lose recognizable limbs, wings, head/body separation, or their
+defining motion cue at the native 27×18 display footprint. In particular, Duck
+needs 40×22 to retain its beak, body, and leg stride; Fish needs 40×21 to keep
+the tail beat distinct from the body; and Slime needs 36×18 to preserve its
+squash/stretch outline instead of reading as a flat bar. The tuning remains
+bounded before normalization: identity dimensions stay fixed per cycle, only
+the documented gait cue moves, contact frames retain their baseline, and
+centroid drift remains at or below each manifest limit. The generated QA report
+is the approval record: it includes per-band bounds, visible occupancy range,
+contact-to-flight delta, and per-pose visible cross-band deltas for every
+character.
 
 ## Verification and Release
 
