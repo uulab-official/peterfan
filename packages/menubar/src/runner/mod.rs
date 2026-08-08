@@ -1,13 +1,20 @@
 mod assets;
 mod draw;
+mod manifest;
 mod procedural;
+mod quality;
 pub(crate) mod timing;
 
 use std::fmt;
 
 use peterfan_core::config::RunnerCharacter;
 
-pub(crate) use timing::*;
+#[allow(unused_imports)]
+pub(crate) use {
+    manifest::{manifest, Direction, RunnerManifest},
+    quality::{measure_cycle, measure_frame, Bounds, CycleMetrics, FrameMetrics},
+    timing::*,
+};
 
 pub(crate) const PIXEL_WIDTH: u32 = 48;
 pub(crate) const PIXEL_HEIGHT: u32 = 32;
