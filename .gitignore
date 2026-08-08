@@ -7,6 +7,7 @@ Cargo.lock.orig
 
 # Release packaging output
 /dist
+/.worktrees
 
 # Local signing/notarization credentials and generated certificate material
 .env
