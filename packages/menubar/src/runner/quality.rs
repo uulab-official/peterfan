@@ -14,12 +14,11 @@ const MIN_VISIBLE_OCCUPANCY: usize = 150;
 #[cfg(test)]
 const MAX_VISIBLE_OCCUPANCY: usize = 520;
 #[cfg(test)]
-// Alpha-stable bands are valid when a character's load variation is conveyed
-// without a meaningful silhouette-alpha change.
-const MIN_CROSS_BAND_VISIBLE_DELTA_TOTAL: usize = 0;
+const MIN_CROSS_BAND_VISIBLE_DELTA_TOTAL: usize = 16;
 #[cfg(test)]
 const MAX_CROSS_BAND_VISIBLE_DELTA_TOTAL: usize = 3_000;
 #[cfg(test)]
+const MIN_CROSS_BAND_CHANGED_POSES: usize = 2;
 #[cfg(test)]
 const MAX_CROSS_BAND_VISIBLE_DELTA_PER_POSE: usize = 400;
 
@@ -462,6 +461,23 @@ mod tests {
     }
 
     #[test]
+    fn cross_band_lower_gate_is_nonzero_and_rejects_alpha_stable_bands() {
+        let alpha_stable_deltas = [0; 8];
+        let alpha_stable_total: usize = alpha_stable_deltas.iter().sum();
+        let alpha_stable_changed_poses = alpha_stable_deltas
+            .iter()
+            .filter(|&&delta| delta > 0)
+            .count();
+        let minimum_total = std::hint::black_box(MIN_CROSS_BAND_VISIBLE_DELTA_TOTAL);
+
+        assert!(minimum_total > 0);
+        assert!(
+            !(minimum_total..=MAX_CROSS_BAND_VISIBLE_DELTA_TOTAL).contains(&alpha_stable_total)
+                || alpha_stable_changed_poses < MIN_CROSS_BAND_CHANGED_POSES
+        );
+    }
+
+    #[test]
     fn quality_report_covers_every_character_and_load_band() {
         let report = build_quality_report().expect("quality report");
         assert_eq!(report.characters.len(), RunnerCharacter::ALL.len());
@@ -489,25 +505,39 @@ mod tests {
                 );
             }
         }
+        let mut cross_band_failures = Vec::new();
         for entry in &report.characters {
             for (index, band) in entry.bands.iter().enumerate() {
                 if index == 0 {
                     continue;
                 }
                 assert_eq!(band.cross_band_visible_deltas.len(), 8);
-                assert!(
-                    (MIN_CROSS_BAND_VISIBLE_DELTA_TOTAL..=MAX_CROSS_BAND_VISIBLE_DELTA_TOTAL)
-                        .contains(&band.cross_band_visible_delta_total)
-                        && band
-                            .cross_band_visible_deltas
-                            .iter()
-                            .all(|delta| *delta <= MAX_CROSS_BAND_VISIBLE_DELTA_PER_POSE),
-                    "{} band {index} has an out-of-bounds visible cross-band delta: {:?}",
-                    entry.name,
-                    band
-                );
+                let total_is_safe = (MIN_CROSS_BAND_VISIBLE_DELTA_TOTAL
+                    ..=MAX_CROSS_BAND_VISIBLE_DELTA_TOTAL)
+                    .contains(&band.cross_band_visible_delta_total);
+                let poses_changed = band.cross_band_changed_poses >= MIN_CROSS_BAND_CHANGED_POSES;
+                let per_pose_is_safe = band
+                    .cross_band_visible_deltas
+                    .iter()
+                    .all(|delta| *delta <= MAX_CROSS_BAND_VISIBLE_DELTA_PER_POSE);
+                if !(total_is_safe && poses_changed && per_pose_is_safe) {
+                    cross_band_failures.push(format!(
+                        "{} {}/{} total={} changed_poses={} deltas={:?}",
+                        entry.name,
+                        index - 1,
+                        index,
+                        band.cross_band_visible_delta_total,
+                        band.cross_band_changed_poses,
+                        band.cross_band_visible_deltas,
+                    ));
+                }
             }
         }
+        assert!(
+            cross_band_failures.is_empty(),
+            "cross-band perceptual gates failed:\n{}",
+            cross_band_failures.join("\n")
+        );
     }
 
     #[test]

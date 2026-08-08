@@ -391,7 +391,9 @@ fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8)
         }
         RunnerCharacter::Slime => {
             const SQUASH: [f32; 8] = [-3.2, -2.0, -0.4, 1.5, 3.0, 1.8, 0.2, -1.9];
-            let squash = SQUASH[pose] * (0.82 + load * 0.26);
+            const MIN_STRETCH: [f32; 8] = [-3.2, -2.5, -1.0, 0.0, 0.0, 0.0, -0.5, -2.0];
+            let squash_motion = 0.60 + load * 1.80;
+            let squash = (SQUASH[pose] * squash_motion).max(MIN_STRETCH[pose]);
             let body_ry = 8.8 - squash * 0.52;
             let body_rx = 14.4 + squash * 0.72;
             let body_center_y = 27.0 - body_ry;
@@ -453,15 +455,17 @@ fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8)
         }
         RunnerCharacter::Orbit => {
             let theta = pose as f32 / FRAME_COUNT as f32 * TAU;
-            let primary_orbit_radius = 14.5 + load * 1.5;
-            let secondary_orbit_radius = 9.5 + load * 1.5;
+            let orbit_motion = 1.5 * load;
+            let orbit_lift = 6.0 * load.powi(16);
+            let primary_orbit_radius = 14.5 + orbit_motion;
+            let secondary_orbit_radius = 9.5 + orbit_motion;
             canvas.line(Pt::new(6.0, 16.0), Pt::new(44.0, 16.0), 2.0, detail);
             canvas.line(Pt::new(14.0, 8.0), Pt::new(36.0, 24.0), 1.8, detail);
             canvas.disc(Pt::new(25.0, 16.0), 6.0, solid);
             canvas.disc(
                 Pt::new(
                     25.0 + theta.cos() * primary_orbit_radius,
-                    16.0 + theta.sin() * 7.0,
+                    16.0 + theta.sin() * (7.0 + orbit_lift),
                 ),
                 2.4,
                 solid,
@@ -477,20 +481,29 @@ fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8)
             canvas.erase_disc(Pt::new(25.0, 16.0), 2.3);
         }
         RunnerCharacter::Sushi => {
+            let serving_motion = 0.55 + load.sqrt() * 0.76 + 5.0 * load.powi(16);
+            let serving_bob = BOB[pose] * serving_motion;
+            let serving_swing = SWING[pose] * serving_motion;
+            let serving_wave = WAVE[pose] * serving_motion;
             canvas.line(Pt::new(2.0, 25.0), Pt::new(48.0, 25.0), 3.2, detail);
             for index in 0..5 {
                 let x = 5.0 + ((index * 11 + pose * 3) % 48) as f32;
                 canvas.disc(Pt::new(x, 27.0), 2.0, detail);
             }
-            canvas.rect(15.0, 12.0 + bob, 37.0, 22.0 + bob, solid);
-            canvas.ellipse(Pt::new(26.0 + swing * 0.18, 10.5 + bob), 13.5, 3.8, detail);
+            canvas.rect(15.0, 12.0 + serving_bob, 37.0, 22.0 + serving_bob, solid);
+            canvas.ellipse(
+                Pt::new(26.0 + serving_swing * 0.18, 10.5 + serving_bob),
+                13.5,
+                3.8,
+                detail,
+            );
             canvas.line(
-                Pt::new(17.0, 15.0 + bob),
-                Pt::new(8.0, 10.0 + bob + wave * 0.3),
+                Pt::new(17.0, 15.0 + serving_bob),
+                Pt::new(8.0, 10.0 + serving_bob + serving_wave * 0.3),
                 2.0,
                 detail,
             );
-            canvas.erase_disc(Pt::new(26.0, 17.0 + bob), 2.0);
+            canvas.erase_disc(Pt::new(26.0, 17.0 + serving_bob), 2.0);
         }
         RunnerCharacter::City => {
             let window_phase = (load * 3.0).round() as usize;
