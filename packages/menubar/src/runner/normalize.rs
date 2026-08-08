@@ -505,9 +505,9 @@ fn validate_pose_index_array(
 
 fn error_detail(error: &RunnerBuildError) -> &str {
     match error {
-        RunnerBuildError::Decode { detail, .. } | RunnerBuildError::InvalidFrame { detail, .. } => {
-            detail
-        }
+        RunnerBuildError::Cache { detail, .. }
+        | RunnerBuildError::Decode { detail, .. }
+        | RunnerBuildError::InvalidFrame { detail, .. } => detail,
     }
 }
 

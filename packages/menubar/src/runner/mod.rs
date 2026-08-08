@@ -25,6 +25,11 @@ pub(crate) type RgbaFrame = Vec<u8>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RunnerBuildError {
+    Cache {
+        character: RunnerCharacter,
+        stage: String,
+        detail: String,
+    },
     Decode {
         character: RunnerCharacter,
         detail: String,
@@ -38,6 +43,18 @@ pub(crate) enum RunnerBuildError {
 impl fmt::Display for RunnerBuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cache {
+                character,
+                stage,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "runner '{}' {} failed: {detail}",
+                    character.as_str(),
+                    stage
+                )
+            }
             Self::Decode { character, detail } => {
                 write!(f, "runner '{}' decode failed: {detail}", character.as_str())
             }
@@ -46,6 +63,29 @@ impl fmt::Display for RunnerBuildError {
             }
         }
     }
+}
+
+impl RunnerBuildError {
+    pub(crate) fn cache(
+        character: RunnerCharacter,
+        stage: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self::Cache {
+            character,
+            stage: bounded_error_text(stage.into(), 64),
+            detail: bounded_error_text(detail.into(), 120),
+        }
+    }
+}
+
+fn bounded_error_text(text: String, limit: usize) -> String {
+    let mut bounded = text.chars().take(limit).collect::<String>();
+    if text.chars().count() > limit && limit > 0 {
+        bounded.pop();
+        bounded.push('…');
+    }
+    bounded
 }
 
 #[derive(Debug, Clone)]

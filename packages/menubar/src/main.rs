@@ -677,11 +677,51 @@ fn strings(lang: ResolvedLanguage) -> L10n {
     }
 }
 
+#[derive(Debug, Clone)]
 struct RunnerAssets {
     pack: RunnerPack,
     icons: Vec<Icon>,
-    #[cfg(target_os = "macos")]
-    native_images: Vec<Retained<NSImage>>,
+    native_images: Vec<NativeRunnerImage>,
+}
+
+#[cfg(target_os = "macos")]
+type NativeRunnerImage = Retained<NSImage>;
+#[cfg(not(target_os = "macos"))]
+type NativeRunnerImage = Vec<u8>;
+
+#[derive(Debug, Clone)]
+struct RunnerStartupState {
+    character: RunnerCharacter,
+    assets: RunnerAssets,
+    original_error: Option<RunnerBuildError>,
+}
+
+#[derive(Debug, Clone)]
+struct RunnerStartupFailure {
+    requested: RunnerCharacter,
+    original_error: Option<RunnerBuildError>,
+    fatal_error: RunnerBuildError,
+}
+
+impl std::fmt::Display for RunnerStartupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(original_error) = &self.original_error {
+            write!(
+                f,
+                "runner '{}' failed, fallback cache build also failed: original={}, fallback={}",
+                self.requested.as_str(),
+                original_error,
+                self.fatal_error
+            )
+        } else {
+            write!(
+                f,
+                "runner '{}' startup failed: {}",
+                self.requested.as_str(),
+                self.fatal_error
+            )
+        }
+    }
 }
 
 struct App {
@@ -966,6 +1006,10 @@ fn runner_startup_failure_message(
         ),
         180,
     )
+}
+
+fn runner_startup_fatal_message(error: &RunnerStartupFailure) -> String {
+    bounded_runner_message(error.to_string(), 180)
 }
 
 fn runner_switch_failure_message(requested: RunnerCharacter, error: &RunnerBuildError) -> String {
@@ -2230,9 +2274,16 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|v| RunnerCharacter::parse(v))
         .unwrap_or(saved.character);
-    let (runner_assets, runner_build_error) =
-        build_runner_assets_or_fallback(requested_runner_character);
-    let runner_character = runner_assets.pack.character();
+    let runner_startup = match initialize_runner_assets(requested_runner_character) {
+        Ok(state) => state,
+        Err(error) => {
+            let message = runner_startup_fatal_message(&error);
+            note_runner_build_failure(message.clone());
+            eprintln!("{message}");
+            return;
+        }
+    };
+    let runner_character = runner_startup.character;
     let temperature_source = saved.temperature_source;
     let update_channel = saved.update_channel;
     let language = saved.language;
@@ -2293,7 +2344,7 @@ fn main() {
         runner_cpu_pct: 0.0,
         runner_has_sample: false,
         reduce_motion: system_reduce_motion(),
-        runner_assets,
+        runner_assets: runner_startup.assets,
         #[cfg(target_os = "macos")]
         runner_native_timer: None,
         #[cfg(target_os = "macos")]
@@ -2337,7 +2388,7 @@ fn main() {
         next_update_result_refresh: Instant::now() + Duration::from_secs(1),
         control_confirm_until: None,
     };
-    if let Some(error) = runner_build_error {
+    if let Some(error) = runner_startup.original_error {
         note_runner_build_failure(runner_startup_failure_message(
             requested_runner_character,
             app.runner_character,
@@ -5743,46 +5794,103 @@ fn runner_icon_index(cpu_pct: f32, frame: u8) -> usize {
 }
 
 impl RunnerAssets {
-    fn from_pack(pack: RunnerPack) -> Self {
+    fn from_pack(pack: RunnerPack) -> Result<Self, RunnerBuildError> {
+        Self::from_pack_with(pack, runner_icon_from_rgba, make_runner_native_image_from_rgba)
+    }
+
+    fn from_pack_with<FI, FN>(
+        pack: RunnerPack,
+        mut icon_builder: FI,
+        mut native_builder: FN,
+    ) -> Result<Self, RunnerBuildError>
+    where
+        FI: FnMut(RunnerCharacter, usize, &[u8]) -> Result<Icon, RunnerBuildError>,
+        FN: FnMut(RunnerCharacter, usize, &[u8]) -> Result<NativeRunnerImage, RunnerBuildError>,
+    {
+        let character = pack.character();
         let icons = pack
             .frames()
             .iter()
-            .map(|rgba| runner_icon_from_rgba(rgba))
-            .collect();
-        #[cfg(target_os = "macos")]
+            .enumerate()
+            .map(|(index, rgba)| icon_builder(character, index, rgba))
+            .collect::<Result<Vec<_>, _>>()?;
         let native_images = pack
             .frames()
             .iter()
-            .map(|rgba| make_runner_native_image_from_rgba(rgba))
-            .collect();
-        Self {
+            .enumerate()
+            .map(|(index, rgba)| native_builder(character, index, rgba))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
             pack,
             icons,
-            #[cfg(target_os = "macos")]
             native_images,
-        }
+        })
     }
 }
 
 fn build_runner_assets(character: RunnerCharacter) -> Result<RunnerAssets, RunnerBuildError> {
-    build_runner_assets_with(character, RunnerPack::build)
+    RunnerAssets::from_pack(RunnerPack::build(character)?)
 }
 
-fn build_runner_assets_with<F>(
+fn build_runner_assets_with<FP, FI, FN>(
     character: RunnerCharacter,
-    builder: F,
+    pack_builder: FP,
+    icon_builder: FI,
+    native_builder: FN,
 ) -> Result<RunnerAssets, RunnerBuildError>
 where
-    F: FnOnce(RunnerCharacter) -> Result<RunnerPack, RunnerBuildError>,
+    FP: FnOnce(RunnerCharacter) -> Result<RunnerPack, RunnerBuildError>,
+    FI: FnMut(RunnerCharacter, usize, &[u8]) -> Result<Icon, RunnerBuildError>,
+    FN: FnMut(RunnerCharacter, usize, &[u8]) -> Result<NativeRunnerImage, RunnerBuildError>,
 {
-    builder(character).map(RunnerAssets::from_pack)
+    RunnerAssets::from_pack_with(pack_builder(character)?, icon_builder, native_builder)
 }
 
-fn build_runner_assets_or_fallback(
+fn initialize_runner_assets(requested: RunnerCharacter) -> Result<RunnerStartupState, RunnerStartupFailure> {
+    initialize_runner_assets_with(requested, build_runner_assets)
+}
+
+fn initialize_runner_assets_with<F>(
     character: RunnerCharacter,
-) -> (RunnerAssets, Option<RunnerBuildError>) {
-    let (pack, error) = build_runner_pack_or_fallback(character);
-    (RunnerAssets::from_pack(pack), error)
+    builder: F,
+) -> Result<RunnerStartupState, RunnerStartupFailure>
+where
+    F: FnMut(RunnerCharacter) -> Result<RunnerAssets, RunnerBuildError>,
+{
+    initialize_runner_assets_impl(character, builder)
+}
+
+fn initialize_runner_assets_impl<F>(
+    requested: RunnerCharacter,
+    mut builder: F,
+) -> Result<RunnerStartupState, RunnerStartupFailure>
+where
+    F: FnMut(RunnerCharacter) -> Result<RunnerAssets, RunnerBuildError>,
+{
+    match builder(requested) {
+        Ok(assets) => Ok(RunnerStartupState {
+            character: requested,
+            assets,
+            original_error: None,
+        }),
+        Err(original_error) if requested != RunnerCharacter::Cat => match builder(RunnerCharacter::Cat) {
+            Ok(assets) => Ok(RunnerStartupState {
+                character: RunnerCharacter::Cat,
+                assets,
+                original_error: Some(original_error),
+            }),
+            Err(fatal_error) => Err(RunnerStartupFailure {
+                requested,
+                original_error: Some(original_error),
+                fatal_error,
+            }),
+        },
+        Err(fatal_error) => Err(RunnerStartupFailure {
+            requested,
+            original_error: None,
+            fatal_error,
+        }),
+    }
 }
 
 fn replace_runner_assets_with<F>(
@@ -5811,17 +5919,33 @@ fn make_runner_icons(character: RunnerCharacter) -> Vec<Icon> {
 }
 
 #[cfg(target_os = "macos")]
-fn runner_icon_from_rgba(rgba: &[u8]) -> Icon {
+fn runner_icon_from_rgba(
+    character: RunnerCharacter,
+    frame_index: usize,
+    rgba: &[u8],
+) -> Result<Icon, RunnerBuildError> {
+    validate_runner_rgba_frame(character, &format!("icon cache frame {frame_index}"), rgba)?;
     Icon::from_rgba(
         rgba.to_vec(),
         RUNNER_PIXEL_WIDTH,
         RUNNER_PIXEL_HEIGHT,
     )
-    .expect("valid icon")
+    .map_err(|error| {
+        RunnerBuildError::cache(
+            character,
+            format!("icon cache frame {frame_index}"),
+            error.to_string(),
+        )
+    })
 }
 
 #[cfg(target_os = "macos")]
-fn make_runner_native_image_from_rgba(rgba: &[u8]) -> Retained<NSImage> {
+fn make_runner_native_image_from_rgba(
+    character: RunnerCharacter,
+    frame_index: usize,
+    rgba: &[u8],
+) -> Result<NativeRunnerImage, RunnerBuildError> {
+    validate_runner_rgba_frame(character, &format!("native cache frame {frame_index}"), rgba)?;
     let mut encoded = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut encoded, RUNNER_PIXEL_WIDTH, RUNNER_PIXEL_HEIGHT);
@@ -5830,26 +5954,75 @@ fn make_runner_native_image_from_rgba(rgba: &[u8]) -> Retained<NSImage> {
         encoder
             .write_header()
             .and_then(|mut writer| writer.write_image_data(rgba))
-            .expect("runner frame must encode as PNG");
+            .map_err(|error| {
+                RunnerBuildError::cache(
+                    character,
+                    format!("native cache frame {frame_index}"),
+                    format!("png encode: {error}"),
+                )
+            })?;
     }
     let data = NSData::from_vec(encoded);
     let image = NSImage::initWithData(NSImage::alloc(), &data)
-        .expect("encoded runner frame must decode as NSImage");
+        .ok_or_else(|| {
+            RunnerBuildError::cache(
+                character,
+                format!("native cache frame {frame_index}"),
+                "nsimage decode returned nil",
+            )
+        })?;
     image.setSize(NSSize::new(27.0, 18.0));
     // Template mode keeps every runner as the same white status-item glyph on
     // both light and dark menu bars.
     image.setTemplate(true);
-    image
+    Ok(image)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn runner_icon_from_rgba(rgba: &[u8]) -> Icon {
+fn runner_icon_from_rgba(
+    character: RunnerCharacter,
+    frame_index: usize,
+    rgba: &[u8],
+) -> Result<Icon, RunnerBuildError> {
+    validate_runner_rgba_frame(character, &format!("icon cache frame {frame_index}"), rgba)?;
     Icon::from_rgba(
         rgba.to_vec(),
         RUNNER_PIXEL_WIDTH,
         RUNNER_PIXEL_HEIGHT,
     )
-    .expect("valid icon")
+    .map_err(|error| {
+        RunnerBuildError::cache(
+            character,
+            format!("icon cache frame {frame_index}"),
+            error.to_string(),
+        )
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn make_runner_native_image_from_rgba(
+    character: RunnerCharacter,
+    frame_index: usize,
+    rgba: &[u8],
+) -> Result<NativeRunnerImage, RunnerBuildError> {
+    validate_runner_rgba_frame(character, &format!("native cache frame {frame_index}"), rgba)?;
+    Ok(rgba.to_vec())
+}
+
+fn validate_runner_rgba_frame(
+    character: RunnerCharacter,
+    stage: &str,
+    rgba: &[u8],
+) -> Result<(), RunnerBuildError> {
+    let expected_len = (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize;
+    if rgba.len() != expected_len {
+        return Err(RunnerBuildError::cache(
+            character,
+            stage.to_string(),
+            format!("expected {expected_len} rgba bytes, got {}", rgba.len()),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -6087,7 +6260,8 @@ fn menubar_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
 
 #[cfg(test)]
 fn make_runner_icon(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Icon {
-    runner_icon_from_rgba(&make_runner_rgba(character, cpu_pct, frame))
+    runner_icon_from_rgba(character, usize::from(frame), &make_runner_rgba(character, cpu_pct, frame))
+        .expect("valid icon")
 }
 
 #[cfg(test)]
@@ -10460,6 +10634,128 @@ mod tests {
             usize::from(RUNNER_FRAME_COUNT) * RUNNER_LOAD_BANDS
         );
         assert!(error.to_string().contains("forced failure"));
+    }
+
+    #[test]
+    fn runner_character_switch_keeps_previous_assets_on_icon_cache_failure() {
+        let mut character = RunnerCharacter::Cat;
+        let mut assets = build_runner_assets(RunnerCharacter::Cat).expect("cat assets");
+        let original_preview = assets
+            .pack
+            .preview_alpha_hex(1, 1)
+            .expect("original preview alpha");
+        let original_icon_count = assets.icons.len();
+        let original_native_count = assets.native_images.len();
+
+        let error = replace_runner_assets_with(&mut character, &mut assets, RunnerCharacter::Fox, |requested| {
+            build_runner_assets_with(
+                requested,
+                RunnerPack::build,
+                |candidate, index, rgba| {
+                    if candidate == RunnerCharacter::Fox && index == 3 {
+                        Err(RunnerBuildError::Cache {
+                            character: candidate,
+                            stage: format!("icon cache frame {index}"),
+                            detail: "forced icon cache failure".to_string(),
+                        })
+                    } else {
+                        runner_icon_from_rgba(candidate, index, rgba)
+                    }
+                },
+                make_runner_native_image_from_rgba,
+            )
+        })
+        .expect_err("switch should fail");
+
+        assert_eq!(character, RunnerCharacter::Cat);
+        assert_eq!(assets.pack.character(), RunnerCharacter::Cat);
+        assert_eq!(assets.icons.len(), original_icon_count);
+        assert_eq!(assets.native_images.len(), original_native_count);
+        assert_eq!(
+            assets.pack.preview_alpha_hex(1, 1).as_deref(),
+            Some(original_preview.as_str())
+        );
+        assert!(error.to_string().contains("icon cache frame 3"));
+    }
+
+    #[test]
+    fn runner_character_switch_keeps_previous_assets_on_native_cache_failure() {
+        let mut character = RunnerCharacter::Cat;
+        let mut assets = build_runner_assets(RunnerCharacter::Cat).expect("cat assets");
+        let original_preview = assets
+            .pack
+            .preview_alpha_hex(1, 1)
+            .expect("original preview alpha");
+        let original_icon_count = assets.icons.len();
+        let original_native_count = assets.native_images.len();
+
+        let error = replace_runner_assets_with(&mut character, &mut assets, RunnerCharacter::Fox, |requested| {
+            build_runner_assets_with(
+                requested,
+                RunnerPack::build,
+                runner_icon_from_rgba,
+                |candidate, index, rgba| {
+                    if candidate == RunnerCharacter::Fox && index == 5 {
+                        Err(RunnerBuildError::Cache {
+                            character: candidate,
+                            stage: format!("native cache frame {index}"),
+                            detail: "forced native cache failure".to_string(),
+                        })
+                    } else {
+                        make_runner_native_image_from_rgba(candidate, index, rgba)
+                    }
+                },
+            )
+        })
+        .expect_err("switch should fail");
+
+        assert_eq!(character, RunnerCharacter::Cat);
+        assert_eq!(assets.pack.character(), RunnerCharacter::Cat);
+        assert_eq!(assets.icons.len(), original_icon_count);
+        assert_eq!(assets.native_images.len(), original_native_count);
+        assert_eq!(
+            assets.pack.preview_alpha_hex(1, 1).as_deref(),
+            Some(original_preview.as_str())
+        );
+        assert!(error.to_string().contains("native cache frame 5"));
+    }
+
+    #[test]
+    fn startup_runner_initialization_returns_controlled_error_when_cat_cache_conversion_fails() {
+        let error = initialize_runner_assets_with(RunnerCharacter::Fox, |requested| {
+            if requested == RunnerCharacter::Fox {
+                Err(RunnerBuildError::InvalidFrame {
+                    character: requested,
+                    detail: "forced pack failure".to_string(),
+                })
+            } else {
+                build_runner_assets_with(
+                    requested,
+                    RunnerPack::build,
+                    runner_icon_from_rgba,
+                    |candidate, index, rgba| {
+                        if candidate == RunnerCharacter::Cat && index == 0 {
+                            Err(RunnerBuildError::Cache {
+                                character: candidate,
+                                stage: format!("native cache frame {index}"),
+                                detail: "forced cat cache failure".to_string(),
+                            })
+                        } else {
+                            make_runner_native_image_from_rgba(candidate, index, rgba)
+                        }
+                    },
+                )
+            }
+        })
+        .expect_err("startup should return a controlled error");
+
+        assert!(matches!(
+            error.original_error,
+            Some(RunnerBuildError::InvalidFrame { .. })
+        ));
+        assert!(matches!(error.fatal_error, RunnerBuildError::Cache { .. }));
+        assert!(runner_startup_fatal_message(&error).chars().count() <= 180);
+        assert!(error.to_string().contains("forced cat cache failure"));
     }
 
     #[test]
