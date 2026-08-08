@@ -1,6 +1,7 @@
 use peterfan_core::config::RunnerCharacter;
+use serde::{Deserialize, Serialize};
 
-use super::{RgbaFrame, RunnerBuildError, PIXEL_HEIGHT, PIXEL_WIDTH};
+use super::{manifest, RgbaFrame, RunnerBuildError, RunnerPack, LOAD_BANDS, PIXEL_HEIGHT, PIXEL_WIDTH};
 
 pub(crate) const CHANNELS_PER_PIXEL: usize = 4;
 pub(crate) const VISIBLE_ALPHA_THRESHOLD: u8 = 96;
@@ -40,6 +41,29 @@ pub(crate) struct CycleMetrics {
     pub baseline_variance: u32,
     pub minimum_frame_delta: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RunnerBandReport {
+    pub cpu_pct: f32,
+    pub max_centroid_drift: f32,
+    pub allowed_centroid_drift: f32,
+    pub baseline_variance: u32,
+    pub minimum_frame_delta: usize,
+    pub clipped: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RunnerCharacterReport {
+    pub name: String,
+    pub bands: Vec<RunnerBandReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RunnerQualityReport {
+    pub characters: Vec<RunnerCharacterReport>,
+}
+
+pub(crate) const LOAD_PRESET_CPUS: [f32; LOAD_BANDS] = [0.0, 30.0, 65.0, 90.0];
 
 pub(crate) fn measure_frame(frame: &RgbaFrame) -> Result<FrameMetrics, RunnerBuildError> {
     validate_frame_len(frame)?;
@@ -124,6 +148,54 @@ pub(crate) fn measure_cycle(cycle: &[RgbaFrame; 8]) -> Result<CycleMetrics, Runn
         max_centroid_drift: max_centroid - min_centroid,
         baseline_variance: max_baseline.saturating_sub(min_baseline),
         minimum_frame_delta,
+    })
+}
+
+pub(crate) fn build_quality_report() -> Result<RunnerQualityReport, RunnerBuildError> {
+    let characters = RunnerCharacter::ALL
+        .into_iter()
+        .map(build_character_report)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(RunnerQualityReport { characters })
+}
+
+pub(crate) fn build_quality_report_json() -> Result<String, RunnerBuildError> {
+    let report = build_quality_report()?;
+    serde_json::to_string_pretty(&report).map_err(|error| {
+        RunnerBuildError::InvalidFrame {
+            character: RunnerCharacter::default(),
+            detail: format!("quality report JSON failed: {error}"),
+        }
+    })
+}
+
+fn build_character_report(character: RunnerCharacter) -> Result<RunnerCharacterReport, RunnerBuildError> {
+    let pack = RunnerPack::build(character)?;
+    let manifest = manifest(character);
+    let bands = LOAD_PRESET_CPUS
+        .into_iter()
+        .enumerate()
+        .map(|(band, cpu_pct)| {
+            let cycle: [RgbaFrame; 8] = std::array::from_fn(|frame| {
+                pack.frame_by_index(band, frame as u8)
+                    .expect("pack band frame")
+                    .to_vec()
+            });
+            let metrics = measure_cycle(&cycle)?;
+            Ok(RunnerBandReport {
+                cpu_pct,
+                max_centroid_drift: metrics.max_centroid_drift,
+                allowed_centroid_drift: manifest.max_centroid_drift,
+                baseline_variance: metrics.baseline_variance,
+                minimum_frame_delta: metrics.minimum_frame_delta,
+                clipped: metrics.frames.iter().any(|frame| frame.clipped),
+            })
+        })
+        .collect::<Result<Vec<_>, RunnerBuildError>>()?;
+
+    Ok(RunnerCharacterReport {
+        name: character.as_str().to_string(),
+        bands,
     })
 }
 
@@ -266,5 +338,51 @@ mod tests {
 
         let metrics = measure_cycle(&frames).expect("cycle metrics");
         assert_eq!(metrics.minimum_frame_delta, 0);
+    }
+
+    #[test]
+    fn quality_report_covers_every_character_and_load_band() {
+        let report = build_quality_report().expect("quality report");
+        assert_eq!(report.characters.len(), RunnerCharacter::ALL.len());
+        assert!(
+            report
+                .characters
+                .iter()
+                .all(|entry| entry.bands.len() == LOAD_BANDS)
+        );
+        assert!(report.characters.iter().flat_map(|entry| &entry.bands).all(|band| {
+            band.max_centroid_drift <= band.allowed_centroid_drift
+                && band.minimum_frame_delta >= 24
+                && !band.clipped
+        }));
+    }
+
+    #[test]
+    fn quality_report_json_is_pretty_and_sorted_by_character_order() {
+        let json = build_quality_report_json().expect("quality report JSON");
+        assert!(json.starts_with("{\n  \"characters\": [\n"));
+        assert!(!json.contains(env!("CARGO_MANIFEST_DIR")));
+        assert!(!json.contains("/Users/"));
+        assert!(!json.contains("2026-"));
+
+        let report: RunnerQualityReport =
+            serde_json::from_str(&json).expect("quality report must parse");
+        let names = report
+            .characters
+            .iter()
+            .map(|character| character.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            RunnerCharacter::ALL
+                .map(|character| character.as_str())
+                .to_vec()
+        );
+        for (character, entry) in RunnerCharacter::ALL.into_iter().zip(report.characters.iter()) {
+            assert_eq!(entry.name, character.as_str());
+            assert_eq!(entry.bands.len(), LOAD_BANDS);
+            let band_cpus = entry.bands.iter().map(|band| band.cpu_pct).collect::<Vec<_>>();
+            assert_eq!(band_cpus, LOAD_PRESET_CPUS.to_vec());
+        }
     }
 }

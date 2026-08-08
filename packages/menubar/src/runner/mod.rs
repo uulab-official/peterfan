@@ -14,7 +14,10 @@ use peterfan_core::config::RunnerCharacter;
 pub(crate) use {
     manifest::{manifest, Direction, RunnerManifest},
     normalize::{normalize_cycle, validate_cycle},
-    quality::{measure_cycle, measure_frame, Bounds, CycleMetrics, FrameMetrics},
+    quality::{
+        build_quality_report, build_quality_report_json, measure_cycle, measure_frame, Bounds,
+        CycleMetrics, FrameMetrics, RunnerBandReport, RunnerCharacterReport, RunnerQualityReport,
+    },
     timing::*,
 };
 

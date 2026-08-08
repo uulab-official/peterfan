@@ -6271,6 +6271,155 @@ fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<
     )
 }
 
+#[cfg(test)]
+struct RunnerQaArtifacts {
+    sheet_path: PathBuf,
+    report_path: PathBuf,
+}
+
+#[cfg(test)]
+const RUNNER_QA_SCALE: u32 = 4;
+#[cfg(test)]
+const RUNNER_QA_PADDING: u32 = 4;
+
+#[cfg(test)]
+fn write_runner_quality_artifacts() -> Result<RunnerQaArtifacts, RunnerBuildError> {
+    let target = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("target");
+    std::fs::create_dir_all(&target).map_err(|error| {
+        RunnerBuildError::cache(
+            RunnerCharacter::Cat,
+            "runner QA target",
+            error.to_string(),
+        )
+    })?;
+
+    let packs = RunnerCharacter::ALL
+        .into_iter()
+        .map(|character| RunnerPack::build(character).map(|pack| (character, pack)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let sheet_path = target.join("runner-sprite-sheet.png");
+    let report_path = target.join("runner-quality-report.json");
+
+    let (width, height) = runner_qa_sheet_dimensions();
+    let mut sheet = vec![0u8; (width * height * 4) as usize];
+    for pixel in sheet.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&[28, 28, 30, 255]);
+    }
+
+    for (character_index, (_, pack)) in packs.iter().enumerate() {
+        for band in 0..RUNNER_LOAD_BANDS {
+            let row = character_index * RUNNER_LOAD_BANDS + band;
+            for frame in 0..RUNNER_FRAME_COUNT {
+                let rgba = pack
+                    .frame_by_index(band, frame)
+                    .expect("QA sheet frame must exist");
+                draw_runner_qa_frame(&mut sheet, width, row as u32, frame as u32, rgba);
+            }
+        }
+    }
+
+    let file = std::fs::File::create(&sheet_path).map_err(|error| {
+        RunnerBuildError::cache(
+            RunnerCharacter::Cat,
+            "runner QA sheet create",
+            error.to_string(),
+        )
+    })?;
+    let mut encoder = png::Encoder::new(file, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .and_then(|mut writer| writer.write_image_data(&sheet))
+        .map_err(|error| {
+            RunnerBuildError::cache(
+                RunnerCharacter::Cat,
+                "runner QA sheet write",
+                error.to_string(),
+            )
+        })?;
+
+    std::fs::write(&report_path, runner::build_quality_report_json()?).map_err(|error| {
+        RunnerBuildError::cache(
+            RunnerCharacter::Cat,
+            "runner QA report write",
+            error.to_string(),
+        )
+    })?;
+
+    Ok(RunnerQaArtifacts {
+        sheet_path,
+        report_path,
+    })
+}
+
+#[cfg(test)]
+fn runner_qa_sheet_dimensions() -> (u32, u32) {
+    let cell_width = RUNNER_PIXEL_WIDTH * (RUNNER_QA_SCALE + 1) + RUNNER_QA_PADDING * 3;
+    let cell_height = RUNNER_PIXEL_HEIGHT * RUNNER_QA_SCALE + RUNNER_QA_PADDING * 2;
+    (
+        cell_width * u32::from(RUNNER_FRAME_COUNT),
+        cell_height * RunnerCharacter::ALL.len() as u32 * RUNNER_LOAD_BANDS as u32,
+    )
+}
+
+#[cfg(test)]
+fn draw_runner_qa_frame(sheet: &mut [u8], sheet_width: u32, row: u32, column: u32, rgba: &[u8]) {
+    let cell_width = RUNNER_PIXEL_WIDTH * (RUNNER_QA_SCALE + 1) + RUNNER_QA_PADDING * 3;
+    let cell_height = RUNNER_PIXEL_HEIGHT * RUNNER_QA_SCALE + RUNNER_QA_PADDING * 2;
+    let cell_origin_x = column * cell_width;
+    let cell_origin_y = row * cell_height;
+    let native_origin_y = cell_origin_y + (cell_height - RUNNER_PIXEL_HEIGHT) / 2;
+    draw_runner_qa_scaled(
+        sheet,
+        sheet_width,
+        cell_origin_x + RUNNER_QA_PADDING,
+        native_origin_y,
+        rgba,
+        1,
+    );
+    draw_runner_qa_scaled(
+        sheet,
+        sheet_width,
+        cell_origin_x + RUNNER_QA_PADDING * 2 + RUNNER_PIXEL_WIDTH,
+        cell_origin_y + RUNNER_QA_PADDING,
+        rgba,
+        RUNNER_QA_SCALE,
+    );
+}
+
+#[cfg(test)]
+fn draw_runner_qa_scaled(
+    sheet: &mut [u8],
+    sheet_width: u32,
+    origin_x: u32,
+    origin_y: u32,
+    rgba: &[u8],
+    scale: u32,
+) {
+    for source_y in 0..RUNNER_PIXEL_HEIGHT {
+        for source_x in 0..RUNNER_PIXEL_WIDTH {
+            let source_index = ((source_y * RUNNER_PIXEL_WIDTH + source_x) * 4) as usize;
+            let alpha = f32::from(rgba[source_index + 3]) / 255.0;
+            for scale_y in 0..scale {
+                for scale_x in 0..scale {
+                    let target_x = origin_x + source_x * scale + scale_x;
+                    let target_y = origin_y + source_y * scale + scale_y;
+                    let target_index = ((target_y * sheet_width + target_x) * 4) as usize;
+                    for channel in 0..3 {
+                        let foreground = f32::from(rgba[source_index + channel]);
+                        sheet[target_index + channel] =
+                            (foreground * alpha + 28.0 * (1.0 - alpha)).round() as u8;
+                    }
+                    sheet[target_index + 3] = 255;
+                }
+            }
+        }
+    }
+}
+
 fn runner_cached_packs() -> &'static Vec<(RunnerCharacter, RunnerPack)> {
     static PACKS: std::sync::OnceLock<Vec<(RunnerCharacter, RunnerPack)>> =
         std::sync::OnceLock::new();
@@ -9418,6 +9567,9 @@ function reportHeight(){
 mod tests {
     use super::*;
 
+    const RUNNER_QA_SCALE: u32 = 4;
+    const RUNNER_QA_PADDING: u32 = 4;
+
     /// Regression test for the v1.9.3 bug: tray-icon shows the attached menu
     /// on left-click by default, silently pre-empting our own click handler
     /// and making the popover permanently unreachable. No OS/window-server
@@ -10106,65 +10258,120 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "writes runner sprite-sheet and picker HTML artifacts for visual QA"]
+    #[ignore = "writes deterministic runner QA artifacts for visual inspection"]
     fn render_runner_sprite_sheet_for_visual_qa() {
-        const SCALE: u32 = 4;
-        const CELL_WIDTH: u32 = RUNNER_PIXEL_WIDTH + 4;
-        const CELL_HEIGHT: u32 = RUNNER_PIXEL_HEIGHT + 4;
-        let width = CELL_WIDTH * u32::from(RUNNER_FRAME_COUNT) * SCALE;
-        let height = CELL_HEIGHT * RunnerCharacter::ALL.len() as u32 * SCALE;
-        let mut sheet = vec![0u8; (width * height * 4) as usize];
+        let artifacts = write_runner_quality_artifacts().expect("runner QA artifacts");
+        assert!(artifacts.sheet_path.is_file());
+        assert!(artifacts.report_path.is_file());
+        assert!(std::fs::metadata(&artifacts.sheet_path).expect("sheet metadata").len() > 0);
+        assert!(std::fs::metadata(&artifacts.report_path).expect("report metadata").len() > 0);
 
-        for pixel in sheet.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&[28, 28, 30, 255]);
+        let (width, height, pixels) = decode_png_rgba(&artifacts.sheet_path);
+        assert_eq!((width, height), expected_runner_qa_sheet_dimensions());
+        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 0));
+
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&artifacts.report_path).expect("read quality report"),
+        )
+        .expect("parse quality report JSON");
+        let characters = report["characters"].as_array().expect("character array");
+        assert_eq!(characters.len(), RunnerCharacter::ALL.len());
+        assert!(characters.iter().zip(RunnerCharacter::ALL).all(|(entry, character)| {
+            entry["name"].as_str() == Some(character.as_str())
+                && entry["bands"]
+                    .as_array()
+                    .is_some_and(|bands| bands.len() == RUNNER_LOAD_BANDS)
+        }));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_runner_timer_closure_only_indexes_prebuilt_native_images() {
+        let body = extract_block_body(
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")),
+            "let block = RcBlock::new(move |timer: std::ptr::NonNull<NSTimer>| {",
+        );
+
+        for expected in [
+            "ease_runner_motion_cpu(",
+            "runner_phase_step(",
+            "runner_load_band_with_hysteresis(",
+            "let index =",
+            "images.get(index)",
+            "button.setImage(Some(&**image));",
+            "runner_native_next_delay(",
+        ] {
+            assert!(body.contains(expected), "missing `{expected}` in timer body");
         }
 
-        for (row, character) in RunnerCharacter::ALL.into_iter().enumerate() {
-            for frame in 0..RUNNER_FRAME_COUNT {
-                let icon = make_runner_rgba(character, 90.0, frame);
-                let origin_x = (u32::from(frame) * CELL_WIDTH + 2) * SCALE;
-                let origin_y = (row as u32 * CELL_HEIGHT + 2) * SCALE;
-                for source_y in 0..RUNNER_PIXEL_HEIGHT {
-                    for source_x in 0..RUNNER_PIXEL_WIDTH {
-                        let source_index =
-                            ((source_y * RUNNER_PIXEL_WIDTH + source_x) * 4) as usize;
-                        let alpha = f32::from(icon[source_index + 3]) / 255.0;
-                        for scale_y in 0..SCALE {
-                            for scale_x in 0..SCALE {
-                                let target_x = origin_x + source_x * SCALE + scale_x;
-                                let target_y = origin_y + source_y * SCALE + scale_y;
-                                let target_index = ((target_y * width + target_x) * 4) as usize;
-                                for channel in 0..3 {
-                                    let foreground = f32::from(icon[source_index + channel]);
-                                    sheet[target_index + channel] =
-                                        (foreground * alpha + 28.0 * (1.0 - alpha)).round() as u8;
-                                }
-                                sheet[target_index + 3] = 255;
-                            }
-                        }
+        for forbidden in [
+            "RunnerPack::build",
+            "render_raw_frame",
+            "normalize_cycle",
+            "png::Decoder",
+            "png::Encoder",
+            "make_runner_native_image_from_rgba",
+            "runner_icon_from_rgba",
+            "Vec::with_capacity",
+            "vec![",
+            ".to_vec()",
+            ".collect::<Vec<_>>()",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "timer body must stay lightweight: found `{forbidden}`"
+            );
+        }
+
+        let sync_timer_fn = extract_block_body(
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")),
+            "fn sync_native_runner_timer(app: &mut App) {",
+        );
+        assert!(sync_timer_fn.contains("let images = app.runner_assets.native_images.clone();"));
+        assert!(!sync_timer_fn.contains("render_raw_frame("));
+        assert!(!sync_timer_fn.contains("RunnerPack::build("));
+    }
+
+    fn expected_runner_qa_sheet_dimensions() -> (u32, u32) {
+        let cell_width = RUNNER_PIXEL_WIDTH * (RUNNER_QA_SCALE + 1) + RUNNER_QA_PADDING * 3;
+        let cell_height = RUNNER_PIXEL_HEIGHT * RUNNER_QA_SCALE + RUNNER_QA_PADDING * 2;
+        (
+            cell_width * u32::from(RUNNER_FRAME_COUNT),
+            cell_height * RunnerCharacter::ALL.len() as u32 * RUNNER_LOAD_BANDS as u32,
+        )
+    }
+
+    fn decode_png_rgba(path: &std::path::Path) -> (u32, u32, Vec<u8>) {
+        let decoder = png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(path).expect("open PNG for QA validation"),
+        ));
+        let mut reader = decoder.read_info().expect("read PNG info");
+        let mut pixels = vec![0; reader.output_buffer_size().expect("PNG output buffer size")];
+        let info = reader
+            .next_frame(&mut pixels)
+            .expect("decode QA PNG");
+        (info.width, info.height, pixels[..info.buffer_size()].to_vec())
+    }
+
+    fn extract_block_body(source: &str, marker: &str) -> String {
+        let start = source.find(marker).expect("marker must exist");
+        let body_start = start + marker.len();
+        let mut depth = 1usize;
+        let mut body_end = body_start;
+        for (offset, ch) in source[body_start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        body_end = body_start + offset;
+                        break;
                     }
                 }
+                _ => {}
             }
         }
-
-        let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("target");
-        std::fs::create_dir_all(&target).expect("create target directory");
-        let file = std::fs::File::create(target.join("runner-sprite-sheet.png"))
-            .expect("create runner QA sheet");
-        let mut encoder = png::Encoder::new(file, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder
-            .write_header()
-            .and_then(|mut writer| writer.write_image_data(&sheet))
-            .expect("write runner QA sheet");
-        std::fs::write(
-            target.join("runner-picker-qa.html"),
-            dashboard_html(ResolvedLanguage::En, false),
-        )
-        .expect("write runner picker QA page");
+        source[body_start..body_end].to_string()
     }
 
     #[test]
