@@ -1,6 +1,7 @@
 mod assets;
 mod draw;
 mod manifest;
+mod normalize;
 mod procedural;
 mod quality;
 pub(crate) mod timing;
@@ -12,6 +13,7 @@ use peterfan_core::config::RunnerCharacter;
 #[allow(unused_imports)]
 pub(crate) use {
     manifest::{manifest, Direction, RunnerManifest},
+    normalize::{normalize_cycle, validate_cycle},
     quality::{measure_cycle, measure_frame, Bounds, CycleMetrics, FrameMetrics},
     timing::*,
 };

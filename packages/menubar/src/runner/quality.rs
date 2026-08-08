@@ -2,8 +2,8 @@ use peterfan_core::config::RunnerCharacter;
 
 use super::{RgbaFrame, RunnerBuildError, PIXEL_HEIGHT, PIXEL_WIDTH};
 
-const CHANNELS_PER_PIXEL: usize = 4;
-const VISIBLE_ALPHA_THRESHOLD: u8 = 96;
+pub(crate) const CHANNELS_PER_PIXEL: usize = 4;
+pub(crate) const VISIBLE_ALPHA_THRESHOLD: u8 = 96;
 const DELTA_ALPHA_THRESHOLD: u8 = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,6 +12,16 @@ pub(crate) struct Bounds {
     pub min_y: u32,
     pub max_x: u32,
     pub max_y: u32,
+}
+
+impl Bounds {
+    pub fn width(&self) -> u32 {
+        self.max_x.saturating_sub(self.min_x) + 1
+    }
+
+    pub fn height(&self) -> u32 {
+        self.max_y.saturating_sub(self.min_y) + 1
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -117,7 +127,7 @@ pub(crate) fn measure_cycle(cycle: &[RgbaFrame; 8]) -> Result<CycleMetrics, Runn
     })
 }
 
-fn validate_frame_len(frame: &RgbaFrame) -> Result<(), RunnerBuildError> {
+pub(crate) fn validate_frame_len(frame: &RgbaFrame) -> Result<(), RunnerBuildError> {
     let expected_len = (PIXEL_WIDTH * PIXEL_HEIGHT) as usize * CHANNELS_PER_PIXEL;
     if frame.len() != expected_len {
         return Err(invalid_frame_error(format!(
