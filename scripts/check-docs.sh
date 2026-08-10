@@ -33,10 +33,28 @@ else
   fail "could not read workspace package version from Cargo.toml"
 fi
 
+if [[ "$version" == "1.32.0" ]]; then
+  ok "safe process control release version is v1.32.0"
+else
+  fail "safe process control release must use workspace version v1.32.0"
+fi
+
 if grep -q "^## \\[$version\\]" "$ROOT/CHANGELOG.md"; then
   ok "CHANGELOG.md has a v$version section"
 else
   fail "CHANGELOG.md is missing a [${version}] section"
+fi
+
+if grep -q 'Process list filtering and "quit process" safeguards' "$ROOT/docs/ROADMAP.md"; then
+  ok "roadmap tracks process filtering and quit safeguards"
+else
+  fail "roadmap is missing process filtering and quit safeguards"
+fi
+
+if grep -qi 'safe process control' "$ROOT/docs/PRODUCTION_CHECKLIST.md"; then
+  ok "production checklist records safe process control"
+else
+  fail "production checklist is missing safe process control evidence"
 fi
 
 if grep -q "v${version}" "$ROOT/README.ko.md"; then

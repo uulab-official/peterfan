@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.0] — 안전한 프로세스 검색과 종료
+
+### Added
+
+- System 화면에서 전체 네이티브 프로세스 스냅샷을 이름 또는 정확한 PID로
+  검색하고 CPU·메모리 기준으로 정렬할 수 있습니다.
+- 현재 사용자가 소유한 프로세스만 인라인 2단계 확인 후 macOS `SIGTERM`으로
+  종료 요청할 수 있으며, 결과를 같은 화면에서 확인할 수 있습니다.
+
+### Security
+
+- PID와 시작 시각을 신호 직전에 다시 확인해 PID 재사용으로 다른 프로세스를
+  종료하는 문제를 차단합니다.
+- 소유권을 확인할 수 없거나 다른 사용자가 소유한 프로세스, PeterFan 구성
+  요소와 보호된 시스템 프로세스는 기본적으로 거부합니다.
+
 ## [1.31.32] — RunCat급 러너 품질 시스템
 
 ### Changed

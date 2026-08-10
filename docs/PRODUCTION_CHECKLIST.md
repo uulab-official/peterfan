@@ -3,7 +3,7 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
-## Current Release Verification — 2026-08-08
+## Current Release Verification — 2026-08-10
 
 ### Public artifact status carried forward from 2026-08-05 verification
 
@@ -18,23 +18,23 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 
 ### Current source build
 
-- [x] Workspace source version is `v1.31.32`.
+- [x] Workspace source version is `v1.32.0`.
 - [x] `cargo fmt --all -- --check`, `./scripts/check-runner-quality.sh`,
       `./scripts/check-sleep-display-regressions.sh`, `./scripts/check-docs.sh`,
       and `git diff --check` pass.
-- [x] `cargo test --workspace`: 355 passed, 0 failed, 6 ignored.
+- [x] `cargo test --workspace`: 375 passed, 0 failed, 6 ignored.
 - [x] `cargo clippy --workspace --all-targets -- -D warnings`: 0 warnings.
 - [x] `cargo build --release --workspace` succeeded.
 - [x] The staged bundle and canonical
       `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app`
-      both report `peterfan-menubar 1.31.32`,
-      `CFBundleShortVersionString=1.31.32`, and `CFBundleVersion=1.31.32`.
+      both report `peterfan-menubar 1.32.0`,
+      `CFBundleShortVersionString=1.32.0`, and `CFBundleVersion=1.32.0`.
 - [x] `codesign --verify --deep --strict` succeeds for the canonical local
       bundle. The signature is local/ad-hoc only
       (`Signature=adhoc`, `TeamIdentifier=not set`), so this build is neither
       Developer ID signed nor notarized.
 - [x] The previous canonical bundle was preserved recoverably at
-      `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app.backup-task9-20260808-232526`
+      `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app.backup-pre-v1.32.0-20260810-134838`
       before replacement.
 - [x] The canonical app relaunch was verified with exactly one live PID from
       `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app/Contents/MacOS/PeterFan`,
@@ -43,19 +43,21 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] The release bundle includes `peterfand`, but this local-install task did
       not replace the system LaunchDaemon; production daemon rollout remains a
       separate release-machine step.
-- [ ] Publish `v1.31.32` as a new official release.
+- [ ] Publish `v1.32.0` as a new official release.
 - [ ] Sign the new release with a Developer ID identity on an authorized Mac.
 - [ ] Notarize/staple the new DMG and rerun the artifact gate.
 - [ ] Upload the new DMG, universal archive, and `checksums.txt` to GitHub.
 
 ### Current release-machine blockers
 
-- [ ] Developer ID identity available in the current Keychain — current check:
-      `0 valid identities found`.
-- [ ] `peterfan-notary` profile or App Store Connect credentials available.
-- [ ] `gh` authenticated for release upload.
+- [ ] Developer ID Application identity available in the current Keychain —
+      none found; only an Apple Distribution identity is installed.
+- [ ] `peterfan-notary` profile or App Store Connect credentials available —
+      `notarytool` reports no Keychain item for that profile.
+- [ ] `gh` authenticated for release upload — the `gh` CLI is unavailable on
+      this Mac.
 
-The public v1.27.78 release is production-trusted. The local v1.31.32 bundle
+The public v1.27.78 release is production-trusted. The local v1.32.0 bundle
 is a development/ad-hoc build until the unchecked release-machine items above
 are completed; it must not replace the public DMG in distribution links.
 
@@ -86,6 +88,10 @@ are completed; it must not replace the public DMG in distribution links.
 
 ## P1 - Reliability And Performance
 
+- [x] Safe process control filters the complete native snapshot, revalidates
+      PID/start-time identity and current-user ownership immediately before
+      macOS `SIGTERM`, protects PeterFan/system targets, and requires inline
+      two-step confirmation without exposing a direct WebView kill path.
 - [x] Enforce one menu-bar app instance.
 - [x] Keep the privileged daemon update path passwordless after first approval.
 - [x] Keep expensive system metrics out of fast refresh ticks.

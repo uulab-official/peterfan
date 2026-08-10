@@ -20,9 +20,11 @@ automated test or a recorded visual check.
       each have one job and preserve a stable popover frame; runner appearance
       is controlled in Settings and deeper observability stays in System.
 - [x] **Keyboard semantics** — Sensor disclosure, chart ranges, profile modes,
-      process actions, and navigation expose native button semantics and state.
+      guarded process actions, and navigation expose native button semantics
+      and state; process termination requires an inline identity-bound confirm.
 - [x] **Assistive feedback** — Live health and fan-control results use polite
-      status announcements without stealing focus.
+      status announcements without stealing focus, including safe process
+      control pending and completion results.
 - [x] **Readable compact UI** — Utility text, hit targets, focus indicators, and
       dark/light contrast use the compact PeterFan type and spacing floor.
 - [x] **Release truth** — Updates distinguish the installed app from the latest

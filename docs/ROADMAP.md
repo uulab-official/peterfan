@@ -168,7 +168,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [ ] Stream Deck / BetterTouchTool snippets
 - [x] CLI `doctor --json` focused on release/support diagnostics
 - [ ] TUI curve editor parity with the detail window
-- [ ] Process list filtering and "quit process" safeguards
+- [x] Process list filtering and "quit process" safeguards
 
 ### v1.33 — Platform Reach
 
