@@ -20,6 +20,7 @@ pub mod ipc;
 pub mod login_item;
 pub mod mock;
 pub mod mock_monitor;
+pub mod process_control;
 pub mod system;
 pub mod updater;
 #[cfg(target_os = "windows")]
