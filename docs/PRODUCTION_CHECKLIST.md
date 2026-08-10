@@ -22,7 +22,7 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] `cargo fmt --all -- --check`, `./scripts/check-runner-quality.sh`,
       `./scripts/check-sleep-display-regressions.sh`, `./scripts/check-docs.sh`,
       and `git diff --check` pass.
-- [x] `cargo test --workspace`: 375 passed, 0 failed, 6 ignored.
+- [x] `cargo test --workspace`: 376 passed, 0 failed, 6 ignored.
 - [x] `cargo clippy --workspace --all-targets -- -D warnings`: 0 warnings.
 - [x] `cargo build --release --workspace` succeeded.
 - [x] The staged bundle and canonical

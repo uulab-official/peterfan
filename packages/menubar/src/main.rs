@@ -2704,11 +2704,7 @@ fn main() {
                         std::thread::spawn(move || {
                             let result = peterfan_platform::process_control::quit_process(request);
                             let state = completed_process_action(revision, request, result);
-                            let code = state.code.unwrap_or("unknown");
-                            log_menubar_event(&format!(
-                                "process termination completed pid={} code={code}",
-                                request.pid
-                            ));
+                            log_menubar_event(&process_action_log_entry(&state));
                             *PROCESS_ACTION.lock().expect("process action poisoned") = state;
                             PROCESS_REFRESH_REQUESTED.store(true, Ordering::Release);
                             PROCESS_ACTION_IN_FLIGHT.store(false, Ordering::Release);
@@ -4073,6 +4069,23 @@ fn completed_process_action(
             message: Some(error.to_string()),
         },
     }
+}
+
+fn process_action_log_entry(state: &ProcessActionState) -> String {
+    let name: String = state
+        .name
+        .as_deref()
+        .unwrap_or("unknown")
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(80)
+        .collect();
+    format!(
+        "process termination completed pid={} name={} code={}",
+        state.pid.unwrap_or(0),
+        name,
+        state.code.unwrap_or("unknown")
+    )
 }
 
 fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
@@ -7120,12 +7133,13 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .proc-search::placeholder{color:var(--dim);}
 .proc-status{min-height:14px;margin-top:5px;color:var(--dim);font-size:9.5px;line-height:1.35;}
 .proc-status.ok{color:var(--g);}.proc-status.error{color:var(--r);}.proc-status.pending{color:var(--accent);}
-.prow{display:grid;grid-template-columns:minmax(0,1fr) auto auto 52px;gap:8px;align-items:center;min-height:24px;font-size:10.5px;margin-top:3px;}
+.prow{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto 52px;gap:7px;align-items:center;min-height:24px;font-size:10.5px;margin-top:3px;}
 .pkill{width:52px;height:21px;padding:0 5px;border:1px solid var(--line);border-radius:5px;background:var(--chip-bg);color:var(--dim);font:inherit;font-size:9.5px;font-weight:700;cursor:pointer;transition:background .15s,color .15s,border-color .15s;}
 .pkill:hover,.pkill:focus-visible{background:var(--chip-hover);border-color:var(--accent-border);color:var(--text);}
 .pkill.confirm{background:var(--warn-soft);border-color:var(--y);color:var(--y);}
 .pkill:disabled{opacity:.35;cursor:default;pointer-events:none;}
 .prow .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.prow .pid{color:var(--dim);font-size:9px;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .prow .c{color:var(--accent);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .prow .m{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .ctl{padding:0 var(--content-x) 13px;border-top:1px solid var(--line);}
@@ -7702,6 +7716,7 @@ var SHOW_CURVE_EDITOR='__SHOWCURVE__';
 var CORE_DETAILS_OPEN=false;
 var PROCESS_FILTER_TIMER=0;
 var PROCESS_CONFIRM={pid:null,startTime:null,until:0};
+var PROCESS_ACTION_REVISION=0;
 // Keep WebView failures visible to the native diagnostic log. A blank pane is
 // otherwise indistinguishable from a slow sensor read.
 window.onerror=function(message,source,line,column,error){
@@ -7768,6 +7783,7 @@ function railView(){
 function setRailView(view){
   if(view==='update'||view==='more')view='system';
   if(!/^(overview|fan|settings|system)$/.test(view))view='overview';
+  resetProcessConfirmation();
   RAIL_VIEW=view;
   storageSet('pf.rail.view',view);
   document.body.setAttribute('data-rail-view',view);
@@ -9233,14 +9249,25 @@ function processActionText(action){
     :{requested:'Requested '+name+' to quit.',identity_changed:'The process changed, so the request was cancelled.',not_owned:'Only processes owned by the current user can be quit.',protected:'PeterFan and protected system processes cannot be quit.',not_found:'The process has already exited.',unsupported:'Process termination is unavailable on this system.',signal_failed:'macOS rejected the termination request.',invalid_pid:'The process identity is invalid.'};
   return messages[action.code]||action.message||'';
 }
+function resetProcessConfirmation(){
+  PROCESS_CONFIRM={pid:null,startTime:null,until:0};
+}
 function renderProcesses(d){
   var input=document.getElementById('process-search');
   if(input&&document.activeElement!==input&&input.value!==(d.process_filter||''))input.value=d.process_filter||'';
   var status=document.getElementById('process-action-status');
   var action=d.process_action||{};
+  var revision=Number(action.revision||0);
+  if(revision!==PROCESS_ACTION_REVISION){
+    PROCESS_ACTION_REVISION=revision;
+    resetProcessConfirmation();
+  }
+  var confirmationActive=PROCESS_CONFIRM.pid!==null&&Date.now()<PROCESS_CONFIRM.until;
   if(status){
-    status.textContent=processActionText(action);
-    status.className='proc-status '+(action.phase==='pending'?'pending':(action.code==='requested'?'ok':(action.phase==='complete'?'error':'')));
+    status.textContent=confirmationActive
+      ?(LANG==='ko'?'같은 행의 확인 버튼을 한 번 더 누르세요.':'Click Confirm on the same row to request termination.')
+      :processActionText(action);
+    status.className='proc-status '+(confirmationActive||action.phase==='pending'?'pending':(action.code==='requested'?'ok':(action.phase==='complete'?'error':'')));
   }
   var rows=d.procs||[],pl=document.getElementById('procs-list');
   show('procs-empty',rows.length===0&&d.slow_data_ready);
@@ -9248,10 +9275,10 @@ function renderProcesses(d){
   pl.innerHTML='';
   rows.forEach(function(p){
     var r=document.createElement('div');r.className='prow';
-    r.innerHTML='<span class="n"></span><span class="c"></span><span class="m"></span><button type="button" class="pkill"></button>';
+    r.innerHTML='<span class="n"></span><span class="pid"></span><span class="c"></span><span class="m"></span><button type="button" class="pkill"></button>';
     r.children[0].textContent=p.name;r.children[0].title=p.name+' · PID '+p.pid;
-    r.children[1].textContent=p.cpu;r.children[2].textContent=p.mem;
-    var b=r.children[3],pending=action.phase==='pending'&&action.pid===p.pid;
+    r.children[1].textContent='PID '+p.pid;r.children[2].textContent=p.cpu;r.children[3].textContent=p.mem;
+    var b=r.children[4],pending=action.phase==='pending'&&action.pid===p.pid;
     var confirming=PROCESS_CONFIRM.pid===p.pid&&PROCESS_CONFIRM.startTime===p.start_time&&Date.now()<PROCESS_CONFIRM.until;
     b.style.visibility=p.can_quit?'visible':'hidden';
     b.disabled=!p.can_quit||!p.start_time||pending;
@@ -9265,14 +9292,14 @@ function renderProcesses(d){
 }
 function setProcessFilter(value){
   clearTimeout(PROCESS_FILTER_TIMER);
-  PROCESS_CONFIRM={pid:null,startTime:null,until:0};
+  resetProcessConfirmation();
   PROCESS_FILTER_TIMER=setTimeout(function(){if(window.ipc)window.ipc.postMessage('processfilter:'+String(value||'').slice(0,64));},180);
 }
 function requestProcessQuit(p){
   if(!p||!p.can_quit||!p.start_time)return;
   var same=PROCESS_CONFIRM.pid===p.pid&&PROCESS_CONFIRM.startTime===p.start_time&&Date.now()<PROCESS_CONFIRM.until;
   if(same){
-    PROCESS_CONFIRM={pid:null,startTime:null,until:0};
+    resetProcessConfirmation();
     if(window.ipc)window.ipc.postMessage('quitprocess:'+p.pid+':'+p.start_time);
     renderProcesses(window.__pf_pending||{});
     return;
@@ -9281,7 +9308,7 @@ function requestProcessQuit(p){
   renderProcesses(window.__pf_pending||{});
   setTimeout(function(){
     if(PROCESS_CONFIRM.pid===p.pid&&PROCESS_CONFIRM.startTime===p.start_time&&Date.now()>=PROCESS_CONFIRM.until){
-      PROCESS_CONFIRM={pid:null,startTime:null,until:0};
+      resetProcessConfirmation();
       renderProcesses(window.__pf_pending||{});
     }
   },5050);
@@ -9578,6 +9605,12 @@ document.addEventListener('click',function(event){
   var trigger=document.getElementById('runner-character-select');
   if(menu&&!menu.hidden&&!menu.contains(event.target)&&trigger&&!trigger.contains(event.target)){
     closeRunnerCharacterMenu(false);
+  }
+});
+document.addEventListener('keydown',function(event){
+  if(event.key==='Escape'&&PROCESS_CONFIRM.pid!==null){
+    resetProcessConfirmation();
+    renderProcesses(window.__pf_pending||{});
   }
 });
 window.addEventListener('resize',function(){closeRunnerCharacterMenu(false);});
@@ -10238,8 +10271,29 @@ mod tests {
         assert!(html.contains("quitprocess:'+p.pid+':'+p.start_time"));
         assert!(html.contains("PROCESS_CONFIRM.pid===p.pid"));
         assert!(html.contains("PROCESS_CONFIRM.startTime===p.start_time"));
+        assert!(html.contains(r#"<span class="pid"></span>"#));
+        assert!(html.contains("PROCESS_ACTION_REVISION"));
+        assert!(html.contains("event.key==='Escape'"));
+        assert!(html.contains("resetProcessConfirmation()"));
         assert!(!html.contains("confirm(msg)"));
         assert!(!html.contains("killproc:"));
+    }
+
+    #[test]
+    fn process_action_log_uses_verified_native_name_without_command_line_data() {
+        let state = ProcessActionState {
+            revision: 1,
+            phase: "complete",
+            pid: Some(4242),
+            name: Some("Safari Networking".into()),
+            code: Some("requested"),
+            message: None,
+        };
+
+        assert_eq!(
+            process_action_log_entry(&state),
+            "process termination completed pid=4242 name=Safari Networking code=requested"
+        );
     }
 
     #[test]
