@@ -20,8 +20,9 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 
 - [x] Workspace source version is `v1.31.32`.
 - [x] `cargo fmt --all -- --check`, `./scripts/check-runner-quality.sh`,
-      `./scripts/check-docs.sh`, and `git diff --check` pass.
-- [x] `cargo test --workspace`: 341 passed, 0 failed, 6 ignored.
+      `./scripts/check-sleep-display-regressions.sh`, `./scripts/check-docs.sh`,
+      and `git diff --check` pass.
+- [x] `cargo test --workspace`: 355 passed, 0 failed, 6 ignored.
 - [x] `cargo clippy --workspace --all-targets -- -D warnings`: 0 warnings.
 - [x] `cargo build --release --workspace` succeeded.
 - [x] The staged bundle and canonical
@@ -108,7 +109,9 @@ are completed; it must not replace the public DMG in distribution links.
 - [x] Provide a 6-hour macOS menu-bar soak test with bounded CPU, RSS, thread
       growth, process-liveness assertions, and CSV evidence. It can monitor an
       existing PID without launching a duplicate menu-bar item.
-- [ ] Add sleep/wake and multi-display regression automation.
+- [x] Add deterministic sleep/wake and multi-display regression automation via
+      `./scripts/check-sleep-display-regressions.sh`; real sleep/wake and
+      mixed-DPI hardware evidence remains tracked in the external gate below.
 - [x] Persist bounded diagnostic logs across app and daemon restarts: the
       menu-bar app rotates `~/Library/Logs/PeterFan/menubar.log`, while the
       daemon uses the installed `newsyslog` policy for `/var/log/peterfand.log`.

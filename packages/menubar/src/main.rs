@@ -2037,45 +2037,79 @@ fn should_recover_after_pause(last_event_at: Option<Instant>, now: Instant) -> b
         .unwrap_or(false)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResumeRecoveryPlan {
+    hide_popover: bool,
+    invalidate_hardware_caches: bool,
+    clear_dashboard_histories: bool,
+    discard_completed_reads: bool,
+    schedule_refreshes_immediately: bool,
+    clear_control_confirmation: bool,
+}
+
+const fn resume_recovery_plan() -> ResumeRecoveryPlan {
+    ResumeRecoveryPlan {
+        hide_popover: true,
+        invalidate_hardware_caches: true,
+        clear_dashboard_histories: true,
+        discard_completed_reads: true,
+        schedule_refreshes_immediately: true,
+        clear_control_confirmation: true,
+    }
+}
+
 fn recover_after_pause(app: &mut App, now: Instant) {
+    let plan = resume_recovery_plan();
     log_menubar_event("resume recovery: invalidating hardware and dashboard caches");
-    hide_popover(app);
-    app.temperature_cache.clear();
-    app.temperature_sampled_at = None;
-    app.temperature_sampled_at_unix_ms = None;
-    // Keep the last known fan identities across sleep so the UI does not
-    // briefly claim that built-in fans disappeared. Readings remain gated by
-    // `fan_sampled_at` until a fresh post-wake sample arrives.
-    app.fan_sampled_at = None;
-    app.fan_empty_samples = 0;
-    app.all_temp_rows_cache.clear();
-    app.all_temp_sampled_at = None;
-    app.all_temp_sampled_at_unix_ms = None;
-    app.daemon_json_cache = None;
-    app.daemon_json_sampled_at = None;
-    app.daemon_probe_completed = false;
-    app.dashboard_slow_cache = DashboardSlowCache::default();
-    app.fan_hist.clear();
-    app.cpu_h.clear();
-    app.per_core_h.clear();
-    app.mem_h.clear();
-    app.temp_h.clear();
-    app.net_h.clear();
-    app.disk_io_h.clear();
+    if plan.hide_popover {
+        hide_popover(app);
+    }
+    if plan.invalidate_hardware_caches {
+        app.temperature_cache.clear();
+        app.temperature_sampled_at = None;
+        app.temperature_sampled_at_unix_ms = None;
+        // Keep the last known fan identities across sleep so the UI does not
+        // briefly claim that built-in fans disappeared. Readings remain gated by
+        // `fan_sampled_at` until a fresh post-wake sample arrives.
+        app.fan_sampled_at = None;
+        app.fan_empty_samples = 0;
+        app.all_temp_rows_cache.clear();
+        app.all_temp_sampled_at = None;
+        app.all_temp_sampled_at_unix_ms = None;
+        app.daemon_json_cache = None;
+        app.daemon_json_sampled_at = None;
+        app.daemon_probe_completed = false;
+        app.dashboard_slow_cache = DashboardSlowCache::default();
+    }
+    if plan.clear_dashboard_histories {
+        app.fan_hist.clear();
+        app.cpu_h.clear();
+        app.per_core_h.clear();
+        app.mem_h.clear();
+        app.temp_h.clear();
+        app.net_h.clear();
+        app.disk_io_h.clear();
+    }
     // A completed read from before sleep must not be mistaken for the first
     // post-resume sample. An in-flight hardware call is left alone; its
     // result is still valid if it finishes after wake.
-    let _ = app.temperature_read.take();
-    let _ = app.fan_read.take();
-    let _ = app.all_temp_read.take();
-    let _ = app.daemon_read.take();
-    app.next_temperature_refresh = now;
-    app.next_fan_refresh = now;
-    app.next_all_temp_refresh = now;
-    app.next_daemon_refresh = now;
-    app.next_dashboard_slow_refresh = now;
-    app.next_update_result_refresh = now;
-    app.control_confirm_until = None;
+    if plan.discard_completed_reads {
+        let _ = app.temperature_read.take();
+        let _ = app.fan_read.take();
+        let _ = app.all_temp_read.take();
+        let _ = app.daemon_read.take();
+    }
+    if plan.schedule_refreshes_immediately {
+        app.next_temperature_refresh = now;
+        app.next_fan_refresh = now;
+        app.next_all_temp_refresh = now;
+        app.next_daemon_refresh = now;
+        app.next_dashboard_slow_refresh = now;
+        app.next_update_result_refresh = now;
+    }
+    if plan.clear_control_confirmation {
+        app.control_confirm_until = None;
+    }
 }
 
 fn fan_action_log_path() -> Option<PathBuf> {
@@ -10033,6 +10067,98 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct DisplayRegressionScenario {
+        name: &'static str,
+        tray: Rect,
+        displays: [DisplayBounds; 3],
+        popover_width: f64,
+        expected_display: usize,
+    }
+
+    fn display_regression_scenarios() -> [DisplayRegressionScenario; 3] {
+        [
+            DisplayRegressionScenario {
+                name: "left external display",
+                tray: tray_rect(-40.0, 0.0, 24, 24),
+                displays: [
+                    DisplayBounds {
+                        x: -1920.0,
+                        y: 0.0,
+                        width: 1920.0,
+                        height: 1080.0,
+                    },
+                    DisplayBounds {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1728.0,
+                        height: 1117.0,
+                    },
+                    DisplayBounds {
+                        x: 0.0,
+                        y: -900.0,
+                        width: 1440.0,
+                        height: 900.0,
+                    },
+                ],
+                popover_width: 440.0,
+                expected_display: 0,
+            },
+            DisplayRegressionScenario {
+                name: "right mixed-DPI display",
+                tray: tray_rect(4260.0, 0.0, 24, 24),
+                displays: [
+                    DisplayBounds {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1728.0,
+                        height: 1117.0,
+                    },
+                    DisplayBounds {
+                        x: 1728.0,
+                        y: 0.0,
+                        width: 2560.0,
+                        height: 1440.0,
+                    },
+                    DisplayBounds {
+                        x: 0.0,
+                        y: -900.0,
+                        width: 1440.0,
+                        height: 900.0,
+                    },
+                ],
+                popover_width: POPOVER_W,
+                expected_display: 1,
+            },
+            DisplayRegressionScenario {
+                name: "upper display with negative global Y",
+                tray: tray_rect(700.0, -40.0, 24, 24),
+                displays: [
+                    DisplayBounds {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1728.0,
+                        height: 1117.0,
+                    },
+                    DisplayBounds {
+                        x: -1920.0,
+                        y: 0.0,
+                        width: 1920.0,
+                        height: 1080.0,
+                    },
+                    DisplayBounds {
+                        x: 0.0,
+                        y: -900.0,
+                        width: 1440.0,
+                        height: 900.0,
+                    },
+                ],
+                popover_width: 440.0,
+                expected_display: 2,
+            },
+        ]
+    }
+
     #[test]
     fn popover_position_stays_on_left_external_display() {
         let displays = [
@@ -10081,6 +10207,35 @@ mod tests {
         );
         assert!(pos.x + 440.0 <= displays[1].right() - 8.0);
         assert_eq!(pos.y, 24.0);
+    }
+
+    #[test]
+    fn multi_display_regression_matrix_keeps_popover_on_clicked_display() {
+        for scenario in display_regression_scenarios() {
+            let pos = popover_position_for_rect(
+                scenario.tray,
+                scenario.popover_width,
+                &scenario.displays,
+            );
+            let display = scenario.displays[scenario.expected_display];
+
+            assert!(
+                pos.x >= display.x + 8.0,
+                "{}: popover escaped the clicked display on the left",
+                scenario.name
+            );
+            assert!(
+                pos.x + scenario.popover_width <= display.right() - 8.0,
+                "{}: popover escaped the clicked display on the right",
+                scenario.name
+            );
+            assert_eq!(
+                pos.y,
+                scenario.tray.position.y + scenario.tray.size.height as f64,
+                "{}: popover should remain flush below the menu bar",
+                scenario.name
+            );
+        }
     }
 
     #[test]
@@ -13336,6 +13491,21 @@ rules = [{ when = "on_ac", profile = "maximum" }]
             Some(now - RESUME_RECOVERY_GAP),
             now
         ));
+    }
+
+    #[test]
+    fn resume_recovery_plan_invalidates_cached_state_before_first_post_wake_sample() {
+        assert_eq!(
+            resume_recovery_plan(),
+            ResumeRecoveryPlan {
+                hide_popover: true,
+                invalidate_hardware_caches: true,
+                clear_dashboard_histories: true,
+                discard_completed_reads: true,
+                schedule_refreshes_immediately: true,
+                clear_control_confirmation: true,
+            }
+        );
     }
 
     #[test]
