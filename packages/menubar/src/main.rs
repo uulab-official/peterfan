@@ -6804,6 +6804,9 @@ fn dashboard_html_with_runner_pack(
             .replace(">Network<", ">네트워크<")
             .replace(">Top Processes<", ">실행 중 프로세스<")
             .replace(">MEM<", ">메모리<")
+            .replace("Search name or PID", "이름 또는 PID 검색")
+            .replace("Search processes", "프로세스 검색")
+            .replace("No matching processes.", "일치하는 프로세스가 없습니다.")
             .replace(">Ready<", ">준비 완료<")
             .replace(">Set Up<", ">설정<")
             .replace(">Settings<", ">설정<")
@@ -7111,9 +7114,17 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .all-temp-list .trow .src{flex:0 0 auto;color:var(--dim);font-size:10px;font-weight:700;}
 .sensor-group-head{margin-top:8px;padding-top:6px;border-top:1px solid var(--line);color:var(--text);font-size:10px;font-weight:750;}
 .sensor-group-head:first-child{margin-top:3px;padding-top:0;border-top:0;}
-.prow{display:grid;grid-template-columns:1fr auto auto auto;gap:9px;align-items:baseline;font-size:10.5px;margin-top:5px;}
-.pkill{opacity:0;background:none;border:0;color:var(--r);font:inherit;font-size:13px;font-weight:700;line-height:1;padding:0 1px;cursor:pointer;transition:opacity .15s;}
-.prow:hover .pkill,.pkill:focus-visible{opacity:1;}
+.proc-tools{display:flex;align-items:center;gap:6px;margin-top:7px;}
+.proc-search{width:100%;min-width:0;height:26px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10.5px;outline:none;}
+.proc-search:focus{border-color:var(--accent-border);box-shadow:0 0 0 2px var(--accent-soft);}
+.proc-search::placeholder{color:var(--dim);}
+.proc-status{min-height:14px;margin-top:5px;color:var(--dim);font-size:9.5px;line-height:1.35;}
+.proc-status.ok{color:var(--g);}.proc-status.error{color:var(--r);}.proc-status.pending{color:var(--accent);}
+.prow{display:grid;grid-template-columns:minmax(0,1fr) auto auto 52px;gap:8px;align-items:center;min-height:24px;font-size:10.5px;margin-top:3px;}
+.pkill{width:52px;height:21px;padding:0 5px;border:1px solid var(--line);border-radius:5px;background:var(--chip-bg);color:var(--dim);font:inherit;font-size:9.5px;font-weight:700;cursor:pointer;transition:background .15s,color .15s,border-color .15s;}
+.pkill:hover,.pkill:focus-visible{background:var(--chip-hover);border-color:var(--accent-border);color:var(--text);}
+.pkill.confirm{background:var(--warn-soft);border-color:var(--y);color:var(--y);}
+.pkill:disabled{opacity:.35;cursor:default;pointer-events:none;}
 .prow .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .prow .c{color:var(--accent);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .prow .m{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
@@ -7671,7 +7682,9 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 
 <div class="row compact-extra" id="sec-procs" data-compact-extra="processes"><span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5"/></svg></span>
 <div class="content"><div class="head"><span class="name">Top Processes</span><span class="sort-tabs"><button class="range-tab" id="ps-cpu" aria-pressed="true" onclick="setProcSort('cpu')">CPU</button><button class="range-tab" id="ps-mem" aria-pressed="false" onclick="setProcSort('mem')">MEM</button></span></div>
-<div id="procs-list"></div></div></div>
+<div class="proc-tools"><input class="proc-search" id="process-search" type="search" maxlength="64" autocomplete="off" spellcheck="false" placeholder="Search name or PID" aria-label="Search processes" oninput="setProcessFilter(this.value)"></div>
+<div class="proc-status" id="process-action-status" role="status" aria-live="polite"></div>
+<div id="procs-list"></div><div class="metric-empty" id="procs-empty" style="display:none">No matching processes.</div></div></div>
 
 <div class="foot compact-extra" data-compact-extra="quit"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
 </main>
@@ -7687,6 +7700,8 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 var LANG='__LANG__';
 var SHOW_CURVE_EDITOR='__SHOWCURVE__';
 var CORE_DETAILS_OPEN=false;
+var PROCESS_FILTER_TIMER=0;
+var PROCESS_CONFIRM={pid:null,startTime:null,until:0};
 // Keep WebView failures visible to the native diagnostic log. A blank pane is
 // otherwise indistinguishable from a slow sensor read.
 window.onerror=function(message,source,line,column,error){
@@ -8207,8 +8222,7 @@ window.__pf={
    if(psCpu){var cpuSort=d.proc_sort!=='mem';psCpu.classList.toggle('active',cpuSort);psCpu.setAttribute('aria-pressed',cpuSort?'true':'false');}
    if(psMem){var memSort=d.proc_sort==='mem';psMem.classList.toggle('active',memSort);psMem.setAttribute('aria-pressed',memSort?'true':'false');}
    if(psMem)psMem.classList.toggle('active',d.proc_sort==='mem');
-   var pl=document.getElementById('procs-list');
-   if(pl){pl.innerHTML='';(d.procs||[]).forEach(function(p){var r=document.createElement('div');r.className='prow';r.innerHTML='<span class="n"></span><span class="c"></span><span class="m"></span><button class="pkill" title="Quit process">×</button>';r.children[0].textContent=p.name;r.children[1].textContent=p.cpu;r.children[2].textContent=p.mem;r.children[3].onclick=function(){quitProcess(p.pid,p.name);};pl.appendChild(r);});}
+   renderProcesses(d);
    drawChart('net-chart', d.net_hist, cssColor('--g','#5dd879'), null, fmtBytesPerSec);
  } else if(view==='fan'){
    updateSetup(d);
@@ -9210,6 +9224,68 @@ function updateFanApplyStatus(d){
   el.textContent=parts.filter(Boolean).join(' · ');
   el.className='fan-apply-status '+tone;
 }
+function processActionText(action){
+  if(!action||action.phase==='idle')return '';
+  if(action.phase==='pending')return LANG==='ko'?'종료 요청을 확인하는 중…':'Verifying termination request…';
+  var name=action.name||('PID '+Number(action.pid||0));
+  var messages=LANG==='ko'
+    ?{requested:name+' 종료를 요청했습니다.',identity_changed:'프로세스가 바뀌어 요청을 취소했습니다.',not_owned:'현재 사용자의 프로세스만 종료할 수 있습니다.',protected:'PeterFan 또는 시스템 핵심 프로세스는 종료할 수 없습니다.',not_found:'프로세스가 이미 종료되었습니다.',unsupported:'이 시스템에서는 프로세스 종료를 지원하지 않습니다.',signal_failed:'macOS가 종료 요청을 거부했습니다.',invalid_pid:'유효하지 않은 프로세스입니다.'}
+    :{requested:'Requested '+name+' to quit.',identity_changed:'The process changed, so the request was cancelled.',not_owned:'Only processes owned by the current user can be quit.',protected:'PeterFan and protected system processes cannot be quit.',not_found:'The process has already exited.',unsupported:'Process termination is unavailable on this system.',signal_failed:'macOS rejected the termination request.',invalid_pid:'The process identity is invalid.'};
+  return messages[action.code]||action.message||'';
+}
+function renderProcesses(d){
+  var input=document.getElementById('process-search');
+  if(input&&document.activeElement!==input&&input.value!==(d.process_filter||''))input.value=d.process_filter||'';
+  var status=document.getElementById('process-action-status');
+  var action=d.process_action||{};
+  if(status){
+    status.textContent=processActionText(action);
+    status.className='proc-status '+(action.phase==='pending'?'pending':(action.code==='requested'?'ok':(action.phase==='complete'?'error':'')));
+  }
+  var rows=d.procs||[],pl=document.getElementById('procs-list');
+  show('procs-empty',rows.length===0&&d.slow_data_ready);
+  if(!pl)return;
+  pl.innerHTML='';
+  rows.forEach(function(p){
+    var r=document.createElement('div');r.className='prow';
+    r.innerHTML='<span class="n"></span><span class="c"></span><span class="m"></span><button type="button" class="pkill"></button>';
+    r.children[0].textContent=p.name;r.children[0].title=p.name+' · PID '+p.pid;
+    r.children[1].textContent=p.cpu;r.children[2].textContent=p.mem;
+    var b=r.children[3],pending=action.phase==='pending'&&action.pid===p.pid;
+    var confirming=PROCESS_CONFIRM.pid===p.pid&&PROCESS_CONFIRM.startTime===p.start_time&&Date.now()<PROCESS_CONFIRM.until;
+    b.style.visibility=p.can_quit?'visible':'hidden';
+    b.disabled=!p.can_quit||!p.start_time||pending;
+    b.textContent=pending?'…':(confirming?(LANG==='ko'?'확인':'Confirm'):(LANG==='ko'?'종료':'Quit'));
+    b.classList.toggle('confirm',confirming);
+    b.title=!p.can_quit?(LANG==='ko'?'현재 사용자가 안전하게 종료할 수 없는 프로세스입니다':'This process is not eligible for safe termination'):(confirming?(LANG==='ko'?'한 번 더 눌러 종료 요청':'Click again to request termination'):(LANG==='ko'?'프로세스 종료 요청':'Request process termination'));
+    b.setAttribute('aria-label',b.title+' · '+p.name);
+    b.onclick=function(){requestProcessQuit(p);};
+    pl.appendChild(r);
+  });
+}
+function setProcessFilter(value){
+  clearTimeout(PROCESS_FILTER_TIMER);
+  PROCESS_CONFIRM={pid:null,startTime:null,until:0};
+  PROCESS_FILTER_TIMER=setTimeout(function(){if(window.ipc)window.ipc.postMessage('processfilter:'+String(value||'').slice(0,64));},180);
+}
+function requestProcessQuit(p){
+  if(!p||!p.can_quit||!p.start_time)return;
+  var same=PROCESS_CONFIRM.pid===p.pid&&PROCESS_CONFIRM.startTime===p.start_time&&Date.now()<PROCESS_CONFIRM.until;
+  if(same){
+    PROCESS_CONFIRM={pid:null,startTime:null,until:0};
+    if(window.ipc)window.ipc.postMessage('quitprocess:'+p.pid+':'+p.start_time);
+    renderProcesses(window.__pf_pending||{});
+    return;
+  }
+  PROCESS_CONFIRM={pid:p.pid,startTime:p.start_time,until:Date.now()+5000};
+  renderProcesses(window.__pf_pending||{});
+  setTimeout(function(){
+    if(PROCESS_CONFIRM.pid===p.pid&&PROCESS_CONFIRM.startTime===p.start_time&&Date.now()>=PROCESS_CONFIRM.until){
+      PROCESS_CONFIRM={pid:null,startTime:null,until:0};
+      renderProcesses(window.__pf_pending||{});
+    }
+  },5050);
+}
 function setProcSort(s){
   var cpu=document.getElementById('ps-cpu'),mem=document.getElementById('ps-mem');
   if(cpu){cpu.classList.toggle('active',s==='cpu');cpu.setAttribute('aria-pressed',s==='cpu'?'true':'false');}
@@ -9507,11 +9583,6 @@ document.addEventListener('click',function(event){
 window.addEventListener('resize',function(){closeRunnerCharacterMenu(false);});
 var runnerScrollPane=document.querySelector('.main-pane');
 if(runnerScrollPane)runnerScrollPane.addEventListener('scroll',function(){closeRunnerCharacterMenu(false);},{passive:true});
-function quitProcess(pid,name){
-  var msg=LANG==='ko'?('"'+name+'" 프로세스를 종료할까요?'):('Quit "'+name+'"?');
-  if(!confirm(msg))return;
-  window.ipc.postMessage('killproc:'+pid);
-}
 function updateSetup(d){
   var setup=document.getElementById('setup-row');
   var fanView=railView()==='fan';
@@ -10158,6 +10229,20 @@ mod tests {
     }
 
     #[test]
+    fn process_control_ui_searches_and_requires_inline_identity_confirmation() {
+        let html = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(html.contains(r#"id="process-search""#));
+        assert!(html.contains(r#"id="process-action-status" role="status" aria-live="polite""#));
+        assert!(html.contains("processfilter:"));
+        assert!(html.contains("quitprocess:'+p.pid+':'+p.start_time"));
+        assert!(html.contains("PROCESS_CONFIRM.pid===p.pid"));
+        assert!(html.contains("PROCESS_CONFIRM.startTime===p.start_time"));
+        assert!(!html.contains("confirm(msg)"));
+        assert!(!html.contains("killproc:"));
+    }
+
+    #[test]
     fn notification_temperature_rule_uses_hysteresis_and_does_not_repeat() {
         let settings = NotificationConfig {
             temperature_c: Some(80.0),
@@ -10677,7 +10762,7 @@ mod tests {
             assert!(html.contains(r#"id="disk-io-chart-stats""#));
             assert!(html.contains(r#"id="net-ip""#));
             assert!(html.contains(r#"id="ps-cpu""#));
-            assert!(html.contains("quitProcess"));
+            assert!(html.contains("requestProcessQuit"));
             assert!(html.contains("renderFanCards"));
             assert!(html.contains("fanControlSetupButton"));
             assert!(html.contains("startFanControlSetup"));
@@ -12753,7 +12838,7 @@ mod tests {
         assert!(en.contains(r#"id="fan-apply-status" role="status" aria-live="polite""#));
         assert!(en.contains("b.setAttribute('aria-pressed',selected?'true':'false');"));
         assert!(en.contains("b.setAttribute('aria-pressed',active?'true':'false');"));
-        assert!(en.contains(".prow:hover .pkill,.pkill:focus-visible{opacity:1;}"));
+        assert!(en.contains(".pkill.confirm{background:var(--warn-soft)"));
         assert!(en.contains(".rail-btn{height:44px"));
     }
 
