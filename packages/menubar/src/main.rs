@@ -66,7 +66,7 @@ use peterfan_core::config::{
     Rule, RunnerCharacter, TemperatureSource, UpdateChannel,
 };
 use peterfan_core::error::CoreError;
-use peterfan_core::metrics::{DiskInfo, ProcSort};
+use peterfan_core::metrics::{DiskInfo, ProcSort, ProcessInfo};
 use peterfan_core::profile::Profile;
 use peterfan_core::thermals::{representative_temperature_c, safety_temperature_c};
 #[cfg(test)]
@@ -448,6 +448,9 @@ fn pending_command_key(cmd: &str) -> Option<String> {
     if cmd.starts_with("character:") {
         return Some("runner-character".to_string());
     }
+    if cmd.starts_with("processfilter:") {
+        return Some("process-filter".to_string());
+    }
     if let Some(setting) = cmd
         .strip_prefix("notifications:")
         .and_then(|value| value.split(':').next())
@@ -478,6 +481,62 @@ fn queue_pending_command(queue: &mut Vec<String>, cmd: String) {
 fn enqueue_pending(cmd: impl Into<String>) {
     let mut queue = PENDING.lock().expect("pending poisoned");
     queue_pending_command(&mut queue, cmd.into());
+}
+
+fn parse_process_quit_command(
+    command: &str,
+) -> Option<peterfan_platform::process_control::ProcessQuitRequest> {
+    let (pid, start_time) = command.strip_prefix("quitprocess:")?.split_once(':')?;
+    let pid = pid.parse::<u32>().ok()?;
+    let expected_start_time_unix_secs = start_time.parse::<u64>().ok()?;
+    if pid <= 1 || expected_start_time_unix_secs == 0 {
+        return None;
+    }
+    Some(peterfan_platform::process_control::ProcessQuitRequest {
+        pid,
+        expected_start_time_unix_secs,
+    })
+}
+
+fn is_native_process_command(command: &str) -> bool {
+    command.starts_with("processfilter:") || parse_process_quit_command(command).is_some()
+}
+
+#[derive(Clone)]
+struct ProcessActionState {
+    revision: u64,
+    phase: &'static str,
+    pid: Option<u32>,
+    name: Option<String>,
+    code: Option<&'static str>,
+    message: Option<String>,
+}
+
+static PROCESS_ACTION: Mutex<ProcessActionState> = Mutex::new(ProcessActionState {
+    revision: 0,
+    phase: "idle",
+    pid: None,
+    name: None,
+    code: None,
+    message: None,
+});
+static PROCESS_ACTION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static PROCESS_REFRESH_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+fn process_action_json(state: &ProcessActionState) -> serde_json::Value {
+    serde_json::json!({
+        "revision": state.revision,
+        "phase": state.phase,
+        "pid": state.pid,
+        "name": state.name,
+        "code": state.code,
+        "message": state.message,
+    })
+}
+
+fn process_action_snapshot() -> serde_json::Value {
+    let state = PROCESS_ACTION.lock().expect("process action poisoned");
+    process_action_json(&state)
 }
 
 #[derive(Clone)]
@@ -775,6 +834,7 @@ struct App {
     net_h: RangedHistory,
     /// Combined disk read+write throughput (bytes/sec), same reasoning.
     disk_io_h: RangedHistory,
+    process_filter: String,
     dashboard_slow_cache: DashboardSlowCache,
     next_dashboard_slow_refresh: Instant,
     /// Small animation frame for the RunCat-style menu-bar character. It
@@ -935,6 +995,7 @@ fn evaluate_notification_rules(
 struct DashboardSlowCache {
     sampled_at: Option<Instant>,
     proc_sort: ProcSort,
+    proc_filter: String,
     procs: Vec<serde_json::Value>,
     disk_pct: f32,
     disk_text: String,
@@ -955,6 +1016,7 @@ impl Default for DashboardSlowCache {
         Self {
             sampled_at: None,
             proc_sort: ProcSort::Cpu,
+            proc_filter: String::new(),
             procs: Vec::new(),
             disk_pct: 0.0,
             disk_text: String::new(),
@@ -2381,6 +2443,7 @@ fn main() {
         temp_h: RangedHistory::new(),
         net_h: RangedHistory::new(),
         disk_io_h: RangedHistory::new(),
+        process_filter: String::new(),
         dashboard_slow_cache: DashboardSlowCache::default(),
         next_dashboard_slow_refresh: Instant::now() + DASHBOARD_SLOW_REFRESH,
         runner_frame: 0,
@@ -2559,6 +2622,10 @@ fn main() {
             app.next_daemon_refresh = now;
             next_metric_at = now;
         }
+        if PROCESS_REFRESH_REQUESTED.swap(false, Ordering::AcqRel) {
+            app.next_dashboard_slow_refresh = now;
+            next_metric_at = now;
+        }
         let confirming_control = app.control_confirm_until.is_some_and(|until| now < until);
         if app.control_confirm_until.is_some_and(|until| now >= until) {
             app.control_confirm_until = None;
@@ -2613,7 +2680,43 @@ fn main() {
         if !cmds.is_empty() {
             let mut refresh_after_pending = false;
             for c in &cmds {
-                if let Some(json) = c.strip_prefix("savecurve:") {
+                if let Some(value) = c.strip_prefix("processfilter:") {
+                    app.process_filter = peterfan_core::metrics::normalize_process_query(value);
+                    app.next_dashboard_slow_refresh = now;
+                    next_metric_at = now;
+                    refresh_after_pending = true;
+                } else if let Some(request) = parse_process_quit_command(c) {
+                    if !PROCESS_ACTION_IN_FLIGHT.swap(true, Ordering::AcqRel) {
+                        let revision = {
+                            let mut state = PROCESS_ACTION.lock().expect("process action poisoned");
+                            let revision = state.revision.saturating_add(1);
+                            *state = ProcessActionState {
+                                revision,
+                                phase: "pending",
+                                pid: Some(request.pid),
+                                name: None,
+                                code: None,
+                                message: None,
+                            };
+                            revision
+                        };
+                        let proxy = event_proxy.clone();
+                        std::thread::spawn(move || {
+                            let result = peterfan_platform::process_control::quit_process(request);
+                            let state = completed_process_action(revision, request, result);
+                            let code = state.code.unwrap_or("unknown");
+                            log_menubar_event(&format!(
+                                "process termination completed pid={} code={code}",
+                                request.pid
+                            ));
+                            *PROCESS_ACTION.lock().expect("process action poisoned") = state;
+                            PROCESS_REFRESH_REQUESTED.store(true, Ordering::Release);
+                            PROCESS_ACTION_IN_FLIGHT.store(false, Ordering::Release);
+                            let _ = proxy.send_event(());
+                        });
+                    }
+                    refresh_after_pending = true;
+                } else if let Some(json) = c.strip_prefix("savecurve:") {
                     *STATUS.lock().expect("status poisoned") = "saving curve…".into();
                     let provider = std::sync::Arc::clone(&app.provider);
                     let json = json.to_string();
@@ -3333,6 +3436,7 @@ fn build_popover(
                 || body.starts_with("rules:")
                 || body.starts_with("importconfig:")
                 || body.starts_with("notifications:")
+                || is_native_process_command(body)
             {
                 enqueue_pending(body);
             } else if body.starts_with("h:") {
@@ -3367,11 +3471,6 @@ fn build_popover(
                 );
             } else if let Some(open) = body.strip_prefix("rawtemps:") {
                 RAW_TEMPS_OPEN.store(open == "1", Ordering::Relaxed);
-            } else if let Some(pid) = body
-                .strip_prefix("killproc:")
-                .and_then(|s| s.parse::<u32>().ok())
-            {
-                kill_process(pid);
             }
             let _ = ipc_proxy.send_event(());
         })
@@ -3524,6 +3623,7 @@ fn open_detail_window(
                 || body.starts_with("rules:")
                 || body.starts_with("importconfig:")
                 || body.starts_with("notifications:")
+                || is_native_process_command(body)
             {
                 enqueue_pending(body);
             } else if let Some(cmd) = body.strip_prefix("cmd:") {
@@ -3552,11 +3652,6 @@ fn open_detail_window(
                 );
             } else if let Some(open) = body.strip_prefix("rawtemps:") {
                 RAW_TEMPS_OPEN.store(open == "1", Ordering::Relaxed);
-            } else if let Some(pid) = body
-                .strip_prefix("killproc:")
-                .and_then(|s| s.parse::<u32>().ok())
-            {
-                kill_process(pid);
             }
             let _ = ipc_proxy.send_event(());
         })
@@ -3916,6 +4011,70 @@ fn default_curve_points() -> Vec<[f32; 2]> {
         .collect()
 }
 
+fn dashboard_process_limit(filter: &str) -> usize {
+    if filter.is_empty() {
+        5
+    } else {
+        20
+    }
+}
+
+fn dashboard_process_row(process: &ProcessInfo) -> serde_json::Value {
+    let can_quit = cfg!(target_os = "macos")
+        && process.owned_by_current_user == Some(true)
+        && process.start_time_unix_secs.is_some()
+        && !peterfan_platform::process_control::is_protected_process(process.pid, &process.name);
+    serde_json::json!({
+        "name": process.name,
+        "cpu": format!("{:.1}%", process.cpu_percent),
+        "mem": bytes(process.memory),
+        "pid": process.pid,
+        "start_time": process.start_time_unix_secs,
+        "can_quit": can_quit,
+    })
+}
+
+fn process_action_error_code(
+    error: &peterfan_platform::process_control::ProcessQuitError,
+) -> &'static str {
+    use peterfan_platform::process_control::ProcessQuitError;
+
+    match error {
+        ProcessQuitError::InvalidPid => "invalid_pid",
+        ProcessQuitError::NotFound => "not_found",
+        ProcessQuitError::IdentityChanged => "identity_changed",
+        ProcessQuitError::OwnershipUnknown | ProcessQuitError::NotOwned => "not_owned",
+        ProcessQuitError::Protected => "protected",
+        ProcessQuitError::Unsupported => "unsupported",
+        ProcessQuitError::SignalFailed(_) => "signal_failed",
+    }
+}
+
+fn completed_process_action(
+    revision: u64,
+    request: peterfan_platform::process_control::ProcessQuitRequest,
+    result: Result<String, peterfan_platform::process_control::ProcessQuitError>,
+) -> ProcessActionState {
+    match result {
+        Ok(name) => ProcessActionState {
+            revision,
+            phase: "complete",
+            pid: Some(request.pid),
+            name: Some(name),
+            code: Some("requested"),
+            message: Some("Termination requested".to_string()),
+        },
+        Err(error) => ProcessActionState {
+            revision,
+            phase: "complete",
+            pid: Some(request.pid),
+            name: None,
+            code: Some(process_action_error_code(&error)),
+            message: Some(error.to_string()),
+        },
+    }
+}
+
 fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
     let config = peterfan_platform::config::load();
     let disks = app.monitor.disks();
@@ -3934,18 +4093,12 @@ fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
         .map(|d| (d.read_bytes_per_sec + d.write_bytes_per_sec) as f32)
         .unwrap_or(0.0);
 
+    let process_limit = dashboard_process_limit(&app.process_filter);
     let procs: Vec<_> = app
         .monitor
-        .processes(5, proc_sort)
+        .processes_matching(process_limit, proc_sort, &app.process_filter)
         .iter()
-        .map(|p| {
-            serde_json::json!({
-                "name": p.name,
-                "cpu": format!("{:.1}%", p.cpu_percent),
-                "mem": bytes(p.memory),
-                "pid": p.pid,
-            })
-        })
+        .map(dashboard_process_row)
         .collect();
 
     // Discovery can transiently fail at launch after sleep or during a Windows
@@ -3986,6 +4139,7 @@ fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
     app.dashboard_slow_cache = DashboardSlowCache {
         sampled_at: Some(Instant::now()),
         proc_sort,
+        proc_filter: app.process_filter.clone(),
         procs,
         disk_pct: disk.map(|d| d.used_percent).unwrap_or(0.0),
         disk_text: disk
@@ -4165,7 +4319,8 @@ fn update(app: &mut App) {
     };
     let refresh_slow_metrics = (settings_visible || system_visible)
         && (now >= app.next_dashboard_slow_refresh
-            || app.dashboard_slow_cache.proc_sort != proc_sort);
+            || app.dashboard_slow_cache.proc_sort != proc_sort
+            || app.dashboard_slow_cache.proc_filter != app.process_filter);
     if refresh_slow_metrics {
         app.monitor.refresh_slow();
     }
@@ -4620,6 +4775,8 @@ fn update(app: &mut App) {
         "disk_io_sub": &app.dashboard_slow_cache.disk_io_sub,
         "procs": &app.dashboard_slow_cache.procs,
         "proc_sort": if matches!(proc_sort, ProcSort::Memory) { "mem" } else { "cpu" },
+        "process_filter": &app.process_filter,
+        "process_action": process_action_snapshot(),
         "temp_present": !temps.is_empty(),
         "temp_stale": temperature_stale,
         "temp_age_secs": temperature_age_secs,
@@ -5186,27 +5343,6 @@ fn toggle_login_item() -> String {
         "startup toggle is not available on this platform".to_string()
     }
 }
-
-/// Send SIGTERM to a process by PID, from the "×" button on a Top Processes
-/// row (confirmed client-side first). No elevated privileges are used or
-/// needed — the OS enforces the same rule it always does for `kill(2)`: this
-/// only succeeds against processes the signing user already owns.
-#[cfg(unix)]
-fn kill_process(pid: u32) {
-    unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGTERM);
-    }
-}
-#[cfg(target_os = "windows")]
-fn kill_process(pid: u32) {
-    let _ = std::process::Command::new("taskkill.exe")
-        .args(["/PID", &pid.to_string(), "/T"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-}
-#[cfg(not(any(unix, target_os = "windows")))]
-fn kill_process(_pid: u32) {}
 
 #[cfg(target_os = "macos")]
 fn send_native_notification(title: &str, body: &str) {
@@ -9874,6 +10010,151 @@ mod tests {
                 "display:both",
             ]
         );
+    }
+
+    #[test]
+    fn process_filter_commands_coalesce_to_the_latest_query() {
+        let mut queue = Vec::new();
+        queue_pending_command(&mut queue, "processfilter:saf".into());
+        queue_pending_command(&mut queue, "processfilter:safari".into());
+
+        assert_eq!(queue, vec!["processfilter:safari"]);
+    }
+
+    #[test]
+    fn guarded_process_request_requires_pid_and_start_token() {
+        assert_eq!(
+            parse_process_quit_command("quitprocess:42:1700000000"),
+            Some(peterfan_platform::process_control::ProcessQuitRequest {
+                pid: 42,
+                expected_start_time_unix_secs: 1_700_000_000,
+            })
+        );
+        assert_eq!(parse_process_quit_command("quitprocess:42"), None);
+        assert_eq!(parse_process_quit_command("quitprocess:0:1"), None);
+    }
+
+    #[test]
+    fn native_process_command_surface_is_narrow_and_explicit() {
+        assert!(is_native_process_command("processfilter:safari"));
+        assert!(is_native_process_command("quitprocess:42:1700000000"));
+        assert!(!is_native_process_command("killproc:42"));
+        assert!(!is_native_process_command("quitprocess:42"));
+        assert!(!is_native_process_command("process:kill:42"));
+    }
+
+    #[test]
+    fn old_direct_process_kill_path_is_absent() {
+        let source = include_str!("main.rs");
+        let direct_prefix = ["strip_prefix(\"", "killproc:", "\")"].concat();
+        let direct_function = ["fn kill_", "process("].concat();
+        assert!(!source.contains(&direct_prefix));
+        assert!(!source.contains(&direct_function));
+    }
+
+    #[test]
+    fn dashboard_process_row_carries_identity_and_native_quit_eligibility() {
+        let process = peterfan_core::metrics::ProcessInfo {
+            pid: 4242,
+            name: "Safari".into(),
+            cpu_percent: 12.5,
+            memory: 512_000_000,
+            start_time_unix_secs: Some(1_700_000_000),
+            owned_by_current_user: Some(true),
+        };
+
+        let row = dashboard_process_row(&process);
+
+        assert_eq!(row["pid"], 4242);
+        assert_eq!(row["start_time"], 1_700_000_000_u64);
+        assert_eq!(row["can_quit"], cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn dashboard_process_row_fails_closed_without_owner_or_start_time() {
+        let process = peterfan_core::metrics::ProcessInfo {
+            pid: 4242,
+            name: "Safari".into(),
+            cpu_percent: 12.5,
+            memory: 512_000_000,
+            start_time_unix_secs: None,
+            owned_by_current_user: None,
+        };
+
+        assert_eq!(dashboard_process_row(&process)["can_quit"], false);
+    }
+
+    #[test]
+    fn process_action_errors_map_to_stable_ui_codes() {
+        use peterfan_platform::process_control::ProcessQuitError;
+
+        assert_eq!(
+            process_action_error_code(&ProcessQuitError::IdentityChanged),
+            "identity_changed"
+        );
+        assert_eq!(
+            process_action_error_code(&ProcessQuitError::NotOwned),
+            "not_owned"
+        );
+        assert_eq!(
+            process_action_error_code(&ProcessQuitError::SignalFailed(1)),
+            "signal_failed"
+        );
+    }
+
+    #[test]
+    fn completed_process_action_preserves_pid_native_name_and_stable_code() {
+        use peterfan_platform::process_control::{ProcessQuitError, ProcessQuitRequest};
+
+        let request = ProcessQuitRequest {
+            pid: 4242,
+            expected_start_time_unix_secs: 1_700_000_000,
+        };
+        let success = completed_process_action(7, request, Ok("Safari".into()));
+        assert_eq!(success.revision, 7);
+        assert_eq!(success.phase, "complete");
+        assert_eq!(success.pid, Some(4242));
+        assert_eq!(success.name.as_deref(), Some("Safari"));
+        assert_eq!(success.code, Some("requested"));
+
+        let rejected = completed_process_action(8, request, Err(ProcessQuitError::IdentityChanged));
+        assert_eq!(rejected.code, Some("identity_changed"));
+        assert_eq!(rejected.name, None);
+    }
+
+    #[test]
+    fn process_action_payload_exposes_revision_and_user_safe_result() {
+        let state = ProcessActionState {
+            revision: 12,
+            phase: "complete",
+            pid: Some(4242),
+            name: Some("Safari".into()),
+            code: Some("requested"),
+            message: Some("Termination requested".into()),
+        };
+
+        assert_eq!(
+            process_action_json(&state),
+            serde_json::json!({
+                "revision": 12,
+                "phase": "complete",
+                "pid": 4242,
+                "name": "Safari",
+                "code": "requested",
+                "message": "Termination requested",
+            })
+        );
+    }
+
+    #[test]
+    fn filtered_process_results_expand_only_to_the_bounded_limit() {
+        assert_eq!(dashboard_process_limit(""), 5);
+        assert_eq!(dashboard_process_limit("safari"), 20);
+    }
+
+    #[test]
+    fn dashboard_process_filter_cache_starts_empty() {
+        assert_eq!(DashboardSlowCache::default().proc_filter, "");
     }
 
     #[test]
