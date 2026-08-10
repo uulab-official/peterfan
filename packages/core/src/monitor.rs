@@ -66,6 +66,24 @@ pub trait SystemMonitor {
     /// Up to `limit` processes, ranked by `sort` (descending).
     fn processes(&self, limit: usize, sort: ProcSort) -> Vec<ProcessInfo>;
 
+    /// Up to `limit` processes matching a normalized name substring or exact PID.
+    fn processes_matching(&self, limit: usize, sort: ProcSort, query: &str) -> Vec<ProcessInfo> {
+        let query = crate::metrics::normalize_process_query(query);
+        let numeric_pid = query.parse::<u32>().ok();
+        let mut processes = self.processes(usize::MAX, sort);
+        processes.retain(|process| {
+            if query.is_empty() {
+                true
+            } else if query.bytes().all(|byte| byte.is_ascii_digit()) {
+                numeric_pid == Some(process.pid)
+            } else {
+                process.name.to_lowercase().contains(&query)
+            }
+        });
+        processes.truncate(limit);
+        processes
+    }
+
     /// Battery state, or `None` on a machine without one.
     fn battery(&self) -> Option<BatteryInfo>;
 }

@@ -23,8 +23,8 @@ use sysinfo::{
 };
 
 use peterfan_core::metrics::{
-    BatteryInfo, CpuMetrics, DiskInfo, LoadAvg, MemoryBreakdown, MemoryMetrics, NetInterface,
-    ProcSort, ProcessInfo, SystemInfo,
+    normalize_process_query, BatteryInfo, CpuMetrics, DiskInfo, LoadAvg, MemoryBreakdown,
+    MemoryMetrics, NetInterface, ProcSort, ProcessInfo, SystemInfo,
 };
 use peterfan_core::monitor::{MonitorCapabilities, SystemMonitor};
 
@@ -86,6 +86,33 @@ impl SysinfoMonitor {
             quick,
         }
     }
+
+    fn process_snapshot(&self) -> Vec<ProcessInfo> {
+        self.sys
+            .processes()
+            .values()
+            .map(|process| ProcessInfo {
+                pid: process.pid().as_u32(),
+                name: process.name().to_string_lossy().into_owned(),
+                cpu_percent: process.cpu_usage(),
+                memory: process.memory(),
+                start_time_unix_secs: (process.start_time() > 0).then_some(process.start_time()),
+                owned_by_current_user: process_owned_by_current_user(process),
+            })
+            .collect()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn process_owned_by_current_user(process: &sysinfo::Process) -> Option<bool> {
+    let current_uid = sysinfo::Uid::try_from(unsafe { libc::geteuid() } as usize).ok()?;
+    let owner = process.effective_user_id().or_else(|| process.user_id())?;
+    Some(owner == &current_uid)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_owned_by_current_user(_process: &sysinfo::Process) -> Option<bool> {
+    None
 }
 
 impl Default for SysinfoMonitor {
@@ -277,18 +304,11 @@ impl SystemMonitor for SysinfoMonitor {
     }
 
     fn processes(&self, limit: usize, sort: ProcSort) -> Vec<ProcessInfo> {
-        let procs: Vec<ProcessInfo> = self
-            .sys
-            .processes()
-            .values()
-            .map(|p| ProcessInfo {
-                pid: p.pid().as_u32(),
-                name: p.name().to_string_lossy().into_owned(),
-                cpu_percent: p.cpu_usage(),
-                memory: p.memory(),
-            })
-            .collect();
-        top_processes(procs, limit, sort)
+        top_processes(self.process_snapshot(), limit, sort)
+    }
+
+    fn processes_matching(&self, limit: usize, sort: ProcSort, query: &str) -> Vec<ProcessInfo> {
+        top_processes_matching(self.process_snapshot(), limit, sort, query)
     }
 
     fn battery(&self) -> Option<BatteryInfo> {
@@ -336,6 +356,26 @@ fn top_processes(mut procs: Vec<ProcessInfo>, limit: usize, sort: ProcSort) -> V
     }
     procs.sort_by(cmp);
     procs
+}
+
+fn top_processes_matching(
+    mut procs: Vec<ProcessInfo>,
+    limit: usize,
+    sort: ProcSort,
+    query: &str,
+) -> Vec<ProcessInfo> {
+    let query = normalize_process_query(query);
+    let numeric_pid = query.parse::<u32>().ok();
+    procs.retain(|process| {
+        if query.is_empty() {
+            true
+        } else if query.bytes().all(|byte| byte.is_ascii_digit()) {
+            numeric_pid == Some(process.pid)
+        } else {
+            process.name.to_lowercase().contains(&query)
+        }
+    });
+    top_processes(procs, limit, sort)
 }
 
 fn pct(part: u64, whole: u64) -> f32 {
@@ -391,7 +431,57 @@ mod tests {
             name: format!("proc{pid}"),
             cpu_percent: cpu,
             memory: mem,
+            start_time_unix_secs: Some(1_700_000_000 + pid as u64),
+            owned_by_current_user: Some(true),
         }
+    }
+
+    fn named_proc(pid: u32, name: &str, cpu: f32, mem: u64) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            name: name.into(),
+            cpu_percent: cpu,
+            memory: mem,
+            start_time_unix_secs: Some(1_700_000_000 + pid as u64),
+            owned_by_current_user: Some(true),
+        }
+    }
+
+    #[test]
+    fn process_filter_matches_name_case_insensitively_before_top_n() {
+        let input = vec![
+            named_proc(10, "WindowServer", 80.0, 10),
+            named_proc(11, "Safari Networking", 30.0, 20),
+            named_proc(12, "Safari", 20.0, 30),
+        ];
+
+        let result = top_processes_matching(input, 1, ProcSort::Cpu, "sAfArI");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].pid, 11);
+    }
+
+    #[test]
+    fn process_filter_matches_only_an_exact_decimal_pid() {
+        let input = vec![
+            named_proc(412, "Editor", 3.0, 10),
+            named_proc(41, "Worker", 2.0, 20),
+        ];
+
+        assert_eq!(
+            top_processes_matching(input.clone(), 5, ProcSort::Cpu, "412")[0].pid,
+            412
+        );
+        assert!(top_processes_matching(input, 5, ProcSort::Cpu, "12").is_empty());
+    }
+
+    #[test]
+    fn process_filter_is_trimmed_and_capped_to_64_unicode_scalars() {
+        assert_eq!(normalize_process_query("  Safari  "), "safari");
+        assert_eq!(
+            normalize_process_query(&"가".repeat(80)).chars().count(),
+            64
+        );
     }
 
     #[test]

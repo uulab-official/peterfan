@@ -115,6 +115,22 @@ pub struct ProcessInfo {
     pub cpu_percent: f32,
     /// Resident memory in bytes.
     pub memory: u64,
+    /// Unix process start time used to detect PID reuse before control actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time_unix_secs: Option<u64>,
+    /// Whether the backend proved that this process belongs to PeterFan's user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owned_by_current_user: Option<bool>,
+}
+
+/// Normalize a process query consistently across native filtering and UI IPC.
+pub fn normalize_process_query(query: &str) -> String {
+    query
+        .trim()
+        .chars()
+        .take(64)
+        .collect::<String>()
+        .to_lowercase()
 }
 
 /// How to rank processes in a "top" listing.
