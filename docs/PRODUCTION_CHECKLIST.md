@@ -36,6 +36,8 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] The previous canonical bundle was preserved recoverably at
       `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app.backup-pre-v1.32.0-20260810-134838`
       before replacement.
+- [x] The post-audit local replacement also preserved its immediate predecessor
+      at `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app.backup-pre-v1.32.0-audit-20260810-135521`.
 - [x] The canonical app relaunch was verified with exactly one live PID from
       `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app/Contents/MacOS/PeterFan`,
       and `~/Library/Logs/PeterFan/menubar.log` recorded `startup mock=false`,
