@@ -7720,10 +7720,16 @@ var PROCESS_ACTION_REVISION=0;
 // Keep WebView failures visible to the native diagnostic log. A blank pane is
 // otherwise indistinguishable from a slow sensor read.
 window.onerror=function(message,source,line,column,error){
-  if(window.ipc)window.ipc.postMessage('js-error:'+String(message||error||'unknown').slice(0,240));
+  var detail=String(message||'unknown');
+  var stack=error&&error.stack?String(error.stack):'';
+  var location=source?(' @ '+String(source)+':'+String(line||0)+':'+String(column||0)):'';
+  if(stack)detail+=' | '+stack;
+  if(window.ipc)window.ipc.postMessage('js-error:'+(detail+location).slice(0,900));
 };
 window.onunhandledrejection=function(event){
-  if(window.ipc)window.ipc.postMessage('js-error:'+String(event.reason||'unhandled rejection').slice(0,240));
+  var reason=event&&event.reason;
+  var detail=reason&&reason.stack?String(reason.stack):String(reason||'unhandled rejection');
+  if(window.ipc)window.ipc.postMessage('js-error:'+detail.slice(0,900));
 };
 var FAN_CONTROL_FIX_PENDING=false;
 var FAN_CONTROL_FIX_REVISION=0;
