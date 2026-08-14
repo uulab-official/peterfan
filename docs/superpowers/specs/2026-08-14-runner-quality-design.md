@@ -19,7 +19,8 @@ OpenGameArt's CC0 `Runner Character` provides a useful reference for an eight-fr
 - Preserve one side-view direction: all characters face and move left-to-right.
 - Keep the final runtime output white with alpha; retain source color only in checked-in source assets and QA previews.
 - Prefer complete, consistently authored CC0 frame packs. Do not combine frames from unrelated art styles in one character.
-- Keep the current character roster and treat non-running novelty entries as authored motion icons only when their silhouette remains recognizable.
+- Keep every historical character value parseable for configuration compatibility, but expose a curated `FEATURED` roster in the product UI: Cat, Dog, Rabbit, Fox, Penguin, Dinosaur, Robot, Ghost, Human, and Push-up. Legacy novelty icons remain renderable for migration/debugging but cannot leak into the picker or preview payload.
+- Use the OpenGameArt CC0 Runner Character sheet as the active Human reference/source so the picker includes a genuine eight-pose run cycle rather than a loosely related character sheet.
 
 ### Push-up cycle
 
@@ -58,5 +59,6 @@ This change covers the runner frame pipeline, the push-up renderer, the runner q
 - The push-up animation visibly moves as a complete body with stable hand and foot contacts.
 - No push-up frame is a shoulder-only change.
 - The runner sprite sheet shows consistent left-to-right silhouettes with no interpolation ghosting.
+- The picker and QA sheet contain only the curated production roster; legacy values continue to parse and fall back to Cat at startup.
 - Existing Rust workspace tests, format, clippy, runner QA, and smoke checks remain green.
 - The selected CC0/reference sources and their licenses are documented.

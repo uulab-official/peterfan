@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the shoulder-only push-up motion and harden the runner pipeline so all eight-frame monochrome animations remain recognizable and crisp.
+**Goal:** Replace the shoulder-only push-up motion and harden the runner pipeline so the curated production roster remains recognizable and crisp, while legacy character values stay configuration-compatible.
 
 **Architecture:** Keep the existing `RunnerPack` and 48×32 frame contract. Author the push-up as a landmark-driven procedural cycle, render crisp frames without geometry interpolation, and extend runner QA with contact/connectivity and loop checks. Keep open-source assets isolated from generated runtime frames and document their licenses.
 
@@ -15,6 +15,7 @@
 - All animations face and move left-to-right where horizontal movement applies.
 - Do not add a runtime dependency or change CPU telemetry/update behavior.
 - Keep existing user changes in the worktree; modify only runner assets, renderer, QA, and related docs for this feature.
+- Keep `RunnerCharacter::ALL` as the persisted compatibility set and use `RunnerCharacter::FEATURED` for the native menu, picker, preview payload, and QA artifact.
 
 ---
 

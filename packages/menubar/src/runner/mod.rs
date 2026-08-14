@@ -346,7 +346,7 @@ mod tests {
             (RunnerCharacter::Sheep, 15344927357810802816),
             (RunnerCharacter::Fish, 1454683525211696439),
             (RunnerCharacter::Slime, 10270468348235596930),
-            (RunnerCharacter::Human, 13784596778891480520),
+            (RunnerCharacter::Human, 15564924611738626466),
             (RunnerCharacter::Pushup, 1949640321478599126),
             (RunnerCharacter::Orbit, 6578607126643036137),
             (RunnerCharacter::Sushi, 16502167201706185881),

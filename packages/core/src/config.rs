@@ -247,6 +247,23 @@ pub enum RunnerCharacter {
 }
 
 impl RunnerCharacter {
+    /// Production picker roster. Keep `ALL` below as the compatibility set for
+    /// values persisted by older builds, but only expose characters that read
+    /// as a side-view moving subject at menu-bar size.
+    pub const FEATURED: [Self; 10] = [
+        Self::Cat,
+        Self::Dog,
+        Self::Rabbit,
+        Self::Fox,
+        Self::Penguin,
+        Self::Dinosaur,
+        Self::Robot,
+        Self::Ghost,
+        Self::Human,
+        Self::Pushup,
+    ];
+
+    /// Every value understood by the persisted configuration format.
     pub const ALL: [Self; 20] = [
         Self::Cat,
         Self::Dog,
@@ -269,6 +286,10 @@ impl RunnerCharacter {
         Self::Sausage,
         Self::Party,
     ];
+
+    pub fn is_featured(self) -> bool {
+        Self::FEATURED.contains(&self)
+    }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
@@ -877,6 +898,27 @@ mod tests {
             Some(RunnerCharacter::Sausage)
         );
         assert_eq!(RunnerCharacter::parse("unknown"), None);
+        for character in RunnerCharacter::ALL {
+            assert_eq!(RunnerCharacter::parse(character.as_str()), Some(character));
+        }
+    }
+
+    #[test]
+    fn runner_character_featured_roster_excludes_legacy_motion_icons() {
+        assert_eq!(
+            RunnerCharacter::FEATURED.map(|character| character.as_str()),
+            [
+                "cat", "dog", "rabbit", "fox", "penguin", "dinosaur", "robot", "ghost", "human",
+                "pushup",
+            ]
+        );
+        assert!(RunnerCharacter::FEATURED
+            .into_iter()
+            .all(RunnerCharacter::is_featured));
+        assert!(RunnerCharacter::ALL
+            .into_iter()
+            .filter(|character| !character.is_featured())
+            .all(|character| !RunnerCharacter::FEATURED.contains(&character)));
     }
 
     #[test]

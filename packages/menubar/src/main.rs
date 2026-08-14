@@ -2379,6 +2379,11 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|v| RunnerCharacter::parse(v))
         .unwrap_or(saved.character);
+    let requested_runner_character = if requested_runner_character.is_featured() {
+        requested_runner_character
+    } else {
+        RunnerCharacter::Cat
+    };
     let runner_startup = match initialize_runner_assets(requested_runner_character) {
         Ok(state) => state,
         Err(error) => {
@@ -3183,7 +3188,7 @@ fn build_tray(app: &mut App) {
     .collect();
 
     let character_submenu = Submenu::new(s.runner_character, true);
-    let character_items = RunnerCharacter::ALL
+    let character_items = RunnerCharacter::FEATURED
         .into_iter()
         .map(|character| {
             let item = CheckMenuItem::new(
@@ -6524,7 +6529,7 @@ fn write_runner_quality_artifacts() -> Result<RunnerQaArtifacts, RunnerBuildErro
         RunnerBuildError::cache(RunnerCharacter::Cat, "runner QA target", error.to_string())
     })?;
 
-    let packs = RunnerCharacter::ALL
+    let packs = RunnerCharacter::FEATURED
         .into_iter()
         .map(|character| RunnerPack::build(character).map(|pack| (character, pack)))
         .collect::<Result<Vec<_>, _>>()?;
@@ -6590,7 +6595,7 @@ fn runner_qa_sheet_dimensions() -> (u32, u32) {
     let cell_height = RUNNER_PIXEL_HEIGHT * RUNNER_QA_SCALE + RUNNER_QA_PADDING * 2;
     (
         cell_width * u32::from(RUNNER_FRAME_COUNT),
-        cell_height * RunnerCharacter::ALL.len() as u32 * RUNNER_LOAD_BANDS as u32,
+        cell_height * RunnerCharacter::FEATURED.len() as u32 * RUNNER_LOAD_BANDS as u32,
     )
 }
 
@@ -6660,7 +6665,7 @@ where
     F: FnMut(RunnerCharacter) -> Result<RunnerPack, RunnerBuildError>,
 {
     let cat_fallback = builder(RunnerCharacter::Cat);
-    RunnerCharacter::ALL
+    RunnerCharacter::FEATURED
         .into_iter()
         .filter_map(|character| {
             match if character == RunnerCharacter::Cat {
@@ -6708,7 +6713,7 @@ fn apply_test_runner_style(mut rgba: Vec<u8>) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 fn runner_character_values_json() -> String {
-    serde_json::to_string(&RunnerCharacter::ALL.map(|character| character.as_str()))
+    serde_json::to_string(&RunnerCharacter::FEATURED.map(|character| character.as_str()))
         .expect("runner character values must serialize")
 }
 
@@ -6767,7 +6772,7 @@ fn runner_selected_preview_frames_json(pack: &RunnerPack) -> String {
 }
 
 fn runner_picker_options(lang: ResolvedLanguage) -> String {
-    RunnerCharacter::ALL
+    RunnerCharacter::FEATURED
         .map(|character| {
             let value = character.as_str();
             let label = runner_character_label(lang, character);
@@ -11024,10 +11029,10 @@ mod tests {
         )
         .expect("parse quality report JSON");
         let characters = report["characters"].as_array().expect("character array");
-        assert_eq!(characters.len(), RunnerCharacter::ALL.len());
+        assert_eq!(characters.len(), RunnerCharacter::FEATURED.len());
         assert!(characters
             .iter()
-            .zip(RunnerCharacter::ALL)
+            .zip(RunnerCharacter::FEATURED)
             .all(|(entry, character)| {
                 entry["name"].as_str() == Some(character.as_str())
                     && entry["bands"]
@@ -11092,7 +11097,7 @@ mod tests {
         let cell_height = RUNNER_PIXEL_HEIGHT * RUNNER_QA_SCALE + RUNNER_QA_PADDING * 2;
         (
             cell_width * u32::from(RUNNER_FRAME_COUNT),
-            cell_height * RunnerCharacter::ALL.len() as u32 * RUNNER_LOAD_BANDS as u32,
+            cell_height * RunnerCharacter::FEATURED.len() as u32 * RUNNER_LOAD_BANDS as u32,
         )
     }
 
@@ -11361,7 +11366,9 @@ mod tests {
             let width = max_x.saturating_sub(min_x) + 1;
             let height = max_y.saturating_sub(min_y) + 1;
             if character == RunnerCharacter::Human {
-                assert!(width >= 14, "{character:?} is too narrow: {width}px");
+                // The CC0 source is a deliberately slim human silhouette;
+                // preserve its anatomy instead of widening it into a blob.
+                assert!(width >= 12, "{character:?} is too narrow: {width}px");
                 assert!(height >= 24, "{character:?} is too short: {height}px");
             } else if matches!(
                 character,
@@ -11486,7 +11493,7 @@ mod tests {
             assert!(html.contains(r#"role="listbox""#));
             assert!(html.contains("function handleRunnerTriggerKey(event)"));
             assert!(html.contains("function handleRunnerOptionKey(event)"));
-            for character in RunnerCharacter::ALL {
+            for character in RunnerCharacter::FEATURED {
                 assert!(
                     html.contains(&format!(r#"data-character="{}""#, character.as_str())),
                     "settings are missing {character:?}"
@@ -11507,24 +11514,51 @@ mod tests {
             assert!(!html.contains("__RUNNER_PREVIEWS__"));
         }
         for label in [
+            "고양이",
+            "강아지",
+            "토끼",
+            "여우",
             "펭귄",
             "공룡",
             "로봇",
             "유령",
+            "달리는 사람",
+            "푸시업",
+        ] {
+            assert!(ko.contains(label), "Korean settings are missing {label}");
+        }
+        for legacy_label in [
             "새",
             "오리",
             "양",
             "물고기",
             "슬라임",
-            "달리는 사람",
-            "푸시업",
             "궤도",
             "회전초밥",
             "도시",
             "소시지",
             "파티",
         ] {
-            assert!(ko.contains(label), "Korean settings are missing {label}");
+            let legacy_character = match legacy_label {
+                "새" => RunnerCharacter::Bird,
+                "오리" => RunnerCharacter::Duck,
+                "양" => RunnerCharacter::Sheep,
+                "물고기" => RunnerCharacter::Fish,
+                "슬라임" => RunnerCharacter::Slime,
+                "궤도" => RunnerCharacter::Orbit,
+                "회전초밥" => RunnerCharacter::Sushi,
+                "도시" => RunnerCharacter::City,
+                "소시지" => RunnerCharacter::Sausage,
+                "파티" => RunnerCharacter::Party,
+                _ => unreachable!(),
+            };
+            assert!(
+                !ko.contains(&format!(
+                    r#"data-character="{}""#,
+                    legacy_character.as_str()
+                )),
+                "legacy runner leaked into picker: {legacy_label}"
+            );
         }
     }
 
@@ -11533,10 +11567,10 @@ mod tests {
         let previews: serde_json::Value =
             serde_json::from_str(runner_preview_alpha_json()).expect("valid preview JSON");
         let previews = previews.as_object().expect("preview object");
-        assert_eq!(previews.len(), RunnerCharacter::ALL.len());
+        assert_eq!(previews.len(), RunnerCharacter::FEATURED.len());
 
         let mut unique = std::collections::HashSet::new();
-        for character in RunnerCharacter::ALL {
+        for character in RunnerCharacter::FEATURED {
             let alpha = previews
                 .get(character.as_str())
                 .and_then(serde_json::Value::as_str)
@@ -11548,13 +11582,13 @@ mod tests {
             assert!(alpha.bytes().any(|byte| byte != b'0'));
             unique.insert(alpha);
         }
-        assert_eq!(unique.len(), RunnerCharacter::ALL.len());
+        assert_eq!(unique.len(), RunnerCharacter::FEATURED.len());
 
         let frames: serde_json::Value =
             serde_json::from_str(runner_preview_frames_json()).expect("valid preview frames JSON");
         let frames = frames.as_object().expect("preview frames object");
-        assert_eq!(frames.len(), RunnerCharacter::ALL.len());
-        for character in RunnerCharacter::ALL {
+        assert_eq!(frames.len(), RunnerCharacter::FEATURED.len());
+        for character in RunnerCharacter::FEATURED {
             let character_frames = frames
                 .get(character.as_str())
                 .and_then(serde_json::Value::as_array)
@@ -11590,7 +11624,7 @@ mod tests {
 
     #[test]
     fn runner_preview_json_matches_shared_runner_pack_alpha() {
-        let packs = RunnerCharacter::ALL
+        let packs = RunnerCharacter::FEATURED
             .into_iter()
             .map(|character| {
                 (
@@ -11724,7 +11758,7 @@ mod tests {
             }
         });
 
-        assert_eq!(packs.len(), RunnerCharacter::ALL.len() - 2);
+        assert_eq!(packs.len(), RunnerCharacter::FEATURED.len() - 2);
         assert!(packs.iter().all(|(character, _)| {
             !matches!(character, RunnerCharacter::Fox | RunnerCharacter::Cat)
         }));
@@ -11762,7 +11796,7 @@ mod tests {
             }
         });
 
-        assert_eq!(packs.len(), RunnerCharacter::ALL.len());
+        assert_eq!(packs.len(), RunnerCharacter::FEATURED.len());
         assert!(packs
             .iter()
             .all(|(_, pack)| pack.character() == RunnerCharacter::Cat));
@@ -11771,7 +11805,7 @@ mod tests {
                 .iter()
                 .map(|(character, _)| *character)
                 .collect::<Vec<_>>(),
-            RunnerCharacter::ALL.to_vec(),
+            RunnerCharacter::FEATURED.to_vec(),
             "fallback previews retain their requested payload keys"
         );
         assert_eq!(

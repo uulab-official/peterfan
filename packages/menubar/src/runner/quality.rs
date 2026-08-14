@@ -191,7 +191,7 @@ pub(crate) fn measure_cycle(cycle: &[RgbaFrame; 8]) -> Result<CycleMetrics, Runn
 
 #[cfg(test)]
 pub(crate) fn build_quality_report() -> Result<RunnerQualityReport, RunnerBuildError> {
-    let characters = RunnerCharacter::ALL
+    let characters = RunnerCharacter::FEATURED
         .into_iter()
         .map(build_character_report)
         .collect::<Result<Vec<_>, _>>()?;
@@ -586,7 +586,7 @@ mod tests {
     #[test]
     fn quality_report_covers_every_character_and_load_band() {
         let report = build_quality_report().expect("quality report");
-        assert_eq!(report.characters.len(), RunnerCharacter::ALL.len());
+        assert_eq!(report.characters.len(), RunnerCharacter::FEATURED.len());
         assert!(report
             .characters
             .iter()
@@ -670,11 +670,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            RunnerCharacter::ALL
+            RunnerCharacter::FEATURED
                 .map(|character| character.as_str())
                 .to_vec()
         );
-        for (character, entry) in RunnerCharacter::ALL
+        for (character, entry) in RunnerCharacter::FEATURED
             .into_iter()
             .zip(report.characters.iter())
         {

@@ -1,14 +1,14 @@
 # Runner character asset
 
-`caveman.png` is the active **Running Caveman** transparent sprite sheet by
-Hapiel, prepared as a sheet by RTLShadow and downloaded from OpenGameArt:
+`runner-sheet.png` is the active eight-frame side-view `Runner Character`
+sheet from OpenGameArt:
 
-- Source: <https://opengameart.org/content/running-caveman-spritesheet>
-- Direct asset: <https://opengameart.org/sites/default/files/spritesheet_caveman.png>
-- License: CC-BY 3.0; credit Hapiel and RTLShadow
+- Source: <https://opengameart.org/content/runner-character>
+- License: CC0; attribution is not required
 
-PeterFan uses the first eight 32×32 cells for the `Human` menu-bar runner
-character.
+PeterFan uses the middle eight 32×32 cells for the `Human` menu-bar runner
+character. The upper and lower rows are idle/jump references and are
+intentionally not part of the runtime cycle.
 
 `cat-run-cc0.png` is the active five-frame side-view cat run by alizard from
 OpenGameArt. Its blue matte is removed during decoding, then the frames are
@@ -18,8 +18,7 @@ normalized into PeterFan's eight-frame white glyph cycle:
 - Direct asset: <https://opengameart.org/sites/default/files/cat_run.png>
 - License: CC0; attribution is not required
 
-The older `runner-sheet.png` and `correr.png` candidates are retained for
-comparison only.
+`caveman.png` and `correr.png` are retained for comparison only.
 
 `dog-run-cc0.png` is the six-frame `Run` row from rmazanek's six-row dog sheet:
 

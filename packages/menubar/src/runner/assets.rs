@@ -10,11 +10,11 @@ use super::{
 
 const HUMAN_RUN_FRAME_WIDTH: u32 = 32;
 const HUMAN_RUN_FRAME_HEIGHT: u32 = 32;
-const HUMAN_RUN_DRAW_WIDTH: u32 = 30;
-const HUMAN_RUN_DRAW_HEIGHT: u32 = 28;
+const HUMAN_RUN_DRAW_WIDTH: u32 = 32;
+const HUMAN_RUN_DRAW_HEIGHT: u32 = 32;
 const HUMAN_RUN_SHEET: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/runner/caveman.png"
+    "/../../assets/runner/runner-sheet.png"
 ));
 const CAT_RUN_FRAME_WIDTH: u32 = 66;
 const CAT_RUN_FRAME_HEIGHT: u32 = 66;
@@ -440,28 +440,30 @@ fn decode_human_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
         HUMAN_RUN_SHEET,
         "decode_human_source_cycle",
     )?;
-    if decoded.width != 128 {
+    if decoded.width != 256 {
         return Err(decode_error(
             RunnerCharacter::Human,
             format!(
-                "decode_human_source_cycle[width]: expected 128px sheet width, got {}",
+                "decode_human_source_cycle[width]: expected 256px sheet width, got {}",
                 decoded.width
             ),
         ));
     }
-    if decoded.height != 128 {
+    if decoded.height != 96 {
         return Err(decode_error(
             RunnerCharacter::Human,
             format!(
-                "decode_human_source_cycle[height]: expected 128px sheet height, got {}",
+                "decode_human_source_cycle[height]: expected 96px sheet height, got {}",
                 decoded.height
             ),
         ));
     }
 
     Ok(std::array::from_fn(|pose| {
-        let frame_x = u32::try_from(pose % 4).unwrap_or(0) * HUMAN_RUN_FRAME_WIDTH;
-        let frame_y = u32::try_from(pose / 4).unwrap_or(0) * HUMAN_RUN_FRAME_HEIGHT;
+        let frame_x = u32::try_from(pose).unwrap_or(0) * HUMAN_RUN_FRAME_WIDTH;
+        // The middle row is the authored eight-frame run cycle; the upper
+        // and lower rows are idle/jump references from the same CC0 sheet.
+        let frame_y = HUMAN_RUN_FRAME_HEIGHT;
         extract_human_frame(&decoded, RunnerCharacter::Human, frame_x, frame_y)
     }))
 }
