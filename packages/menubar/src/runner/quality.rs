@@ -12,6 +12,7 @@ const DELTA_ALPHA_THRESHOLD: u8 = 48;
 #[cfg(test)]
 const MIN_VISIBLE_OCCUPANCY: usize = 150;
 // The stationary plank is intentionally thinner than a standing runner.
+#[cfg(test)]
 const MIN_PUSHUP_VISIBLE_OCCUPANCY: usize = 145;
 #[cfg(test)]
 const MAX_VISIBLE_OCCUPANCY: usize = 520;
@@ -355,6 +356,7 @@ fn frame_delta(left: &[u8], right: &[u8]) -> usize {
         .count()
 }
 
+#[cfg(test)]
 fn frame_region_delta(
     left: &[u8],
     right: &[u8],
