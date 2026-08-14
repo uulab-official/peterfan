@@ -41,6 +41,18 @@ impl RunnerCanvas {
         );
     }
 
+    pub(crate) fn leg(&mut self, hip: Pt, paw: Pt, knee_bend: f32, color: (u8, u8, u8, u8)) {
+        draw_runner_leg(
+            &mut self.rgba,
+            PIXEL_WIDTH,
+            PIXEL_HEIGHT,
+            hip,
+            paw,
+            knee_bend,
+            color,
+        );
+    }
+
     pub(crate) fn disc(&mut self, center: Pt, radius: f32, color: (u8, u8, u8, u8)) {
         draw_disc(
             &mut self.rgba,

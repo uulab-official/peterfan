@@ -60,12 +60,12 @@ fn render_pose(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> RgbaFrame
     match character {
         RunnerCharacter::Penguin => make_penguin_runner_rgba(cpu_pct, frame),
         RunnerCharacter::Robot => make_robot_runner_rgba(cpu_pct, frame),
+        RunnerCharacter::Pushup => make_pushup_runner_rgba(cpu_pct, frame),
         RunnerCharacter::Bird
         | RunnerCharacter::Duck
         | RunnerCharacter::Sheep
         | RunnerCharacter::Fish
         | RunnerCharacter::Slime
-        | RunnerCharacter::Pushup
         | RunnerCharacter::Orbit
         | RunnerCharacter::Sushi
         | RunnerCharacter::City
@@ -242,6 +242,65 @@ fn make_robot_runner_rgba(cpu_pct: f32, frame: u8) -> RgbaFrame {
     erase_disc(&mut rgba, W, H, Pt::new(34.5, 7.8 + bob), 1.05);
     erase_disc(&mut rgba, W, H, Pt::new(27.5, 16.0 + bob), 1.35);
     rgba
+}
+
+fn make_pushup_runner_rgba(cpu_pct: f32, frame: u8) -> RgbaFrame {
+    const FAR_HAND: Pt = Pt::new(38.0, 27.0);
+    const NEAR_HAND: Pt = Pt::new(41.0, 26.0);
+    const FAR_TOE: Pt = Pt::new(3.0, 26.0);
+    const NEAR_TOE: Pt = Pt::new(6.5, 26.0);
+    const HIP_Y: [f32; 8] = [21.8, 22.4, 23.2, 24.0, 23.7, 23.0, 22.3, 22.2];
+    const SHOULDER_Y: [f32; 8] = [19.7, 20.7, 22.0, 23.6, 22.8, 21.7, 20.9, 20.5];
+    const ELBOW_X: [f32; 8] = [32.7, 32.0, 31.0, 30.0, 28.5, 31.5, 32.5, 33.5];
+    const ELBOW_Y: [f32; 8] = [23.0, 24.0, 25.2, 26.0, 25.0, 24.8, 23.5, 23.8];
+    const KNEE_Y: [f32; 8] = [23.0, 23.8, 24.7, 25.4, 24.4, 24.4, 23.4, 23.6];
+    const HEAD_X: [f32; 8] = [34.2, 34.2, 34.2, 34.2, 34.2, 34.2, 34.2, 35.3];
+
+    let pose = usize::from(frame % FRAME_COUNT);
+    let effort = match cpu_pct.clamp(0.0, 100.0) {
+        load if load < 15.0 => 0.0,
+        load if load < 50.0 => 0.4,
+        load if load < 80.0 => 0.85,
+        _ => 1.35,
+    };
+    let hip = Pt::new(16.0, HIP_Y[pose] + effort);
+    let shoulder = Pt::new(29.0, SHOULDER_Y[pose] + effort);
+    let elbow = Pt::new(ELBOW_X[pose], ELBOW_Y[pose] + effort);
+    let knee = Pt::new(10.0, KNEE_Y[pose] + effort * 0.7);
+    let head = Pt::new(HEAD_X[pose], SHOULDER_Y[pose] - 2.3 + effort);
+    let solid = (255, 255, 255, 248);
+    let detail = (255, 255, 255, 222);
+    let mut canvas = RunnerCanvas::new();
+
+    // Far limbs establish the fixed toe and hand contacts first.
+    canvas.leg(hip, FAR_TOE, -1.5, detail);
+    canvas.line(shoulder, elbow, 2.8, detail);
+    canvas.line(elbow, FAR_HAND, 2.6, detail);
+
+    // The torso and near limbs move as one connected chain through the cycle.
+    canvas.line(hip, shoulder, 4.8, solid);
+    canvas.disc(Pt::new(22.0, (hip.y + shoulder.y) * 0.5), 1.2, solid);
+    canvas.line(hip, knee, 2.8, solid);
+    canvas.line(knee, NEAR_TOE, 2.8, solid);
+    canvas.line(shoulder, elbow, 3.2, solid);
+    canvas.line(elbow, NEAR_HAND, 3.0, solid);
+    canvas.line(
+        shoulder,
+        Pt::new(31.0, SHOULDER_Y[pose] - 1.0 + effort),
+        2.0,
+        solid,
+    );
+    canvas.disc(head, 3.1, solid);
+    canvas.erase_disc(Pt::new(head.x + 1.0, head.y - 0.6), 0.55);
+    canvas.disc(Pt::new(16.0, HIP_Y[pose] + effort), 1.25, solid);
+    canvas.disc(FAR_TOE, 1.0, detail);
+    canvas.disc(NEAR_TOE, 1.1, solid);
+    canvas.disc(FAR_HAND, 1.0, detail);
+    canvas.disc(NEAR_HAND, 1.1, solid);
+    canvas.line(Pt::new(2.0, 26.0), Pt::new(7.5, 26.0), 1.8, detail);
+    canvas.line(Pt::new(36.5, 26.0), Pt::new(42.0, 26.0), 1.8, detail);
+
+    canvas.finish()
 }
 
 fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> RgbaFrame {
@@ -430,28 +489,6 @@ fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8)
             );
             canvas.erase_disc(Pt::new(22.0, body_center_y - 2.2), 1.1);
             canvas.erase_disc(Pt::new(31.0, body_center_y - 2.2), 1.1);
-        }
-        RunnerCharacter::Pushup => {
-            const SHOULDER_Y: [f32; 8] = [13.4, 14.1, 15.3, 16.6, 17.2, 16.0, 14.6, 13.8];
-            const ELBOW_X: [f32; 8] = [34.0, 33.0, 31.6, 29.8, 28.4, 29.7, 31.3, 33.1];
-            const ELBOW_Y: [f32; 8] = [16.8, 18.5, 20.7, 22.8, 24.2, 22.1, 19.5, 17.5];
-            const HIP_Y: [f32; 8] = [12.0, 12.2, 12.8, 13.3, 13.6, 13.2, 12.6, 12.1];
-            let stretch = 0.88 + load * 0.2;
-            let hip = Pt::new(10.5, HIP_Y[pose] * stretch);
-            let shoulder = Pt::new(34.5, SHOULDER_Y[pose] * stretch);
-            let elbow = Pt::new(ELBOW_X[pose], ELBOW_Y[pose] * stretch);
-            let hand = Pt::new(40.5, 27.0);
-            canvas.line(hip, shoulder, 4.3, solid);
-            canvas.disc(
-                Pt::new(41.5, (SHOULDER_Y[pose] - 1.9) * stretch),
-                3.8,
-                solid,
-            );
-            canvas.line(shoulder, elbow, 3.0, detail);
-            canvas.line(elbow, hand, 3.0, solid);
-            canvas.line(hip, Pt::new(2.0, 25.5), 3.2, detail);
-            canvas.line(Pt::new(3.0, 25.5), Pt::new(9.0, 26.0), 2.3, detail);
-            canvas.erase_disc(Pt::new(42.5, (SHOULDER_Y[pose] - 2.9) * stretch), 0.8);
         }
         RunnerCharacter::Orbit => {
             let theta = pose as f32 / FRAME_COUNT as f32 * TAU;

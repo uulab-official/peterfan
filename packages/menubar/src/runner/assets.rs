@@ -92,9 +92,6 @@ const LOAD_PRESET_CPUS: [f32; 4] = [0.0, 30.0, 65.0, 90.0];
 const CHANNELS_PER_PIXEL: usize = 4;
 const MATTE_DARK_THRESHOLD: u8 = 35;
 const CAT_BLUE_MATTE_MIN: u8 = 100;
-const VISIBLE_SOURCE_ALPHA_THRESHOLD: u8 = 1;
-const ALPHA_DELTA_THRESHOLD: u8 = 48;
-const NEAREST_POSE_VISIBLE_DELTA_RATIO: f32 = 0.35;
 
 #[derive(Clone, Copy)]
 struct Crop {
@@ -599,21 +596,8 @@ fn resample_source_cycle(
         .map(|pose| {
             let position =
                 phase_offset + pose as f32 * source_frames.len() as f32 / f32::from(FRAME_COUNT);
-            let left_index = position.floor() as usize % source_frames.len();
-            let right_index = (left_index + 1) % source_frames.len();
-            let mix = position.fract();
-            if mix == 0.0 {
-                return source_frames[left_index].clone();
-            }
-
-            if alpha_delta_ratio(&source_frames[left_index], &source_frames[right_index])
-                > NEAREST_POSE_VISIBLE_DELTA_RATIO
-            {
-                let source_index = if mix < 0.5 { left_index } else { right_index };
-                source_frames[source_index].clone()
-            } else {
-                interpolate_frames(&source_frames[left_index], &source_frames[right_index], mix)
-            }
+            let source_index = (position.round() as usize) % source_frames.len();
+            source_frames[source_index].clone()
         })
         .collect::<Vec<_>>();
     frames.try_into().map_err(|frames: Vec<RgbaFrame>| {
@@ -942,45 +926,6 @@ fn sample_axis(draw_index: u32, draw_span: u32, source_span: u32) -> u32 {
     draw_index.min(draw_span - 1) * source_span.saturating_sub(1) / (draw_span - 1)
 }
 
-fn alpha_delta_ratio(left: &RgbaFrame, right: &RgbaFrame) -> f32 {
-    let mut visible = 0usize;
-    let mut delta = 0usize;
-    for (left, right) in left
-        .chunks_exact(CHANNELS_PER_PIXEL)
-        .zip(right.chunks_exact(CHANNELS_PER_PIXEL))
-    {
-        let left_alpha = left[3];
-        let right_alpha = right[3];
-        if left_alpha >= VISIBLE_SOURCE_ALPHA_THRESHOLD
-            || right_alpha >= VISIBLE_SOURCE_ALPHA_THRESHOLD
-        {
-            visible += 1;
-            if left_alpha.abs_diff(right_alpha) > ALPHA_DELTA_THRESHOLD {
-                delta += 1;
-            }
-        }
-    }
-
-    if visible == 0 {
-        0.0
-    } else {
-        delta as f32 / visible as f32
-    }
-}
-
-fn interpolate_frames(left: &RgbaFrame, right: &RgbaFrame, mix: f32) -> RgbaFrame {
-    let mut frame = vec![0; left.len()];
-    for (index, (left, right)) in left
-        .chunks_exact(CHANNELS_PER_PIXEL)
-        .zip(right.chunks_exact(CHANNELS_PER_PIXEL))
-        .enumerate()
-    {
-        let alpha = (f32::from(left[3]) * (1.0 - mix) + f32::from(right[3]) * mix).round() as u8;
-        frame[index * CHANNELS_PER_PIXEL + 3] = alpha;
-    }
-    frame
-}
-
 #[cfg(test)]
 fn frame_at(
     frames: &[RgbaFrame; 8],
@@ -1028,6 +973,17 @@ mod tests {
             vec![0; (crate::runner::PIXEL_WIDTH * crate::runner::PIXEL_HEIGHT * 4) as usize];
         for pixel in frame.chunks_exact_mut(4) {
             pixel[3] = alpha;
+        }
+        frame
+    }
+
+    fn shifted_rect_frame(offset: u32) -> Vec<u8> {
+        let mut frame =
+            vec![0; (crate::runner::PIXEL_WIDTH * crate::runner::PIXEL_HEIGHT * 4) as usize];
+        for y in 10..=20 {
+            for x in (10 + offset)..=(25 + offset) {
+                frame[((y * crate::runner::PIXEL_WIDTH + x) * 4 + 3) as usize] = 255;
+            }
         }
         frame
     }
@@ -1094,6 +1050,18 @@ mod tests {
                 "pose {pose} should select source frame {expected_source}"
             );
         }
+    }
+
+    #[test]
+    fn resampling_never_blends_geometry_changing_pixel_frames() {
+        let source_frames = [0_u32, 1, 2, 3].map(shifted_rect_frame);
+        let resampled = resample_source_cycle(RunnerCharacter::Cat, &source_frames, 0.0)
+            .expect("resampled cycle");
+
+        assert!(resampled
+            .iter()
+            .flat_map(|frame| frame.chunks_exact(4))
+            .all(|pixel| { pixel[3] == 0 || pixel[3] == 255 }));
     }
 
     #[test]

@@ -41,6 +41,15 @@ ScratchIO's animated wild animals pack:
 - Direct asset: <https://opengameart.org/sites/default/files/anim-nme-ghost.png>
 - License: CC0; attribution is not required
 
+For animation-quality reference, the project also reviewed OpenGameArt's CC0
+`Runner Character` (eight 32×32 side-scroll frames) and Kenney's CC0 Blocky
+Characters pack. These are reference sources for pose timing and silhouette
+consistency; no files from those pages are bundled unless listed above:
+
+- OpenGameArt reference: <https://opengameart.org/content/runner-character>
+- Kenney reference: <https://kenney.nl/assets/blocky-characters>
+- Both pages were checked for their stated CC0 licensing before use as references.
+
 `dino-run-1-cc0.png` through `dino-run-8-cc0.png` are the eight side-view run
 frames from pzUH's Free Dino Sprites pack:
 

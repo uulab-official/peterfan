@@ -11,6 +11,8 @@ pub(crate) const VISIBLE_ALPHA_THRESHOLD: u8 = 96;
 const DELTA_ALPHA_THRESHOLD: u8 = 48;
 #[cfg(test)]
 const MIN_VISIBLE_OCCUPANCY: usize = 150;
+// The stationary plank is intentionally thinner than a standing runner.
+const MIN_PUSHUP_VISIBLE_OCCUPANCY: usize = 145;
 #[cfg(test)]
 const MAX_VISIBLE_OCCUPANCY: usize = 520;
 #[cfg(test)]
@@ -75,6 +77,8 @@ pub(crate) struct RunnerBandReport {
     pub allowed_centroid_drift: f32,
     pub baseline_variance: u32,
     pub minimum_frame_delta: usize,
+    pub minimum_region_delta: usize,
+    pub loop_seam_delta: usize,
     pub clipped: bool,
 }
 
@@ -249,6 +253,30 @@ fn build_character_report(
                 .iter()
                 .filter(|&&delta| delta > 0)
                 .count();
+            let split_y = bounds.min_y + bounds.height() / 2;
+            let minimum_region_delta = (0..8)
+                .map(|frame| {
+                    let next = (frame + 1) % 8;
+                    frame_region_delta(
+                        &cycle[frame],
+                        &cycle[next],
+                        bounds.min_x,
+                        bounds.min_y,
+                        bounds.max_x,
+                        split_y,
+                    )
+                    .min(frame_region_delta(
+                        &cycle[frame],
+                        &cycle[next],
+                        bounds.min_x,
+                        split_y.saturating_add(1),
+                        bounds.max_x,
+                        bounds.max_y,
+                    ))
+                })
+                .min()
+                .unwrap_or(0);
+            let loop_seam_delta = frame_delta(&cycle[7], &cycle[0]);
             Ok(RunnerBandReport {
                 cpu_pct,
                 bounds,
@@ -262,6 +290,8 @@ fn build_character_report(
                 allowed_centroid_drift: manifest.max_centroid_drift,
                 baseline_variance: metrics.baseline_variance,
                 minimum_frame_delta: metrics.minimum_frame_delta,
+                minimum_region_delta,
+                loop_seam_delta,
                 clipped: metrics.frames.iter().any(|frame| frame.clipped),
             })
         })
@@ -322,6 +352,23 @@ fn frame_delta(left: &[u8], right: &[u8]) -> usize {
     left.chunks_exact(CHANNELS_PER_PIXEL)
         .zip(right.chunks_exact(CHANNELS_PER_PIXEL))
         .filter(|(left, right)| left[3].abs_diff(right[3]) > DELTA_ALPHA_THRESHOLD)
+        .count()
+}
+
+fn frame_region_delta(
+    left: &[u8],
+    right: &[u8],
+    min_x: u32,
+    min_y: u32,
+    max_x: u32,
+    max_y: u32,
+) -> usize {
+    (min_y..=max_y)
+        .flat_map(|y| (min_x..=max_x).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let index = (y * PIXEL_WIDTH + x) as usize * CHANNELS_PER_PIXEL + 3;
+            left[index].abs_diff(right[index]) > DELTA_ALPHA_THRESHOLD
+        })
         .count()
 }
 
@@ -460,6 +507,63 @@ mod tests {
         assert_eq!(visible_alpha_frame_delta(&pixel(120), &pixel(200)), 1);
     }
 
+    fn region_visible_count(
+        frame: &RgbaFrame,
+        min_x: u32,
+        min_y: u32,
+        max_x: u32,
+        max_y: u32,
+    ) -> usize {
+        (min_y..=max_y)
+            .flat_map(|y| (min_x..=max_x).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let alpha = frame[(y * PIXEL_WIDTH + x) as usize * CHANNELS_PER_PIXEL + 3];
+                alpha > VISIBLE_ALPHA_THRESHOLD
+            })
+            .count()
+    }
+
+    fn region_visible_delta(
+        left: &RgbaFrame,
+        right: &RgbaFrame,
+        min_x: u32,
+        min_y: u32,
+        max_x: u32,
+        max_y: u32,
+    ) -> usize {
+        (min_y..=max_y)
+            .flat_map(|y| (min_x..=max_x).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let index = (y * PIXEL_WIDTH + x) as usize * CHANNELS_PER_PIXEL + 3;
+                left[index].abs_diff(right[index]) > DELTA_ALPHA_THRESHOLD
+            })
+            .count()
+    }
+
+    #[test]
+    fn pushup_moves_the_full_body_while_hands_and_feet_stay_grounded() {
+        let high = crate::runner::procedural::render(RunnerCharacter::Pushup, 0.0, 0)
+            .expect("high plank frame");
+        let low = crate::runner::procedural::render(RunnerCharacter::Pushup, 0.0, 3)
+            .expect("bottom frame");
+
+        assert!(region_visible_count(&high, 37, 24, 43, 29) > 0);
+        assert!(region_visible_count(&low, 37, 24, 43, 29) > 0);
+        assert!(region_visible_count(&high, 1, 23, 8, 29) > 0);
+        assert!(region_visible_count(&low, 1, 23, 8, 29) > 0);
+
+        let upper_body_delta = region_visible_delta(&high, &low, 24, 15, 43, 28);
+        let lower_body_delta = region_visible_delta(&high, &low, 1, 19, 22, 29);
+        assert!(
+            upper_body_delta >= 24,
+            "upper body delta: {upper_body_delta}"
+        );
+        assert!(
+            lower_body_delta >= 12,
+            "lower body delta: {lower_body_delta}"
+        );
+    }
+
     #[test]
     fn cross_band_lower_gate_is_nonzero_and_rejects_alpha_stable_bands() {
         let alpha_stable_deltas = [0; 8];
@@ -490,11 +594,18 @@ mod tests {
                 assert!(
                     band.max_centroid_drift <= band.allowed_centroid_drift
                         && band.minimum_frame_delta >= 24
+                        && (entry.name != "pushup"
+                            || (band.minimum_region_delta >= 4 && band.loop_seam_delta >= 24))
                         && band.bounds.min_x > 0
                         && band.bounds.min_y > 0
                         && band.bounds.max_x + 1 < PIXEL_WIDTH
                         && band.bounds.max_y + 1 < PIXEL_HEIGHT
-                        && band.min_occupancy >= MIN_VISIBLE_OCCUPANCY
+                        && band.min_occupancy
+                            >= if entry.name == "pushup" {
+                                MIN_PUSHUP_VISIBLE_OCCUPANCY
+                            } else {
+                                MIN_VISIBLE_OCCUPANCY
+                            }
                         && band.max_occupancy <= MAX_VISIBLE_OCCUPANCY
                         && band.contact_flight_delta >= 24
                         && !band.clipped,

@@ -21,3 +21,5 @@ env RUSTC="$rust_bin/rustc" PATH="$rust_bin:/usr/bin:/bin" \
 
 test -s "$task_root/target/runner-sprite-sheet.png"
 test -s "$task_root/target/runner-quality-report.json"
+rg -q '"minimum_region_delta"' "$task_root/target/runner-quality-report.json"
+rg -q '"loop_seam_delta"' "$task_root/target/runner-quality-report.json"
