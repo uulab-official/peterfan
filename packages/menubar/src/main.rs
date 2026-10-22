@@ -52,7 +52,9 @@ use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
 use objc2::AllocAnyThread;
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSCellImagePosition, NSEvent, NSImage, NSScreen, NSWindow, NSWorkspace};
+use objc2_app_kit::{
+    NSCellImagePosition, NSEvent, NSImage, NSImageCacheMode, NSScreen, NSWindow, NSWorkspace,
+};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{
     MainThreadMarker, NSData, NSDate, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize,
@@ -6289,6 +6291,9 @@ fn make_runner_native_image_from_rgba(
             "nsimage decode returned nil",
         )
     })?;
+    // Keep a raster cache for repeated status-item snapshot draws. The native
+    // timer reuses these tiny images without changing the shared CPU cadence.
+    image.setCacheMode(NSImageCacheMode::Always);
     image.setSize(NSSize::new(27.0, 18.0));
     // Template mode keeps every runner as the same white status-item glyph on
     // both light and dark menu bars.
@@ -7015,6 +7020,8 @@ fn dashboard_html_with_runner_pack(
             .replace(">App Preferences<", ">앱 설정<")
             .replace(">Menu bar<", ">메뉴 막대<")
             .replace(">Character<", ">캐릭터<")
+            .replace(">Update channel<", ">업데이트 채널<")
+            .replace(">Fan RPM<", ">팬 RPM<")
             .replace("Choose a character, or shuffle every minute.", "캐릭터를 고르거나 1분마다 랜덤으로 바꾸세요.")
             .replace(">CPU core graph<", ">코어별 CPU 그래프<")
             .replace(
@@ -7184,7 +7191,7 @@ fn dashboard_html_with_runner_pack(
                 "한 번에 최신 버전을 확인하고 검증·설치한 뒤 PeterFan을 다시 실행합니다.",
             )
             .replace(">Startup<", ">시작 설정<")
-            .replace("Start on login", "Run on startup")
+            .replace("Start on login", "부팅 시 자동 실행")
             .replace("Run PeterFan automatically on startup.", "부팅 시 PeterFan을 자동으로 실행합니다.")
             .replace(">Selected point<", ">선택한 점<")
             .replace(">Reset<", ">초기화<")
@@ -7199,6 +7206,31 @@ fn dashboard_html_with_runner_pack(
                 "팁: peterfan install-daemon을 한 번 실행하면 부팅 시에도 설정이 유지됩니다.",
             ),
     };
+    let mut html = html;
+    if lang == ResolvedLanguage::Ko {
+        for (english, korean) in [
+            ("Status", "상태"),
+            ("Fans", "팬 제어"),
+            ("Settings", "설정"),
+            ("System", "시스템"),
+            ("Live summary", "실시간 요약"),
+            ("Per-core CPU usage", "코어별 CPU 사용률"),
+            ("Menu bar style", "메뉴 막대 표시"),
+            ("Quick actions", "빠른 작업"),
+            ("Runner character", "러너 캐릭터"),
+            ("Update channel", "업데이트 채널"),
+            ("CPU temperature warning", "CPU 온도 경고"),
+            ("Fan control failures", "팬 제어 오류 알림"),
+            ("App updates", "앱 업데이트 알림"),
+            ("PeterFan configuration", "PeterFan 설정"),
+            ("System quick facts", "시스템 요약"),
+        ] {
+            html = html.replace(
+                &format!("aria-label=\"{english}\""),
+                &format!("aria-label=\"{korean}\""),
+            );
+        }
+    }
     html.replace("__RUNNER_OPTIONS__", &runner_picker_options(lang))
         .replace("__RUNNER_CHARACTERS__", &runner_character_values_json())
         .replace("__RUNNER_PREVIEWS__", runner_preview_alpha_json())
@@ -7436,7 +7468,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .character-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .character-chevron{width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);color:var(--dim);transition:transform .12s ease;}
 .character-select[aria-expanded="true"] .character-chevron{transform:translateY(2px) rotate(225deg);}
-.random-runner-icon{font-size:21px;text-align:center;line-height:18px;color:var(--text-secondary)}
+.random-runner-icon{font-size:21px;text-align:center;line-height:18px;color:var(--dim)}
 .character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:260px;overflow-y:auto;padding:5px;border:1px solid var(--panel-border);border-radius:8px;background:var(--surface-raised);box-shadow:var(--shadow);scrollbar-width:thin;overscroll-behavior:contain;}
 .character-menu.show{display:block;}
 .character-option{display:grid;grid-template-columns:38px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:34px;padding:1px 7px 1px 4px;border:0;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-size:10.5px;font-weight:650;text-align:left;cursor:pointer;}
@@ -7661,7 +7693,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="summary-cell cpu"><span class="summary-label" id="summary-cpu-label">CPU</span><span class="summary-value" id="summary-cpu">—</span><span class="summary-meter"><span class="bar-fill" id="summary-cpu-bar"></span></span><canvas class="summary-core-chart" id="summary-cpu-core-chart" aria-label="Per-core CPU usage" role="img"></canvas></div>
 <div class="summary-cell memory"><span class="summary-label" id="summary-mem-label">Memory</span><span class="summary-value" id="summary-mem">—</span><span class="summary-meter"><span class="bar-fill" id="summary-mem-bar"></span></span></div>
 <div class="summary-cell temperature"><span class="summary-label" id="summary-temp-label">CPU temp</span><span class="summary-value" id="summary-temp">—</span><span class="summary-meter"><span class="bar-fill" id="summary-temp-bar"></span></span></div>
-<div class="summary-cell fan"><span class="summary-label" id="summary-fan-label">Fans</span><span class="summary-value" id="summary-fan">—</span><span class="summary-meter"><span class="bar-fill info" id="summary-fan-bar"></span></span></div>
+<div class="summary-cell fan"><span class="summary-label" id="summary-fan-label">Fan RPM</span><span class="summary-value" id="summary-fan">—</span><span class="summary-meter"><span class="bar-fill info" id="summary-fan-bar"></span></span></div>
 </div>
 
 <div class="data-loading" id="data-loading" role="status" aria-live="polite"><span class="data-loading-dot"></span><span id="data-loading-text">Reading system sensors…</span><button class="loading-retry" id="data-loading-retry" style="display:none" onclick="retryDashboard()">Retry</button></div>
@@ -7779,7 +7811,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="health-grid" id="update-version-grid">
 <div class="health-row"><span class="health-label">Installed app</span><span class="health-value" id="update-current-version">—</span></div>
 <div class="health-row"><span class="health-label">Latest signed</span><span class="health-value" id="update-latest-version">—</span></div>
-<div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result">—</span></div>
+<div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result" role="status" aria-live="polite" aria-atomic="true">—</span></div>
 <div class="health-row"><span class="health-label">Update channel</span><select class="update-channel-select" id="update-channel" aria-label="Update channel" onchange="changeUpdateChannel(this.value)"><option value="stable">Stable releases</option><option value="pre-release">Pre-release builds</option></select></div>
 </div>
 <div class="release-notes-card" id="update-release-notes-card" style="display:none"><div class="release-notes-title">Release Notes</div><div class="release-notes-body" id="update-release-notes">—</div></div>
@@ -8064,20 +8096,29 @@ function retryDashboard(){
 }
 function setText(id,text){
   var el=document.getElementById(id);
-  if(el)el.textContent=text||'—';
+  var value=String(text||'—');
+  if(el&&el.textContent!==value)el.textContent=value;
 }
 function compareVersions(a,b){
-  function parts(v){
-    return String(v||'').replace(/^v/,'').split('.').slice(0,3).map(function(p){
-      var n=parseInt(p,10);
-      return isNaN(n)?0:n;
-    });
+  function numeric(a,b){return a.length===b.length?(a===b?0:(a<b?-1:1)):(a.length<b.length?-1:1);}
+  function parse(value){
+    var match=String(value||'').match(/^v?(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?(?:\.(0|[1-9][0-9]*))?(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/);
+    if(!match)return null;
+    var core=[match[1],match[2]||'0',match[3]||'0'];
+    if(core.some(function(part){return numeric(part,'18446744073709551615')>0;}))return null;
+    var pre=match[4]?match[4].split('.'):[];
+    if(pre.some(function(part){return /^[0-9]+$/.test(part)&&part.length>1&&part[0]==='0';}))return null;
+    return {core:core,pre:pre};
   }
-  var aa=parts(a),bb=parts(b);
-  for(var i=0;i<3;i++){
-    var av=aa[i]||0,bv=bb[i]||0;
-    if(av<bv)return -1;
-    if(av>bv)return 1;
+  var aa=parse(a),bb=parse(b);
+  if(!aa||!bb)return null;
+  for(var i=0;i<3;i++){var order=numeric(aa.core[i],bb.core[i]);if(order)return order;}
+  if(!aa.pre.length||!bb.pre.length)return aa.pre.length===bb.pre.length?0:(aa.pre.length?-1:1);
+  for(var j=0;j<Math.max(aa.pre.length,bb.pre.length);j++){
+    if(j>=aa.pre.length)return -1;if(j>=bb.pre.length)return 1;
+    var x=aa.pre[j],y=bb.pre[j];if(x===y)continue;
+    var xn=/^[0-9]+$/.test(x),yn=/^[0-9]+$/.test(y);
+    return xn&&yn?numeric(x,y):(xn!==yn?(xn?-1:1):(x<y?-1:1));
   }
   return 0;
 }
@@ -8108,7 +8149,8 @@ function renderUpdateStatus(status){
   var phase=s.phase||'';
   var current=s.current||(window.__pf_pending&&window.__pf_pending.app_version)||'';
   setText('update-current-version',current?('v'+String(current).replace(/^v/,'')):'—');
-  setText('update-latest-version',s.latest?('v'+String(s.latest).replace(/^v/,'')):'—');
+  var validLatest=s.latest&&compareVersions(s.latest,s.latest)!==null;
+  setText('update-latest-version',validLatest?('v'+String(s.latest).replace(/^v/,'')):(s.latest?(LANG==='ko'?'확인 불가':'Unverified'):'—'));
   var result=document.getElementById('update-check-result');
   var link=document.getElementById('update-release-link');
   var install=document.getElementById('rail-update-install');
@@ -8170,6 +8212,7 @@ function renderUpdateStatus(status){
   } else if(s.latest){
     var comparison=compareVersions(current,s.latest);
     var newer=comparison<0,ahead=comparison>0;
+    if(comparison===null){s=Object.assign({},s,{message:LANG==='ko'?'릴리스 버전을 확인할 수 없습니다. 다시 확인해 주세요.':'Release version could not be verified. Please check again.'});}
     msg=ahead
       ?(LANG==='ko'
         ?'현재 버전이 공개 서명 릴리스보다 최신입니다. 공식 릴리스가 공개되면 업데이트할 수 있습니다.'
@@ -8177,11 +8220,11 @@ function renderUpdateStatus(status){
       :(s.message||(newer
         ?(LANG==='ko'?'새 서명 릴리스를 사용할 수 있습니다.':'A newer signed PeterFan release is available.')
         :(LANG==='ko'?'최신 서명 릴리스를 사용 중입니다.':'You are running the latest signed release.')));
-    pillText=newer
+    pillText=comparison===null?(LANG==='ko'?'확인 필요':'Needs verification'):newer
       ?(LANG==='ko'?'업데이트 있음':'Update')
       :(ahead?(LANG==='ko'?'공식 릴리스 대기':'Awaiting Signed Release'):(LANG==='ko'?'최신':'Current'));
-    pillTone=newer?'warn':(ahead?'info':'ok');
-    setText('update-check-result',newer
+    pillTone=comparison===null?'warn':(newer?'warn':(ahead?'info':'ok'));
+    setText('update-check-result',comparison===null?(LANG==='ko'?'버전 정보 확인 필요':'invalid version metadata'):newer
       ?(LANG==='ko'?'업데이트 가능':'update available')
       :(ahead?(LANG==='ko'?'서명 릴리스보다 앞섬':'ahead of signed release'):(LANG==='ko'?'최신 상태':'up to date')));
   } else {
@@ -8206,7 +8249,9 @@ function renderUpdateStatus(status){
       ?(LANG==='ko'?'설치 중…':'Installing…')
       :(checking
         ?(LANG==='ko'?'확인 중…':'Checking…')
-        :(updateKnown
+        :(s.latest&&comparison===null
+          ?(LANG==='ko'?'확인 필요':'Needs verification')
+          :(updateKnown
           ?(s.install_ready===true
             ?(LANG==='ko'?'지금 업데이트':'Install Update')
             :(LANG==='ko'?'설치 준비 중':'Preparing Update'))
@@ -8214,7 +8259,7 @@ function renderUpdateStatus(status){
             ?(LANG==='ko'?'최신 버전':'Up to Date')
             :(s.latest&&comparison>0
               ?(LANG==='ko'?'공식 릴리스 대기':'Awaiting Signed Release')
-              :(LANG==='ko'?'확인 전':'Not checked')))));
+              :(LANG==='ko'?'확인 전':'Not checked'))))));
   }
   rememberUpdateStatus(APP_UPDATE_STATUS);
 }
@@ -8347,6 +8392,10 @@ function updateHealthVerdict(d){
   title.textContent=heading;
   detail.textContent=parts.join(' · ');
 }
+function summaryFanRpm(d){
+  var value=Number(d.fan_avg_rpm);
+  return (d.fans||[]).length&&Number.isFinite(value)&&value>=0?Math.round(value).toLocaleString('en-US'):'—';
+}
 function cssColor(token,fallback){
   var value=getComputedStyle(document.documentElement).getPropertyValue(token);
   return String(value||'').trim()||fallback;
@@ -8382,7 +8431,9 @@ window.__pf={
    set('summary-cpu',d.cpu_text||'—');
    set('summary-mem',d.mem_text||'—');
    set('summary-temp',d.temp_present?(d.temp_stale?'--°C':(d.temp_text||'—')):'—');
-   set('summary-fan',d.fan_avg_rpm_text||'—');
+   set('summary-fan',summaryFanRpm(d));
+   var fanSummary=document.getElementById('summary-fan');
+   if(fanSummary){fanSummary.title=d.fan_avg_rpm_text||'—';fanSummary.setAttribute('aria-label',(LANG==='ko'?'팬 평균 속도 ':'Average fan speed ')+(d.fan_avg_rpm_text||'—'));}
    bar('summary-cpu-bar',d.cpu_pct||0);
    bar('summary-mem-bar',d.mem_pct||0,'info');
    bar('summary-temp-bar',d.temp_stale?0:(d.temp_pct||0),d.temp_stale?'info':(d.temp_cls||''));
@@ -8439,7 +8490,15 @@ window.__pf={
  } else if(view==='fan'){
    updateSetup(d);
    var note=document.getElementById('ctl-note');
-   if(d.fan_control_supported){
+   var fanStateReady=d.fan_control_state_ready!==false;
+   var guide=document.getElementById('profile-guide');if(guide)guide.style.display=fanStateReady?'':'none';
+   if(!fanStateReady){
+     set('ctl-status',LANG==='ko'?'상태 확인 중…':'Checking fan state…');
+     updateProfileStrip(Object.assign({},d,{can_control:false}));
+     if(note)note.style.display='none';
+     var pendingCards=document.getElementById('fan-cards');if(pendingCards)pendingCards.innerHTML='';
+     updateFanEmptyState(d);
+   } else if(d.fan_control_supported){
      var fanCount=Number(d.fan_count||0),controllableCount=Number(d.controllable_fan_count||0);
      set('ctl-status',controllableCount>0
        ?(d.ctl_status||'')
@@ -8615,7 +8674,11 @@ function renderFanCards(fans,enabled){
     var useRpm=f.max_rpm>0;
     var targetPct=f.override_pct!=null?f.override_pct:f.pct;
     card.dataset.curPct=targetPct;
-    card.querySelector('.fn').textContent=f.l;
+    var fanName=f.l||(LANG==='ko'?'팬 '+f.id:'Fan '+f.id);
+    card.querySelector('.fn').textContent=fanName;
+    var unit=useRpm?'RPM':'%';
+    card.querySelector('input[type=range]').setAttribute('aria-label',fanName+' '+(LANG==='ko'?'목표 속도 조절':'target speed slider')+' ('+unit+')');
+    card.querySelector('.fa-num').setAttribute('aria-label',fanName+' '+(LANG==='ko'?'목표 속도 입력':'target speed input')+' ('+unit+')');
     card.querySelector('.fan-bar i').style.width=Math.max(0,Math.min(100,f.pct))+'%';
     var appliedTarget=f.target_pct==null?null:Number(f.target_pct);
     var targetRpm=f.target_rpm==null?null:Number(f.target_rpm);
@@ -9466,7 +9529,7 @@ function renderProcesses(d){
     status.className='proc-status '+(confirmationActive||action.phase==='pending'?'pending':(action.code==='requested'?'ok':(action.phase==='complete'?'error':'')));
   }
   var rows=d.procs||[],pl=document.getElementById('procs-list');
-  show('procs-empty',rows.length===0&&d.slow_data_ready);
+  setVisible('procs-empty',rows.length===0&&d.slow_data_ready);
   if(!pl)return;
   pl.innerHTML='';
   rows.forEach(function(p){
@@ -9892,7 +9955,7 @@ function updateSetup(d){
       :(LANG==='ko'?'팬 제어 설정':'Set up fan control');
     fan.textContent=FAN_CONTROL_FIX_PENDING
       ?(LANG==='ko'?'설치 중…':'Installing…')
-      :(d.daemon_update_needed?(LANG==='ko'?'재설치':'Reinstall'):(LANG==='ko'?'팬':'Fan'));
+      :(d.daemon_update_needed?(LANG==='ko'?'재설치':'Reinstall'):(LANG==='ko'?'설정하기':'Set Up'));
   }
   var more=document.getElementById('setup-more');
   if(more){
@@ -10076,6 +10139,16 @@ function updateHardwareAvailability(d){
 function updateFanEmptyState(d){
   var empty=document.getElementById('fan-empty-state');
   if(!empty)return;
+  if(d.fan_control_state_ready===false){
+    empty.style.display='';
+    var loadingTitle=empty.querySelector('.empty-state-title');
+    var loadingCopy=empty.querySelector('.empty-state-copy');
+    if(loadingTitle)loadingTitle.textContent=LANG==='ko'?'팬 상태 확인 중…':'Checking fan state…';
+    if(loadingCopy)loadingCopy.textContent=LANG==='ko'?'팬 센서와 제어 가능 여부를 확인하고 있습니다.':'Reading fan sensors and checking available controls.';
+    empty.setAttribute('aria-busy','true');
+    return;
+  }
+  empty.setAttribute('aria-busy','false');
   var fans=d.fans||[];
   var controllable=fans.filter(function(f){return !!f.controllable;}).length;
   var show=controllable===0;
@@ -12302,7 +12375,7 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
             assert!(en.contains(&format!(r##"id="{id}""##)));
         }
         assert!(en.contains(r#"id="summary-temp-label">CPU temp<"#));
-        assert!(en.contains(r#"id="summary-fan-label">Fans<"#));
+        assert!(en.contains(r#"id="summary-fan-label">Fan RPM<"#));
         assert!(en.contains(r#"id="summary-cpu-core-chart"#));
         assert!(en.contains(r#"id="show-core-graph-setting"#));
         assert!(en.contains(r#"id="cpu-core-graph-toggle"#));

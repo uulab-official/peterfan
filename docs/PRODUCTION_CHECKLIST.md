@@ -3,6 +3,45 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
+## Local v1.32.4 production polish — 2026-10-22
+
+- [x] Settings/system process rendering no longer throws an out-of-scope
+      JavaScript helper error. Empty, populated and repeated snapshots execute
+      successfully; browser reproduction changed from `show is not defined`
+      to zero recorded script errors across those views.
+- [x] Fan detection has one pending state; compact RPM values fit; Korean
+      startup/channel/navigation and fan target accessible names are complete.
+      Dark/light 440×520 browser QA uses the actual renderer with fixture data.
+- [x] Native and dashboard SemVer ordering agree for prerelease/stable upgrades
+      and malformed versions cannot offer installation.
+- [x] Daemon installation completion requires the resident IPC version, not
+      socket reachability alone. RPM read failures are distinct from stalls,
+      restore active targets once and retain cooldown while sampling continues.
+      The three repeated-loop regression tests failed before the correction.
+- [x] All-feature workspace tests: 430 passed, 0 failed, 7 ignored; clippy with
+      warnings denied, formatting, release build, docs and 43 smoke checks pass.
+      Six JavaScript behavior checks run within the smoke suite.
+- [x] Final local arm64 app is Developer ID signed, notarized, stapled and
+      accepted by Gatekeeper, installed with byte-for-byte settings preservation
+      and backups. Installed app/helper hashes match the signed candidate.
+- [x] Real native startup, one menu-bar process, tray creation, WebView readiness
+      and live CPU/thermal metric readiness were observed. Native accessibility
+      capture timed out; browser screenshots are not native hardware evidence.
+- [x] Repeated native runner drawing uses an explicit raster cache while keeping
+      the shared CPU cadence. A short A/B measurement and native call-stack
+      sample are recorded in the audit; no efficiency parity is claimed.
+- [ ] Longer controlled rendering/energy measurements and a stable CPU budget.
+      The observed AppKit status-item snapshot cost remains a watchpoint.
+- [ ] Privileged system daemon replacement, physical fan fail-safe checks and
+      extended hardware soak. The existing daemon remains unreachable and fan
+      control still reports `needs_setup`; metrics and thermal reads are ready.
+- [ ] Public v1.32.4 release/OTA. GitHub latest was freshly read back as v1.32.2;
+      Homebrew remains pinned to that verified public release.
+
+See [audit, fixes and evidence limits](PRODUCTION_POLISH_2026-10-22.md).
+Local receipts/logs are `target/production-polish-*.json` and
+`target/production-*.log`; backups are in `dist/production-polish-backups/`.
+
 ## Local v1.32.3 runner polish — 2026-10-22
 
 - [x] All 20 characters retain the shared CPU clock; authored anatomy,

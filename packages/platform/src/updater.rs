@@ -474,18 +474,29 @@ fn is_checksum_asset(name: &str) -> bool {
     name == "checksums.txt"
 }
 
-/// Numeric semver-ish comparison (`"1.13.0"` vs `"1.9.6"` — a naive string
-/// compare would get this backwards). Missing/non-numeric components count
-/// as 0, so `"1.13"` and `"1.13.0"` compare equal.
+/// Compare SemVer precedence, ignoring build metadata. A single lowercase `v`
+/// prefix is accepted and missing minor/patch components are padded with zero.
+/// Invalid versions on either side fail closed (no update is offered).
 pub fn is_newer(current: &str, latest: &str) -> bool {
-    fn parts(s: &str) -> [u64; 3] {
-        let mut out = [0u64; 3];
-        for (i, p) in s.split('.').take(3).enumerate() {
-            out[i] = p.parse().unwrap_or(0);
+    fn parse(version: &str) -> Option<semver::Version> {
+        let version = version.strip_prefix('v').unwrap_or(version);
+        let core_end = version.find(['-', '+']).unwrap_or(version.len());
+        let (core, suffix) = version.split_at(core_end);
+        let mut normalized = core.to_string();
+        match core.split('.').count() {
+            1 => normalized.push_str(".0.0"),
+            2 => normalized.push_str(".0"),
+            3 => {}
+            _ => return None,
         }
-        out
+        normalized.push_str(suffix);
+        semver::Version::parse(&normalized).ok()
     }
-    parts(latest) > parts(current)
+
+    match (parse(current), parse(latest)) {
+        (Some(current), Some(latest)) => latest.cmp_precedence(&current).is_gt(),
+        _ => false,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2144,6 +2155,74 @@ mod tests {
     fn is_newer_treats_missing_components_as_zero() {
         assert!(!is_newer("1.13", "1.13.0"));
         assert!(is_newer("1.13", "1.13.1"));
+        assert!(!is_newer("1", "1.0"));
+        assert!(is_newer("1.13-beta.1", "1.13"));
+    }
+
+    #[test]
+    fn is_newer_handles_prerelease_upgrade_paths() {
+        assert!(is_newer("1.32.2", "1.32.3-beta.1"));
+        assert!(is_newer("1.32.3-beta.1", "1.32.3"));
+        assert!(!is_newer("1.32.3", "1.32.3-beta.1"));
+        assert!(!is_newer("1.32.3-beta.1", "1.32.2"));
+    }
+
+    #[test]
+    fn is_newer_obeys_semver_prerelease_identifier_precedence() {
+        let ordered = [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.10",
+            "1.0.0-rc.1",
+            "1.0.0",
+        ];
+        for pair in ordered.windows(2) {
+            assert!(is_newer(pair[0], pair[1]), "{} -> {}", pair[0], pair[1]);
+            assert!(!is_newer(pair[1], pair[0]));
+        }
+        assert!(is_newer(
+            "1.0.0-999999999999999999999999999999",
+            "1.0.0-alpha"
+        ));
+    }
+
+    #[test]
+    fn is_newer_accepts_v_prefix_and_ignores_build_metadata() {
+        assert!(is_newer("v1.32.2", "v1.32.3-beta.1+build.7"));
+        assert!(!is_newer("1.32.3+build.1", "1.32.3+build.2"));
+        assert!(!is_newer("1.32.3-beta.1+build.2", "1.32.3-beta.1+build.1"));
+    }
+
+    #[test]
+    fn is_newer_fails_closed_for_invalid_versions() {
+        for invalid in [
+            "",
+            "v",
+            "V1.2.3",
+            "vv1.2.3",
+            " 1.2.3",
+            "1.2.3\n",
+            "1..2",
+            ".1",
+            "1.2.",
+            "1.2.3.4",
+            "01.2.3",
+            "1.02.3",
+            "1.2.03",
+            "1.2.3-01",
+            "1.2.3-beta..1",
+            "1.2.3-",
+            "1.2.3+",
+            "1.2.3+bad_metadata",
+            "18446744073709551616.0.0",
+            "garbage",
+        ] {
+            assert!(!is_newer(invalid, "2.0.0"), "invalid current: {invalid:?}");
+            assert!(!is_newer("0.0.0", invalid), "invalid latest: {invalid:?}");
+        }
     }
 
     #[test]

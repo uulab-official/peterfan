@@ -315,6 +315,13 @@ PY
     fi
     rm -f "$js_source" /tmp/smoke_js.$$
     rmdir "$js_dir"
+    if node scripts/check-dashboard-behavior.mjs >/tmp/smoke_behavior.$$ 2>&1; then
+        pass "dashboard state and SemVer behavior"
+    else
+        fail "dashboard state and SemVer behavior"
+        sed 's/^/      /' /tmp/smoke_behavior.$$
+    fi
+    rm -f /tmp/smoke_behavior.$$
 else
     echo "== embedded menu-bar JavaScript syntax skipped (node not installed) =="
 fi

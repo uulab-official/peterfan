@@ -8,6 +8,7 @@
 //! - `profile <name>` — switch the active curve profile
 //! - `auto`           — hand fans back to the OS
 //! - `ping`           — liveness check
+//! - `version`        — version of the process answering IPC
 //! - `reload`         — reload the logged-in user's validated config
 //! - `config-source`  — confirm support for user-aware config loading
 //!
@@ -57,11 +58,87 @@ pub fn send_command(cmd: &str) -> Option<String> {
 /// operations such as signature verification need longer than normal fan
 /// control commands, while the default path should remain responsive.
 pub fn send_command_with_timeout(cmd: &str, timeout: std::time::Duration) -> Option<String> {
+    send_command_on_stream(connect()?, cmd, timeout)
+}
+
+fn send_command_on_stream(
+    mut stream: UnixStream,
+    cmd: &str,
+    timeout: std::time::Duration,
+) -> Option<String> {
     use std::io::{BufRead, BufReader, Write};
-    let mut stream = connect()?;
-    let _ = stream.set_read_timeout(Some(timeout));
+    stream.set_read_timeout(Some(timeout)).ok()?;
+    stream.set_write_timeout(Some(timeout)).ok()?;
     writeln!(stream, "{cmd}").ok()?;
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).ok()?;
     Some(line.trim().to_string())
+}
+
+/// Query the resident process. A socket connection or legacy ping reply does
+/// not establish that the replacement daemon has actually started.
+pub fn daemon_version() -> Option<String> {
+    daemon_version_on_stream(connect()?, std::time::Duration::from_millis(500))
+}
+
+fn daemon_version_on_stream(stream: UnixStream, timeout: std::time::Duration) -> Option<String> {
+    parse_daemon_version_reply(&send_command_on_stream(stream, "version", timeout)?)
+}
+
+fn parse_daemon_version_reply(reply: &str) -> Option<String> {
+    let version = reply.strip_prefix("ok peterfand ")?;
+    semver::Version::parse(version).ok()?;
+    Some(version.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resident_version_reply_requires_an_explicit_valid_version() {
+        assert_eq!(
+            parse_daemon_version_reply("ok peterfand 1.32.3-beta.1+build.7"),
+            Some("1.32.3-beta.1+build.7".into())
+        );
+        for reply in [
+            "error: unknown command",
+            "ok peterfand (macOS)",
+            "ok rules:balanced (macOS)",
+            "",
+            "ok peterfand unknown",
+            "ok peterfand 1.32.3 extra",
+            "ok peterfand 1.32.3-",
+            "ok peterfand 1.32.3\n",
+        ] {
+            assert_eq!(parse_daemon_version_reply(reply), None, "{reply:?}");
+        }
+    }
+
+    #[test]
+    fn resident_version_query_exchanges_a_read_only_command_over_ipc() {
+        use std::io::{BufRead, BufReader, Write};
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let daemon = std::thread::spawn(move || {
+            let mut command = String::new();
+            BufReader::new(server.try_clone().unwrap())
+                .read_line(&mut command)
+                .unwrap();
+            assert_eq!(command, "version\n");
+            writeln!(server, "ok peterfand 1.32.3").unwrap();
+        });
+        assert_eq!(
+            daemon_version_on_stream(client, std::time::Duration::from_millis(500)),
+            Some("1.32.3".into()),
+        );
+        daemon.join().unwrap();
+    }
+
+    #[test]
+    fn a_connected_but_unresponsive_daemon_does_not_prove_runtime_health() {
+        let (client, _server) = UnixStream::pair().unwrap();
+        let start = std::time::Instant::now();
+        assert!(daemon_version_on_stream(client, std::time::Duration::from_millis(30)).is_none());
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
 }
