@@ -1769,6 +1769,7 @@ mod tests {
         assert_eq!(selected_profile(&state, &context), Profile::Silent);
     }
 
+    #[cfg(unix)]
     #[test]
     fn daemon_advertises_logged_in_user_config_support() {
         let reply = handle_command("config-source", &test_state());
