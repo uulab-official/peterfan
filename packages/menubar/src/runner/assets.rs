@@ -651,7 +651,7 @@ mod tests {
     fn constant_alpha_frame(alpha: u8) -> Vec<u8> {
         let mut frame =
             vec![0; (crate::runner::PIXEL_WIDTH * crate::runner::PIXEL_HEIGHT * 4) as usize];
-        for pixel in frame.chunks_exact_mut(4) {
+        for pixel in frame.as_chunks_mut::<4>().0.iter_mut() {
             pixel[3] = alpha;
         }
         frame
@@ -776,7 +776,7 @@ mod tests {
 
         assert!(resampled
             .iter()
-            .flat_map(|frame| frame.chunks_exact(4))
+            .flat_map(|frame| frame.as_chunks::<4>().0.iter())
             .all(|pixel| { pixel[3] == 0 || pixel[3] == 255 }));
     }
 

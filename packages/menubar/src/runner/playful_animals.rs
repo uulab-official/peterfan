@@ -313,8 +313,10 @@ mod tests {
                 let deltas: Vec<_> = (0..8)
                     .map(|p| {
                         pair[0][p]
-                            .chunks_exact(4)
-                            .zip(pair[1][p].chunks_exact(4))
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .zip(pair[1][p].as_chunks::<4>().0.iter())
                             .filter(|(l, r)| l[3].abs_diff(r[3]) > 48 && l[3].max(r[3]) > 96)
                             .count()
                     })

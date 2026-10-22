@@ -54,6 +54,7 @@ const FAN_READBACK_PROGRESS_GRACE_MS: u64 = 6_000;
 const FAN_READBACK_MIN_PROGRESS_RPM: u32 = 50;
 const FAN_READBACK_STALE_CONFIRMATIONS: u32 = 3;
 const FAN_READBACK_RETRY_SECS: u64 = 15;
+#[cfg(any(unix, test))]
 const SENSOR_STALE_MIN_MS: u64 = 6_000;
 
 /// Move a requested fan duty toward its target at a bounded rate. The control
@@ -130,6 +131,7 @@ fn state_file_path() -> PathBuf {
     }
 }
 
+#[cfg(unix)]
 fn save_state(state: &State) {
     let saved = SavedState {
         mode: if state.auto {
@@ -192,6 +194,7 @@ fn logged_in_user_config_path() -> Option<PathBuf> {
     home.is_absolute().then(|| macos_user_config_path(&home))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn load_valid_config_file(path: &std::path::Path) -> Result<Config, String> {
     const MAX_CONFIG_BYTES: u64 = 256 * 1024;
     let metadata = std::fs::symlink_metadata(path)
@@ -256,6 +259,7 @@ struct State {
     manual: bool,
     /// Backend name (e.g. "macos", "mock") — surfaced in IPC replies so the UI
     /// can tell real control from a simulated daemon.
+    #[cfg(unix)]
     backend: String,
     /// Live copy of the config, refreshed by `reload`. The base profile and
     /// automation rules are read from here each control-loop tick.
@@ -437,6 +441,7 @@ fn run(cli: Cli) -> Result<()> {
             // choice below opts into PeterFan's control loop.
             auto: fresh_daemon_starts_in_auto(cli.profile.is_some()),
             manual: false,
+            #[cfg(unix)]
             backend: provider.name().to_string(),
             config: resolved_cfg,
             last_temps: Vec::new(),
@@ -596,6 +601,7 @@ fn unix_now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+#[cfg(any(unix, test))]
 fn sensor_stale_after_ms(interval_secs: u64) -> u64 {
     interval_secs
         .max(1)
@@ -603,6 +609,7 @@ fn sensor_stale_after_ms(interval_secs: u64) -> u64 {
         .max(SENSOR_STALE_MIN_MS)
 }
 
+#[cfg(any(unix, test))]
 fn sensor_sample_freshness(
     sampled_at_unix_ms: Option<u64>,
     now_unix_ms: u64,
@@ -805,6 +812,7 @@ fn sleep_control_interval(interval: u64) {
     }
 }
 
+#[cfg(unix)]
 fn request_apply_now() {
     APPLY_NOW.store(true, Ordering::Release);
     if let Some(control_thread) = CONTROL_THREAD
@@ -816,6 +824,7 @@ fn request_apply_now() {
     }
 }
 
+#[cfg(unix)]
 fn mark_control_requested(state: &mut State) {
     state.control_revision = state.control_revision.wrapping_add(1).max(1);
     request_apply_now();
@@ -1184,6 +1193,7 @@ fn control_loop_while(
     Ok(())
 }
 
+#[cfg(unix)]
 fn apply_cached_control_request(
     provider: &dyn HardwareProvider,
     fan_ids: &[String],
@@ -1383,7 +1393,7 @@ fn start_self_reinstall(path: &str) -> Result<String, String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn start_self_reinstall(_path: &str) -> Result<String, String> {
     Err("error: fan-control reinstall is only available on macOS".to_string())
 }
@@ -1767,6 +1777,7 @@ mod tests {
             fan_overrides: std::collections::HashMap::new(),
             auto: false,
             manual: false,
+            #[cfg(unix)]
             backend: "mock".to_string(),
             config: peterfan_core::config::Config::default(),
             last_temps: Vec::new(),

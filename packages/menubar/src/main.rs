@@ -27,11 +27,13 @@ use std::sync::atomic::{AtomicU32, AtomicUsize};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(any(target_os = "macos", test))]
+use tao::dpi::LogicalPosition;
+use tao::dpi::LogicalSize;
 #[cfg(any(not(target_os = "macos"), test))]
 use tao::dpi::PhysicalPosition;
 #[cfg(not(target_os = "macos"))]
 use tao::dpi::PhysicalSize;
-use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 #[cfg(not(target_os = "macos"))]
@@ -80,15 +82,18 @@ use peterfan_core::types::SensorSource;
 use peterfan_core::types::{Celsius, Fan, TempSensor};
 use peterfan_core::types::{SensorGroup, SensorKind};
 use peterfan_core::{HardwareProvider, SystemMonitor};
+#[cfg(any(target_os = "macos", test))]
+use runner::ease_motion_cpu as ease_runner_motion_cpu;
+#[cfg(target_os = "macos")]
+use runner::{advance_phase as advance_runner_phase, NATIVE_TICK as RUNNER_NATIVE_TICK};
 use runner::{
-    advance_phase as advance_runner_phase, ease_motion_cpu as ease_runner_motion_cpu,
     enabled as runner_enabled, frame_interval_for_character as runner_character_interval,
     frame_interval_for_pose as runner_frame_interval_for_pose, load_band as runner_load_band,
     load_band_with_hysteresis as runner_load_band_with_hysteresis,
     should_animate as runner_should_animate, smooth_cpu as smooth_runner_cpu,
     uses_event_loop_timer as runner_uses_event_loop_timer, RunnerBuildError, RunnerPack,
-    FRAME_COUNT as RUNNER_FRAME_COUNT, NATIVE_TICK as RUNNER_NATIVE_TICK,
-    PIXEL_HEIGHT as RUNNER_PIXEL_HEIGHT, PIXEL_WIDTH as RUNNER_PIXEL_WIDTH,
+    FRAME_COUNT as RUNNER_FRAME_COUNT, PIXEL_HEIGHT as RUNNER_PIXEL_HEIGHT,
+    PIXEL_WIDTH as RUNNER_PIXEL_WIDTH,
 };
 #[cfg(test)]
 use runner::{
@@ -678,6 +683,7 @@ struct TrayMenu {
 /// popover reads it fresh so a language change takes effect on the very next
 /// popover/detail-window open, without needing a full app relaunch).
 struct L10n {
+    #[cfg(target_os = "macos")]
     enable_fan_control: &'static str,
     auto: &'static str,
     rules: &'static str,
@@ -703,6 +709,7 @@ struct L10n {
 fn strings(lang: ResolvedLanguage) -> L10n {
     match lang {
         ResolvedLanguage::En => L10n {
+            #[cfg(target_os = "macos")]
             enable_fan_control: "Enable Fan Control (One-Time Setup)…",
             auto: "Auto (OS-managed)",
             rules: "Rules",
@@ -725,6 +732,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             style_both: "Number + Runner",
         },
         ResolvedLanguage::Ko => L10n {
+            #[cfg(target_os = "macos")]
             enable_fan_control: "팬 제어 활성화 (최초 1회 설정)…",
             auto: "자동 (OS 관리)",
             rules: "규칙",
@@ -753,6 +761,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
 struct RunnerAssets {
     pack: RunnerPack,
     icons: Vec<Icon>,
+    #[cfg(any(target_os = "macos", test))]
     native_images: Vec<NativeRunnerImage>,
 }
 
@@ -1316,6 +1325,7 @@ fn copy_config_export() {
     });
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn daemon_supports_user_config(reply: Option<&str>) -> bool {
     reply.is_some_and(|reply| reply.starts_with("ok logged-in-user"))
 }
@@ -1787,6 +1797,7 @@ fn cached_installed_daemon_version() -> Option<String> {
     version
 }
 
+#[cfg(target_os = "macos")]
 fn clear_daemon_version_cache() {
     *DAEMON_VERSION_CACHE
         .lock()
@@ -1797,11 +1808,13 @@ fn daemon_control_usable(daemon_version: Option<&str>) -> bool {
     daemon_version.is_some_and(|version| !peterfan_platform::daemon_update_required(version))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn clear_daemon_update_prompt_state(cfg: &mut peterfan_core::config::Config) {
     cfg.menubar.daemon_update_prompt_dismissed_for = None;
     cfg.menubar.daemon_update_prompt_snoozed_until_unix = None;
 }
 
+#[cfg(target_os = "macos")]
 fn persist_clear_daemon_update_prompt_state() {
     let mut cfg = peterfan_platform::config::load();
     clear_daemon_update_prompt_state(&mut cfg);
@@ -3804,6 +3817,7 @@ fn monitor_bounds(monitor: &MonitorHandle) -> DisplayBounds {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LogicalPopoverAnchor {
     x: f64,
@@ -3812,6 +3826,7 @@ struct LogicalPopoverAnchor {
     scale: f64,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn popover_position_for_anchor(
     anchor: LogicalPopoverAnchor,
     popover_width: f64,
@@ -3826,6 +3841,7 @@ fn popover_position_for_anchor(
     LogicalPosition::new(x, anchor.y)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn popover_height_for_anchor(anchor: LogicalPopoverAnchor) -> f64 {
     let available = (anchor.display.bottom() - anchor.y - 12.0).max(200.0);
     POPOVER_H.min(available)
@@ -3934,6 +3950,7 @@ fn configure_native_popover_window(
     Some(native_window.frame())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn appkit_window_top_left(position: LogicalPosition<f64>, primary_top: f64) -> (f64, f64) {
     (position.x, primary_top - position.y)
 }
@@ -5497,6 +5514,7 @@ fn is_enable_fan_control_id(_tm: &TrayMenu, _id: &tray_icon::menu::MenuId) -> bo
 /// Run the one-time privileged daemon install (macOS admin-password dialog)
 /// from the menu bar directly — a GUI-only user never has to open a
 /// terminal. Blocks on the dialog, so it must run off the event-loop thread.
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FanControlInstallPlan {
     AlreadyReady,
@@ -5505,6 +5523,7 @@ enum FanControlInstallPlan {
     InstalledButUnavailable,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn fan_control_install_plan(
     installed_version: Option<&str>,
     daemon_reachable: bool,
@@ -5716,11 +5735,8 @@ fn stale_daemon_version() -> Option<String> {
         None
     }
 }
-#[cfg(not(target_os = "macos"))]
-fn stale_daemon_version() -> Option<String> {
-    None
-}
 
+#[cfg(any(target_os = "macos", test))]
 fn daemon_can_self_update_silently(installed_version: &str) -> bool {
     peterfan_platform::daemon_update_required(installed_version)
         && peterfan_platform::daemon_self_reinstall_supported(installed_version)
@@ -5772,6 +5788,7 @@ fn maybe_silently_update_stale_daemon() {
 #[cfg(not(target_os = "macos"))]
 fn maybe_silently_update_stale_daemon() {}
 
+#[cfg(any(target_os = "macos", test))]
 fn should_prompt_stale_daemon_update(
     _cfg: &peterfan_core::config::Config,
     _current_version: &str,
@@ -6116,7 +6133,7 @@ impl RunnerAssets {
     fn from_pack_with<FI, FN>(
         pack: RunnerPack,
         mut icon_builder: FI,
-        mut native_builder: FN,
+        _native_builder: FN,
     ) -> Result<Self, RunnerBuildError>
     where
         FI: FnMut(RunnerCharacter, usize, &[u8]) -> Result<Icon, RunnerBuildError>,
@@ -6129,6 +6146,9 @@ impl RunnerAssets {
             .enumerate()
             .map(|(index, rgba)| icon_builder(character, index, rgba))
             .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(any(target_os = "macos", test))]
+        let mut native_builder = _native_builder;
+        #[cfg(any(target_os = "macos", test))]
         let native_images = pack
             .frames()
             .iter()
@@ -6138,6 +6158,7 @@ impl RunnerAssets {
         Ok(Self {
             pack,
             icons,
+            #[cfg(any(target_os = "macos", test))]
             native_images,
         })
     }
@@ -6717,7 +6738,7 @@ fn write_runner_quality_artifacts() -> Result<RunnerQaArtifacts, RunnerBuildErro
 
     let (width, height) = runner_qa_sheet_dimensions();
     let mut sheet = vec![0u8; (width * height * 4) as usize];
-    for pixel in sheet.chunks_exact_mut(4) {
+    for pixel in sheet.as_chunks_mut::<4>().0.iter_mut() {
         pixel.copy_from_slice(&[28, 28, 30, 255]);
     }
 
@@ -6877,7 +6898,7 @@ where
 
 #[cfg(test)]
 fn apply_test_runner_style(mut rgba: Vec<u8>) -> Vec<u8> {
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0.iter_mut() {
         if pixel[3] != 0 {
             pixel[0] = 255;
             pixel[1] = 255;
@@ -11242,8 +11263,8 @@ mod tests {
         let idle = make_runner_rgba(RunnerCharacter::Cat, 12.0, 0);
         let active = make_runner_rgba(RunnerCharacter::Cat, 72.0, 1);
 
-        assert!(idle.chunks_exact(4).any(|px| px[3] > 0));
-        assert!(active.chunks_exact(4).any(|px| px[3] > 0));
+        assert!(idle.as_chunks::<4>().0.iter().any(|px| px[3] > 0));
+        assert!(active.as_chunks::<4>().0.iter().any(|px| px[3] > 0));
         assert_ne!(idle, active);
     }
 
@@ -11254,7 +11275,7 @@ mod tests {
         assert_eq!(unique.len(), RunnerCharacter::ALL.len());
         assert!(frames
             .iter()
-            .all(|rgba| rgba.chunks_exact(4).any(|pixel| pixel[3] > 0)));
+            .all(|rgba| rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0)));
     }
 
     #[test]
@@ -11277,7 +11298,9 @@ mod tests {
         let ground_pixels = frames
             .iter()
             .map(|rgba| {
-                rgba.chunks_exact(4)
+                rgba.as_chunks::<4>()
+                    .0
+                    .iter()
                     .enumerate()
                     .filter(|(index, pixel)| {
                         index / RUNNER_PIXEL_WIDTH as usize >= (RUNNER_PIXEL_HEIGHT - 7) as usize
@@ -11312,7 +11335,7 @@ mod tests {
 
         let (width, height, pixels) = decode_png_rgba(&artifacts.sheet_path);
         assert_eq!((width, height), expected_runner_qa_sheet_dimensions());
-        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 0));
+        assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
 
         let report: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&artifacts.report_path).expect("read quality report"),
@@ -11405,6 +11428,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn extract_block_body(source: &str, marker: &str) -> String {
         let start = source.find(marker).expect("marker must exist");
         let body_start = start + marker.len();
@@ -11635,7 +11659,7 @@ mod tests {
             let mut min_y = RUNNER_PIXEL_HEIGHT;
             let mut max_y = 0;
 
-            for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+            for (index, pixel) in rgba.as_chunks::<4>().0.iter().enumerate() {
                 if pixel[3] <= 96 {
                     continue;
                 }
@@ -11722,7 +11746,7 @@ mod tests {
         for character in RunnerCharacter::ALL {
             for frame in [0, 3, 7] {
                 let rgba = make_runner_rgba(character, 55.0, frame);
-                for pixel in rgba.chunks_exact(4).filter(|pixel| pixel[3] != 0) {
+                for pixel in rgba.as_chunks::<4>().0.iter().filter(|pixel| pixel[3] != 0) {
                     assert_eq!(&pixel[..3], &[255, 255, 255], "{character:?} is not white");
                 }
             }
@@ -11747,7 +11771,7 @@ mod tests {
             let centers: Vec<f32> = (0..RUNNER_FRAME_COUNT)
                 .map(|frame| {
                     let rgba = make_runner_rgba(character, 55.0, frame);
-                    let (weighted_x, alpha_sum) = rgba.chunks_exact(4).enumerate().fold(
+                    let (weighted_x, alpha_sum) = rgba.as_chunks::<4>().0.iter().enumerate().fold(
                         (0.0_f32, 0.0_f32),
                         |(weighted_x, alpha_sum), (index, pixel)| {
                             let alpha = f32::from(pixel[3]);
@@ -11776,8 +11800,10 @@ mod tests {
             let extended = make_runner_rgba(RunnerCharacter::Fox, cpu_pct, 0);
             let airborne = make_runner_rgba(RunnerCharacter::Fox, cpu_pct, 3);
             extended
-                .chunks_exact(4)
-                .zip(airborne.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(airborne.as_chunks::<4>().0.iter())
                 .filter(|(a, b)| a[3].abs_diff(b[3]) > 48)
                 .count()
         };

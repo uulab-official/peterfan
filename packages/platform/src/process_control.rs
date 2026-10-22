@@ -46,6 +46,7 @@ pub fn is_protected_process(pid: u32, name: &str) -> bool {
     pid <= 1 || pid == std::process::id() || is_protected_process_name(name)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn validate_quit_target(pid: u32, current_pid: u32, name: &str) -> Result<(), ProcessQuitError> {
     if pid <= 1 {
         return Err(ProcessQuitError::InvalidPid);
@@ -56,6 +57,7 @@ fn validate_quit_target(pid: u32, current_pid: u32, name: &str) -> Result<(), Pr
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn validate_owner(owner: Option<u32>, current: u32) -> Result<(), ProcessQuitError> {
     match owner {
         None => Err(ProcessQuitError::OwnershipUnknown),
@@ -64,6 +66,7 @@ fn validate_owner(owner: Option<u32>, current: u32) -> Result<(), ProcessQuitErr
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn validate_identity(expected: u64, actual: u64) -> Result<(), ProcessQuitError> {
     if expected == actual {
         Ok(())

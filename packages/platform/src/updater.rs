@@ -1075,6 +1075,7 @@ pub fn verify_release_directory_integrity(
     report.finish()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn is_release_artifact_name(name: &str) -> bool {
     (name.starts_with("PeterFan-") && name.ends_with(".dmg"))
         || (name.starts_with("peterfan-")
@@ -1082,6 +1083,7 @@ fn is_release_artifact_name(name: &str) -> bool {
             && name.ends_with(".tar.gz"))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn infer_release_directory_version(
     dir: &std::path::Path,
     artifact_names: &[String],
@@ -1105,6 +1107,7 @@ fn infer_release_directory_version(
     (versions.len() == 1).then(|| versions.remove(0))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn release_artifact_version(name: &str) -> Option<String> {
     if let Some(rest) = name
         .strip_prefix("PeterFan-v")
@@ -1117,6 +1120,7 @@ fn release_artifact_version(name: &str) -> Option<String> {
     is_semverish(version).then(|| version.to_string())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn checksum_release_artifact_names(checksums: &str) -> Vec<String> {
     checksums
         .lines()
@@ -1136,6 +1140,7 @@ fn checksum_release_artifact_names(checksums: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn is_semverish(version: &str) -> bool {
     let parts = version.split('.').collect::<Vec<_>>();
     parts.len() == 3
@@ -2018,6 +2023,7 @@ fn codesign_details(app: &std::path::Path) -> Result<String, String> {
     ))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn codesign_field(text: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}=");
     text.lines()
@@ -2025,6 +2031,7 @@ fn codesign_field(text: &str, key: &str) -> Option<String> {
         .find_map(|line| line.strip_prefix(&prefix).map(ToString::to_string))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn has_developer_id_authority(text: &str) -> bool {
     text.lines().any(|line| {
         line.contains("Authority=Developer ID Application:") && line.contains(EXPECTED_TEAM_ID)

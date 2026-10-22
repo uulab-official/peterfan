@@ -176,7 +176,7 @@ where
 pub(crate) fn alpha_hex(rgba: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut alpha = String::with_capacity((PIXEL_WIDTH * PIXEL_HEIGHT * 2) as usize);
-    for pixel in rgba.chunks_exact(4) {
+    for pixel in rgba.as_chunks::<4>().0.iter() {
         let value = pixel[3];
         alpha.push(HEX[usize::from(value >> 4)] as char);
         alpha.push(HEX[usize::from(value & 0x0f)] as char);
@@ -185,7 +185,7 @@ pub(crate) fn alpha_hex(rgba: &[u8]) -> String {
 }
 
 fn style_template_frame(mut rgba: RgbaFrame) -> RgbaFrame {
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0.iter_mut() {
         if pixel[3] != 0 {
             pixel[0] = 255;
             pixel[1] = 255;
@@ -370,7 +370,7 @@ mod tests {
             for frame in 0..FRAME_COUNT {
                 let rgba = render_raw_frame(character, 55.0, frame).expect("raw runner frame");
                 assert_eq!(rgba.len(), (PIXEL_WIDTH * PIXEL_HEIGHT * 4) as usize);
-                assert!(rgba.chunks_exact(4).any(|pixel| pixel[3] > 0));
+                assert!(rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
             }
         }
     }

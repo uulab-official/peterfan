@@ -277,7 +277,7 @@ fn alpha_bounds(frame: &RgbaFrame) -> Result<Bounds, RunnerBuildError> {
     let mut max_y = 0;
     let mut found = false;
 
-    for (index, pixel) in frame.chunks_exact(CHANNELS_PER_PIXEL).enumerate() {
+    for (index, pixel) in frame.as_chunks::<CHANNELS_PER_PIXEL>().0.iter().enumerate() {
         if pixel[3] == 0 {
             continue;
         }
@@ -435,7 +435,7 @@ fn validate_white_pixels(
     index: usize,
     frame: &RgbaFrame,
 ) -> Result<(), RunnerBuildError> {
-    for (pixel_index, pixel) in frame.chunks_exact(CHANNELS_PER_PIXEL).enumerate() {
+    for (pixel_index, pixel) in frame.as_chunks::<CHANNELS_PER_PIXEL>().0.iter().enumerate() {
         if pixel[3] == 0 {
             continue;
         }
@@ -619,7 +619,10 @@ mod tests {
             .iter()
             .all(|frame| frame.baseline_y <= manifest.baseline_y));
         assert!(metrics.max_centroid_drift <= manifest.max_centroid_drift);
-        for pixel in normalized.iter().flat_map(|frame| frame.chunks_exact(4)) {
+        for pixel in normalized
+            .iter()
+            .flat_map(|frame| frame.as_chunks::<4>().0.iter())
+        {
             if pixel[3] != 0 {
                 assert_eq!(&pixel[..3], &[255, 255, 255]);
             }
