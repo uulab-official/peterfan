@@ -3,6 +3,31 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
+## Local v1.32.3 runner polish — 2026-10-22
+
+- [x] All 20 characters retain the shared CPU clock; authored anatomy,
+      planted/recovering feet, connected wings and dancer joints were revised.
+      Human is now an original athletic silhouette, and Dinosaur's artificial
+      whole-sprite jumps were reduced. Geometry/perceptual quality gates pass.
+- [x] Settings and native character menus offer Random (every minute). A shuffled
+      bag visits all characters before reuse and avoids consecutive repeats.
+      Fixed selection disables random mode; number-only and Reduce Motion pause
+      timed replacement. The preference survives configuration round trips.
+- [x] Workspace all-feature tests: 414 passed, 0 failed, 7 ignored.
+      Clippy, formatting, docs, native Homebrew audits, all 42 smoke checks and
+      whitespace checks pass.
+- [x] Browser verification of the real settings code at the native 440×520 size: random selection and return to a fixed character
+      send the expected IPC commands and keep the active character preview.
+- [x] The local arm64 app is Developer ID signed, notarized, stapled and accepted
+      by Gatekeeper. Installed in `/Applications/PeterFan.app` after backing up
+      the existing v1.32.2 bundle and preserving the user's exact config bytes.
+- [x] Real native random-mode run observed City → Rabbit → Robot at approximately
+      60-second intervals, with one running app, tray creation, WebView readiness
+      and no artwork fallbacks. Restarted with the user's saved fixed choice
+      after verification. Local evidence is in `target/random-polish-*.json`.
+- [ ] Public v1.32.3 release and OTA publication. Public downloads and Homebrew
+      remain on the verified v1.32.2 release below.
+
 ## v1.32.2 public release — 2026-10-22
 
 - [x] Public latest release identified as `v1.32.2`:

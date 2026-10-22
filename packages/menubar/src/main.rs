@@ -41,7 +41,9 @@ use tao::window::{Window, WindowBuilder};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
+mod random_runner;
 mod runner;
+use random_runner::RandomRunner;
 
 #[cfg(target_os = "macos")]
 use block2::RcBlock;
@@ -649,6 +651,7 @@ struct TrayMenu {
     display_items: Vec<(MenubarDisplay, tray_icon::menu::CheckMenuItem)>,
     /// CPU runner character, independent of number/runner display mode.
     character_items: Vec<(RunnerCharacter, tray_icon::menu::CheckMenuItem)>,
+    random_character_item: tray_icon::menu::CheckMenuItem,
     /// "CPU Temperature Source" submenu — which sensor family feeds the
     /// headline/menu-bar temperature.
     temperature_source_items: Vec<(TemperatureSource, tray_icon::menu::CheckMenuItem)>,
@@ -799,6 +802,7 @@ struct App {
     provider: std::sync::Arc<dyn HardwareProvider>,
     display: MenubarDisplay,
     runner_character: RunnerCharacter,
+    random_runner: RandomRunner,
     temperature_source: TemperatureSource,
     update_channel: UpdateChannel,
     critical_temp_c: f32,
@@ -1053,9 +1057,10 @@ fn save_cpu_core_graph(show: bool) {
     let _ = peterfan_platform::config::save(&cfg);
 }
 
-fn save_runner_character(character: RunnerCharacter) {
+fn save_runner_character(character: RunnerCharacter, random: bool) {
     let mut cfg = peterfan_platform::config::load();
     cfg.menubar.character = character;
+    cfg.menubar.random_character = random;
     let _ = peterfan_platform::config::save(&cfg);
 }
 
@@ -2398,6 +2403,12 @@ fn main() {
             return;
         }
     };
+    let random_character = args
+        .iter()
+        .position(|a| a == "--character")
+        .and_then(|i| args.get(i + 1))
+        .map(|value| value == "random")
+        .unwrap_or(saved.random_character);
     let runner_character = runner_startup.character;
     let temperature_source = saved.temperature_source;
     let update_channel = saved.update_channel;
@@ -2427,6 +2438,7 @@ fn main() {
         provider,
         display,
         runner_character,
+        random_runner: RandomRunner::new(random_character, Instant::now()),
         temperature_source,
         update_channel,
         critical_temp_c,
@@ -2671,6 +2683,12 @@ fn main() {
                 );
             }
         }
+        if let Some(character) = app.random_runner.next_due(
+            now, app.runner_character, runner_should_animate(app.display, app.reduce_motion),
+        ) {
+            switch_runner_character(&mut app, character);
+            next_metric_at = now;
+        }
         if runner_should_animate(app.display, app.reduce_motion) && now >= next_runner_cpu_at {
             let cpu = app.monitor.sample_cpu_usage();
             app.runner_cpu_pct = smooth_runner_cpu(app.runner_cpu_pct, cpu, app.runner_has_sample);
@@ -2692,6 +2710,7 @@ fn main() {
         }
         let next_tick = [
             Some(next_metric_at),
+            app.random_runner.deadline(runner_should_animate(app.display, app.reduce_motion)),
             runner_should_animate(app.display, app.reduce_motion).then_some(next_runner_cpu_at),
             runner_uses_event_loop_timer(app.display, app.reduce_motion).then_some(next_runner_at),
             prewarm_popover_at,
@@ -2807,7 +2826,10 @@ fn main() {
                     save_cpu_core_graph(show);
                     refresh_after_pending = true;
                 } else if let Some(value) = c.strip_prefix("character:") {
-                    if let Some(character) = RunnerCharacter::parse(value) {
+                    if value == "random" {
+                        set_runner_random(&mut app);
+                        refresh_after_pending = true;
+                    } else if let Some(character) = RunnerCharacter::parse(value) {
                         set_runner_character(&mut app, character);
                         next_runner_at = now;
                         refresh_after_pending = true;
@@ -2897,6 +2919,7 @@ fn main() {
             let id = &ev.id;
             let mut matched_display: Option<MenubarDisplay> = None;
             let mut matched_character: Option<RunnerCharacter> = None;
+            let mut matched_random = false;
             let mut matched_temperature_source: Option<TemperatureSource> = None;
             let mut matched_language: Option<Language> = None;
             let mut open_detail_requested = false;
@@ -2913,6 +2936,9 @@ fn main() {
                     tm.display_items.iter().find(|(_, item)| item.id() == id)
                 {
                     matched_display = Some(*d);
+                    None
+                } else if id == tm.random_character_item.id() {
+                    matched_random = true;
                     None
                 } else if let Some((character, _)) =
                     tm.character_items.iter().find(|(_, item)| item.id() == id)
@@ -2984,6 +3010,10 @@ fn main() {
                     }
                 }
                 save_menubar_display(app.display);
+                update(&mut app);
+            }
+            if matched_random {
+                set_runner_random(&mut app);
                 update(&mut app);
             }
             if let Some(character) = matched_character {
@@ -3211,13 +3241,25 @@ fn build_tray(app: &mut App) {
     .collect();
 
     let character_submenu = Submenu::new(s.runner_character, true);
+    let random_character_item = CheckMenuItem::new(
+        if app.language.resolve() == ResolvedLanguage::Ko {
+            "랜덤 · 1분마다"
+        } else {
+            "Random · every minute"
+        },
+        true,
+        app.random_runner.enabled(),
+        None,
+    );
+    let _ = character_submenu.append(&random_character_item);
+    let _ = character_submenu.append(&PredefinedMenuItem::separator());
     let character_items = RunnerCharacter::FEATURED
         .into_iter()
         .map(|character| {
             let item = CheckMenuItem::new(
                 runner_character_label(app.language.resolve(), character),
                 true,
-                app.runner_character == character,
+                !app.random_runner.enabled() && app.runner_character == character,
                 None,
             );
             let _ = character_submenu.append(&item);
@@ -3328,6 +3370,7 @@ fn build_tray(app: &mut App) {
         quit: quit_item.id().clone(),
         display_items,
         character_items,
+        random_character_item,
         temperature_source_items,
         fan_speed_items,
         #[cfg(target_os = "macos")]
@@ -4899,6 +4942,7 @@ fn update(app: &mut App) {
     payload["config_toml"] = serde_json::json!(config.to_toml());
     payload["menubar_display"] = serde_json::json!(app.display.as_str());
     payload["runner_character"] = serde_json::json!(app.runner_character.as_str());
+    payload["runner_random"] = serde_json::json!(app.random_runner.enabled());
     payload["runner_selected_preview"] =
         serde_json::json!(serde_json::from_str::<serde_json::Value>(
             &app.runner_assets.selected_preview_frames_json()
@@ -6452,9 +6496,46 @@ fn sync_native_runner_timer(app: &mut App) {
     app.runner_native_timer = Some(timer);
 }
 
+fn sync_runner_selection(app: &App) {
+    if let Some(ref tm) = app.tray_menu {
+        tm.random_character_item
+            .set_checked(app.random_runner.enabled());
+        for (candidate, item) in &tm.character_items {
+            item.set_checked(!app.random_runner.enabled() && *candidate == app.runner_character);
+        }
+    }
+}
+
+fn set_runner_random(app: &mut App) {
+    app.random_runner.set_enabled(true, Instant::now());
+    if let Some(next) = app.random_runner.next_due(
+        Instant::now(),
+        app.runner_character,
+        runner_should_animate(app.display, app.reduce_motion),
+    ) {
+        switch_runner_character(app, next);
+    }
+    sync_runner_selection(app);
+    // Save once when the user selects a mode, never on timed rotations.
+    save_runner_character(app.runner_character, true);
+    log_menubar_event("runner selection=random interval=60s");
+}
+
 fn set_runner_character(app: &mut App, character: RunnerCharacter) {
+    if switch_runner_character(app, character) {
+        app.random_runner.set_enabled(false, Instant::now());
+        sync_runner_selection(app);
+        save_runner_character(app.runner_character, false);
+        log_menubar_event(&format!(
+            "runner selection=fixed character={}",
+            character.as_str()
+        ));
+    }
+}
+
+fn switch_runner_character(app: &mut App, character: RunnerCharacter) -> bool {
     if app.runner_character == character {
-        return;
+        return true;
     }
 
     if let Err(error) = replace_runner_assets_with(
@@ -6464,7 +6545,7 @@ fn set_runner_character(app: &mut App, character: RunnerCharacter) {
         build_runner_assets,
     ) {
         note_runner_build_failure(runner_switch_failure_message(character, &error));
-        return;
+        return false;
     }
 
     #[cfg(target_os = "macos")]
@@ -6473,15 +6554,15 @@ fn set_runner_character(app: &mut App, character: RunnerCharacter) {
     app.runner_native_applied_icon
         .store(usize::MAX, Ordering::Relaxed);
     app.last_runner_icon = None;
-    if let Some(ref tm) = app.tray_menu {
-        for (candidate, item) in &tm.character_items {
-            item.set_checked(*candidate == app.runner_character);
-        }
-    }
-    save_runner_character(app.runner_character);
+    app.runner_frame = 0;
+    #[cfg(target_os = "macos")]
+    app.runner_native_frame.store(0, Ordering::Relaxed);
+    sync_runner_selection(app);
+    log_menubar_event(&format!("runner active={}", app.runner_character.as_str()));
     apply_runner_icon(app);
     #[cfg(target_os = "macos")]
     sync_native_runner_timer(app);
+    true
 }
 
 fn apply_runner_icon(app: &mut App) {
@@ -6865,7 +6946,15 @@ fn runner_selected_preview_frames_json(pack: &RunnerPack) -> String {
 }
 
 fn runner_picker_options(lang: ResolvedLanguage) -> String {
-    RunnerCharacter::FEATURED
+    let label = if lang == ResolvedLanguage::Ko {
+        "랜덤 · 1분마다"
+    } else {
+        "Random · every minute"
+    };
+    let random = format!(
+        r#"<button type="button" class="character-option" role="option" aria-selected="false" data-character="random" onclick="chooseRunnerCharacter('random')" onkeydown="handleRunnerOptionKey(event)"><span class="runner-preview random-runner-icon" aria-hidden="true">⇄</span><span class="character-option-label">{label}</span><span class="character-option-check" aria-hidden="true"></span></button>"#
+    );
+    random + &RunnerCharacter::FEATURED
         .map(|character| {
             let value = character.as_str();
             let label = runner_character_label(lang, character);
@@ -6926,6 +7015,7 @@ fn dashboard_html_with_runner_pack(
             .replace(">App Preferences<", ">앱 설정<")
             .replace(">Menu bar<", ">메뉴 막대<")
             .replace(">Character<", ">캐릭터<")
+            .replace("Choose a character, or shuffle every minute.", "캐릭터를 고르거나 1분마다 랜덤으로 바꾸세요.")
             .replace(">CPU core graph<", ">코어별 CPU 그래프<")
             .replace(
                 "Show live per-core CPU activity in the overview.",
@@ -7346,6 +7436,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .character-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .character-chevron{width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);color:var(--dim);transition:transform .12s ease;}
 .character-select[aria-expanded="true"] .character-chevron{transform:translateY(2px) rotate(225deg);}
+.random-runner-icon{font-size:21px;text-align:center;line-height:18px;color:var(--text-secondary)}
 .character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:260px;overflow-y:auto;padding:5px;border:1px solid var(--panel-border);border-radius:8px;background:var(--surface-raised);box-shadow:var(--shadow);scrollbar-width:thin;overscroll-behavior:contain;}
 .character-menu.show{display:block;}
 .character-option{display:grid;grid-template-columns:38px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:34px;padding:1px 7px 1px 4px;border:0;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-size:10.5px;font-weight:650;text-align:left;cursor:pointer;}
@@ -7613,7 +7704,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <button id="cpu-core-graph-toggle" class="panel-action secondary" aria-pressed="true" onclick="toggleCpuCoreGraph(this)">On</button>
 </div>
 <div class="settings-item" id="runner-character-setting">
-<div><div class="settings-item-title">Character</div><div class="settings-item-copy">Choose your CPU-responsive runner.</div></div>
+<div><div class="settings-item-title">Character</div><div class="settings-item-copy">Choose a character, or shuffle every minute.</div></div>
 <div class="character-picker">
 <button type="button" id="runner-character-select" class="character-select" aria-label="Runner character" aria-haspopup="listbox" aria-controls="runner-character-menu" aria-expanded="false" onclick="toggleRunnerCharacterMenu(event)" onkeydown="handleRunnerTriggerKey(event)"><canvas id="runner-character-preview" class="runner-preview" width="48" height="32" data-runner-preview="cat" aria-hidden="true"></canvas><span id="runner-character-label" class="character-label">Cat</span><span class="character-chevron" aria-hidden="true"></span></button>
 </div>
@@ -9676,9 +9767,10 @@ function chooseRunnerCharacter(character){
   closeRunnerCharacterMenu(true);
 }
 function setRunnerCharacter(character){
-  if(RUNNER_CHARACTERS.indexOf(character)<0)return;
+  if(character!=='random'&&RUNNER_CHARACTERS.indexOf(character)<0)return;
   var data=window.__pf_pending||{};
-  data.runner_character=character;
+  data.runner_random=character==='random';
+  if(character!=='random')data.runner_character=character;
   updateMenubarDisplay(data);
   if(window.ipc)window.ipc.postMessage('character:'+character);
 }
@@ -9698,11 +9790,12 @@ function updateMenubarDisplay(d){
     RUNNER_SELECTED_PREVIEW_CHARACTER=character;
   }
   var characterSelect=document.getElementById('runner-character-select');
-  var selectedOption=document.querySelector('.character-option[data-character="'+character+'"]');
+  var selection=d.runner_random?'random':character;
+  var selectedOption=document.querySelector('.character-option[data-character="'+selection+'"]');
   document.querySelectorAll('.character-option').forEach(function(option){
-    option.setAttribute('aria-selected',option.dataset.character===character?'true':'false');
+    option.setAttribute('aria-selected',option.dataset.character===selection?'true':'false');
   });
-  if(characterSelect)characterSelect.dataset.character=character;
+  if(characterSelect)characterSelect.dataset.character=selection;
   var characterLabel=document.getElementById('runner-character-label');
   if(characterLabel&&selectedOption)characterLabel.textContent=selectedOption.querySelector('.character-option-label').textContent;
   var characterPreview=document.getElementById('runner-character-preview');
@@ -11688,6 +11781,25 @@ mod tests {
             );
             assert!(ko.contains(runner_character_label(ResolvedLanguage::Ko, character)));
         }
+    }
+
+    #[test]
+    #[ignore = "writes the real settings picker for local browser verification"]
+    fn render_random_runner_settings_for_visual_qa() {
+        let html = dashboard_html(ResolvedLanguage::Ko, false);
+        let bootstrap = r#"<script>
+window.ipc={postMessage:function(message){document.body.dataset.lastCommand=message;}};
+window.__pf_pending={menubar_display:'both',runner_character:'pushup',runner_random:false,runner_cpu_pct:45,runner_interval_ms:81};
+setRailView('settings');updateMenubarDisplay(window.__pf_pending);
+</script>"#;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target");
+        std::fs::write(
+            root.join("random-runner-settings-qa.html"),
+            html.replace("</body>", &format!("{bootstrap}</body>")),
+        )
+        .unwrap();
     }
 
     #[test]

@@ -439,6 +439,8 @@ pub struct MenubarConfig {
     pub metric: MenubarMetric,
     pub display: MenubarDisplay,
     pub character: RunnerCharacter,
+    /// Rotate through a shuffled character roster once per minute.
+    pub random_character: bool,
     pub temperature_source: TemperatureSource,
     pub update_channel: UpdateChannel,
     /// Show the compact per-core CPU activity graph in the overview header.
@@ -464,6 +466,7 @@ impl Default for MenubarConfig {
             metric: MenubarMetric::default(),
             display: MenubarDisplay::default(),
             character: RunnerCharacter::default(),
+            random_character: false,
             temperature_source: TemperatureSource::default(),
             update_channel: UpdateChannel::default(),
             show_cpu_core_graph: default_show_cpu_core_graph(),
@@ -480,6 +483,7 @@ impl MenubarConfig {
         self.metric == MenubarMetric::Temp
             && self.display == MenubarDisplay::Both
             && self.character == RunnerCharacter::Cat
+            && !self.random_character
             && self.temperature_source == TemperatureSource::CoreAverage
             && self.update_channel == UpdateChannel::Stable
             && self.show_cpu_core_graph
@@ -829,6 +833,19 @@ mod tests {
             TemperatureSource::CoreAverage
         );
         assert!(legacy.menubar.show_cpu_core_graph);
+    }
+
+    #[test]
+    fn random_runner_preference_survives_roundtrip_without_changing_fixed_character() {
+        let config =
+            Config::from_toml("[menubar]\ncharacter = \"fox\"\nrandom_character = true\n").unwrap();
+        let encoded = config.to_toml();
+        assert!(encoded.contains("random_character = true"));
+        let restored = Config::from_toml(&encoded).unwrap();
+        assert_eq!(restored.menubar.character, RunnerCharacter::Fox);
+        assert!(restored.to_toml().contains("random_character = true"));
+        let legacy = Config::from_toml("[menubar]\ncharacter = \"pushup\"\n").unwrap();
+        assert!(!legacy.to_toml().contains("random_character = true"));
     }
 
     #[test]

@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.3] — 2026-10-22 · 캐릭터 동작 정돈과 랜덤 선택
+
+- 캐릭터 선택에 ‘랜덤 · 1분마다’ 추가. 전체 캐릭터를 섞어서 한 번씩 보여주며 연속 중복을 피하고 선택을 저장
+- 고정 캐릭터를 선택하면 랜덤 해제. 숫자만 표시하거나 동작 줄이기를 사용할 때 자동 교체 정지
+- 네 발 동물·로봇·새·오리·양·초밥·소시지·파티댄서의 관절 길이와 접지 동작 정돈
+- 달리는 사람을 전용 실루엣으로 다시 그리고 푸시업 몸통, 고스트 옷자락, 새 날개, 행성 가림과 도시 바퀴 동작 개선
+- 공룡의 프레임 사이 강제 위치 이동을 줄여 튀는 움직임 완화
+
 ## [1.32.2] — 2026-10-22 · 러너 동작과 반응성 개선
 
 - 새·오리·양·물고기·슬라임·궤도·초밥·도시·소시지·파티를 오리지널 8프레임으로 새로 제작하고 선택 가능한 러너를 20종으로 확대
