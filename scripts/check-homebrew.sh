@@ -54,8 +54,25 @@ if ! grep -Fq "releases/download/v#{version}/PeterFan-v#{version}.dmg" "$CASK"; 
 fi
 
 if command -v brew >/dev/null 2>&1; then
-  brew audit --cask --strict "$CASK"
-  brew audit --formula --strict "$FORMULA"
+  # Modern Homebrew audits tap-qualified names, not arbitrary file paths.
+  # Copy the definitions into an owned temporary tap without touching any
+  # existing tap or installing either package.
+  audit_tap="uulab/peterfan-audit-$$"
+  if brew tap | grep -Fxq "$audit_tap"; then
+    echo "error: temporary audit tap already exists: $audit_tap" >&2
+    exit 1
+  fi
+  brew tap-new --no-git "$audit_tap"
+  cleanup_audit_tap() {
+    brew untap "$audit_tap" >/dev/null 2>&1 || true
+  }
+  trap cleanup_audit_tap EXIT
+  audit_root="$(brew --repository "$audit_tap")"
+  mkdir -p "$audit_root/Casks" "$audit_root/Formula"
+  cp "$CASK" "$audit_root/Casks/peterfan.rb"
+  cp "$FORMULA" "$audit_root/Formula/peterfan.rb"
+  brew audit --cask --strict "$audit_tap/peterfan"
+  brew audit --formula --strict "$audit_tap/peterfan"
 else
   echo "Homebrew not installed; Ruby and repository checks passed."
 fi
