@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: windows-${{ github.event.pull_request.number || github.ref }}-${{ inputs.tag || 'ci' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -23,6 +27,7 @@ jobs:
   source-preflight:
     name: Resolve CI or reviewed release source
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       release: ${{ steps.source.outputs.release || 'false' }}
       tag: ${{ steps.source.outputs.tag }}
@@ -60,6 +65,7 @@ jobs:
     name: Build, test, and package Windows x64
     needs: source-preflight
     runs-on: windows-2022
+    timeout-minutes: 30
     outputs:
       artifact_name: peterfan-windows-x64-v${{ steps.version.outputs.version }}
     env:

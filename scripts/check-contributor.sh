@@ -26,9 +26,16 @@ node scripts/check-oss.mjs
 node --test scripts/*.test.mjs
 scripts/check-docs.sh
 node scripts/check-dashboard-behavior.mjs
-node scripts/check-runner-preview.mjs
 cargo fmt --all -- --check
 cargo clippy --locked "${scope[@]}" --all-targets --all-features -- -D warnings
 cargo test --locked "${scope[@]}" --all-features
+if [[ "${1:-}" == --core-only ]]; then
+  node scripts/check-runner-preview.mjs --web-only
+else
+  # Generate timing evidence from current Rust source; never reuse a developer's
+  # ignored target artifact as a prerequisite for a fresh checkout.
+  cargo test --locked -p peterfan-menubar render_runner_sprite_sheet_for_visual_qa -- --ignored --nocapture
+  node scripts/check-runner-preview.mjs
+fi
 RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings" cargo doc --locked "${scope[@]}" --all-features --no-deps
 echo 'PASS contributor checks (no app launch or hardware changes)'

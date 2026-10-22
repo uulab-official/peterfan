@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Execute the shipped WebView runner code with a deterministic browser clock.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+const webOnly = process.argv[2] === '--web-only';
+if (process.argv.length > (webOnly ? 3 : 2)) throw Error('Usage: node scripts/check-runner-preview.mjs [--web-only]');
 import vm from 'node:vm';
 const source = readFileSync(new URL('../packages/menubar/src/main.rs', import.meta.url), 'utf8');
 const start = source.indexOf('var RUNNER_CHARACTERS=');
@@ -74,13 +76,19 @@ context.RUNNER_SELECTED_PREVIEW_CHARACTER='pushup';
 context.startRunnerPreview(canvas,'pushup',95);
 advance(500);
 assert.equal(context.RUNNER_PREVIEW_STATE.frame,7,'exercise preview must use its character cadence');
-const cadence=JSON.parse(readFileSync(new URL('../target/runner-motion-cadence.json',import.meta.url),'utf8'));
-assert.equal(Object.keys(cadence).length,20,'native cadence evidence must cover the full catalog');
-for(let cpu=0;cpu<=100;cpu++)for(const character of Object.keys(cadence))for(let pose=0;pose<8;pose++){
- assert.equal(context.runnerPreviewInterval(cpu,pose,character),context.runnerPreviewInterval(cpu,0,'cat'),`character-specific speed cap returned: ${character}`);
-}
-for(const [character,loads] of Object.entries(cadence))for(let cpu=0;cpu<=100;cpu++)for(let pose=0;pose<8;pose++){
- assert.ok(Math.abs(context.runnerPreviewInterval(cpu,pose,character)-loads[cpu][pose])<=1,`native/preview cadence differs: ${character} ${cpu}% pose ${pose}`);
+if (!webOnly) {
+ const report = new URL('../target/runner-motion-cadence.json',import.meta.url);
+ if (!existsSync(report)) throw Error('Missing native cadence evidence. Run scripts/check-runner-quality.sh first, or use --web-only for frontend-only checks.');
+ const cadence=JSON.parse(readFileSync(report,'utf8'));
+ assert.equal(Object.keys(cadence).length,20,'native cadence evidence must cover the full catalog');
+ for(let cpu=0;cpu<=100;cpu++)for(const character of Object.keys(cadence))for(let pose=0;pose<8;pose++){
+  assert.equal(context.runnerPreviewInterval(cpu,pose,character),context.runnerPreviewInterval(cpu,0,'cat'),`character-specific speed cap returned: ${character}`);
+ }
+ for(const [character,loads] of Object.entries(cadence))for(let cpu=0;cpu<=100;cpu++)for(let pose=0;pose<8;pose++){
+  assert.ok(Math.abs(context.runnerPreviewInterval(cpu,pose,character)-loads[cpu][pose])<=1,`native/preview cadence differs: ${character} ${cpu}% pose ${pose}`);
+ }
+} else {
+ console.log('Frontend-only mode: native cadence comparison was not run.');
 }
 for(const sample of [NaN,Infinity,-Infinity])assert.equal(context.runnerPreviewInterval(sample,0,'slime'),180);
 console.log('Runner preview: cache, cadence, CPU response, panel visibility, Reduce Motion and timer lifecycle passed.');

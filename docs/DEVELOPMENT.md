@@ -58,7 +58,10 @@ scripts/check-contributor.sh --core-only
 
 This runs the same repository policy and formatting checks, then limits clippy,
 tests and Rust documentation to `peterfan-core`. Passing it is not evidence that
-the desktop app compiles or runs on Linux.
+the desktop app compiles or runs on Linux. Native checks regenerate runner sheets
+and cadence evidence from Rust before comparing the JavaScript preview. Core-only
+checks run frontend preview behavior with `--web-only` and explicitly omit that
+native comparison; no ignored artifact from an earlier checkout is required.
 
 PowerShell equivalents for full native Rust checks:
 
@@ -66,6 +69,7 @@ PowerShell equivalents for full native Rust checks:
 node scripts/check-oss.mjs
 node --test scripts/check-oss.test.mjs scripts/check-release-source.test.mjs scripts/check-dev-launcher.test.mjs
 node scripts/check-dashboard-behavior.mjs
+cargo test --locked -p peterfan-menubar render_runner_sprite_sheet_for_visual_qa -- --ignored
 node scripts/check-runner-preview.mjs
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
