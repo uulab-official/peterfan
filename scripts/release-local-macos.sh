@@ -195,7 +195,7 @@ for bin in peterfan peterfan-tui peterfan-menubar peterfand; do
   scripts/sign-macos.sh "$PKG_DIR/$bin"
 done
 
-cp README.md LICENSE CHANGELOG.md "$PKG_DIR/"
+cp README.md LICENSE THIRD_PARTY_NOTICES.md CHANGELOG.md "$PKG_DIR/"
 
 VERSION="$VER" scripts/bundle-macos.sh "$OUT_ROOT/bins/universal/peterfan-menubar" "$PKG_DIR"
 

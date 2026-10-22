@@ -43,6 +43,7 @@ Copy-Item "packaging\windows\install.ps1" $Stage
 Copy-Item "packaging\windows\uninstall.ps1" $Stage
 Copy-Item "packaging\windows\README-WINDOWS.txt" $Stage
 Copy-Item "LICENSE" $Stage
+Copy-Item "THIRD_PARTY_NOTICES.md" $Stage
 Copy-Item "CHANGELOG.md" $Stage
 
 if (-not $WebView2Bootstrapper) {

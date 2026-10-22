@@ -30,3 +30,7 @@ reference; its artwork is not included in PeterFan.
 The former unused `caveman.png` and `correr.png` comparison files were removed
 from the current source tree because their source/license were not recorded.
 This notice does not assign a license to those files or certify old Git history.
+
+New app bundles keep this notice and the MIT license in `Contents/Resources/`.
+New macOS universal archives and Windows ZIPs include both files alongside their
+README/changelog. Earlier published releases are not retroactively modified.

@@ -301,7 +301,7 @@ jobs:
           NAME="peterfan-${VERSION}-universal-apple-darwin"
           mkdir -p "dist/$NAME"
           cp bins/universal/* "dist/$NAME/"
-          cp README.md LICENSE CHANGELOG.md "dist/$NAME/"
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md CHANGELOG.md "dist/$NAME/"
           # Sign loose CLI binaries too. In official releases this uses
           # Developer ID; in forks/local release builds it falls back to ad-hoc.
           for bin in peterfan peterfan-tui peterfan-menubar peterfand; do
