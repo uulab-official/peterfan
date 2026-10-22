@@ -3,20 +3,46 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
-## v1.32.2 release candidate — 2026-10-22
+## v1.32.2 public release — 2026-10-22
 
-- [x] Local v1.32.1 runner candidate: 20 original/reviewed characters, one CPU
-      clock, 403 workspace tests, 42 smoke checks and fresh launch evidence.
-- [x] Stable update metadata currently resolves public v1.27.78, including
-      GitHub asset digests and checksums.txt. No newer candidate is public yet.
-- [x] Existing direct Apple notarization credentials work (submission history
-      read back successfully); the configured Keychain notary profile is absent.
-- [x] Existing Developer ID Application certificate and matching private key
-      restored to the login Keychain for Team N99FMBQ662; hardened-runtime
-      signing probe verified with the expected identity and full Apple chain.
-- [ ] v1.32.2 exact-source local tests, Windows verification and release assets.
-- [ ] Signed/notarized universal macOS DMG/archive verified before publication.
-- [ ] Public v1.32.2 asset readback and actual OTA replacement/relaunch receipt.
+- [x] Public latest release identified as `v1.32.2`:
+      https://github.com/uulab-official/peterfan/releases/tag/v1.32.2
+- [x] Exact release source: `6cb5f921e9a4d85f335da306bb2d1eb1ddc8569d`.
+      PR #1 merged after macOS CI and Windows CI passed. Local workspace tests:
+      407 passed, 0 failed, 6 ignored; clippy and formatting passed.
+- [x] Twenty runner characters share one CPU cadence, with no character-specific
+      speed cap or repeated pose hold. The pushup uses fixed contact points and
+      rigid body geometry. Browser preview and animation regression checks passed.
+- [x] Universal macOS app and DMG signed with Developer ID Team N99FMBQ662,
+      accepted by Apple notarization, stapled, and accepted by Gatekeeper.
+      DMG volume/filesystem, bundle identifier and bundled helper verified.
+- [x] Windows release workflow built, tested and uploaded the x64 archive:
+      https://github.com/uulab-official/peterfan/actions/runs/39763998309
+- [x] All three published assets and combined checksums manifest match GitHub
+      provider SHA-256 digests. Public CLI integrity verification passed for the
+      DMG and universal archive, including both embedded apps' trust checks.
+- [x] Actual stable OTA from the verified public v1.27.78 app downloaded v1.32.2,
+      installed it, wrote a durable `installed` receipt and relaunched one process.
+      Installed app/helper hashes match the release; config and fan-action data
+      were preserved. Startup, tray creation and WebView readiness were observed.
+- [x] The new v1.32.2 updater also downloaded and reinstalled the public release,
+      exercising its exact-version/helper validation before a second successful
+      replacement, durable receipt and healthy relaunch with preserved settings.
+- [x] Homebrew Cask and Formula pinned to the verified public v1.32.2 assets.
+- [ ] Physical fan-control daemon replacement and extended hardware soak are
+      outside this runner/OTA release verification. The existing system daemon
+      was not manually replaced during the OTA check.
+
+Published SHA-256 values:
+
+| Asset | SHA-256 |
+| --- | --- |
+| `PeterFan-v1.32.2.dmg` | `e8edcec56126ad7afc570b94163e8272f21123c158ed8ba68e6c076ed3ef2cd6` |
+| `peterfan-v1.32.2-universal-apple-darwin.tar.gz` | `1459f711391cd4fc9e843bd1eadf6cfb8bf1b745eef1cda4fc69129170e6ee9e` |
+| `peterfan-v1.32.2-x86_64-pc-windows-msvc.zip` | `1aa395444eb76d475a7a0acf3e80c697ac6c35697013491c4f28e9a0c06629f3` |
+
+The older dated sections below are historical verification snapshots. Their
+source versions and former signing-machine blockers do not describe v1.32.2.
 
 ## Bugfix Verification — 2026-08-13
 
@@ -36,7 +62,7 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 
 ### Public artifact status carried forward from 2026-08-05 verification
 
-- [x] Public latest release identified as `v1.27.78`:
+- [x] Historical public release identified as `v1.27.78`:
       https://github.com/uulab-official/peterfan/releases/tag/v1.27.78
 - [x] Public DMG downloaded and SHA-256 matched GitHub `checksums.txt`:
       `d3308bc93293f4e27102723b68973577d615e18f317f89ccce750dd6844fe9d8`

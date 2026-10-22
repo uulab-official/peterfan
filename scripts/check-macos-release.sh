@@ -206,8 +206,9 @@ if [[ -n "$ARTIFACT" && "$(uname)" == "Darwin" ]]; then
 
   MOUNT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/peterfan-release-check.XXXXXX")"
   if hdiutil attach -nobrowse -quiet -mountpoint "$MOUNT_DIR" "$ARTIFACT"; then
-    VOLUME_NAME=$(diskutil info "$MOUNT_DIR" 2>/dev/null | awk -F: '/Volume Name/ {sub(/^ +/, "", $2); print $2; exit}')
-    FS_PERSONALITY=$(diskutil info "$MOUNT_DIR" 2>/dev/null | awk -F: '/File System Personality/ {sub(/^ +/, "", $2); print $2; exit}')
+    DISK_INFO=$(diskutil info "$MOUNT_DIR" 2>/dev/null)
+    VOLUME_NAME=$(awk -F: '/Volume Name/ {sub(/^ +/, "", $2); print $2; exit}' <<<"$DISK_INFO")
+    FS_PERSONALITY=$(awk -F: '/File System Personality/ {sub(/^ +/, "", $2); print $2; exit}' <<<"$DISK_INFO")
     if [[ "$VOLUME_NAME" == "PeterFan" ]]; then
       ok "DMG volume name is PeterFan"
     else
