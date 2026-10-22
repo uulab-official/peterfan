@@ -3,6 +3,35 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
+## v1.32.2 release candidate — 2026-10-22
+
+- [x] Local v1.32.1 runner candidate: 20 original/reviewed characters, one CPU
+      clock, 403 workspace tests, 42 smoke checks and fresh launch evidence.
+- [x] Stable update metadata currently resolves public v1.27.78, including
+      GitHub asset digests and checksums.txt. No newer candidate is public yet.
+- [x] Existing direct Apple notarization credentials work (submission history
+      read back successfully); the configured Keychain notary profile is absent.
+- [x] Existing Developer ID Application certificate and matching private key
+      restored to the login Keychain for Team N99FMBQ662; hardened-runtime
+      signing probe verified with the expected identity and full Apple chain.
+- [ ] v1.32.2 exact-source local tests, Windows verification and release assets.
+- [ ] Signed/notarized universal macOS DMG/archive verified before publication.
+- [ ] Public v1.32.2 asset readback and actual OTA replacement/relaunch receipt.
+
+## Bugfix Verification — 2026-08-13
+
+- [x] Workspace source and local app bundle are v1.32.1.
+- [x] Manual stale-daemon reinstall falls back to one privileged install when
+      a local ad-hoc bundle cannot satisfy the production signature check.
+- [x] Homebrew cask remains pinned to the documented public v1.27.78 DMG and
+      its recorded SHA-256 while v1.32.1 is not publicly signed/notarized.
+- [x] macOS release checker validates the ignored `private/` directory path.
+- [x] Local install keeps one running menu-bar PID and preserves the previous
+      app bundle at `/Applications/PeterFan.app.backup-pre-bugfix-20260813`.
+- [ ] Developer ID signing, notarization, and public v1.32.1 upload remain
+      release-machine work because this Mac has no Developer ID identity or
+      notary credentials.
+
 ## Current Release Verification — 2026-08-10
 
 ### Public artifact status carried forward from 2026-08-05 verification

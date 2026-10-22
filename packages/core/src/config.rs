@@ -247,21 +247,8 @@ pub enum RunnerCharacter {
 }
 
 impl RunnerCharacter {
-    /// Production picker roster. Keep `ALL` below as the compatibility set for
-    /// values persisted by older builds, but only expose characters that read
-    /// as a side-view moving subject at menu-bar size.
-    pub const FEATURED: [Self; 10] = [
-        Self::Cat,
-        Self::Dog,
-        Self::Rabbit,
-        Self::Fox,
-        Self::Penguin,
-        Self::Dinosaur,
-        Self::Robot,
-        Self::Ghost,
-        Self::Human,
-        Self::Pushup,
-    ];
+    /// Authored, quality-checked production picker roster.
+    pub const FEATURED: [Self; 20] = Self::ALL;
 
     /// Every value understood by the persisted configuration format.
     pub const ALL: [Self; 20] = [
@@ -904,21 +891,20 @@ mod tests {
     }
 
     #[test]
-    fn runner_character_featured_roster_excludes_legacy_motion_icons() {
+    fn every_authored_character_is_selectable_and_round_trips() {
+        assert_eq!(RunnerCharacter::FEATURED.len(), 20);
+        for character in RunnerCharacter::ALL {
+            assert!(character.is_featured(), "missing {}", character.as_str());
+            assert_eq!(RunnerCharacter::parse(character.as_str()), Some(character));
+        }
+        let names = RunnerCharacter::FEATURED.map(|c| c.as_str());
         assert_eq!(
-            RunnerCharacter::FEATURED.map(|character| character.as_str()),
-            [
-                "cat", "dog", "rabbit", "fox", "penguin", "dinosaur", "robot", "ghost", "human",
-                "pushup",
-            ]
+            names
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            20
         );
-        assert!(RunnerCharacter::FEATURED
-            .into_iter()
-            .all(RunnerCharacter::is_featured));
-        assert!(RunnerCharacter::ALL
-            .into_iter()
-            .filter(|character| !character.is_featured())
-            .all(|character| !RunnerCharacter::FEATURED.contains(&character)));
     }
 
     #[test]

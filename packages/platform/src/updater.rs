@@ -1532,7 +1532,7 @@ fn install_downloaded_update(
     } else {
         extract_app_from_archive(download, tmp_dir)?
     };
-    validate_update_app(&new_app)?;
+    validate_update_app(&new_app, target_version)?;
 
     // A detached script rather than doing the replace in-process: this
     // process's own executable is inside the bundle being replaced, and the
@@ -1915,7 +1915,8 @@ fn validate_update_dmg(dmg: &std::path::Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn validate_update_app(app: &std::path::Path) -> Result<(), String> {
+fn validate_update_app(app: &std::path::Path, expected_version: &str) -> Result<(), String> {
+    validate_update_app_contents(app, expected_version)?;
     if !silent_status(
         std::process::Command::new("codesign")
             .args(["--verify", "--deep", "--strict", "--verbose=2"])
@@ -1942,6 +1943,33 @@ fn validate_update_app(app: &std::path::Path) -> Result<(), String> {
         return Err("Gatekeeper rejected the downloaded PeterFan.app".into());
     }
 
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn validate_update_app_contents(
+    app: &std::path::Path,
+    expected_version: &str,
+) -> Result<(), String> {
+    // Bind the extracted payload to the selected release before queuing any
+    // replacement. Both archive and DMG installs pass through this gate.
+    if expected_version.is_empty() {
+        return Err("downloaded PeterFan.app has no expected release version".into());
+    }
+    let version = plist_value(app, "CFBundleShortVersionString")
+        .ok_or("downloaded PeterFan.app is missing a readable bundle version")?;
+    if version != expected_version {
+        return Err(format!(
+            "downloaded PeterFan.app has version {version}, expected {expected_version}"
+        ));
+    }
+
+    let helper = app.join("Contents/MacOS/peterfand");
+    if !helper.is_file() || !is_executable(&helper) {
+        return Err(
+            "downloaded PeterFan.app is missing an executable bundled peterfand helper".into(),
+        );
+    }
     Ok(())
 }
 
@@ -2585,6 +2613,97 @@ TeamIdentifier=N99FMBQ662
             "rolled_back"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "macos")]
+    struct UpdateAppFixture(std::path::PathBuf);
+
+    #[cfg(target_os = "macos")]
+    impl UpdateAppFixture {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "peterfan-update-validation-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(root.join("Contents/MacOS")).unwrap();
+            let fixture = Self(root);
+            fixture.write_version(Some("1.31.32"));
+            fixture.write_helper(0o755);
+            fixture
+        }
+
+        fn write_version(&self, version: Option<&str>) {
+            let entry = version
+                .map(|v| format!("<key>CFBundleShortVersionString</key><string>{v}</string>"))
+                .unwrap_or_default();
+            std::fs::write(
+                self.0.join("Contents/Info.plist"),
+                format!(
+                    "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>{entry}</dict></plist>"
+                ),
+            )
+            .unwrap();
+        }
+
+        fn write_helper(&self, mode: u32) {
+            use std::os::unix::fs::PermissionsExt;
+            let helper = self.0.join("Contents/MacOS/peterfand");
+            std::fs::write(&helper, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(helper, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for UpdateAppFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn update_app_contents_accepts_exact_release_version_and_executable_helper() {
+        let app = UpdateAppFixture::new();
+        assert_eq!(validate_update_app_contents(&app.0, "1.31.32"), Ok(()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn update_app_contents_rejects_mismatched_or_missing_bundle_version() {
+        let app = UpdateAppFixture::new();
+        assert!(validate_update_app_contents(&app.0, "1.31.33")
+            .unwrap_err()
+            .contains("version"));
+        app.write_version(None);
+        assert!(validate_update_app_contents(&app.0, "1.31.32")
+            .unwrap_err()
+            .contains("version"));
+        std::fs::write(app.0.join("Contents/Info.plist"), "invalid plist").unwrap();
+        assert!(validate_update_app_contents(&app.0, "1.31.32").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn update_app_contents_rejects_empty_expected_version() {
+        let app = UpdateAppFixture::new();
+        assert!(validate_update_app_contents(&app.0, "").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn update_app_contents_rejects_missing_nonexecutable_or_directory_helper() {
+        let app = UpdateAppFixture::new();
+        let helper = app.0.join("Contents/MacOS/peterfand");
+        app.write_helper(0o644);
+        assert!(validate_update_app_contents(&app.0, "1.31.32")
+            .unwrap_err()
+            .contains("helper"));
+        std::fs::remove_file(&helper).unwrap();
+        assert!(validate_update_app_contents(&app.0, "1.31.32").is_err());
+        std::fs::create_dir(&helper).unwrap();
+        assert!(validate_update_app_contents(&app.0, "1.31.32").is_err());
     }
 
     #[test]

@@ -2,6 +2,8 @@ mod assets;
 mod draw;
 mod manifest;
 mod normalize;
+mod playful_animals;
+mod playful_objects;
 mod procedural;
 mod quality;
 pub(crate) mod timing;
@@ -333,26 +335,26 @@ mod tests {
     #[test]
     fn rendered_direction_has_hand_approved_signatures_for_every_character() {
         let expected = [
-            (RunnerCharacter::Cat, 6173666051153182085_u64),
-            (RunnerCharacter::Dog, 2198120862554108057),
-            (RunnerCharacter::Rabbit, 8714800904743353510),
-            (RunnerCharacter::Fox, 4115935687352985311),
-            (RunnerCharacter::Penguin, 11917221229586655539),
+            (RunnerCharacter::Cat, 9453413548924385313_u64),
+            (RunnerCharacter::Dog, 10296048561691772368),
+            (RunnerCharacter::Rabbit, 3631146020509054727),
+            (RunnerCharacter::Fox, 11929435085102497449),
+            (RunnerCharacter::Penguin, 3145105424534364039),
             (RunnerCharacter::Dinosaur, 3683395265801644717),
-            (RunnerCharacter::Robot, 4679401743605925042),
-            (RunnerCharacter::Ghost, 4905326288456941391),
-            (RunnerCharacter::Bird, 8119060861408304317),
-            (RunnerCharacter::Duck, 9215540427510077264),
-            (RunnerCharacter::Sheep, 15344927357810802816),
-            (RunnerCharacter::Fish, 1454683525211696439),
-            (RunnerCharacter::Slime, 10270468348235596930),
+            (RunnerCharacter::Robot, 2033540284082552199),
+            (RunnerCharacter::Ghost, 5609072901848664016),
+            (RunnerCharacter::Bird, 12157300076353730953),
+            (RunnerCharacter::Duck, 16510218921723599678),
+            (RunnerCharacter::Sheep, 777736534157912451),
+            (RunnerCharacter::Fish, 2480771458963854715),
+            (RunnerCharacter::Slime, 16809246103360517528),
             (RunnerCharacter::Human, 15564924611738626466),
-            (RunnerCharacter::Pushup, 1949640321478599126),
-            (RunnerCharacter::Orbit, 6578607126643036137),
-            (RunnerCharacter::Sushi, 16502167201706185881),
-            (RunnerCharacter::City, 8667612527342811797),
-            (RunnerCharacter::Sausage, 17288445996476175593),
-            (RunnerCharacter::Party, 13745339646856667859),
+            (RunnerCharacter::Pushup, 3451587977518029261),
+            (RunnerCharacter::Orbit, 4553854499446331724),
+            (RunnerCharacter::Sushi, 3038523819319935784),
+            (RunnerCharacter::City, 1960348027929245961),
+            (RunnerCharacter::Sausage, 18200290292772796011),
+            (RunnerCharacter::Party, 15520422695539434978),
         ];
 
         let actual = expected.map(|(character, _)| {

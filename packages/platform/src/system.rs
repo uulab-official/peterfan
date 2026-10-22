@@ -142,6 +142,11 @@ impl SystemMonitor for SysinfoMonitor {
         self.refresh_slow();
     }
 
+    fn sample_cpu_usage(&mut self) -> f32 {
+        self.sys.refresh_cpu_usage();
+        self.sys.global_cpu_usage()
+    }
+
     fn refresh_quick(&mut self) {
         self.sys.refresh_cpu_all();
         self.sys

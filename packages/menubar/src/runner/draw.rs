@@ -41,18 +41,6 @@ impl RunnerCanvas {
         );
     }
 
-    pub(crate) fn leg(&mut self, hip: Pt, paw: Pt, knee_bend: f32, color: (u8, u8, u8, u8)) {
-        draw_runner_leg(
-            &mut self.rgba,
-            PIXEL_WIDTH,
-            PIXEL_HEIGHT,
-            hip,
-            paw,
-            knee_bend,
-            color,
-        );
-    }
-
     pub(crate) fn disc(&mut self, center: Pt, radius: f32, color: (u8, u8, u8, u8)) {
         draw_disc(
             &mut self.rgba,
@@ -115,32 +103,6 @@ impl RunnerCanvas {
     pub(crate) fn erase_disc(&mut self, center: Pt, radius: f32) {
         erase_disc(&mut self.rgba, PIXEL_WIDTH, PIXEL_HEIGHT, center, radius);
     }
-}
-
-pub(crate) fn draw_runner_leg(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    hip: Pt,
-    paw: Pt,
-    knee_bend: f32,
-    color: (u8, u8, u8, u8),
-) {
-    let knee = Pt::new(
-        (hip.x + paw.x) * 0.5 + knee_bend,
-        hip.y + (paw.y - hip.y) * 0.53 - 0.5,
-    );
-    draw_line(rgba, w, h, hip, knee, 2.8, color);
-    draw_line(rgba, w, h, knee, paw, 2.5, color);
-    draw_line(
-        rgba,
-        w,
-        h,
-        Pt::new(paw.x - 0.4, paw.y),
-        Pt::new(paw.x + 1.7, paw.y),
-        1.8,
-        color,
-    );
 }
 
 #[allow(clippy::too_many_arguments)]

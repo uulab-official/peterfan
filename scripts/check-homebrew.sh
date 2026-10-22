@@ -24,8 +24,24 @@ if [[ "$fail" != "0" ]]; then
 fi
 
 VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="peterfan-menubar") | .version')"
-if ! grep -Fq "version \"$VERSION\"" "$CASK"; then
-  echo "error: Homebrew cask version does not match Cargo: $VERSION" >&2
+CASK_VERSION="$(ruby -ne 'puts $1 if $_ =~ /^\s*version\s+\"([^\"]+)\"/' "$CASK" | head -1)"
+PUBLIC_VERSION="$(sed -n 's/.*Public latest release identified as `v\([^`]*\)`.*/\1/p' "$ROOT/docs/PRODUCTION_CHECKLIST.md" | head -1)"
+if [[ -z "$CASK_VERSION" || ! "$CASK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "error: Homebrew cask does not contain a valid pinned semver" >&2
+  exit 1
+fi
+if [[ -z "$PUBLIC_VERSION" || "$CASK_VERSION" != "$PUBLIC_VERSION" ]]; then
+  echo "error: Homebrew cask must stay pinned to documented public release v${PUBLIC_VERSION:-unknown}; found v$CASK_VERSION" >&2
+  exit 1
+fi
+if [[ "$CASK_VERSION" == "$VERSION" ]]; then
+  echo "Homebrew cask matches the workspace release version v$VERSION."
+else
+  echo "Homebrew cask remains pinned to public v$CASK_VERSION while workspace is v$VERSION."
+fi
+CASK_SHA256="$(ruby -ne 'puts $1 if $_ =~ /^\s*sha256\s+\"([0-9a-f]{64})\"/' "$CASK" | head -1)"
+if [[ ! "$CASK_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "error: Homebrew cask checksum is not a pinned SHA-256" >&2
   exit 1
 fi
 if grep -Eq 'PLACEHOLDER|:no_check|uulab/peterfan/releases' "$CASK"; then

@@ -128,7 +128,7 @@ if [[ "$ARTIFACT_ONLY" != "1" ]]; then
     fail ".env is not ignored by git"
   fi
 
-  if git -C "$PETERFAN_REPO_ROOT" check-ignore -q private; then
+  if git -C "$PETERFAN_REPO_ROOT" check-ignore -q private/; then
     ok "private/ is ignored by git"
   else
     fail "private/ is not ignored by git"

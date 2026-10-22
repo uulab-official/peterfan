@@ -254,26 +254,29 @@ fn build_character_report(
                 .iter()
                 .filter(|&&delta| delta > 0)
                 .count();
-            let split_y = bounds.min_y + bounds.height() / 2;
+            // A push-up's body axis is horizontal. Split rear-chain and
+            // shoulder/arm motion along X; a Y split stops measuring the head
+            // when both bottom poses correctly descend below that fixed line.
             let minimum_region_delta = (0..8)
                 .map(|frame| {
                     let next = (frame + 1) % 8;
-                    frame_region_delta(
-                        &cycle[frame],
-                        &cycle[next],
-                        bounds.min_x,
-                        bounds.min_y,
-                        bounds.max_x,
-                        split_y,
-                    )
-                    .min(frame_region_delta(
-                        &cycle[frame],
-                        &cycle[next],
-                        bounds.min_x,
-                        split_y.saturating_add(1),
-                        bounds.max_x,
-                        bounds.max_y,
-                    ))
+                    let (first, second) = if character == RunnerCharacter::Pushup {
+                        let split_x = bounds.min_x + bounds.width() / 2;
+                        (
+                            (bounds.min_x, bounds.min_y, split_x, bounds.max_y),
+                            (split_x + 1, bounds.min_y, bounds.max_x, bounds.max_y),
+                        )
+                    } else {
+                        let split_y = bounds.min_y + bounds.height() / 2;
+                        (
+                            (bounds.min_x, bounds.min_y, bounds.max_x, split_y),
+                            (bounds.min_x, split_y + 1, bounds.max_x, bounds.max_y),
+                        )
+                    };
+                    let delta = |(x0, y0, x1, y1)| {
+                        frame_region_delta(&cycle[frame], &cycle[next], x0, y0, x1, y1)
+                    };
+                    delta(first).min(delta(second))
                 })
                 .min()
                 .unwrap_or(0);

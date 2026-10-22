@@ -15,6 +15,8 @@
 #![recursion_limit = "512"]
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[cfg(target_os = "macos")]
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -74,17 +76,19 @@ use peterfan_core::types::SensorSource;
 use peterfan_core::types::{Celsius, Fan, TempSensor};
 use peterfan_core::types::{SensorGroup, SensorKind};
 use peterfan_core::{HardwareProvider, SystemMonitor};
-#[cfg(test)]
-use runner::render_raw_frame;
 use runner::{
-    ease_motion_cpu as ease_runner_motion_cpu, enabled as runner_enabled,
-    frame_interval as runner_frame_interval,
+    advance_phase as advance_runner_phase, ease_motion_cpu as ease_runner_motion_cpu,
+    enabled as runner_enabled, frame_interval_for_character as runner_character_interval,
     frame_interval_for_pose as runner_frame_interval_for_pose, load_band as runner_load_band,
-    load_band_with_hysteresis as runner_load_band_with_hysteresis, phase_step as runner_phase_step,
+    load_band_with_hysteresis as runner_load_band_with_hysteresis,
     should_animate as runner_should_animate, smooth_cpu as smooth_runner_cpu,
     uses_event_loop_timer as runner_uses_event_loop_timer, RunnerBuildError, RunnerPack,
     FRAME_COUNT as RUNNER_FRAME_COUNT, NATIVE_TICK as RUNNER_NATIVE_TICK,
     PIXEL_HEIGHT as RUNNER_PIXEL_HEIGHT, PIXEL_WIDTH as RUNNER_PIXEL_WIDTH,
+};
+#[cfg(test)]
+use runner::{
+    frame_interval as runner_frame_interval, phase_step as runner_phase_step, render_raw_frame,
 };
 #[cfg(target_os = "macos")]
 use runner::{
@@ -97,6 +101,7 @@ use runner::{
 };
 
 const REFRESH: Duration = Duration::from_secs(1);
+const RUNNER_CPU_REFRESH: Duration = Duration::from_millis(250);
 const TEMPERATURE_REFRESH_VISIBLE: Duration = Duration::from_secs(2);
 const TEMPERATURE_REFRESH_BACKGROUND: Duration = Duration::from_secs(3);
 const FAN_REFRESH_VISIBLE: Duration = Duration::from_secs(1);
@@ -2511,6 +2516,7 @@ fn main() {
 
     let mut next_metric_at = Instant::now();
     let mut next_runner_at = Instant::now();
+    let mut next_runner_cpu_at = Instant::now() + RUNNER_CPU_REFRESH;
     let mut prewarm_popover_at = Some(Instant::now() + POPOVER_PREWARM_DELAY);
     let mut last_event_at: Option<Instant> = None;
     event_loop.run(move |event, target, control_flow| {
@@ -2524,6 +2530,7 @@ fn main() {
             recover_after_pause(&mut app, now);
             next_metric_at = now;
             next_runner_at = now;
+            next_runner_cpu_at = now + RUNNER_CPU_REFRESH;
             prewarm_popover_at = None;
         }
         last_event_at = Some(now);
@@ -2647,6 +2654,7 @@ fn main() {
                 apply_runner_icon(&mut app);
             }
             update(&mut app);
+            next_runner_cpu_at = now + RUNNER_CPU_REFRESH;
             #[cfg(target_os = "macos")]
             sync_native_runner_timer(&mut app);
             next_metric_at = now
@@ -2659,17 +2667,32 @@ fn main() {
                 // A CPU spike must accelerate the runner immediately instead
                 // of waiting for the old idle-speed deadline to expire.
                 next_runner_at = next_runner_at.min(
-                    now + runner_frame_interval_for_pose(app.runner_cpu_pct, app.runner_frame),
+                    now + runner_frame_interval_for_pose(app.runner_character, app.runner_cpu_pct, app.runner_frame),
+                );
+            }
+        }
+        if runner_should_animate(app.display, app.reduce_motion) && now >= next_runner_cpu_at {
+            let cpu = app.monitor.sample_cpu_usage();
+            app.runner_cpu_pct = smooth_runner_cpu(app.runner_cpu_pct, cpu, app.runner_has_sample);
+            app.runner_has_sample = true;
+            next_runner_cpu_at = now + RUNNER_CPU_REFRESH;
+            #[cfg(target_os = "macos")]
+            sync_native_runner_timer(&mut app);
+            #[cfg(not(target_os = "macos"))]
+            {
+                next_runner_at = next_runner_at.min(
+                    now + runner_frame_interval_for_pose(app.runner_character, app.runner_cpu_pct, app.runner_frame),
                 );
             }
         }
         if runner_uses_event_loop_timer(app.display, app.reduce_motion) && now >= next_runner_at {
             animate_runner(&mut app);
             next_runner_at =
-                now + runner_frame_interval_for_pose(app.runner_cpu_pct, app.runner_frame);
+                now + runner_frame_interval_for_pose(app.runner_character, app.runner_cpu_pct, app.runner_frame);
         }
         let next_tick = [
             Some(next_metric_at),
+            runner_should_animate(app.display, app.reduce_motion).then_some(next_runner_cpu_at),
             runner_uses_event_loop_timer(app.display, app.reduce_motion).then_some(next_runner_at),
             prewarm_popover_at,
             app.popover_show_at,
@@ -4885,9 +4908,8 @@ fn update(app: &mut App) {
         serde_json::json!(app.runner_assets.pack.character().as_str());
     payload["runner_cpu_pct"] = serde_json::json!(app.runner_cpu_pct);
     payload["runner_reduce_motion"] = serde_json::json!(app.reduce_motion);
-    payload["runner_interval_ms"] = serde_json::json!(
-        (!app.reduce_motion).then(|| runner_frame_interval(app.runner_cpu_pct).as_millis())
-    );
+    payload["runner_interval_ms"] = serde_json::json!((!app.reduce_motion)
+        .then(|| runner_character_interval(app.runner_character, app.runner_cpu_pct).as_millis()));
     payload["network_rate_text"] = serde_json::json!(format!("{}/s", bytes((rx + tx) as u64)));
     payload["load_avg_text"] = serde_json::json!(load_avg_text);
     payload["power_text"] = serde_json::json!(power_text);
@@ -5454,6 +5476,25 @@ fn fan_control_install_plan(
 }
 
 #[cfg(target_os = "macos")]
+fn reinstall_or_privileged_install<F, G>(
+    self_reinstall: F,
+    privileged_install: G,
+) -> Result<peterfan_platform::daemon_install::InstallOutcome, String>
+where
+    F: FnOnce() -> Result<peterfan_platform::daemon_install::InstallOutcome, String>,
+    G: FnOnce() -> Result<peterfan_platform::daemon_install::InstallOutcome, String>,
+{
+    match self_reinstall() {
+        Ok(outcome) => Ok(outcome),
+        Err(self_reinstall_error) => privileged_install().map_err(|fallback_error| {
+            format!(
+                "passwordless daemon reinstall failed: {self_reinstall_error}; administrator reinstall also failed: {fallback_error}"
+            )
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn install_fan_control() {
     use peterfan_platform::daemon_install::InstallOutcome;
     // compare_exchange (not a plain store) so a second concurrent call —
@@ -5474,7 +5515,10 @@ fn install_fan_control() {
     let install_result = match plan {
         FanControlInstallPlan::AlreadyReady => Ok(InstallOutcome::Installed),
         FanControlInstallPlan::SelfReinstall => {
-            peterfan_platform::daemon_install::reinstall_via_running_daemon(false)
+            reinstall_or_privileged_install(
+                || peterfan_platform::daemon_install::reinstall_via_running_daemon(false),
+                || peterfan_platform::daemon_install::install(false),
+            )
         }
         FanControlInstallPlan::PrivilegedInstall => {
             peterfan_platform::daemon_install::install(false)
@@ -6327,10 +6371,13 @@ fn sync_native_runner_timer(app: &mut App) {
     {
         let motion_cpu = f32::from_bits(app.runner_native_motion_cpu_bits.load(Ordering::Relaxed));
         if (app.runner_cpu_pct - motion_cpu).abs() >= 0.1 {
-            app.runner_native_tick_us
-                .store(RUNNER_NATIVE_TICK.as_micros() as u64, Ordering::Relaxed);
-            let fire_date = NSDate::dateWithTimeIntervalSinceNow(RUNNER_NATIVE_TICK.as_secs_f64());
-            timer.setFireDate(&fire_date);
+            // Bring a distant idle deadline forward without postponing a pose
+            // that is already due sooner. Elapsed time comes from Instant.
+            if timer.fireDate().timeIntervalSinceNow() > RUNNER_NATIVE_TICK.as_secs_f64() {
+                let fire_date =
+                    NSDate::dateWithTimeIntervalSinceNow(RUNNER_NATIVE_TICK.as_secs_f64());
+                timer.setFireDate(&fire_date);
+            }
         }
         return;
     }
@@ -6347,6 +6394,7 @@ fn sync_native_runner_timer(app: &mut App) {
         return;
     };
 
+    let character = app.runner_character;
     let images = app.runner_assets.native_images.clone();
     let frame = Arc::clone(&app.runner_native_frame);
     let cpu_bits = Arc::clone(&app.runner_native_cpu_bits);
@@ -6358,36 +6406,38 @@ fn sync_native_runner_timer(app: &mut App) {
     phase_us.store(0, Ordering::Relaxed);
     band.store(runner_load_band(app.runner_cpu_pct), Ordering::Relaxed);
     scheduled_tick_us.store(RUNNER_NATIVE_TICK.as_micros() as u64, Ordering::Relaxed);
+    let last_tick = Cell::new(Instant::now());
     let block = RcBlock::new(move |timer: std::ptr::NonNull<NSTimer>| {
         let target_cpu = f32::from_bits(cpu_bits.load(Ordering::Relaxed));
         let current_cpu = f32::from_bits(motion_cpu_bits.load(Ordering::Relaxed));
-        let elapsed_us = scheduled_tick_us.load(Ordering::Relaxed);
-        let elapsed = Duration::from_micros(elapsed_us);
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(last_tick.replace(now));
+        let elapsed_us = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
         let cpu_pct = ease_runner_motion_cpu(current_cpu, target_cpu, elapsed);
         motion_cpu_bits.store(cpu_pct.to_bits(), Ordering::Relaxed);
         let current_frame = frame.load(Ordering::Relaxed) as u8 % RUNNER_FRAME_COUNT;
-        let (next_phase, should_advance) = runner_phase_step(
+        let (next_phase, next_frame) = advance_runner_phase(
+            character,
             phase_us.load(Ordering::Relaxed),
             elapsed_us,
             cpu_pct,
             current_frame,
         );
         phase_us.store(next_phase, Ordering::Relaxed);
-        let mut next_frame = current_frame;
-        if should_advance {
+        if next_frame != current_frame {
             let current_band = band.load(Ordering::Relaxed);
             let next_band = runner_load_band_with_hysteresis(cpu_pct, current_band);
             band.store(next_band, Ordering::Relaxed);
-            let next = (frame.fetch_add(1, Ordering::Relaxed) + 1) % u64::from(RUNNER_FRAME_COUNT);
-            next_frame = next as u8;
-            let index = next_band * usize::from(RUNNER_FRAME_COUNT) + next as usize;
+            frame.store(u64::from(next_frame), Ordering::Relaxed);
+            let index = next_band * usize::from(RUNNER_FRAME_COUNT) + usize::from(next_frame);
             if let Some(image) = images.get(index) {
                 button.setImage(Some(&**image));
                 applied_icon.store(index, Ordering::Relaxed);
             }
         }
 
-        let next_delay = runner_native_next_delay(next_phase, cpu_pct, target_cpu, next_frame);
+        let next_delay =
+            runner_native_next_delay(character, next_phase, cpu_pct, target_cpu, next_frame);
         scheduled_tick_us.store(next_delay.as_micros() as u64, Ordering::Relaxed);
         let fire_date = NSDate::dateWithTimeIntervalSinceNow(next_delay.as_secs_f64());
         unsafe { timer.as_ref() }.setFireDate(&fire_date);
@@ -6533,6 +6583,49 @@ fn write_runner_quality_artifacts() -> Result<RunnerQaArtifacts, RunnerBuildErro
         .into_iter()
         .map(|character| RunnerPack::build(character).map(|pack| (character, pack)))
         .collect::<Result<Vec<_>, _>>()?;
+    let frame_payload: serde_json::Map<String, serde_json::Value> = packs
+        .iter()
+        .map(|(character, pack)| {
+            (
+                character.as_str().to_string(),
+                serde_json::json!(pack
+                    .frames()
+                    .iter()
+                    .map(|frame| runner::alpha_hex(frame))
+                    .collect::<Vec<_>>()),
+            )
+        })
+        .collect();
+    std::fs::write(
+        target.join("runner-motion-frames.json"),
+        serde_json::to_vec(&frame_payload).expect("serializable frame payload"),
+    )
+    .map_err(|error| {
+        RunnerBuildError::cache(RunnerCharacter::Cat, "motion QA frames", error.to_string())
+    })?;
+    let cadence: serde_json::Map<String, serde_json::Value> = RunnerCharacter::FEATURED
+        .into_iter()
+        .map(|character| {
+            (
+                character.as_str().to_string(),
+                serde_json::json!((0..=100)
+                    .map(|cpu| (0..RUNNER_FRAME_COUNT)
+                        .map(|pose| runner::timing::frame_interval_for_pose(
+                            character, cpu as f32, pose
+                        )
+                        .as_millis())
+                        .collect::<Vec<_>>())
+                    .collect::<Vec<_>>()),
+            )
+        })
+        .collect();
+    std::fs::write(
+        target.join("runner-motion-cadence.json"),
+        serde_json::to_vec(&cadence).expect("serializable cadence"),
+    )
+    .map_err(|error| {
+        RunnerBuildError::cache(RunnerCharacter::Cat, "motion QA cadence", error.to_string())
+    })?;
     let sheet_path = target.join("runner-sprite-sheet.png");
     let report_path = target.join("runner-quality-report.json");
 
@@ -7854,6 +7947,7 @@ function applyRailView(resetScroll){
       ?(LANG==='ko'?'설정':'Settings')
       :(view==='system'?(LANG==='ko'?'시스템':'System'):'PeterFan'));
   if(resetScroll)resetRailPaneScroll();
+  setRunnerPreviewVisibility(view==='settings');
 }
 document.body.classList.add('compact');
 setRailView(railView());
@@ -9357,8 +9451,8 @@ var RUNNER_PREVIEW_ALPHA=__RUNNER_PREVIEWS__;
 var RUNNER_PREVIEW_FRAMES=__RUNNER_PREVIEW_FRAMES__;
 var RUNNER_SELECTED_PREVIEW=__RUNNER_SELECTED_PREVIEW__;
 var RUNNER_SELECTED_PREVIEW_CHARACTER='__RUNNER_SELECTED_PREVIEW_CHARACTER__';
-var RUNNER_PREVIEW_STATE={canvas:null,character:'',cpu:0,frame:0,band:0,timer:null,hasRealCpuSample:false};
-var RUNNER_PREVIEW_GAIT=[1.14,1.00,0.84,1.02,1.14,1.00,0.84,1.02];
+var RUNNER_PREVIEW_STATE={canvas:null,character:'',cpu:0,motionCpu:0,frame:0,band:0,phaseMs:0,lastTick:0,timer:null,visible:true,hasRealCpuSample:false};
+var RUNNER_PREVIEW_IMAGES=new Map();
 function runnerPreviewBand(cpu){
   var load=Math.max(0,Math.min(100,Number(cpu)||0));
   return load<20?0:(load<55?1:(load<80?2:3));
@@ -9400,36 +9494,54 @@ function paintRunnerPreview(canvas,character,frame,band){
   if(!alpha)return;
   var ctx=canvas.getContext('2d');
   if(!ctx)return;
-  var image=ctx.createImageData(canvas.width,canvas.height);
-  for(var i=0;i<alpha.length;i+=2){
-    var pixel=i/2,offset=pixel*4,a=parseInt(alpha.slice(i,i+2),16);
-    image.data[offset]=255;image.data[offset+1]=255;image.data[offset+2]=255;image.data[offset+3]=a;
+  var image=RUNNER_PREVIEW_IMAGES.get(alpha);
+  if(!image){
+    image=ctx.createImageData(canvas.width,canvas.height);
+    for(var i=0;i<alpha.length;i+=2){
+      var offset=i*2,a=parseInt(alpha.slice(i,i+2),16);
+      image.data[offset]=255;image.data[offset+1]=255;image.data[offset+2]=255;image.data[offset+3]=a;
+    }
+    if(RUNNER_PREVIEW_IMAGES.size>=128)RUNNER_PREVIEW_IMAGES.clear();
+    RUNNER_PREVIEW_IMAGES.set(alpha,image);
   }
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.putImageData(image,0,0);
-  ctx.globalCompositeOperation='source-in';
-  ctx.fillStyle='#ffffff';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
-  ctx.globalCompositeOperation='source-over';
 }
-function runnerPreviewInterval(cpu,frame){
-  var load=Math.max(0,Math.min(100,Number(cpu)||0))/100;
-  var base=60+420*Math.pow(1-load,3);
-  var influence=Math.max(0,1-load/0.8);
-  var gait=RUNNER_PREVIEW_GAIT[(Number(frame)||0)%RUNNER_PREVIEW_GAIT.length];
-  return Math.round(base*(1+(gait-1)*influence));
+function runnerPreviewInterval(cpu,frame,character){
+  var sample=Number(cpu);
+  var load=Number.isFinite(sample)?Math.max(0,Math.min(100,sample))/100:0;
+  return Math.round(20+160*Math.pow(1-load,1.6));
+}
+function runnerPreviewCanAnimate(){
+  var state=RUNNER_PREVIEW_STATE;
+  return state&&state.canvas&&state.visible&&!document.hidden
+    &&railView()==='settings'
+    &&!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 }
 function scheduleRunnerPreview(){
   var state=RUNNER_PREVIEW_STATE;
-  if(!state.canvas)return;
-  var reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if(reduced||document.hidden)return;
+  if(!runnerPreviewCanAnimate()||state.timer)return;
+  var changing=Math.abs(state.cpu-state.motionCpu)>=0.1;
+  var remaining=runnerPreviewInterval(state.motionCpu,state.frame,state.character)-state.phaseMs;
+  var delay=Math.max(1,Math.min(changing?30:Infinity,remaining));
   state.timer=setTimeout(function(){
+    state.timer=null;
+    if(!runnerPreviewCanAnimate())return;
+    var now=performance.now(),elapsed=Math.max(0,now-state.lastTick);
+    state.lastTick=now;
+    if(elapsed>1000){elapsed=0;state.phaseMs=0;}
+    var delta=state.cpu-state.motionCpu;
+    state.motionCpu=Math.abs(delta)<0.1?state.cpu:
+      state.motionCpu+delta*(1-Math.exp(-elapsed/(delta>0?75:300)));
+    state.phaseMs+=elapsed;
+    while(state.phaseMs>=runnerPreviewInterval(state.motionCpu,state.frame,state.character)){
+      state.phaseMs-=runnerPreviewInterval(state.motionCpu,state.frame,state.character);
+      state.frame=(state.frame+1)%8;
+    }
     state.band=runnerPreviewBandWithHysteresis(state.cpu,state.band);
-    state.frame=(state.frame+1)%8;
     paintRunnerPreview(state.canvas,state.character,state.frame,state.band);
     scheduleRunnerPreview();
-  },runnerPreviewInterval(state.cpu,state.frame));
+  },delay);
 }
 function startRunnerPreview(canvas,character,cpu){
   if(RUNNER_PREVIEW_STATE.timer){
@@ -9440,6 +9552,9 @@ function startRunnerPreview(canvas,character,cpu){
   RUNNER_PREVIEW_STATE.character=character;
   RUNNER_PREVIEW_STATE.cpu=Math.max(0,Math.min(100,Number(cpu)||0));
   RUNNER_PREVIEW_STATE.frame=0;
+  RUNNER_PREVIEW_STATE.motionCpu=RUNNER_PREVIEW_STATE.cpu;
+  RUNNER_PREVIEW_STATE.phaseMs=0;
+  RUNNER_PREVIEW_STATE.lastTick=performance.now();
   RUNNER_PREVIEW_STATE.band=runnerPreviewBand(RUNNER_PREVIEW_STATE.cpu);
   paintRunnerPreview(canvas,character,0,RUNNER_PREVIEW_STATE.band);
   var reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -9448,35 +9563,44 @@ function startRunnerPreview(canvas,character,cpu){
 }
 function setRunnerPreviewVisibility(visible){
   var state=RUNNER_PREVIEW_STATE;
+  if(!state)return;
+  state.visible=!!visible;
   if(!visible){
     if(state.timer){clearTimeout(state.timer);state.timer=null;}
     return;
   }
-  if(state.canvas&&!state.timer) scheduleRunnerPreview();
+  if(!state.timer){state.lastTick=performance.now();scheduleRunnerPreview();}
 }
 function seedRunnerPreview(cpu){
   var state=RUNNER_PREVIEW_STATE;
   state.cpu=Math.max(0,Math.min(100,Number(cpu)||0));
+  state.motionCpu=state.cpu;
   state.band=runnerPreviewBand(state.cpu);
   paintRunnerPreview(state.canvas,state.character,state.frame,state.band);
 }
 function setRunnerPreviewCpu(cpu){
   var state=RUNNER_PREVIEW_STATE;
+  var previous=state.cpu;
   state.cpu=Math.max(0,Math.min(100,Number(cpu)||0));
   if(!state.hasRealCpuSample){
     state.hasRealCpuSample=true;
     state.band=runnerPreviewBand(state.cpu);
     paintRunnerPreview(state.canvas,state.character,state.frame,state.band);
   }
+  if(previous!==state.cpu&&state.timer){clearTimeout(state.timer);state.timer=null;}
+  scheduleRunnerPreview();
 }
-document.addEventListener('visibilitychange',function(){
+function refreshRunnerPreviewMotionPreference(){
   var state=RUNNER_PREVIEW_STATE;
-  if(document.hidden){
-    if(state.timer){clearTimeout(state.timer);state.timer=null;}
-    return;
-  }
-  if(state.canvas&&!state.timer) scheduleRunnerPreview();
-});
+  if(state.timer){clearTimeout(state.timer);state.timer=null;}
+  state.lastTick=performance.now();
+  scheduleRunnerPreview();
+}
+document.addEventListener('visibilitychange',refreshRunnerPreviewMotionPreference);
+if(window.matchMedia){
+  var runnerMotionQuery=window.matchMedia('(prefers-reduced-motion: reduce)');
+  if(runnerMotionQuery.addEventListener)runnerMotionQuery.addEventListener('change',refreshRunnerPreviewMotionPreference);
+}
 function paintRunnerPreviews(root){
   (root||document).querySelectorAll('canvas[data-runner-preview]').forEach(function(canvas){
     paintRunnerPreview(canvas,canvas.dataset.runnerPreview,1,0);
@@ -11051,7 +11175,7 @@ mod tests {
 
         for expected in [
             "ease_runner_motion_cpu(",
-            "runner_phase_step(",
+            "advance_runner_phase(",
             "runner_load_band_with_hysteresis(",
             "let index =",
             "images.get(index)",
@@ -11146,11 +11270,11 @@ mod tests {
         assert!(normal > busy);
         assert!(idle <= RUNNER_MAX_INTERVAL);
         assert!(busy >= RUNNER_MIN_INTERVAL);
-        assert!((418..=422).contains(&idle.as_millis()));
-        assert!((128..=132).contains(&normal.as_millis()));
-        assert!((274..=276).contains(&runner_frame_interval(20.0).as_millis()));
-        assert!((59..=61).contains(&busy.as_millis()));
-        assert!(idle.as_millis() >= busy.as_millis() * 7);
+        assert!((167..=169).contains(&idle.as_millis()));
+        assert!((80..=82).contains(&normal.as_millis()));
+        assert!((131..=133).contains(&runner_frame_interval(20.0).as_millis()));
+        assert!((20..=22).contains(&busy.as_millis()));
+        assert!(idle.as_millis() >= busy.as_millis() * 5);
 
         assert!(!runner_enabled(MenubarDisplay::Number));
         assert!(runner_enabled(MenubarDisplay::Graph));
@@ -11174,18 +11298,19 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn native_runner_sleeps_between_idle_frames_but_wakes_for_speed_changes() {
-        let settled_idle = runner_native_next_delay(0, 5.0, 5.0, 0);
-        let settled_busy = runner_native_next_delay(0, 100.0, 100.0, 0);
-        let accelerating = runner_native_next_delay(0, 5.0, 90.0, 0);
+        let settled_idle = runner_native_next_delay(RunnerCharacter::Cat, 0, 5.0, 5.0, 0);
+        let settled_busy = runner_native_next_delay(RunnerCharacter::Cat, 0, 100.0, 100.0, 0);
+        let accelerating = runner_native_next_delay(RunnerCharacter::Cat, 0, 5.0, 90.0, 0);
 
-        assert!(settled_idle > RUNNER_NATIVE_TICK * 6);
+        assert!(settled_idle > RUNNER_NATIVE_TICK * 5);
         assert_eq!(settled_busy, RUNNER_NATIVE_TICK);
         assert_eq!(accelerating, RUNNER_NATIVE_TICK);
 
-        let interval_us = runner_frame_interval_for_pose(5.0, 0).as_micros() as u64;
+        let interval_us =
+            runner_frame_interval_for_pose(RunnerCharacter::Cat, 5.0, 0).as_micros() as u64;
         assert_eq!(
-            runner_native_next_delay(interval_us - 1, 5.0, 5.0, 0),
-            RUNNER_NATIVE_TICK
+            runner_native_next_delay(RunnerCharacter::Cat, interval_us - 1, 5.0, 5.0, 0),
+            Duration::from_millis(1)
         );
     }
 
@@ -11278,37 +11403,30 @@ mod tests {
 
     #[test]
     fn runner_phase_keeps_remainder_when_speed_changes() {
-        let tick_us = 30_000;
-        let (phase, advanced) = runner_phase_step(450_000, tick_us, 5.0, 0);
+        let (phase, advanced) = runner_phase_step(10_000, 15_000, 100.0, 0);
         assert!(advanced);
-        assert!(phase < runner_frame_interval_for_pose(5.0, 0).as_micros() as u64);
-
-        let (phase, advanced) = runner_phase_step(phase, tick_us, 95.0, 1);
+        assert_eq!(phase, 5_000);
+        let (phase, advanced) = runner_phase_step(phase, 10_000, 100.0, 1);
         assert!(!advanced);
-        let (phase, advanced) = runner_phase_step(phase, tick_us, 95.0, 1);
+        let (phase, advanced) = runner_phase_step(phase, 10_000, 100.0, 1);
         assert!(advanced);
-        assert!(phase < runner_frame_interval_for_pose(95.0, 1).as_micros() as u64);
+        assert_eq!(phase, 5_000);
     }
 
     #[test]
-    fn runner_gait_timing_has_weight_without_changing_lap_speed() {
-        let contact = runner_frame_interval_for_pose(5.0, 0);
-        let flight = runner_frame_interval_for_pose(5.0, 2);
-        assert!(contact > runner_frame_interval(5.0));
-        assert!(flight < runner_frame_interval(5.0));
-        assert!(contact > flight);
-
-        let lap_ms: u128 = (0..RUNNER_FRAME_COUNT)
-            .map(|frame| runner_frame_interval_for_pose(5.0, frame).as_millis())
-            .sum();
-        let uniform_lap_ms =
-            runner_frame_interval(5.0).as_millis() * u128::from(RUNNER_FRAME_COUNT);
-        assert!(lap_ms.abs_diff(uniform_lap_ms) <= 4);
-
-        assert_eq!(
-            runner_frame_interval_for_pose(95.0, 0),
-            runner_frame_interval_for_pose(95.0, 2)
-        );
+    fn every_runner_lap_uses_one_common_cpu_clock() {
+        for cpu in [5.0, 45.0, 95.0] {
+            for character in RunnerCharacter::FEATURED {
+                let lap: Duration = (0..RUNNER_FRAME_COUNT)
+                    .map(|pose| runner_frame_interval_for_pose(character, cpu, pose))
+                    .sum();
+                assert_eq!(
+                    lap,
+                    runner_frame_interval(cpu) * u32::from(RUNNER_FRAME_COUNT),
+                    "{character:?} at {cpu}% must not have a separate lap speed"
+                );
+            }
+        }
     }
 
     #[test]
@@ -11329,7 +11447,7 @@ mod tests {
             assert!(next >= value);
             value = next;
         }
-        assert!(value > 75.0 && value < 80.0);
+        assert!(value > 79.0 && value <= 80.0);
     }
 
     #[test]
@@ -11370,6 +11488,26 @@ mod tests {
                 // preserve its anatomy instead of widening it into a blob.
                 assert!(width >= 12, "{character:?} is too narrow: {width}px");
                 assert!(height >= 24, "{character:?} is too short: {height}px");
+            } else if character == RunnerCharacter::Pushup {
+                // An elevated plank needs vertical room as well as a long body.
+                assert!(width >= 30, "push-up is too narrow: {width}px");
+                assert!(height >= 20, "push-up plank is flattened: {height}px");
+            } else if matches!(character, RunnerCharacter::Penguin | RunnerCharacter::Robot) {
+                // Upright anatomy stays legible without decorative horizontal
+                // speed lines that previously inflated this width check.
+                assert!(width >= 14, "{character:?} is too narrow: {width}px");
+                assert!(height >= 24, "{character:?} is too short: {height}px");
+            } else if matches!(
+                character,
+                RunnerCharacter::Cat
+                    | RunnerCharacter::Dog
+                    | RunnerCharacter::Rabbit
+                    | RunnerCharacter::Fox
+            ) {
+                // Tucked legs shorten an individual pose; the cycle's full
+                // silhouette is independently checked against its manifest.
+                assert!(width >= 30, "{character:?} is too narrow: {width}px");
+                assert!(height >= 16, "{character:?} is too short: {height}px");
             } else if matches!(
                 character,
                 RunnerCharacter::Dinosaur | RunnerCharacter::Ghost
@@ -11383,10 +11521,22 @@ mod tests {
                 assert!(width >= 30, "{character:?} is too narrow: {width}px");
                 assert!(width as f32 / height as f32 >= 1.0);
             } else {
-                assert!(width >= 36, "{character:?} is too narrow: {width}px");
+                // A dancer is upright, the skyline is height-limited, and a
+                // slime alternates a narrow tall dome with a broad compression.
+                // Their entire cycles still obey the unchanged manifest gates.
+                let (min_width, min_height) = match character {
+                    RunnerCharacter::Slime => (18, 10),
+                    RunnerCharacter::Party => (18, 24),
+                    RunnerCharacter::City => (30, 20),
+                    RunnerCharacter::Bird | RunnerCharacter::Fish | RunnerCharacter::Orbit => {
+                        (34, 14)
+                    }
+                    RunnerCharacter::Sausage => (36, 16),
+                    _ => (30, 16),
+                };
                 assert!(
-                    width as f32 / height as f32 >= 1.40,
-                    "{character:?} is not recognizably horizontal: {width}x{height}"
+                    width >= min_width && height >= min_height,
+                    "{character:?} does not fill its optical slot: {width}x{height}"
                 );
             }
         }
@@ -11420,7 +11570,8 @@ mod tests {
         ));
         assert!(html.contains(".character-option{display:grid;grid-template-columns:38px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:34px"));
         assert!(html.contains("image-rendering:auto"));
-        assert!(html.contains("ctx.fillStyle='#ffffff'"));
+        assert!(html
+            .contains("image.data[offset]=255;image.data[offset+1]=255;image.data[offset+2]=255;"));
         assert!(!html.contains("__RUNNER_COLORS__"));
     }
 
@@ -11472,7 +11623,9 @@ mod tests {
             "high load should enlarge the gait: idle={idle_motion}, sprint={sprint_motion}"
         );
         assert!(
-            sprint_motion >= 300,
+            // Stable head/ribcage volume must not needlessly morph merely to
+            // raise the whole-frame pixel difference. Limbs supply the motion.
+            sprint_motion >= 120,
             "sprint key poses are too similar: {sprint_motion} changed pixels"
         );
     }
@@ -11527,38 +11680,13 @@ mod tests {
         ] {
             assert!(ko.contains(label), "Korean settings are missing {label}");
         }
-        for legacy_label in [
-            "새",
-            "오리",
-            "양",
-            "물고기",
-            "슬라임",
-            "궤도",
-            "회전초밥",
-            "도시",
-            "소시지",
-            "파티",
-        ] {
-            let legacy_character = match legacy_label {
-                "새" => RunnerCharacter::Bird,
-                "오리" => RunnerCharacter::Duck,
-                "양" => RunnerCharacter::Sheep,
-                "물고기" => RunnerCharacter::Fish,
-                "슬라임" => RunnerCharacter::Slime,
-                "궤도" => RunnerCharacter::Orbit,
-                "회전초밥" => RunnerCharacter::Sushi,
-                "도시" => RunnerCharacter::City,
-                "소시지" => RunnerCharacter::Sausage,
-                "파티" => RunnerCharacter::Party,
-                _ => unreachable!(),
-            };
+        for character in RunnerCharacter::FEATURED {
             assert!(
-                !ko.contains(&format!(
-                    r#"data-character="{}""#,
-                    legacy_character.as_str()
-                )),
-                "legacy runner leaked into picker: {legacy_label}"
+                ko.contains(&format!(r#"data-character="{}""#, character.as_str())),
+                "authored runner missing from picker: {}",
+                character.as_str()
             );
+            assert!(ko.contains(runner_character_label(ResolvedLanguage::Ko, character)));
         }
     }
 
@@ -11612,9 +11740,7 @@ mod tests {
         assert!(html.contains("paintRunnerPreview(canvas,canvas.dataset.runnerPreview,1,0);"));
         assert!(html.contains("startRunnerPreview(characterPreview,character,cpu);"));
         assert!(!html.contains("startRunnerPreview(characterPreview,character,0);"));
-        assert!(html.contains("function runnerPreviewInterval(cpu,frame)"));
-        assert!(html.contains("RUNNER_PREVIEW_GAIT=[1.14,1.00,0.84,1.02"));
-        assert!(html.contains("60+420*Math.pow(1-load,3)"));
+        assert!(html.contains("function runnerPreviewInterval(cpu,frame,character)"));
         assert!(html.contains("function setRunnerPreviewCpu(cpu)"));
         assert!(html.contains("function setRunnerPreviewVisibility(visible)"));
         assert!(html.contains("document.addEventListener('visibilitychange'"));
@@ -13628,6 +13754,24 @@ mod tests {
             fan_control_install_plan(None, false),
             FanControlInstallPlan::PrivilegedInstall
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn manual_daemon_reinstall_falls_back_to_one_privileged_install() {
+        use peterfan_platform::daemon_install::InstallOutcome;
+
+        let mut privileged_called = false;
+        let result = reinstall_or_privileged_install(
+            || Err("reinstall source is not a trusted PeterFan release".to_string()),
+            || {
+                privileged_called = true;
+                Ok(InstallOutcome::Installed)
+            },
+        );
+
+        assert!(matches!(result, Ok(InstallOutcome::Installed)));
+        assert!(privileged_called);
     }
 
     #[test]

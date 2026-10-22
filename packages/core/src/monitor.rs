@@ -52,6 +52,13 @@ pub trait SystemMonitor {
         self.refresh();
     }
 
+    /// Read CPU usage alone for responsive animation, leaving expensive metric
+    /// families on the caller's slower dashboard schedule.
+    fn sample_cpu_usage(&mut self) -> f32 {
+        self.refresh_quick();
+        self.cpu().usage_percent
+    }
+
     /// Re-sample expensive dashboard families such as processes, disks, and
     /// networks. The default is empty because `refresh_quick` already called
     /// `refresh` for backends that do not implement split refreshes.

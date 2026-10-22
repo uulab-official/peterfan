@@ -16,42 +16,6 @@ const HUMAN_RUN_SHEET: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/runner/runner-sheet.png"
 ));
-const CAT_RUN_FRAME_WIDTH: u32 = 66;
-const CAT_RUN_FRAME_HEIGHT: u32 = 66;
-const CAT_RUN_FRAME_COUNT: u32 = 5;
-const CAT_RUN_SHEET: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/runner/cat-run-cc0.png"
-));
-const FOX_RUN_FRAME_WIDTH: u32 = 64;
-const FOX_RUN_FRAME_HEIGHT: u32 = 36;
-const FOX_RUN_FRAME_COUNT: u32 = 6;
-const FOX_RUN_SHEET: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/runner/fox-run-cc0.png"
-));
-const DOG_RUN_FRAME_WIDTH: u32 = 60;
-const DOG_RUN_FRAME_HEIGHT: u32 = 38;
-const DOG_RUN_FRAME_COUNT: u32 = 6;
-const DOG_RUN_SHEET_ROW: u32 = 1;
-const DOG_RUN_SHEET: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/runner/dog-run-cc0.png"
-));
-const RABBIT_RUN_FRAME_WIDTH: u32 = 32;
-const RABBIT_RUN_FRAME_HEIGHT: u32 = 26;
-const RABBIT_RUN_FRAME_COUNT: u32 = 6;
-const RABBIT_RUN_SHEET: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/runner/rabbit-run-cc0.png"
-));
-const GHOST_RUN_FRAME_WIDTH: u32 = 32;
-const GHOST_RUN_FRAME_HEIGHT: u32 = 32;
-const GHOST_RUN_FRAME_COUNT: u32 = 6;
-const GHOST_RUN_SHEET: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/runner/ghost-run-cc0.png"
-));
 const DINO_RUN_FRAME_WIDTH: u32 = 680;
 const DINO_RUN_FRAME_HEIGHT: u32 = 472;
 const DINO_RUN_FRAMES: &[&[u8]] = &[
@@ -90,8 +54,6 @@ const DINO_RUN_FRAMES: &[&[u8]] = &[
 ];
 const LOAD_PRESET_CPUS: [f32; 4] = [0.0, 30.0, 65.0, 90.0];
 const CHANNELS_PER_PIXEL: usize = 4;
-const MATTE_DARK_THRESHOLD: u8 = 35;
-const CAT_BLUE_MATTE_MIN: u8 = 100;
 
 #[derive(Clone, Copy)]
 struct Crop {
@@ -102,32 +64,12 @@ struct Crop {
 }
 
 #[derive(Clone, Copy)]
-struct SheetLayout {
-    frame_width: u32,
-    frame_height: u32,
-    sheet_columns: u32,
-    source_pose_count: u32,
-    sheet_row: u32,
-    phase_offset: f32,
-    draw_height: u32,
-    crop: Crop,
-    matte: MatteKey,
-}
-
-#[derive(Clone, Copy)]
 struct SequenceLayout {
     source_width: u32,
     source_height: u32,
     draw_width: u32,
     draw_height: u32,
     crop: Crop,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum MatteKey {
-    None,
-    BlueBackground,
-    DarkBackground,
 }
 
 struct DecodedPng {
@@ -293,126 +235,51 @@ fn finalize_cycle(
     character: RunnerCharacter,
     cpu_pct: f32,
 ) -> Result<[RgbaFrame; 8], RunnerBuildError> {
-    let raw = source_cycle(character)?;
-    let motion_input = apply_motion_cycle(&raw, cpu_pct);
+    // Authored animals have their own planted/flight poses. Translating the
+    // complete sprite would make the paws skate and flatten the real stride.
+    let motion_input = match character {
+        RunnerCharacter::Cat
+        | RunnerCharacter::Dog
+        | RunnerCharacter::Rabbit
+        | RunnerCharacter::Fox => super::procedural::animal_source_cycle(character, cpu_pct),
+        RunnerCharacter::Ghost => super::procedural::ghost_source_cycle(cpu_pct),
+        _ => apply_motion_cycle(&source_cycle(character)?, cpu_pct),
+    };
     let normalized = normalize_cycle(manifest(character), motion_input)?;
     validate_cycle(manifest(character), &normalized)?;
     Ok(normalized)
 }
 
 fn decode_cat_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
-    decode_sheet_cycle(
+    Ok(super::procedural::animal_source_cycle(
         RunnerCharacter::Cat,
-        CAT_RUN_SHEET,
-        SheetLayout {
-            frame_width: CAT_RUN_FRAME_WIDTH,
-            frame_height: CAT_RUN_FRAME_HEIGHT,
-            sheet_columns: CAT_RUN_FRAME_COUNT,
-            source_pose_count: CAT_RUN_FRAME_COUNT,
-            sheet_row: 0,
-            phase_offset: 0.0,
-            draw_height: PIXEL_HEIGHT,
-            crop: Crop {
-                left: 1,
-                top: 4,
-                width: 64,
-                height: 58,
-            },
-            matte: MatteKey::BlueBackground,
-        },
-    )
+        0.0,
+    ))
 }
 
 fn decode_dog_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
-    decode_sheet_cycle(
+    Ok(super::procedural::animal_source_cycle(
         RunnerCharacter::Dog,
-        DOG_RUN_SHEET,
-        SheetLayout {
-            frame_width: DOG_RUN_FRAME_WIDTH,
-            frame_height: DOG_RUN_FRAME_HEIGHT,
-            sheet_columns: DOG_RUN_FRAME_COUNT,
-            source_pose_count: DOG_RUN_FRAME_COUNT,
-            sheet_row: DOG_RUN_SHEET_ROW,
-            phase_offset: 0.0,
-            draw_height: 18,
-            crop: Crop {
-                left: 0,
-                top: 0,
-                width: 60,
-                height: 38,
-            },
-            matte: MatteKey::DarkBackground,
-        },
-    )
+        0.0,
+    ))
 }
 
 fn decode_rabbit_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
-    decode_sheet_cycle(
+    Ok(super::procedural::animal_source_cycle(
         RunnerCharacter::Rabbit,
-        RABBIT_RUN_SHEET,
-        SheetLayout {
-            frame_width: RABBIT_RUN_FRAME_WIDTH,
-            frame_height: RABBIT_RUN_FRAME_HEIGHT,
-            sheet_columns: RABBIT_RUN_FRAME_COUNT,
-            source_pose_count: RABBIT_RUN_FRAME_COUNT,
-            sheet_row: 0,
-            phase_offset: 1.0,
-            draw_height: 14,
-            crop: Crop {
-                left: 2,
-                top: 1,
-                width: 28,
-                height: 24,
-            },
-            matte: MatteKey::DarkBackground,
-        },
-    )
+        0.0,
+    ))
 }
 
 fn decode_fox_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
-    decode_sheet_cycle(
+    Ok(super::procedural::animal_source_cycle(
         RunnerCharacter::Fox,
-        FOX_RUN_SHEET,
-        SheetLayout {
-            frame_width: FOX_RUN_FRAME_WIDTH,
-            frame_height: FOX_RUN_FRAME_HEIGHT,
-            sheet_columns: FOX_RUN_FRAME_COUNT,
-            source_pose_count: FOX_RUN_FRAME_COUNT,
-            sheet_row: 0,
-            phase_offset: 0.0,
-            draw_height: 18,
-            crop: Crop {
-                left: 1,
-                top: 0,
-                width: 62,
-                height: 36,
-            },
-            matte: MatteKey::DarkBackground,
-        },
-    )
+        0.0,
+    ))
 }
 
 fn decode_ghost_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
-    decode_sheet_cycle(
-        RunnerCharacter::Ghost,
-        GHOST_RUN_SHEET,
-        SheetLayout {
-            frame_width: GHOST_RUN_FRAME_WIDTH,
-            frame_height: GHOST_RUN_FRAME_HEIGHT,
-            sheet_columns: GHOST_RUN_FRAME_COUNT,
-            source_pose_count: GHOST_RUN_FRAME_COUNT,
-            sheet_row: 0,
-            phase_offset: 0.0,
-            draw_height: 18,
-            crop: Crop {
-                left: 1,
-                top: 0,
-                width: 30,
-                height: 32,
-            },
-            matte: MatteKey::DarkBackground,
-        },
-    )
+    Ok(super::procedural::ghost_source_cycle(0.0))
 }
 
 fn decode_dinosaur_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
@@ -466,46 +333,6 @@ fn decode_human_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
         let frame_y = HUMAN_RUN_FRAME_HEIGHT;
         extract_human_frame(&decoded, RunnerCharacter::Human, frame_x, frame_y)
     }))
-}
-
-fn decode_sheet_cycle(
-    character: RunnerCharacter,
-    sheet: &[u8],
-    layout: SheetLayout,
-) -> Result<[RgbaFrame; 8], RunnerBuildError> {
-    validate_crop(
-        character,
-        "decode_sheet_cycle[crop]",
-        layout.frame_width,
-        layout.frame_height,
-        layout.crop,
-    )?;
-    let decoded = decode_png(character, sheet, "decode_sheet_cycle[png]")?;
-    let expected_width = layout.frame_width * layout.sheet_columns;
-    if decoded.width != expected_width {
-        return Err(decode_error(
-            character,
-            format!(
-                "decode_sheet_cycle[width]: expected {}px ({} columns × {}px), got {}",
-                expected_width, layout.sheet_columns, layout.frame_width, decoded.width
-            ),
-        ));
-    }
-    let minimum_height = layout.frame_height * (layout.sheet_row + 1);
-    if decoded.height < minimum_height {
-        return Err(decode_error(
-            character,
-            format!(
-                "decode_sheet_cycle[height]: expected at least {}px for row {}, got {}",
-                minimum_height, layout.sheet_row, decoded.height
-            ),
-        ));
-    }
-
-    let source_frames = (0..layout.source_pose_count)
-        .map(|source_frame| extract_sheet_frame(&decoded, character, layout, source_frame))
-        .collect::<Result<Vec<_>, _>>()?;
-    resample_source_cycle(character, &source_frames, layout.phase_offset)
 }
 
 fn decode_sequence_cycle(
@@ -568,6 +395,7 @@ fn decode_sequence_cycle(
     })
 }
 
+#[cfg(test)]
 fn resample_source_cycle(
     character: RunnerCharacter,
     source_frames: &[RgbaFrame],
@@ -720,26 +548,6 @@ fn validate_crop(
     Ok(())
 }
 
-fn extract_sheet_frame(
-    decoded: &DecodedPng,
-    character: RunnerCharacter,
-    layout: SheetLayout,
-    source_frame: u32,
-) -> Result<RgbaFrame, RunnerBuildError> {
-    extract_cropped_frame(
-        decoded,
-        character,
-        SheetFrameOrigin {
-            x: source_frame * layout.frame_width,
-            y: layout.sheet_row * layout.frame_height,
-        },
-        layout.crop,
-        layout.matte,
-        PIXEL_WIDTH,
-        layout.draw_height,
-    )
-}
-
 fn extract_sequence_frame(
     decoded: &DecodedPng,
     character: RunnerCharacter,
@@ -752,7 +560,6 @@ fn extract_sequence_frame(
         character,
         SheetFrameOrigin { x: 0, y: 0 },
         crop,
-        MatteKey::None,
         draw_width,
         draw_height,
     )
@@ -769,7 +576,6 @@ fn extract_cropped_frame(
     character: RunnerCharacter,
     origin: SheetFrameOrigin,
     crop: Crop,
-    matte: MatteKey,
     draw_width: u32,
     draw_height: u32,
 ) -> Result<RgbaFrame, RunnerBuildError> {
@@ -791,13 +597,7 @@ fn extract_cropped_frame(
         let source_y = crop.top + sample_axis(draw_y, draw_height, crop.height);
         for draw_x in 0..draw_width {
             let source_x = crop.left + sample_axis(draw_x, draw_width, crop.width);
-            let alpha = sample_alpha(
-                decoded,
-                character,
-                origin.x + source_x,
-                origin.y + source_y,
-                matte,
-            )?;
+            let alpha = sample_alpha(decoded, character, origin.x + source_x, origin.y + source_y)?;
             if alpha == 0 {
                 continue;
             }
@@ -849,7 +649,6 @@ fn sample_alpha(
     character: RunnerCharacter,
     x: u32,
     y: u32,
-    matte: MatteKey,
 ) -> Result<u8, RunnerBuildError> {
     if x >= decoded.width || y >= decoded.height {
         return Err(RunnerBuildError::InvalidFrame {
@@ -861,25 +660,7 @@ fn sample_alpha(
         });
     }
 
-    let pixel = read_pixel(decoded, x, y);
-    let masked = match matte {
-        MatteKey::None => false,
-        MatteKey::BlueBackground => {
-            pixel.blue > pixel.red.saturating_add(35)
-                && pixel.blue > pixel.green.saturating_add(10)
-                && pixel.blue > CAT_BLUE_MATTE_MIN
-        }
-        MatteKey::DarkBackground => {
-            matches!(
-                decoded.color_type,
-                png::ColorType::Rgb | png::ColorType::Grayscale
-            ) && pixel.red < MATTE_DARK_THRESHOLD
-                && pixel.green < MATTE_DARK_THRESHOLD
-                && pixel.blue < MATTE_DARK_THRESHOLD
-        }
-    };
-
-    Ok(if masked { 0 } else { pixel.alpha })
+    Ok(read_pixel(decoded, x, y).alpha)
 }
 
 #[derive(Clone, Copy)]
@@ -955,7 +736,7 @@ fn decode_error(character: RunnerCharacter, detail: String) -> RunnerBuildError 
 mod tests {
     use peterfan_core::config::RunnerCharacter;
 
-    use super::{build_cycle, render, resample_source_cycle, sample_alpha, DecodedPng, MatteKey};
+    use super::{build_cycle, render, resample_source_cycle, sample_alpha, DecodedPng};
     use crate::runner::{manifest, validate_cycle, FRAME_COUNT};
 
     fn asset_characters() -> [RunnerCharacter; 7] {
@@ -988,6 +769,42 @@ mod tests {
             }
         }
         frame
+    }
+
+    #[test]
+    fn rabbit_remains_legible_at_the_native_runner_scale() {
+        for cpu_pct in [0.0, 30.0, 65.0, 90.0] {
+            let cycle = build_cycle(RunnerCharacter::Rabbit, cpu_pct).expect("rabbit cycle");
+            let bounds = crate::runner::measure_frame(&cycle[0])
+                .expect("rabbit bounds")
+                .bounds;
+            assert!(
+                bounds.width() >= 30,
+                "rabbit width {} at {cpu_pct}% is undersized",
+                bounds.width()
+            );
+        }
+    }
+
+    #[test]
+    fn authored_animals_have_eight_source_poses_without_duplicate_holds() {
+        for character in [
+            RunnerCharacter::Cat,
+            RunnerCharacter::Dog,
+            RunnerCharacter::Rabbit,
+            RunnerCharacter::Fox,
+            RunnerCharacter::Ghost,
+        ] {
+            let cycle = super::source_cycle(character).expect("animal source");
+            for first in 0..8 {
+                for second in first + 1..8 {
+                    assert!(
+                        cycle[first] != cycle[second],
+                        "{character:?} repeats poses {first}/{second}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1086,8 +903,7 @@ mod tests {
             pixels: vec![255],
         };
 
-        let error = sample_alpha(&decoded, RunnerCharacter::Dog, 1, 0, MatteKey::None)
-            .expect_err("out of bounds");
+        let error = sample_alpha(&decoded, RunnerCharacter::Dog, 1, 0).expect_err("out of bounds");
         let detail = error.to_string();
         assert!(
             detail.contains("runner 'dog'"),

@@ -33,10 +33,10 @@ else
   fail "could not read workspace package version from Cargo.toml"
 fi
 
-if [[ "$version" == "1.32.0" ]]; then
-  ok "safe process control release version is v1.32.0"
+if [[ "$version" == "1.32.2" ]]; then
+  ok "safe process control release version is v1.32.2"
 else
-  fail "safe process control release must use workspace version v1.32.0"
+  fail "safe process control release must use workspace version v1.32.2"
 fi
 
 if grep -q "^## \\[$version\\]" "$ROOT/CHANGELOG.md"; then
