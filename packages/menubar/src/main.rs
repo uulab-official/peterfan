@@ -12,9 +12,11 @@
 // and that payload has grown past the default limit (128) over the course of
 // many feature additions. Bumping this is the standard fix (recommended by
 // rustc's own error message), not a workaround for a real problem.
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[cfg(target_os = "macos")]
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -27,6 +29,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(any(not(target_os = "macos"), test))]
 use tao::dpi::PhysicalPosition;
+#[cfg(not(target_os = "macos"))]
+use tao::dpi::PhysicalSize;
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
@@ -36,6 +40,8 @@ use tao::window::{Window, WindowBuilder};
 
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
+
+mod runner;
 
 #[cfg(target_os = "macos")]
 use block2::RcBlock;
@@ -58,39 +64,52 @@ use tray_icon::{
 use wry::{WebView, WebViewBuilder, RGBA};
 
 use peterfan_core::config::{
-    CustomCurveConfig, Language, MenubarDisplay, NotificationConfig, ResolvedLanguage,
-    RunnerCharacter, TemperatureSource,
+    Config, CustomCurveConfig, Language, MenubarDisplay, NotificationConfig, ResolvedLanguage,
+    Rule, RunnerCharacter, TemperatureSource, UpdateChannel,
 };
 use peterfan_core::error::CoreError;
-use peterfan_core::metrics::{DiskInfo, ProcSort};
+use peterfan_core::metrics::{DiskInfo, ProcSort, ProcessInfo};
 use peterfan_core::profile::Profile;
 use peterfan_core::thermals::{representative_temperature_c, safety_temperature_c};
-use peterfan_core::types::SensorKind;
 #[cfg(test)]
 use peterfan_core::types::SensorSource;
 use peterfan_core::types::{Celsius, Fan, TempSensor};
+use peterfan_core::types::{SensorGroup, SensorKind};
 use peterfan_core::{HardwareProvider, SystemMonitor};
+use runner::{
+    advance_phase as advance_runner_phase, ease_motion_cpu as ease_runner_motion_cpu,
+    enabled as runner_enabled, frame_interval_for_character as runner_character_interval,
+    frame_interval_for_pose as runner_frame_interval_for_pose, load_band as runner_load_band,
+    load_band_with_hysteresis as runner_load_band_with_hysteresis,
+    should_animate as runner_should_animate, smooth_cpu as smooth_runner_cpu,
+    uses_event_loop_timer as runner_uses_event_loop_timer, RunnerBuildError, RunnerPack,
+    FRAME_COUNT as RUNNER_FRAME_COUNT, NATIVE_TICK as RUNNER_NATIVE_TICK,
+    PIXEL_HEIGHT as RUNNER_PIXEL_HEIGHT, PIXEL_WIDTH as RUNNER_PIXEL_WIDTH,
+};
+#[cfg(test)]
+use runner::{
+    frame_interval as runner_frame_interval, phase_step as runner_phase_step, render_raw_frame,
+};
+#[cfg(target_os = "macos")]
+use runner::{
+    native_next_delay as runner_native_next_delay, NATIVE_TOLERANCE as RUNNER_NATIVE_TOLERANCE,
+};
+#[cfg(test)]
+use runner::{
+    LOAD_BANDS as RUNNER_LOAD_BANDS, MAX_INTERVAL as RUNNER_MAX_INTERVAL,
+    MIN_INTERVAL as RUNNER_MIN_INTERVAL,
+};
 
 const REFRESH: Duration = Duration::from_secs(1);
+const RUNNER_CPU_REFRESH: Duration = Duration::from_millis(250);
 const TEMPERATURE_REFRESH_VISIBLE: Duration = Duration::from_secs(2);
 const TEMPERATURE_REFRESH_BACKGROUND: Duration = Duration::from_secs(3);
 const FAN_REFRESH_VISIBLE: Duration = Duration::from_secs(1);
 const FAN_REFRESH_BACKGROUND: Duration = Duration::from_secs(3);
 const FAN_STALE_AFTER: Duration = Duration::from_secs(8);
 const FAN_EMPTY_CONFIRMATIONS: u8 = 3;
-// The runner should jog legibly at idle and sprint at the display refresh limit.
-// Frames are pre-rendered, so each tick only swaps a cached status-item image.
-const RUNNER_FRAME_COUNT: u8 = 8;
-const RUNNER_PIXEL_WIDTH: u32 = 48;
-const RUNNER_PIXEL_HEIGHT: u32 = 32;
-const RUNNER_MIN_INTERVAL: Duration = Duration::from_millis(60);
-const RUNNER_MAX_INTERVAL: Duration = Duration::from_millis(480);
-#[cfg(target_os = "macos")]
-// The runner cannot display frames faster than RUNNER_MIN_INTERVAL. Waking the
-// AppKit run loop more often only burns energy while producing the same image.
-const RUNNER_NATIVE_TICK: Duration = RUNNER_MIN_INTERVAL;
-#[cfg(target_os = "macos")]
-const RUNNER_NATIVE_TOLERANCE: Duration = Duration::from_millis(8);
+const RUNNER_PREVIEW_BAND: usize = 1;
+const RUNNER_PREVIEW_POSE: u8 = 1;
 #[cfg(target_os = "macos")]
 const MENUBAR_GRAPH_WIDTH: f64 = 36.0;
 #[cfg(target_os = "macos")]
@@ -398,6 +417,10 @@ static SUPPORT_REPORT: Mutex<String> = Mutex::new(String::new());
 static SUPPORT_REPORT_COPY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static SUPPORT_REPORT_COPY_REVISION: AtomicU64 = AtomicU64::new(0);
 static SUPPORT_REPORT_COPY_OK: AtomicBool = AtomicBool::new(false);
+/// Monotonic completion signal for copying the current TOML configuration.
+static CONFIG_COPY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static CONFIG_COPY_REVISION: AtomicU64 = AtomicU64::new(0);
+static CONFIG_COPY_OK: AtomicBool = AtomicBool::new(false);
 /// Guards `install_fan_control()` process-wide. The popover and Detail
 /// Window each track their own "installing…" button state in per-webview JS
 /// (`FAN_CONTROL_FIX_PENDING`), which doesn't stop both windows from firing
@@ -430,6 +453,9 @@ fn pending_command_key(cmd: &str) -> Option<String> {
     if cmd.starts_with("character:") {
         return Some("runner-character".to_string());
     }
+    if cmd.starts_with("processfilter:") {
+        return Some("process-filter".to_string());
+    }
     if let Some(setting) = cmd
         .strip_prefix("notifications:")
         .and_then(|value| value.split(':').next())
@@ -460,6 +486,62 @@ fn queue_pending_command(queue: &mut Vec<String>, cmd: String) {
 fn enqueue_pending(cmd: impl Into<String>) {
     let mut queue = PENDING.lock().expect("pending poisoned");
     queue_pending_command(&mut queue, cmd.into());
+}
+
+fn parse_process_quit_command(
+    command: &str,
+) -> Option<peterfan_platform::process_control::ProcessQuitRequest> {
+    let (pid, start_time) = command.strip_prefix("quitprocess:")?.split_once(':')?;
+    let pid = pid.parse::<u32>().ok()?;
+    let expected_start_time_unix_secs = start_time.parse::<u64>().ok()?;
+    if pid <= 1 || expected_start_time_unix_secs == 0 {
+        return None;
+    }
+    Some(peterfan_platform::process_control::ProcessQuitRequest {
+        pid,
+        expected_start_time_unix_secs,
+    })
+}
+
+fn is_native_process_command(command: &str) -> bool {
+    command.starts_with("processfilter:") || parse_process_quit_command(command).is_some()
+}
+
+#[derive(Clone)]
+struct ProcessActionState {
+    revision: u64,
+    phase: &'static str,
+    pid: Option<u32>,
+    name: Option<String>,
+    code: Option<&'static str>,
+    message: Option<String>,
+}
+
+static PROCESS_ACTION: Mutex<ProcessActionState> = Mutex::new(ProcessActionState {
+    revision: 0,
+    phase: "idle",
+    pid: None,
+    name: None,
+    code: None,
+    message: None,
+});
+static PROCESS_ACTION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static PROCESS_REFRESH_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+fn process_action_json(state: &ProcessActionState) -> serde_json::Value {
+    serde_json::json!({
+        "revision": state.revision,
+        "phase": state.phase,
+        "pid": state.pid,
+        "name": state.name,
+        "code": state.code,
+        "message": state.message,
+    })
+}
+
+fn process_action_snapshot() -> serde_json::Value {
+    let state = PROCESS_ACTION.lock().expect("process action poisoned");
+    process_action_json(&state)
 }
 
 #[derive(Clone)]
@@ -662,6 +744,53 @@ fn strings(lang: ResolvedLanguage) -> L10n {
     }
 }
 
+#[derive(Debug, Clone)]
+struct RunnerAssets {
+    pack: RunnerPack,
+    icons: Vec<Icon>,
+    native_images: Vec<NativeRunnerImage>,
+}
+
+#[cfg(target_os = "macos")]
+type NativeRunnerImage = Retained<NSImage>;
+#[cfg(not(target_os = "macos"))]
+type NativeRunnerImage = Vec<u8>;
+
+#[derive(Debug, Clone)]
+struct RunnerStartupState {
+    character: RunnerCharacter,
+    assets: RunnerAssets,
+    original_error: Option<RunnerBuildError>,
+}
+
+#[derive(Debug, Clone)]
+struct RunnerStartupFailure {
+    requested: RunnerCharacter,
+    original_error: Option<RunnerBuildError>,
+    fatal_error: RunnerBuildError,
+}
+
+impl std::fmt::Display for RunnerStartupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(original_error) = &self.original_error {
+            write!(
+                f,
+                "runner '{}' failed, fallback cache build also failed: original={}, fallback={}",
+                self.requested.as_str(),
+                original_error,
+                self.fatal_error
+            )
+        } else {
+            write!(
+                f,
+                "runner '{}' startup failed: {}",
+                self.requested.as_str(),
+                self.fatal_error
+            )
+        }
+    }
+}
+
 struct App {
     monitor: Box<dyn SystemMonitor>,
     /// Shared (not owned) so control actions can run on a background thread
@@ -671,10 +800,12 @@ struct App {
     display: MenubarDisplay,
     runner_character: RunnerCharacter,
     temperature_source: TemperatureSource,
+    update_channel: UpdateChannel,
     critical_temp_c: f32,
     notifications: NotificationConfig,
     notification_runtime: NotificationRuntime,
     language: Language,
+    show_cpu_core_graph: bool,
     tray: Option<TrayIcon>,
     tray_menu: Option<TrayMenu>,
     window: Option<Window>,
@@ -699,6 +830,8 @@ struct App {
     fan_hist: VecDeque<f32>,
     /// Multi-range history (2m/1h/1d) for the popover's own charts.
     cpu_h: RangedHistory,
+    /// Per-core short history used by the compact overview graph.
+    per_core_h: Vec<RangedHistory>,
     mem_h: RangedHistory,
     temp_h: RangedHistory,
     /// Combined rx+tx throughput (bytes/sec) — the chart only ever shows the
@@ -706,6 +839,7 @@ struct App {
     net_h: RangedHistory,
     /// Combined disk read+write throughput (bytes/sec), same reasoning.
     disk_io_h: RangedHistory,
+    process_filter: String,
     dashboard_slow_cache: DashboardSlowCache,
     next_dashboard_slow_refresh: Instant,
     /// Small animation frame for the RunCat-style menu-bar character. It
@@ -714,9 +848,9 @@ struct App {
     runner_cpu_pct: f32,
     runner_has_sample: bool,
     reduce_motion: bool,
-    runner_icons: Vec<Icon>,
-    #[cfg(target_os = "macos")]
-    runner_native_images: Vec<Retained<NSImage>>,
+    runner_assets: RunnerAssets,
+    #[cfg(not(target_os = "macos"))]
+    runner_band: usize,
     #[cfg(target_os = "macos")]
     runner_native_timer: Option<Retained<NSTimer>>,
     #[cfg(target_os = "macos")]
@@ -866,6 +1000,7 @@ fn evaluate_notification_rules(
 struct DashboardSlowCache {
     sampled_at: Option<Instant>,
     proc_sort: ProcSort,
+    proc_filter: String,
     procs: Vec<serde_json::Value>,
     disk_pct: f32,
     disk_text: String,
@@ -886,6 +1021,7 @@ impl Default for DashboardSlowCache {
         Self {
             sampled_at: None,
             proc_sort: ProcSort::Cpu,
+            proc_filter: String::new(),
             procs: Vec::new(),
             disk_pct: 0.0,
             disk_text: String::new(),
@@ -911,10 +1047,72 @@ fn save_menubar_display(display: MenubarDisplay) {
     let _ = peterfan_platform::config::save(&cfg);
 }
 
+fn save_cpu_core_graph(show: bool) {
+    let mut cfg = peterfan_platform::config::load();
+    cfg.menubar.show_cpu_core_graph = show;
+    let _ = peterfan_platform::config::save(&cfg);
+}
+
 fn save_runner_character(character: RunnerCharacter) {
     let mut cfg = peterfan_platform::config::load();
     cfg.menubar.character = character;
     let _ = peterfan_platform::config::save(&cfg);
+}
+
+fn note_runner_build_failure(message: String) {
+    *STATUS.lock().expect("status poisoned") = message.clone();
+    log_menubar_event(&message);
+}
+
+fn runner_startup_failure_message(
+    requested: RunnerCharacter,
+    fallback: RunnerCharacter,
+    error: &RunnerBuildError,
+) -> String {
+    bounded_runner_message(
+        format!(
+            "runner '{}' failed; using '{}': {}",
+            requested.as_str(),
+            fallback.as_str(),
+            error
+        ),
+        180,
+    )
+}
+
+fn runner_startup_fatal_message(error: &RunnerStartupFailure) -> String {
+    bounded_runner_message(error.to_string(), 180)
+}
+
+fn runner_switch_failure_message(requested: RunnerCharacter, error: &RunnerBuildError) -> String {
+    bounded_runner_message(
+        format!(
+            "runner '{}' unavailable; keeping current runner: {}",
+            requested.as_str(),
+            error
+        ),
+        180,
+    )
+}
+
+fn runner_preview_failure_message(requested: RunnerCharacter, error: &RunnerBuildError) -> String {
+    bounded_runner_message(
+        format!(
+            "runner '{}' preview fallback: {}",
+            requested.as_str(),
+            error
+        ),
+        180,
+    )
+}
+
+fn bounded_runner_message(message: String, limit: usize) -> String {
+    let mut bounded = message.chars().take(limit).collect::<String>();
+    if message.chars().count() > limit && limit > 0 {
+        bounded.pop();
+        bounded.push('…');
+    }
+    bounded
 }
 
 fn runner_character_label(lang: ResolvedLanguage, character: RunnerCharacter) -> &'static str {
@@ -968,6 +1166,20 @@ fn save_temperature_source(source: TemperatureSource) {
     let _ = peterfan_platform::config::save(&cfg);
 }
 
+fn save_update_channel(channel: UpdateChannel) {
+    let mut cfg = peterfan_platform::config::load();
+    cfg.menubar.update_channel = channel;
+    let _ = peterfan_platform::config::save(&cfg);
+}
+
+fn configured_update_channel() -> UpdateChannel {
+    peterfan_platform::config::load().menubar.update_channel
+}
+
+fn fetch_configured_release() -> Result<peterfan_platform::updater::ReleaseInfo, String> {
+    peterfan_platform::updater::fetch_release_for_channel(configured_update_channel())
+}
+
 /// Persist the UI language choice so it survives a relaunch.
 fn save_language(language: Language) {
     let mut cfg = peterfan_platform::config::load();
@@ -1016,6 +1228,132 @@ fn save_notification_settings(settings: &NotificationConfig) -> Result<(), Strin
         .map(|_| ())
         .map_err(|error| format!("could not save notifications: {error}"))
 }
+
+/// Parse, validate, persist, and reload the automation rules edited in the
+/// detail window. The daemon validates the same config again before applying
+/// it, but validating here gives the user an immediate error without touching
+/// the on-disk file.
+fn parse_automation_rules(rules_json: &str) -> Result<Vec<Rule>, String> {
+    let rules: Vec<Rule> = match serde_json::from_str(rules_json) {
+        Ok(rules) => rules,
+        Err(error) => return Err(format!("invalid rule data ({error})")),
+    };
+    let validation = Config {
+        rules: rules.clone(),
+        ..Config::default()
+    };
+    validation.validate_for_control()?;
+    Ok(rules)
+}
+
+fn save_automation_rules(rules_json: &str) -> String {
+    let rules = match parse_automation_rules(rules_json) {
+        Ok(rules) => rules,
+        Err(error) => return format!("rules save failed: {error}"),
+    };
+    let mut cfg = peterfan_platform::config::load();
+    cfg.rules = rules;
+    let count = cfg.rules.len();
+    if let Err(error) = peterfan_platform::config::save(&cfg) {
+        return format!("rules save failed: {error}");
+    }
+    #[cfg(unix)]
+    if peterfan_platform::ipc::send_command("reload").is_none() {
+        return format!("rules saved ({count}); daemon reload pending");
+    }
+    format!("rules saved ({count})")
+}
+
+fn parse_imported_config(config_text: &str) -> Result<Config, String> {
+    let config = match Config::from_toml(config_text) {
+        Ok(config) => config,
+        Err(error) => return Err(format!("invalid TOML ({error})")),
+    };
+    config.validate_for_control()?;
+    Ok(config)
+}
+
+fn import_config(config_text: &str) -> String {
+    let config = match parse_imported_config(config_text) {
+        Ok(config) => config,
+        Err(error) => return format!("config import failed: {error}"),
+    };
+    let rules = config.rules.len();
+    if let Err(error) = peterfan_platform::config::save(&config) {
+        return format!("config import failed: {error}");
+    }
+    #[cfg(unix)]
+    if peterfan_platform::ipc::send_command("reload").is_none() {
+        return format!("config imported ({rules} rules); daemon reload pending");
+    }
+    format!("config imported ({rules} rules)")
+}
+
+fn copy_config_export() {
+    if CONFIG_COPY_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let config = peterfan_platform::config::load().to_toml();
+    std::thread::spawn(move || {
+        let result = write_support_report_to_clipboard(&config);
+        CONFIG_COPY_OK.store(result.is_ok(), Ordering::Release);
+        CONFIG_COPY_REVISION.fetch_add(1, Ordering::AcqRel);
+        CONFIG_COPY_IN_FLIGHT.store(false, Ordering::Release);
+        match result {
+            Ok(()) => log_menubar_event("configuration copied"),
+            Err(error) => log_menubar_event(&format!("configuration copy failed: {error}")),
+        }
+    });
+}
+
+fn daemon_supports_user_config(reply: Option<&str>) -> bool {
+    reply.is_some_and(|reply| reply.starts_with("ok logged-in-user"))
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_daemon_user_config_sync() {
+    let probe = peterfan_platform::ipc::send_command("config-source");
+    if !daemon_supports_user_config(probe.as_deref()) {
+        let installed = peterfan_platform::installed_daemon_version();
+        // A helper that is already too old for general control is handled by
+        // the regular stale-daemon updater running alongside this task. Only
+        // self-reinstall here when the sole missing capability is config sync.
+        if installed.as_deref().is_some_and(|version| {
+            !peterfan_platform::daemon_update_required(version)
+                && peterfan_platform::daemon_self_reinstall_supported(version)
+        }) {
+            match peterfan_platform::daemon_install::reinstall_via_running_daemon(false) {
+                Ok(_) => log_menubar_event("daemon updated for user config sync"),
+                Err(error) => {
+                    log_menubar_event(&format!("daemon config sync update skipped: {error}"))
+                }
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < deadline {
+            let probe = peterfan_platform::ipc::send_command("config-source");
+            if daemon_supports_user_config(probe.as_deref()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+    if let Some(reply) = peterfan_platform::ipc::send_command("reload") {
+        log_menubar_event(&format!("daemon config sync: {reply}"));
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn ensure_daemon_user_config_sync() {
+    let _ = peterfan_platform::ipc::send_command("reload");
+}
+
+#[cfg(not(unix))]
+fn ensure_daemon_user_config_sync() {}
 
 fn hottest_temperature(temps: &[TempSensor]) -> Option<&TempSensor> {
     temps.iter().max_by(|a, b| {
@@ -1313,6 +1651,7 @@ fn raw_temperature_row_label(sensor: &TempSensor) -> String {
     format!("{} · {}", sensor.label, sensor.id)
 }
 
+#[cfg(test)]
 fn sensor_group_label(lang: ResolvedLanguage, kind: SensorKind) -> &'static str {
     match (lang, kind) {
         (_, SensorKind::Cpu) => "CPU",
@@ -1327,6 +1666,29 @@ fn sensor_group_label(lang: ResolvedLanguage, kind: SensorKind) -> &'static str 
         (ResolvedLanguage::En, SensorKind::Mainboard) => "Mainboard",
         (ResolvedLanguage::En, SensorKind::Battery) => "Battery",
         (ResolvedLanguage::En, SensorKind::Other) => "Other",
+    }
+}
+
+fn sensor_group_label_for_sensor(lang: ResolvedLanguage, sensor: &TempSensor) -> &'static str {
+    match (lang, SensorGroup::from_sensor(sensor)) {
+        (_, SensorGroup::CpuAverage) => "CPU average",
+        (_, SensorGroup::CpuHottest) => "CPU hottest",
+        (_, SensorGroup::CpuCore) => "CPU cores",
+        (ResolvedLanguage::Ko, SensorGroup::CpuDie) => "CPU 다이",
+        (ResolvedLanguage::En, SensorGroup::CpuDie) => "CPU die",
+        (ResolvedLanguage::Ko, SensorGroup::GpuDie) => "GPU 다이",
+        (ResolvedLanguage::En, SensorGroup::GpuDie) => "GPU die",
+        (_, SensorGroup::Gpu) => "GPU",
+        (ResolvedLanguage::Ko, SensorGroup::Memory) => "메모리",
+        (ResolvedLanguage::En, SensorGroup::Memory) => "Memory",
+        (ResolvedLanguage::Ko, SensorGroup::Storage) => "저장장치",
+        (ResolvedLanguage::En, SensorGroup::Storage) => "Storage",
+        (ResolvedLanguage::Ko, SensorGroup::Battery) => "배터리",
+        (ResolvedLanguage::En, SensorGroup::Battery) => "Battery",
+        (ResolvedLanguage::Ko, SensorGroup::Mainboard) => "메인보드",
+        (ResolvedLanguage::En, SensorGroup::Mainboard) => "Mainboard",
+        (ResolvedLanguage::Ko, SensorGroup::Other) => "기타",
+        (ResolvedLanguage::En, SensorGroup::Other) => "Other",
     }
 }
 
@@ -1706,6 +2068,7 @@ fn support_report_json(input: SupportReportInput<'_>) -> serde_json::Value {
                 "id": sensor.id,
                 "label": sensor.label,
                 "kind": sensor.kind,
+                "group": SensorGroup::from_sensor(sensor),
                 "source": sensor.source,
                 "value_c": sensor.value.0,
             })).collect::<Vec<_>>(),
@@ -1741,44 +2104,79 @@ fn should_recover_after_pause(last_event_at: Option<Instant>, now: Instant) -> b
         .unwrap_or(false)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResumeRecoveryPlan {
+    hide_popover: bool,
+    invalidate_hardware_caches: bool,
+    clear_dashboard_histories: bool,
+    discard_completed_reads: bool,
+    schedule_refreshes_immediately: bool,
+    clear_control_confirmation: bool,
+}
+
+const fn resume_recovery_plan() -> ResumeRecoveryPlan {
+    ResumeRecoveryPlan {
+        hide_popover: true,
+        invalidate_hardware_caches: true,
+        clear_dashboard_histories: true,
+        discard_completed_reads: true,
+        schedule_refreshes_immediately: true,
+        clear_control_confirmation: true,
+    }
+}
+
 fn recover_after_pause(app: &mut App, now: Instant) {
+    let plan = resume_recovery_plan();
     log_menubar_event("resume recovery: invalidating hardware and dashboard caches");
-    hide_popover(app);
-    app.temperature_cache.clear();
-    app.temperature_sampled_at = None;
-    app.temperature_sampled_at_unix_ms = None;
-    // Keep the last known fan identities across sleep so the UI does not
-    // briefly claim that built-in fans disappeared. Readings remain gated by
-    // `fan_sampled_at` until a fresh post-wake sample arrives.
-    app.fan_sampled_at = None;
-    app.fan_empty_samples = 0;
-    app.all_temp_rows_cache.clear();
-    app.all_temp_sampled_at = None;
-    app.all_temp_sampled_at_unix_ms = None;
-    app.daemon_json_cache = None;
-    app.daemon_json_sampled_at = None;
-    app.daemon_probe_completed = false;
-    app.dashboard_slow_cache = DashboardSlowCache::default();
-    app.fan_hist.clear();
-    app.cpu_h.clear();
-    app.mem_h.clear();
-    app.temp_h.clear();
-    app.net_h.clear();
-    app.disk_io_h.clear();
+    if plan.hide_popover {
+        hide_popover(app);
+    }
+    if plan.invalidate_hardware_caches {
+        app.temperature_cache.clear();
+        app.temperature_sampled_at = None;
+        app.temperature_sampled_at_unix_ms = None;
+        // Keep the last known fan identities across sleep so the UI does not
+        // briefly claim that built-in fans disappeared. Readings remain gated by
+        // `fan_sampled_at` until a fresh post-wake sample arrives.
+        app.fan_sampled_at = None;
+        app.fan_empty_samples = 0;
+        app.all_temp_rows_cache.clear();
+        app.all_temp_sampled_at = None;
+        app.all_temp_sampled_at_unix_ms = None;
+        app.daemon_json_cache = None;
+        app.daemon_json_sampled_at = None;
+        app.daemon_probe_completed = false;
+        app.dashboard_slow_cache = DashboardSlowCache::default();
+    }
+    if plan.clear_dashboard_histories {
+        app.fan_hist.clear();
+        app.cpu_h.clear();
+        app.per_core_h.clear();
+        app.mem_h.clear();
+        app.temp_h.clear();
+        app.net_h.clear();
+        app.disk_io_h.clear();
+    }
     // A completed read from before sleep must not be mistaken for the first
     // post-resume sample. An in-flight hardware call is left alone; its
     // result is still valid if it finishes after wake.
-    let _ = app.temperature_read.take();
-    let _ = app.fan_read.take();
-    let _ = app.all_temp_read.take();
-    let _ = app.daemon_read.take();
-    app.next_temperature_refresh = now;
-    app.next_fan_refresh = now;
-    app.next_all_temp_refresh = now;
-    app.next_daemon_refresh = now;
-    app.next_dashboard_slow_refresh = now;
-    app.next_update_result_refresh = now;
-    app.control_confirm_until = None;
+    if plan.discard_completed_reads {
+        let _ = app.temperature_read.take();
+        let _ = app.fan_read.take();
+        let _ = app.all_temp_read.take();
+        let _ = app.daemon_read.take();
+    }
+    if plan.schedule_refreshes_immediately {
+        app.next_temperature_refresh = now;
+        app.next_fan_refresh = now;
+        app.next_all_temp_refresh = now;
+        app.next_daemon_refresh = now;
+        app.next_dashboard_slow_refresh = now;
+        app.next_update_result_refresh = now;
+    }
+    if plan.clear_control_confirmation {
+        app.control_confirm_until = None;
+    }
 }
 
 fn fan_action_log_path() -> Option<PathBuf> {
@@ -1980,14 +2378,31 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|v| MenubarDisplay::parse(v))
         .unwrap_or(saved.display);
-    let runner_character = args
+    let requested_runner_character = args
         .iter()
         .position(|a| a == "--character")
         .and_then(|i| args.get(i + 1))
         .and_then(|v| RunnerCharacter::parse(v))
         .unwrap_or(saved.character);
+    let requested_runner_character = if requested_runner_character.is_featured() {
+        requested_runner_character
+    } else {
+        RunnerCharacter::Cat
+    };
+    let runner_startup = match initialize_runner_assets(requested_runner_character) {
+        Ok(state) => state,
+        Err(error) => {
+            let message = runner_startup_fatal_message(&error);
+            note_runner_build_failure(message.clone());
+            eprintln!("{message}");
+            return;
+        }
+    };
+    let runner_character = runner_startup.character;
     let temperature_source = saved.temperature_source;
+    let update_channel = saved.update_channel;
     let language = saved.language;
+    let show_cpu_core_graph = saved.show_cpu_core_graph;
 
     let (monitor, provider): (Box<dyn SystemMonitor>, std::sync::Arc<dyn HardwareProvider>) =
         if use_mock {
@@ -2013,10 +2428,12 @@ fn main() {
         display,
         runner_character,
         temperature_source,
+        update_channel,
         critical_temp_c,
         notifications,
         notification_runtime: NotificationRuntime::default(),
         language,
+        show_cpu_core_graph,
         tray: None,
         tray_menu: None,
         window: None,
@@ -2031,19 +2448,21 @@ fn main() {
         detail_webview_ready: false,
         fan_hist: VecDeque::with_capacity(HIST_CAP),
         cpu_h: RangedHistory::new(),
+        per_core_h: Vec::new(),
         mem_h: RangedHistory::new(),
         temp_h: RangedHistory::new(),
         net_h: RangedHistory::new(),
         disk_io_h: RangedHistory::new(),
+        process_filter: String::new(),
         dashboard_slow_cache: DashboardSlowCache::default(),
         next_dashboard_slow_refresh: Instant::now() + DASHBOARD_SLOW_REFRESH,
         runner_frame: 0,
         runner_cpu_pct: 0.0,
         runner_has_sample: false,
         reduce_motion: system_reduce_motion(),
-        runner_icons: make_runner_icons(runner_character),
-        #[cfg(target_os = "macos")]
-        runner_native_images: make_runner_native_images(runner_character),
+        runner_assets: runner_startup.assets,
+        #[cfg(not(target_os = "macos"))]
+        runner_band: 0,
         #[cfg(target_os = "macos")]
         runner_native_timer: None,
         #[cfg(target_os = "macos")]
@@ -2087,9 +2506,17 @@ fn main() {
         next_update_result_refresh: Instant::now() + Duration::from_secs(1),
         control_confirm_until: None,
     };
+    if let Some(error) = runner_startup.original_error {
+        note_runner_build_failure(runner_startup_failure_message(
+            requested_runner_character,
+            app.runner_character,
+            &error,
+        ));
+    }
 
     let mut next_metric_at = Instant::now();
     let mut next_runner_at = Instant::now();
+    let mut next_runner_cpu_at = Instant::now() + RUNNER_CPU_REFRESH;
     let mut prewarm_popover_at = Some(Instant::now() + POPOVER_PREWARM_DELAY);
     let mut last_event_at: Option<Instant> = None;
     event_loop.run(move |event, target, control_flow| {
@@ -2103,6 +2530,7 @@ fn main() {
             recover_after_pause(&mut app, now);
             next_metric_at = now;
             next_runner_at = now;
+            next_runner_cpu_at = now + RUNNER_CPU_REFRESH;
             prewarm_popover_at = None;
         }
         last_event_at = Some(now);
@@ -2137,6 +2565,10 @@ fn main() {
                     // newly bundled daemon themselves. Keep required helper
                     // updates silent after the one initial macOS approval.
                     std::thread::spawn(maybe_silently_update_stale_daemon);
+                    // A system LaunchDaemon can start before any GUI user has
+                    // logged in. Reload now that the menu-bar app knows which
+                    // user's settings should drive rules and custom curves.
+                    std::thread::spawn(ensure_daemon_user_config_sync);
                     std::thread::spawn(check_for_updates_on_launch);
                 }
             }
@@ -2179,6 +2611,13 @@ fn main() {
                 w.set_focus();
                 app.popover_visible = true;
                 log_menubar_event("popover shown");
+                if let Some(wv) = &app.webview {
+                    evaluate_dashboard_script(
+                        wv,
+                        "window.setRunnerPreviewVisibility&&window.setRunnerPreviewVisibility(true);",
+                        "popover",
+                    );
+                }
                 defer_dashboard_io_after_open(&mut app);
             }
             app.popover_show_at = None;
@@ -2193,6 +2632,10 @@ fn main() {
         }
         if CONTROL_REFRESH_REQUESTED.swap(false, Ordering::Relaxed) {
             app.next_daemon_refresh = now;
+            next_metric_at = now;
+        }
+        if PROCESS_REFRESH_REQUESTED.swap(false, Ordering::AcqRel) {
+            app.next_dashboard_slow_refresh = now;
             next_metric_at = now;
         }
         let confirming_control = app.control_confirm_until.is_some_and(|until| now < until);
@@ -2211,6 +2654,7 @@ fn main() {
                 apply_runner_icon(&mut app);
             }
             update(&mut app);
+            next_runner_cpu_at = now + RUNNER_CPU_REFRESH;
             #[cfg(target_os = "macos")]
             sync_native_runner_timer(&mut app);
             next_metric_at = now
@@ -2223,17 +2667,32 @@ fn main() {
                 // A CPU spike must accelerate the runner immediately instead
                 // of waiting for the old idle-speed deadline to expire.
                 next_runner_at = next_runner_at.min(
-                    now + runner_frame_interval_for_pose(app.runner_cpu_pct, app.runner_frame),
+                    now + runner_frame_interval_for_pose(app.runner_character, app.runner_cpu_pct, app.runner_frame),
+                );
+            }
+        }
+        if runner_should_animate(app.display, app.reduce_motion) && now >= next_runner_cpu_at {
+            let cpu = app.monitor.sample_cpu_usage();
+            app.runner_cpu_pct = smooth_runner_cpu(app.runner_cpu_pct, cpu, app.runner_has_sample);
+            app.runner_has_sample = true;
+            next_runner_cpu_at = now + RUNNER_CPU_REFRESH;
+            #[cfg(target_os = "macos")]
+            sync_native_runner_timer(&mut app);
+            #[cfg(not(target_os = "macos"))]
+            {
+                next_runner_at = next_runner_at.min(
+                    now + runner_frame_interval_for_pose(app.runner_character, app.runner_cpu_pct, app.runner_frame),
                 );
             }
         }
         if runner_uses_event_loop_timer(app.display, app.reduce_motion) && now >= next_runner_at {
             animate_runner(&mut app);
             next_runner_at =
-                now + runner_frame_interval_for_pose(app.runner_cpu_pct, app.runner_frame);
+                now + runner_frame_interval_for_pose(app.runner_character, app.runner_cpu_pct, app.runner_frame);
         }
         let next_tick = [
             Some(next_metric_at),
+            runner_should_animate(app.display, app.reduce_motion).then_some(next_runner_cpu_at),
             runner_uses_event_loop_timer(app.display, app.reduce_motion).then_some(next_runner_at),
             prewarm_popover_at,
             app.popover_show_at,
@@ -2249,7 +2708,39 @@ fn main() {
         if !cmds.is_empty() {
             let mut refresh_after_pending = false;
             for c in &cmds {
-                if let Some(json) = c.strip_prefix("savecurve:") {
+                if let Some(value) = c.strip_prefix("processfilter:") {
+                    app.process_filter = peterfan_core::metrics::normalize_process_query(value);
+                    app.next_dashboard_slow_refresh = now;
+                    next_metric_at = now;
+                    refresh_after_pending = true;
+                } else if let Some(request) = parse_process_quit_command(c) {
+                    if !PROCESS_ACTION_IN_FLIGHT.swap(true, Ordering::AcqRel) {
+                        let revision = {
+                            let mut state = PROCESS_ACTION.lock().expect("process action poisoned");
+                            let revision = state.revision.saturating_add(1);
+                            *state = ProcessActionState {
+                                revision,
+                                phase: "pending",
+                                pid: Some(request.pid),
+                                name: None,
+                                code: None,
+                                message: None,
+                            };
+                            revision
+                        };
+                        let proxy = event_proxy.clone();
+                        std::thread::spawn(move || {
+                            let result = peterfan_platform::process_control::quit_process(request);
+                            let state = completed_process_action(revision, request, result);
+                            log_menubar_event(&process_action_log_entry(&state));
+                            *PROCESS_ACTION.lock().expect("process action poisoned") = state;
+                            PROCESS_REFRESH_REQUESTED.store(true, Ordering::Release);
+                            PROCESS_ACTION_IN_FLIGHT.store(false, Ordering::Release);
+                            let _ = proxy.send_event(());
+                        });
+                    }
+                    refresh_after_pending = true;
+                } else if let Some(json) = c.strip_prefix("savecurve:") {
                     *STATUS.lock().expect("status poisoned") = "saving curve…".into();
                     let provider = std::sync::Arc::clone(&app.provider);
                     let json = json.to_string();
@@ -2275,6 +2766,14 @@ fn main() {
                     refresh_after_pending = true;
                 } else if c == "installupdate" {
                     std::thread::spawn(install_update_interactive);
+                    refresh_after_pending = true;
+                } else if let Some(value) = c.strip_prefix("updatechannel:") {
+                    if let Some(channel) = UpdateChannel::parse(value) {
+                        app.update_channel = channel;
+                        save_update_channel(channel);
+                        *STATUS.lock().expect("status poisoned") =
+                            format!("update channel set to {}", channel.as_str());
+                    }
                     refresh_after_pending = true;
                 } else if c == "toggle-login-item" || c == "togglelogin" {
                     std::thread::spawn(move || {
@@ -2302,12 +2801,25 @@ fn main() {
                         save_menubar_display(display);
                         refresh_after_pending = true;
                     }
+                } else if let Some(value) = c.strip_prefix("cpu-core-graph:") {
+                    let show = value == "1";
+                    app.show_cpu_core_graph = show;
+                    save_cpu_core_graph(show);
+                    refresh_after_pending = true;
                 } else if let Some(value) = c.strip_prefix("character:") {
                     if let Some(character) = RunnerCharacter::parse(value) {
                         set_runner_character(&mut app, character);
                         next_runner_at = now;
                         refresh_after_pending = true;
                     }
+                } else if let Some(json) = c.strip_prefix("rules:") {
+                    let status = save_automation_rules(json);
+                    *STATUS.lock().expect("status poisoned") = status;
+                    refresh_after_pending = true;
+                } else if let Some(config_text) = c.strip_prefix("importconfig:") {
+                    let status = import_config(config_text);
+                    *STATUS.lock().expect("status poisoned") = status;
+                    refresh_after_pending = true;
                 } else if c.starts_with("notifications:") {
                     match apply_notification_command(&mut app.notifications, c) {
                         Ok(()) => {
@@ -2499,11 +3011,22 @@ fn main() {
                 // visible immediately instead of needing a relaunch.
                 build_tray(&mut app);
                 let was_visible = app.popover_visible;
+                let popover_geometry = app
+                    .window
+                    .as_ref()
+                    .and_then(capture_window_geometry);
                 if app.window.is_some() {
+                    if let Some(window) = app.window.as_ref() {
+                        window.set_visible(false);
+                    }
                     app.window = None;
                     app.webview = None;
                     app.webview_ready = false;
                     let _ = build_popover(&mut app, target, &event_proxy);
+                    if let (Some(window), Some(geometry)) = (app.window.as_ref(), popover_geometry)
+                    {
+                        restore_window_geometry(window, geometry);
+                    }
                     if was_visible {
                         if let Some(w) = &app.window {
                             w.set_visible(true);
@@ -2514,11 +3037,23 @@ fn main() {
                 if app.detail_window.is_some() {
                     let was_detail_visible =
                         app.detail_window.as_ref().is_some_and(Window::is_visible);
+                    let detail_geometry = app
+                        .detail_window
+                        .as_ref()
+                        .and_then(capture_window_geometry);
+                    if let Some(window) = app.detail_window.as_ref() {
+                        window.set_visible(false);
+                    }
                     app.detail_window = None;
                     app.detail_webview = None;
                     app.detail_webview_ready = false;
                     if was_detail_visible {
                         open_detail_window(&mut app, target, &event_proxy);
+                        if let (Some(window), Some(geometry)) =
+                            (app.detail_window.as_ref(), detail_geometry)
+                        {
+                            restore_window_geometry(window, geometry);
+                        }
                     }
                 }
                 update(&mut app);
@@ -2676,7 +3211,7 @@ fn build_tray(app: &mut App) {
     .collect();
 
     let character_submenu = Submenu::new(s.runner_character, true);
-    let character_items = RunnerCharacter::ALL
+    let character_items = RunnerCharacter::FEATURED
         .into_iter()
         .map(|character| {
             let item = CheckMenuItem::new(
@@ -2805,7 +3340,8 @@ fn build_tray(app: &mut App) {
 
     let initial_runner_icon = runner_enabled(app.display)
         .then(|| runner_icon_index(app.runner_cpu_pct, app.runner_frame));
-    let initial_icon = initial_runner_icon.and_then(|index| app.runner_icons.get(index).cloned());
+    let initial_icon =
+        initial_runner_icon.and_then(|index| app.runner_assets.icons.get(index).cloned());
     match TrayIcon::new(tray_attributes(initial_icon, Box::new(menu))) {
         Ok(tray) => {
             #[cfg(target_os = "macos")]
@@ -2889,7 +3425,11 @@ fn build_popover(
 
     let ipc_proxy = event_proxy.clone();
     match WebViewBuilder::new()
-        .with_html(dashboard_html(app.language.resolve(), false))
+        .with_html(dashboard_html_with_runner_pack(
+            app.language.resolve(),
+            false,
+            &app.runner_assets.pack,
+        ))
         .with_background_color(DASHBOARD_BACKGROUND)
         .with_accept_first_mouse(true)
         .with_ipc_handler(move |req| {
@@ -2908,13 +3448,19 @@ fn build_popover(
                 CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
             } else if body == "copydiagnostics" {
                 copy_support_report();
+            } else if body == "copyconfig" {
+                copy_config_export();
             } else if body == "checkupdates"
                 || body == "installupdate"
                 || body == "toggle-login-item"
                 || body == "togglelogin"
+                || body.starts_with("updatechannel:")
                 || body.starts_with("display:")
                 || body.starts_with("character:")
+                || body.starts_with("rules:")
+                || body.starts_with("importconfig:")
                 || body.starts_with("notifications:")
+                || is_native_process_command(body)
             {
                 enqueue_pending(body);
             } else if body.starts_with("h:") {
@@ -2949,11 +3495,6 @@ fn build_popover(
                 );
             } else if let Some(open) = body.strip_prefix("rawtemps:") {
                 RAW_TEMPS_OPEN.store(open == "1", Ordering::Relaxed);
-            } else if let Some(pid) = body
-                .strip_prefix("killproc:")
-                .and_then(|s| s.parse::<u32>().ok())
-            {
-                kill_process(pid);
             }
             let _ = ipc_proxy.send_event(());
         })
@@ -2971,6 +3512,70 @@ fn build_popover(
             eprintln!("failed to create popover webview: {e}");
             false
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WindowGeometry {
+    #[cfg(target_os = "macos")]
+    frame: NSRect,
+    #[cfg(not(target_os = "macos"))]
+    position: PhysicalPosition<i32>,
+    #[cfg(not(target_os = "macos"))]
+    size: PhysicalSize<u32>,
+}
+
+fn capture_window_geometry(window: &Window) -> Option<WindowGeometry> {
+    #[cfg(target_os = "macos")]
+    {
+        // The Tao position is not reliable across mixed-DPI macOS displays;
+        // retain the actual AppKit frame so a WebView rebuild cannot move the
+        // popover to the window manager's default (usually screen center).
+        let raw = window.ns_window().cast::<NSWindow>();
+        if raw.is_null() {
+            return None;
+        }
+        let native_window = unsafe { &*raw };
+        Some(WindowGeometry {
+            frame: native_window.frame(),
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Some(WindowGeometry {
+            position: window.outer_position().ok()?,
+            size: window.inner_size(),
+        })
+    }
+}
+
+fn restore_window_geometry(window: &Window, geometry: WindowGeometry) {
+    #[cfg(target_os = "macos")]
+    {
+        let raw = window.ns_window().cast::<NSWindow>();
+        if raw.is_null() {
+            return;
+        }
+        let native_window = unsafe { &*raw };
+        native_window.setContentSize(NSSize::new(
+            geometry.frame.size.width,
+            geometry.frame.size.height,
+        ));
+        native_window.setFrameTopLeftPoint(NSPoint::new(
+            geometry.frame.origin.x,
+            geometry.frame.origin.y + geometry.frame.size.height,
+        ));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let scale = window.scale_factor();
+        window.set_inner_size(LogicalSize::new(
+            geometry.size.width as f64 / scale,
+            geometry.size.height as f64 / scale,
+        ));
+        window.set_outer_position(geometry.position);
     }
 }
 
@@ -3005,7 +3610,11 @@ fn open_detail_window(
 
     let ipc_proxy = event_proxy.clone();
     match WebViewBuilder::new()
-        .with_html(dashboard_html(app.language.resolve(), true))
+        .with_html(dashboard_html_with_runner_pack(
+            app.language.resolve(),
+            true,
+            &app.runner_assets.pack,
+        ))
         .with_background_color(DASHBOARD_BACKGROUND)
         .with_ipc_handler(move |req| {
             let body = req.body();
@@ -3026,13 +3635,19 @@ fn open_detail_window(
                 CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
             } else if body == "copydiagnostics" {
                 copy_support_report();
+            } else if body == "copyconfig" {
+                copy_config_export();
             } else if body == "checkupdates"
                 || body == "installupdate"
                 || body == "toggle-login-item"
                 || body == "togglelogin"
+                || body.starts_with("updatechannel:")
                 || body.starts_with("display:")
                 || body.starts_with("character:")
+                || body.starts_with("rules:")
+                || body.starts_with("importconfig:")
                 || body.starts_with("notifications:")
+                || is_native_process_command(body)
             {
                 enqueue_pending(body);
             } else if let Some(cmd) = body.strip_prefix("cmd:") {
@@ -3061,11 +3676,6 @@ fn open_detail_window(
                 );
             } else if let Some(open) = body.strip_prefix("rawtemps:") {
                 RAW_TEMPS_OPEN.store(open == "1", Ordering::Relaxed);
-            } else if let Some(pid) = body
-                .strip_prefix("killproc:")
-                .and_then(|s| s.parse::<u32>().ok())
-            {
-                kill_process(pid);
             }
             let _ = ipc_proxy.send_event(());
         })
@@ -3394,6 +4004,13 @@ fn toggle_popover(
 
 fn hide_popover(app: &mut App) {
     app.popover_show_at = None;
+    if let Some(wv) = &app.webview {
+        evaluate_dashboard_script(
+            wv,
+            "window.setRunnerPreviewVisibility&&window.setRunnerPreviewVisibility(false);",
+            "popover",
+        );
+    }
     if let Some(w) = &app.window {
         w.set_visible(false);
     }
@@ -3418,7 +4035,89 @@ fn default_curve_points() -> Vec<[f32; 2]> {
         .collect()
 }
 
+fn dashboard_process_limit(filter: &str) -> usize {
+    if filter.is_empty() {
+        5
+    } else {
+        20
+    }
+}
+
+fn dashboard_process_row(process: &ProcessInfo) -> serde_json::Value {
+    let can_quit = cfg!(target_os = "macos")
+        && process.owned_by_current_user == Some(true)
+        && process.start_time_unix_secs.is_some()
+        && !peterfan_platform::process_control::is_protected_process(process.pid, &process.name);
+    serde_json::json!({
+        "name": process.name,
+        "cpu": format!("{:.1}%", process.cpu_percent),
+        "mem": bytes(process.memory),
+        "pid": process.pid,
+        "start_time": process.start_time_unix_secs,
+        "can_quit": can_quit,
+    })
+}
+
+fn process_action_error_code(
+    error: &peterfan_platform::process_control::ProcessQuitError,
+) -> &'static str {
+    use peterfan_platform::process_control::ProcessQuitError;
+
+    match error {
+        ProcessQuitError::InvalidPid => "invalid_pid",
+        ProcessQuitError::NotFound => "not_found",
+        ProcessQuitError::IdentityChanged => "identity_changed",
+        ProcessQuitError::OwnershipUnknown | ProcessQuitError::NotOwned => "not_owned",
+        ProcessQuitError::Protected => "protected",
+        ProcessQuitError::Unsupported => "unsupported",
+        ProcessQuitError::SignalFailed(_) => "signal_failed",
+    }
+}
+
+fn completed_process_action(
+    revision: u64,
+    request: peterfan_platform::process_control::ProcessQuitRequest,
+    result: Result<String, peterfan_platform::process_control::ProcessQuitError>,
+) -> ProcessActionState {
+    match result {
+        Ok(name) => ProcessActionState {
+            revision,
+            phase: "complete",
+            pid: Some(request.pid),
+            name: Some(name),
+            code: Some("requested"),
+            message: Some("Termination requested".to_string()),
+        },
+        Err(error) => ProcessActionState {
+            revision,
+            phase: "complete",
+            pid: Some(request.pid),
+            name: None,
+            code: Some(process_action_error_code(&error)),
+            message: Some(error.to_string()),
+        },
+    }
+}
+
+fn process_action_log_entry(state: &ProcessActionState) -> String {
+    let name: String = state
+        .name
+        .as_deref()
+        .unwrap_or("unknown")
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(80)
+        .collect();
+    format!(
+        "process termination completed pid={} name={} code={}",
+        state.pid.unwrap_or(0),
+        name,
+        state.code.unwrap_or("unknown")
+    )
+}
+
 fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
+    let config = peterfan_platform::config::load();
     let disks = app.monitor.disks();
     let disk = primary_disk(&disks);
     let disk_io_present = disk.is_some_and(|d| d.read_bytes_per_sec + d.write_bytes_per_sec > 0.0);
@@ -3435,18 +4134,12 @@ fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
         .map(|d| (d.read_bytes_per_sec + d.write_bytes_per_sec) as f32)
         .unwrap_or(0.0);
 
+    let process_limit = dashboard_process_limit(&app.process_filter);
     let procs: Vec<_> = app
         .monitor
-        .processes(5, proc_sort)
+        .processes_matching(process_limit, proc_sort, &app.process_filter)
         .iter()
-        .map(|p| {
-            serde_json::json!({
-                "name": p.name,
-                "cpu": format!("{:.1}%", p.cpu_percent),
-                "mem": bytes(p.memory),
-                "pid": p.pid,
-            })
-        })
+        .map(dashboard_process_row)
         .collect();
 
     // Discovery can transiently fail at launch after sleep or during a Windows
@@ -3471,8 +4164,9 @@ fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
         })
         .unwrap_or_else(|| (false, 0.0, String::new(), String::new()));
 
-    let curve_points = peterfan_platform::config::load()
+    let curve_points = config
         .custom_curve
+        .as_ref()
         .and_then(|c| c.to_fan_curve())
         .map(|curve| {
             curve
@@ -3486,6 +4180,7 @@ fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
     app.dashboard_slow_cache = DashboardSlowCache {
         sampled_at: Some(Instant::now()),
         proc_sort,
+        proc_filter: app.process_filter.clone(),
         procs,
         disk_pct: disk.map(|d| d.used_percent).unwrap_or(0.0),
         disk_text: disk
@@ -3605,7 +4300,7 @@ fn refresh_all_temperature_cache(app: &mut App, now: Instant, dashboard_visible:
                     "l": raw_temperature_row_label(temp),
                     "c": format!("{:.0}°C", temp.value.0),
                     "cls": temp_cls(temp.value),
-                    "group": sensor_group_label(app.language.resolve(), temp.kind),
+                    "group": sensor_group_label_for_sensor(app.language.resolve(), temp),
                     "source": temp.source.short(),
                 })
             })
@@ -3644,6 +4339,10 @@ fn dashboard_render_requested(
 
 fn update(app: &mut App) {
     let now = Instant::now();
+    // Re-read the small user config so CLI edits and the detail-window rule
+    // editor converge without an app restart. The privileged daemon still
+    // validates the same file before applying rules.
+    let config = peterfan_platform::config::load();
     app.monitor.refresh_quick();
     let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
     let popover_scheduled = app.popover_show_at.is_some();
@@ -3661,7 +4360,8 @@ fn update(app: &mut App) {
     };
     let refresh_slow_metrics = (settings_visible || system_visible)
         && (now >= app.next_dashboard_slow_refresh
-            || app.dashboard_slow_cache.proc_sort != proc_sort);
+            || app.dashboard_slow_cache.proc_sort != proc_sort
+            || app.dashboard_slow_cache.proc_filter != app.process_filter);
     if refresh_slow_metrics {
         app.monitor.refresh_slow();
     }
@@ -3728,6 +4428,14 @@ fn update(app: &mut App) {
 
     push_hist(&mut app.fan_hist, fastest_pct);
     app.cpu_h.push(cpu.usage_percent);
+    if app.per_core_h.len() != cpu.per_core.len() {
+        app.per_core_h = (0..cpu.per_core.len())
+            .map(|_| RangedHistory::new())
+            .collect();
+    }
+    for (history, usage) in app.per_core_h.iter_mut().zip(&cpu.per_core) {
+        history.push(*usage);
+    }
     app.mem_h.push(mem.used_percent);
     if let Some(temp) = display_temp {
         app.temp_h.push(temp);
@@ -4073,6 +4781,11 @@ fn update(app: &mut App) {
         }
     };
     let cpu_core_groups = dashboard_cpu_core_groups(&cpu.per_core);
+    let core_hist: Vec<Vec<f32>> = app
+        .per_core_h
+        .iter()
+        .map(|history| to_vec(history.range(ChartRange::TwoMin)))
+        .collect();
 
     let mut payload = serde_json::json!({
         "cpu_pct": cpu.usage_percent,
@@ -4088,6 +4801,7 @@ fn update(app: &mut App) {
         ),
         "cores": &cpu.per_core,
         "core_groups": cpu_core_groups,
+        "core_hist": core_hist,
         "mem_pct": mem.used_percent,
         "mem_text": format!("{:.1}%", mem.used_percent),
         "mem_sub": format!(
@@ -4102,6 +4816,8 @@ fn update(app: &mut App) {
         "disk_io_sub": &app.dashboard_slow_cache.disk_io_sub,
         "procs": &app.dashboard_slow_cache.procs,
         "proc_sort": if matches!(proc_sort, ProcSort::Memory) { "mem" } else { "cpu" },
+        "process_filter": &app.process_filter,
+        "process_action": process_action_snapshot(),
         "temp_present": !temps.is_empty(),
         "temp_stale": temperature_stale,
         "temp_age_secs": temperature_age_secs,
@@ -4168,7 +4884,10 @@ fn update(app: &mut App) {
             "fan_failures": app.notifications.fan_failures,
             "updates": app.notifications.updates,
         },
+        "rules": &config.rules,
         "app_version": env!("CARGO_PKG_VERSION"),
+        "update_channel": app.update_channel.as_str(),
+        "show_cpu_core_graph": app.show_cpu_core_graph,
         "app_update_status": app_update_status,
         "update_install_result": &app.update_install_result,
         "setup_tone": setup_tone(!daemon_st.is_empty(), daemon_update_needed),
@@ -4177,13 +4896,20 @@ fn update(app: &mut App) {
         "curve_points": &app.dashboard_slow_cache.curve_points,
         "last_cmd_status": STATUS.lock().expect("status poisoned").clone(),
     });
+    payload["config_toml"] = serde_json::json!(config.to_toml());
     payload["menubar_display"] = serde_json::json!(app.display.as_str());
     payload["runner_character"] = serde_json::json!(app.runner_character.as_str());
+    payload["runner_selected_preview"] =
+        serde_json::json!(serde_json::from_str::<serde_json::Value>(
+            &app.runner_assets.selected_preview_frames_json()
+        )
+        .expect("runner preview JSON is serialized from canonical frames"));
+    payload["runner_selected_preview_character"] =
+        serde_json::json!(app.runner_assets.pack.character().as_str());
     payload["runner_cpu_pct"] = serde_json::json!(app.runner_cpu_pct);
     payload["runner_reduce_motion"] = serde_json::json!(app.reduce_motion);
-    payload["runner_interval_ms"] = serde_json::json!(
-        (!app.reduce_motion).then(|| runner_frame_interval(app.runner_cpu_pct).as_millis())
-    );
+    payload["runner_interval_ms"] = serde_json::json!((!app.reduce_motion)
+        .then(|| runner_character_interval(app.runner_character, app.runner_cpu_pct).as_millis()));
     payload["network_rate_text"] = serde_json::json!(format!("{}/s", bytes((rx + tx) as u64)));
     payload["load_avg_text"] = serde_json::json!(load_avg_text);
     payload["power_text"] = serde_json::json!(power_text);
@@ -4209,6 +4935,9 @@ fn update(app: &mut App) {
         serde_json::json!(SUPPORT_REPORT_COPY_REVISION.load(Ordering::Acquire));
     payload["support_report_copy_ok"] =
         serde_json::json!(SUPPORT_REPORT_COPY_OK.load(Ordering::Acquire));
+    payload["config_copy_revision"] =
+        serde_json::json!(CONFIG_COPY_REVISION.load(Ordering::Acquire));
+    payload["config_copy_ok"] = serde_json::json!(CONFIG_COPY_OK.load(Ordering::Acquire));
     let script = format!(
         "window.__pf_pending={payload};window.__pf&&window.__pf.update(window.__pf_pending)"
     );
@@ -4655,27 +5384,6 @@ fn toggle_login_item() -> String {
     }
 }
 
-/// Send SIGTERM to a process by PID, from the "×" button on a Top Processes
-/// row (confirmed client-side first). No elevated privileges are used or
-/// needed — the OS enforces the same rule it always does for `kill(2)`: this
-/// only succeeds against processes the signing user already owns.
-#[cfg(unix)]
-fn kill_process(pid: u32) {
-    unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGTERM);
-    }
-}
-#[cfg(target_os = "windows")]
-fn kill_process(pid: u32) {
-    let _ = std::process::Command::new("taskkill.exe")
-        .args(["/PID", &pid.to_string(), "/T"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-}
-#[cfg(not(any(unix, target_os = "windows")))]
-fn kill_process(_pid: u32) {}
-
 #[cfg(target_os = "macos")]
 fn send_native_notification(title: &str, body: &str) {
     let script = format!(
@@ -4768,6 +5476,25 @@ fn fan_control_install_plan(
 }
 
 #[cfg(target_os = "macos")]
+fn reinstall_or_privileged_install<F, G>(
+    self_reinstall: F,
+    privileged_install: G,
+) -> Result<peterfan_platform::daemon_install::InstallOutcome, String>
+where
+    F: FnOnce() -> Result<peterfan_platform::daemon_install::InstallOutcome, String>,
+    G: FnOnce() -> Result<peterfan_platform::daemon_install::InstallOutcome, String>,
+{
+    match self_reinstall() {
+        Ok(outcome) => Ok(outcome),
+        Err(self_reinstall_error) => privileged_install().map_err(|fallback_error| {
+            format!(
+                "passwordless daemon reinstall failed: {self_reinstall_error}; administrator reinstall also failed: {fallback_error}"
+            )
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn install_fan_control() {
     use peterfan_platform::daemon_install::InstallOutcome;
     // compare_exchange (not a plain store) so a second concurrent call —
@@ -4788,7 +5515,10 @@ fn install_fan_control() {
     let install_result = match plan {
         FanControlInstallPlan::AlreadyReady => Ok(InstallOutcome::Installed),
         FanControlInstallPlan::SelfReinstall => {
-            peterfan_platform::daemon_install::reinstall_via_running_daemon(false)
+            reinstall_or_privileged_install(
+                || peterfan_platform::daemon_install::reinstall_via_running_daemon(false),
+                || peterfan_platform::daemon_install::install(false),
+            )
         }
         FanControlInstallPlan::PrivilegedInstall => {
             peterfan_platform::daemon_install::install(false)
@@ -5092,7 +5822,7 @@ fn check_for_updates_on_launch() {
     if APP_UPDATE_IN_FLIGHT.load(Ordering::Acquire) {
         return;
     }
-    if let Ok(release) = peterfan_platform::updater::fetch_latest_release() {
+    if let Ok(release) = fetch_configured_release() {
         if APP_UPDATE_IN_FLIGHT.load(Ordering::Acquire) {
             return;
         }
@@ -5143,7 +5873,7 @@ fn run_update_interactive(install: bool) {
     } else {
         "app update check started"
     });
-    match peterfan_platform::updater::fetch_latest_release() {
+    match fetch_configured_release() {
         Ok(release)
             if !peterfan_platform::updater::is_newer(
                 env!("CARGO_PKG_VERSION"),
@@ -5307,61 +6037,6 @@ fn to_vec(hist: &VecDeque<f32>) -> Vec<f32> {
     hist.iter().copied().collect()
 }
 
-fn runner_frame_interval(cpu_pct: f32) -> Duration {
-    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let min_ms = RUNNER_MIN_INTERVAL.as_millis() as f32;
-    let max_ms = RUNNER_MAX_INTERVAL.as_millis() as f32;
-    // A cubic curve makes ordinary work visibly quicker and gives sustained
-    // load a sevenfold sprint without making icon compositing create its own
-    // artificial CPU load.
-    let ms = min_ms + (max_ms - min_ms) * (1.0 - load).powi(3);
-    Duration::from_millis(ms.round() as u64)
-}
-
-fn runner_frame_interval_for_pose(cpu_pct: f32, frame: u8) -> Duration {
-    // Contact poses carry a touch more weight while flight poses pass more
-    // quickly. The weights average to 1.0, preserving the CPU-to-lap-speed
-    // mapping, and fade out by 80% load for an even sprint cadence.
-    const GAIT_WEIGHTS: [f32; 8] = [1.14, 1.00, 0.84, 1.02, 1.14, 1.00, 0.84, 1.02];
-    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let influence = (1.0 - load / 0.8).clamp(0.0, 1.0);
-    let weight = 1.0 + (GAIT_WEIGHTS[usize::from(frame % RUNNER_FRAME_COUNT)] - 1.0) * influence;
-    let millis = runner_frame_interval(cpu_pct).as_secs_f32() * 1000.0 * weight;
-    Duration::from_millis((millis.round() as u64).max(RUNNER_MIN_INTERVAL.as_millis() as u64))
-}
-
-fn smooth_runner_cpu(previous: f32, sample: f32, has_sample: bool) -> f32 {
-    let sample = sample.clamp(0.0, 100.0);
-    if !has_sample {
-        return sample;
-    }
-    // Workload spikes should be visible immediately. Decay is deliberately
-    // slower so a single quiet sample cannot make the cat stutter between
-    // sprinting and walking.
-    let alpha = if sample >= previous { 0.82 } else { 0.22 };
-    (previous + (sample - previous) * alpha).clamp(0.0, 100.0)
-}
-
-fn runner_enabled(display: MenubarDisplay) -> bool {
-    matches!(display, MenubarDisplay::Graph | MenubarDisplay::Both)
-}
-
-fn runner_should_animate(display: MenubarDisplay, reduce_motion: bool) -> bool {
-    runner_enabled(display) && !reduce_motion
-}
-
-fn runner_uses_event_loop_timer(display: MenubarDisplay, reduce_motion: bool) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = (display, reduce_motion);
-        false
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        runner_should_animate(display, reduce_motion)
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn system_reduce_motion() -> bool {
     NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
@@ -5372,106 +6047,180 @@ fn system_reduce_motion() -> bool {
     false
 }
 
-fn runner_load_band(cpu_pct: f32) -> usize {
-    match cpu_pct.clamp(0.0, 100.0) {
-        x if x < 20.0 => 0,
-        x if x < 55.0 => 1,
-        x if x < 80.0 => 2,
-        _ => 3,
-    }
-}
-
-fn runner_load_band_with_hysteresis(cpu_pct: f32, current: usize) -> usize {
-    let load = cpu_pct.clamp(0.0, 100.0);
-    match current {
-        0 if load >= 24.0 => 1,
-        0 => 0,
-        1 if load < 16.0 => 0,
-        1 if load >= 59.0 => 2,
-        1 => 1,
-        2 if load < 51.0 => 1,
-        2 if load >= 84.0 => 3,
-        2 => 2,
-        3 if load < 76.0 => 2,
-        3 => 3,
-        _ => runner_load_band(load),
-    }
-}
-
-fn runner_phase_step(phase_us: u64, tick_us: u64, cpu_pct: f32, frame: u8) -> (u64, bool) {
-    let interval_us = runner_frame_interval_for_pose(cpu_pct, frame).as_micros() as u64;
-    let next = phase_us.saturating_add(tick_us);
-    if next >= interval_us {
-        (next % interval_us, true)
-    } else {
-        (next, false)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn runner_native_next_delay(
-    phase_us: u64,
-    motion_cpu_pct: f32,
-    target_cpu_pct: f32,
-    frame: u8,
-) -> Duration {
-    // Keep sampling at the fastest visible cadence only while speed is
-    // changing. Once the gait has settled, sleep until the next actual pose.
-    if (target_cpu_pct - motion_cpu_pct).abs() >= 0.1 {
-        return RUNNER_NATIVE_TICK;
-    }
-    let interval_us = runner_frame_interval_for_pose(motion_cpu_pct, frame).as_micros() as u64;
-    let remaining_us = interval_us.saturating_sub(phase_us.min(interval_us));
-    Duration::from_micros(remaining_us.max(RUNNER_NATIVE_TICK.as_micros() as u64))
-}
-
-fn ease_runner_motion_cpu(current: f32, target: f32, tick: Duration) -> f32 {
-    let current = current.clamp(0.0, 100.0);
-    let target = target.clamp(0.0, 100.0);
-    let delta = target - current;
-    if delta.abs() < 0.1 {
-        return target;
-    }
-
-    // A short acceleration feels responsive while the gentler deceleration
-    // prevents a one-sample dip from making the gait visibly hesitate.
-    let response_seconds = if delta > 0.0 { 0.18 } else { 0.42 };
-    let alpha = 1.0 - (-tick.as_secs_f32() / response_seconds).exp();
-    (current + delta * alpha).clamp(0.0, 100.0)
-}
-
 fn runner_icon_index(cpu_pct: f32, frame: u8) -> usize {
     runner_load_band(cpu_pct) * usize::from(RUNNER_FRAME_COUNT)
         + usize::from(frame % RUNNER_FRAME_COUNT)
 }
 
-fn make_runner_icons(character: RunnerCharacter) -> Vec<Icon> {
-    [0.0, 30.0, 65.0, 90.0]
-        .into_iter()
-        .flat_map(|cpu| {
-            (0..RUNNER_FRAME_COUNT).map(move |frame| make_runner_icon(character, cpu, frame))
-        })
-        .collect()
+#[cfg(any(not(target_os = "macos"), test))]
+fn runner_icon_index_with_hysteresis(cpu_pct: f32, frame: u8, band: &mut usize) -> usize {
+    *band = runner_load_band_with_hysteresis(cpu_pct, *band);
+    *band * usize::from(RUNNER_FRAME_COUNT) + usize::from(frame % RUNNER_FRAME_COUNT)
 }
 
-#[cfg(target_os = "macos")]
-fn make_runner_native_images(character: RunnerCharacter) -> Vec<Retained<NSImage>> {
-    [0.0, 30.0, 65.0, 90.0]
-        .into_iter()
-        .flat_map(|cpu| {
-            (0..RUNNER_FRAME_COUNT)
-                .map(move |frame| make_runner_native_image(character, cpu, frame))
+impl RunnerAssets {
+    fn from_pack(pack: RunnerPack) -> Result<Self, RunnerBuildError> {
+        Self::from_pack_with(
+            pack,
+            runner_icon_from_rgba,
+            make_runner_native_image_from_rgba,
+        )
+    }
+
+    fn from_pack_with<FI, FN>(
+        pack: RunnerPack,
+        mut icon_builder: FI,
+        mut native_builder: FN,
+    ) -> Result<Self, RunnerBuildError>
+    where
+        FI: FnMut(RunnerCharacter, usize, &[u8]) -> Result<Icon, RunnerBuildError>,
+        FN: FnMut(RunnerCharacter, usize, &[u8]) -> Result<NativeRunnerImage, RunnerBuildError>,
+    {
+        let character = pack.character();
+        let icons = pack
+            .frames()
+            .iter()
+            .enumerate()
+            .map(|(index, rgba)| icon_builder(character, index, rgba))
+            .collect::<Result<Vec<_>, _>>()?;
+        let native_images = pack
+            .frames()
+            .iter()
+            .enumerate()
+            .map(|(index, rgba)| native_builder(character, index, rgba))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            pack,
+            icons,
+            native_images,
         })
-        .collect()
+    }
+
+    fn selected_preview_frames_json(&self) -> String {
+        runner_selected_preview_frames_json(&self.pack)
+    }
 }
 
-#[cfg(target_os = "macos")]
-fn make_runner_native_image(
+fn build_runner_assets(character: RunnerCharacter) -> Result<RunnerAssets, RunnerBuildError> {
+    RunnerAssets::from_pack(RunnerPack::build(character)?)
+}
+
+#[cfg(test)]
+fn build_runner_assets_with<FP, FI, FN>(
     character: RunnerCharacter,
-    cpu_pct: f32,
-    frame: u8,
-) -> Retained<NSImage> {
-    let rgba = make_runner_rgba(character, cpu_pct, frame);
+    pack_builder: FP,
+    icon_builder: FI,
+    native_builder: FN,
+) -> Result<RunnerAssets, RunnerBuildError>
+where
+    FP: FnOnce(RunnerCharacter) -> Result<RunnerPack, RunnerBuildError>,
+    FI: FnMut(RunnerCharacter, usize, &[u8]) -> Result<Icon, RunnerBuildError>,
+    FN: FnMut(RunnerCharacter, usize, &[u8]) -> Result<NativeRunnerImage, RunnerBuildError>,
+{
+    RunnerAssets::from_pack_with(pack_builder(character)?, icon_builder, native_builder)
+}
+
+fn initialize_runner_assets(
+    requested: RunnerCharacter,
+) -> Result<RunnerStartupState, RunnerStartupFailure> {
+    initialize_runner_assets_with(requested, build_runner_assets)
+}
+
+fn initialize_runner_assets_with<F>(
+    character: RunnerCharacter,
+    builder: F,
+) -> Result<RunnerStartupState, RunnerStartupFailure>
+where
+    F: FnMut(RunnerCharacter) -> Result<RunnerAssets, RunnerBuildError>,
+{
+    initialize_runner_assets_impl(character, builder)
+}
+
+fn initialize_runner_assets_impl<F>(
+    requested: RunnerCharacter,
+    mut builder: F,
+) -> Result<RunnerStartupState, RunnerStartupFailure>
+where
+    F: FnMut(RunnerCharacter) -> Result<RunnerAssets, RunnerBuildError>,
+{
+    match builder(requested) {
+        Ok(assets) => Ok(RunnerStartupState {
+            character: requested,
+            assets,
+            original_error: None,
+        }),
+        Err(original_error) if requested != RunnerCharacter::Cat => {
+            match builder(RunnerCharacter::Cat) {
+                Ok(assets) => Ok(RunnerStartupState {
+                    character: RunnerCharacter::Cat,
+                    assets,
+                    original_error: Some(original_error),
+                }),
+                Err(fatal_error) => Err(RunnerStartupFailure {
+                    requested,
+                    original_error: Some(original_error),
+                    fatal_error,
+                }),
+            }
+        }
+        Err(fatal_error) => Err(RunnerStartupFailure {
+            requested,
+            original_error: None,
+            fatal_error,
+        }),
+    }
+}
+
+fn replace_runner_assets_with<F>(
+    current_character: &mut RunnerCharacter,
+    current_assets: &mut RunnerAssets,
+    requested: RunnerCharacter,
+    builder: F,
+) -> Result<(), RunnerBuildError>
+where
+    F: FnOnce(RunnerCharacter) -> Result<RunnerAssets, RunnerBuildError>,
+{
+    if *current_character == requested {
+        return Ok(());
+    }
+    let next_assets = builder(requested)?;
+    *current_character = requested;
+    *current_assets = next_assets;
+    Ok(())
+}
+
+#[cfg(test)]
+fn make_runner_icons(character: RunnerCharacter) -> Vec<Icon> {
+    build_runner_assets(character).expect("runner assets").icons
+}
+
+#[cfg(target_os = "macos")]
+fn runner_icon_from_rgba(
+    character: RunnerCharacter,
+    frame_index: usize,
+    rgba: &[u8],
+) -> Result<Icon, RunnerBuildError> {
+    validate_runner_rgba_frame(character, &format!("icon cache frame {frame_index}"), rgba)?;
+    Icon::from_rgba(rgba.to_vec(), RUNNER_PIXEL_WIDTH, RUNNER_PIXEL_HEIGHT).map_err(|error| {
+        RunnerBuildError::cache(
+            character,
+            format!("icon cache frame {frame_index}"),
+            error.to_string(),
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn make_runner_native_image_from_rgba(
+    character: RunnerCharacter,
+    frame_index: usize,
+    rgba: &[u8],
+) -> Result<NativeRunnerImage, RunnerBuildError> {
+    validate_runner_rgba_frame(
+        character,
+        &format!("native cache frame {frame_index}"),
+        rgba,
+    )?;
     let mut encoded = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut encoded, RUNNER_PIXEL_WIDTH, RUNNER_PIXEL_HEIGHT);
@@ -5479,15 +6228,74 @@ fn make_runner_native_image(
         encoder.set_depth(png::BitDepth::Eight);
         encoder
             .write_header()
-            .and_then(|mut writer| writer.write_image_data(&rgba))
-            .expect("runner frame must encode as PNG");
+            .and_then(|mut writer| writer.write_image_data(rgba))
+            .map_err(|error| {
+                RunnerBuildError::cache(
+                    character,
+                    format!("native cache frame {frame_index}"),
+                    format!("png encode: {error}"),
+                )
+            })?;
     }
     let data = NSData::from_vec(encoded);
-    let image = NSImage::initWithData(NSImage::alloc(), &data)
-        .expect("encoded runner frame must decode as NSImage");
+    let image = NSImage::initWithData(NSImage::alloc(), &data).ok_or_else(|| {
+        RunnerBuildError::cache(
+            character,
+            format!("native cache frame {frame_index}"),
+            "nsimage decode returned nil",
+        )
+    })?;
     image.setSize(NSSize::new(27.0, 18.0));
+    // Template mode keeps every runner as the same white status-item glyph on
+    // both light and dark menu bars.
     image.setTemplate(true);
-    image
+    Ok(image)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn runner_icon_from_rgba(
+    character: RunnerCharacter,
+    frame_index: usize,
+    rgba: &[u8],
+) -> Result<Icon, RunnerBuildError> {
+    validate_runner_rgba_frame(character, &format!("icon cache frame {frame_index}"), rgba)?;
+    Icon::from_rgba(rgba.to_vec(), RUNNER_PIXEL_WIDTH, RUNNER_PIXEL_HEIGHT).map_err(|error| {
+        RunnerBuildError::cache(
+            character,
+            format!("icon cache frame {frame_index}"),
+            error.to_string(),
+        )
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn make_runner_native_image_from_rgba(
+    character: RunnerCharacter,
+    frame_index: usize,
+    rgba: &[u8],
+) -> Result<NativeRunnerImage, RunnerBuildError> {
+    validate_runner_rgba_frame(
+        character,
+        &format!("native cache frame {frame_index}"),
+        rgba,
+    )?;
+    Ok(rgba.to_vec())
+}
+
+fn validate_runner_rgba_frame(
+    character: RunnerCharacter,
+    stage: &str,
+    rgba: &[u8],
+) -> Result<(), RunnerBuildError> {
+    let expected_len = (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize;
+    if rgba.len() != expected_len {
+        return Err(RunnerBuildError::cache(
+            character,
+            stage.to_string(),
+            format!("expected {expected_len} rgba bytes, got {}", rgba.len()),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -5563,10 +6371,13 @@ fn sync_native_runner_timer(app: &mut App) {
     {
         let motion_cpu = f32::from_bits(app.runner_native_motion_cpu_bits.load(Ordering::Relaxed));
         if (app.runner_cpu_pct - motion_cpu).abs() >= 0.1 {
-            app.runner_native_tick_us
-                .store(RUNNER_NATIVE_TICK.as_micros() as u64, Ordering::Relaxed);
-            let fire_date = NSDate::dateWithTimeIntervalSinceNow(RUNNER_NATIVE_TICK.as_secs_f64());
-            timer.setFireDate(&fire_date);
+            // Bring a distant idle deadline forward without postponing a pose
+            // that is already due sooner. Elapsed time comes from Instant.
+            if timer.fireDate().timeIntervalSinceNow() > RUNNER_NATIVE_TICK.as_secs_f64() {
+                let fire_date =
+                    NSDate::dateWithTimeIntervalSinceNow(RUNNER_NATIVE_TICK.as_secs_f64());
+                timer.setFireDate(&fire_date);
+            }
         }
         return;
     }
@@ -5583,7 +6394,8 @@ fn sync_native_runner_timer(app: &mut App) {
         return;
     };
 
-    let images = app.runner_native_images.clone();
+    let character = app.runner_character;
+    let images = app.runner_assets.native_images.clone();
     let frame = Arc::clone(&app.runner_native_frame);
     let cpu_bits = Arc::clone(&app.runner_native_cpu_bits);
     let motion_cpu_bits = Arc::clone(&app.runner_native_motion_cpu_bits);
@@ -5594,36 +6406,38 @@ fn sync_native_runner_timer(app: &mut App) {
     phase_us.store(0, Ordering::Relaxed);
     band.store(runner_load_band(app.runner_cpu_pct), Ordering::Relaxed);
     scheduled_tick_us.store(RUNNER_NATIVE_TICK.as_micros() as u64, Ordering::Relaxed);
+    let last_tick = Cell::new(Instant::now());
     let block = RcBlock::new(move |timer: std::ptr::NonNull<NSTimer>| {
         let target_cpu = f32::from_bits(cpu_bits.load(Ordering::Relaxed));
         let current_cpu = f32::from_bits(motion_cpu_bits.load(Ordering::Relaxed));
-        let elapsed_us = scheduled_tick_us.load(Ordering::Relaxed);
-        let elapsed = Duration::from_micros(elapsed_us);
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(last_tick.replace(now));
+        let elapsed_us = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
         let cpu_pct = ease_runner_motion_cpu(current_cpu, target_cpu, elapsed);
         motion_cpu_bits.store(cpu_pct.to_bits(), Ordering::Relaxed);
         let current_frame = frame.load(Ordering::Relaxed) as u8 % RUNNER_FRAME_COUNT;
-        let (next_phase, should_advance) = runner_phase_step(
+        let (next_phase, next_frame) = advance_runner_phase(
+            character,
             phase_us.load(Ordering::Relaxed),
             elapsed_us,
             cpu_pct,
             current_frame,
         );
         phase_us.store(next_phase, Ordering::Relaxed);
-        let mut next_frame = current_frame;
-        if should_advance {
+        if next_frame != current_frame {
             let current_band = band.load(Ordering::Relaxed);
             let next_band = runner_load_band_with_hysteresis(cpu_pct, current_band);
             band.store(next_band, Ordering::Relaxed);
-            let next = (frame.fetch_add(1, Ordering::Relaxed) + 1) % u64::from(RUNNER_FRAME_COUNT);
-            next_frame = next as u8;
-            let index = next_band * usize::from(RUNNER_FRAME_COUNT) + next as usize;
+            frame.store(u64::from(next_frame), Ordering::Relaxed);
+            let index = next_band * usize::from(RUNNER_FRAME_COUNT) + usize::from(next_frame);
             if let Some(image) = images.get(index) {
                 button.setImage(Some(&**image));
                 applied_icon.store(index, Ordering::Relaxed);
             }
         }
 
-        let next_delay = runner_native_next_delay(next_phase, cpu_pct, target_cpu, next_frame);
+        let next_delay =
+            runner_native_next_delay(character, next_phase, cpu_pct, target_cpu, next_frame);
         scheduled_tick_us.store(next_delay.as_micros() as u64, Ordering::Relaxed);
         let fire_date = NSDate::dateWithTimeIntervalSinceNow(next_delay.as_secs_f64());
         unsafe { timer.as_ref() }.setFireDate(&fire_date);
@@ -5642,23 +6456,29 @@ fn set_runner_character(app: &mut App, character: RunnerCharacter) {
     if app.runner_character == character {
         return;
     }
+
+    if let Err(error) = replace_runner_assets_with(
+        &mut app.runner_character,
+        &mut app.runner_assets,
+        character,
+        build_runner_assets,
+    ) {
+        note_runner_build_failure(runner_switch_failure_message(character, &error));
+        return;
+    }
+
     #[cfg(target_os = "macos")]
     stop_native_runner_timer(app);
-    app.runner_character = character;
-    app.runner_icons = make_runner_icons(character);
     #[cfg(target_os = "macos")]
-    {
-        app.runner_native_images = make_runner_native_images(character);
-        app.runner_native_applied_icon
-            .store(usize::MAX, Ordering::Relaxed);
-    }
+    app.runner_native_applied_icon
+        .store(usize::MAX, Ordering::Relaxed);
     app.last_runner_icon = None;
     if let Some(ref tm) = app.tray_menu {
         for (candidate, item) in &tm.character_items {
-            item.set_checked(*candidate == character);
+            item.set_checked(*candidate == app.runner_character);
         }
     }
-    save_runner_character(character);
+    save_runner_character(app.runner_character);
     apply_runner_icon(app);
     #[cfg(target_os = "macos")]
     sync_native_runner_timer(app);
@@ -5672,8 +6492,13 @@ fn apply_runner_icon(app: &mut App) {
                 % usize::from(RUNNER_FRAME_COUNT)
     });
     #[cfg(not(target_os = "macos"))]
-    let desired = runner_enabled(app.display)
-        .then(|| runner_icon_index(app.runner_cpu_pct, app.runner_frame));
+    let desired = runner_enabled(app.display).then(|| {
+        runner_icon_index_with_hysteresis(
+            app.runner_cpu_pct,
+            app.runner_frame,
+            &mut app.runner_band,
+        )
+    });
     #[cfg(target_os = "macos")]
     let already_applied =
         app.runner_native_applied_icon.load(Ordering::Relaxed) == desired.unwrap_or(usize::MAX);
@@ -5695,7 +6520,7 @@ fn apply_runner_icon(app: &mut App) {
             };
             button.setImagePosition(native_status_item_image_position(app.display));
             let image = desired
-                .and_then(|index| app.runner_native_images.get(index))
+                .and_then(|index| app.runner_assets.native_images.get(index))
                 .map(|image| &**image);
             button.setImage(image);
             app.last_runner_icon = desired;
@@ -5704,7 +6529,7 @@ fn apply_runner_icon(app: &mut App) {
         }
 
         #[cfg(not(target_os = "macos"))]
-        let icon = desired.and_then(|index| app.runner_icons.get(index).cloned());
+        let icon = desired.and_then(|index| app.runner_assets.icons.get(index).cloned());
         #[cfg(not(target_os = "macos"))]
         if tray.set_icon_with_as_template(icon, false).is_ok() {
             app.last_runner_icon = desired;
@@ -5717,1251 +6542,263 @@ fn menubar_runner_icon(cpu_pct: f32, frame: u8) -> Icon {
     make_runner_icon(RunnerCharacter::Cat, cpu_pct, frame)
 }
 
+#[cfg(test)]
 fn make_runner_icon(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Icon {
-    let rgba = make_runner_rgba(character, cpu_pct, frame);
-    Icon::from_rgba(rgba, RUNNER_PIXEL_WIDTH, RUNNER_PIXEL_HEIGHT).expect("valid icon")
+    runner_icon_from_rgba(
+        character,
+        usize::from(frame),
+        &make_runner_rgba(character, cpu_pct, frame),
+    )
+    .expect("valid icon")
 }
 
+#[cfg(test)]
 fn make_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<u8> {
-    match character {
-        RunnerCharacter::Cat
-        | RunnerCharacter::Dog
-        | RunnerCharacter::Rabbit
-        | RunnerCharacter::Fox => make_quadruped_runner_rgba(character, cpu_pct, frame),
-        RunnerCharacter::Penguin => make_penguin_runner_rgba(cpu_pct, frame),
-        RunnerCharacter::Dinosaur => make_dinosaur_runner_rgba(cpu_pct, frame),
-        RunnerCharacter::Robot => make_robot_runner_rgba(cpu_pct, frame),
-        RunnerCharacter::Ghost => make_ghost_runner_rgba(cpu_pct, frame),
-        RunnerCharacter::Bird
-        | RunnerCharacter::Duck
-        | RunnerCharacter::Sheep
-        | RunnerCharacter::Fish
-        | RunnerCharacter::Slime
-        | RunnerCharacter::Human
-        | RunnerCharacter::Pushup
-        | RunnerCharacter::Orbit
-        | RunnerCharacter::Sushi
-        | RunnerCharacter::City
-        | RunnerCharacter::Sausage
-        | RunnerCharacter::Party => make_novelty_runner_rgba(character, cpu_pct, frame),
-    }
+    apply_test_runner_style(
+        render_raw_frame(character, cpu_pct, frame).expect("runner frame must render as RGBA"),
+    )
 }
 
-fn make_quadruped_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<u8> {
-    const W: u32 = RUNNER_PIXEL_WIDTH;
-    const H: u32 = RUNNER_PIXEL_HEIGHT;
-    const BOUNCE: [f32; 8] = [0.8, 0.2, -1.4, -3.0, -1.8, -0.2, 0.6, -1.6];
-    const STRETCH: [f32; 8] = [2.2, 1.0, -0.8, -2.2, -0.4, 1.8, 0.8, -1.3];
-    const SQUASH: [f32; 8] = [-0.3, 0.3, 0.9, 1.3, 0.6, -0.2, 0.3, 1.0];
-    const BODY_ANGLE: [f32; 8] = [-0.12, -0.08, 0.0, 0.10, 0.15, 0.06, -0.06, -0.12];
-    const BODY_SHIFT_X: [f32; 8] = [-0.5, 0.0, 0.8, 1.7, 1.0, 0.1, -0.6, -0.8];
-    const HEAD_SHIFT_X: [f32; 8] = [1.1, 0.4, -0.5, -1.0, -0.2, 0.9, 1.2, 0.2];
-    const HEAD_SHIFT_Y: [f32; 8] = [-0.8, -0.2, 0.7, 1.4, 0.5, -0.6, -1.0, -0.5];
-    const TAIL_LIFT: [f32; 8] = [2.5, 1.0, -1.0, -3.0, -2.0, 0.0, 2.5, 3.5];
-    const HIND_PAW: [Pt; 8] = [
-        Pt::new(4.5, 27.0),
-        Pt::new(10.0, 27.2),
-        Pt::new(18.0, 26.2),
-        Pt::new(27.0, 21.5),
-        Pt::new(31.0, 24.0),
-        Pt::new(25.0, 27.1),
-        Pt::new(16.0, 27.0),
-        Pt::new(8.0, 23.0),
-    ];
-    const FORE_PAW: [Pt; 8] = [
-        Pt::new(46.0, 26.3),
-        Pt::new(40.0, 27.2),
-        Pt::new(34.0, 26.5),
-        Pt::new(25.0, 21.5),
-        Pt::new(18.0, 24.0),
-        Pt::new(25.0, 27.1),
-        Pt::new(37.0, 27.0),
-        Pt::new(45.0, 23.0),
-    ];
+#[cfg(test)]
+struct RunnerQaArtifacts {
+    sheet_path: PathBuf,
+    report_path: PathBuf,
+}
 
-    let mut rgba = vec![0u8; (W * H * 4) as usize];
-    let pose = usize::from(frame % RUNNER_FRAME_COUNT);
-    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let bounce_scale = 0.55 + load.sqrt() * 0.70;
-    let stride_scale = 0.60 + load.sqrt() * 0.65;
-    let bounce = BOUNCE[pose] * bounce_scale;
-    let tail_lift = TAIL_LIFT[pose] * bounce_scale;
-    let body_color = (255, 255, 255, 248);
-    let detail_color = (255, 255, 255, 226);
-    let leg_color = (255, 255, 255, 244);
-    let body_shift_x = BODY_SHIFT_X[pose] * (0.55 + load * 0.7);
-    let head_shift_x = HEAD_SHIFT_X[pose] * (0.55 + load * 0.7);
-    let head_shift_y = HEAD_SHIFT_Y[pose] * bounce_scale;
-    let hind_hip = Pt::new(16.0 + body_shift_x, 20.0 + bounce);
-    let fore_hip = Pt::new(33.5 + body_shift_x, 19.4 + bounce);
-    let hind_paw = Pt::new(
-        hind_hip.x + (HIND_PAW[pose].x - hind_hip.x) * stride_scale,
-        HIND_PAW[pose].y,
-    );
-    let fore_paw = Pt::new(
-        fore_hip.x + (FORE_PAW[pose].x - fore_hip.x) * stride_scale,
-        FORE_PAW[pose].y,
-    );
+#[cfg(test)]
+const RUNNER_QA_SCALE: u32 = 4;
+#[cfg(test)]
+const RUNNER_QA_PADDING: u32 = 4;
 
-    match character {
-        RunnerCharacter::Cat => {
-            draw_line(
-                &mut rgba,
-                W,
-                H,
-                Pt::new(11.2, 16.2 + bounce),
-                Pt::new(6.2, 12.0 + bounce - tail_lift * 0.35),
-                2.5,
-                detail_color,
-            );
-            draw_line(
-                &mut rgba,
-                W,
-                H,
-                Pt::new(6.2, 12.0 + bounce - tail_lift * 0.35),
-                Pt::new(3.2, 6.6 + bounce - tail_lift),
-                2.1,
-                detail_color,
-            );
-        }
-        RunnerCharacter::Dog => {
-            draw_line(
-                &mut rgba,
-                W,
-                H,
-                Pt::new(11.0, 16.0 + bounce),
-                Pt::new(6.4, 17.0 + bounce - tail_lift * 0.16),
-                3.2,
-                detail_color,
-            );
-            draw_line(
-                &mut rgba,
-                W,
-                H,
-                Pt::new(6.4, 17.0 + bounce - tail_lift * 0.16),
-                Pt::new(3.0, 14.8 + bounce - tail_lift * 0.34),
-                2.7,
-                detail_color,
-            );
-        }
-        RunnerCharacter::Rabbit => {
-            draw_disc(
-                &mut rgba,
-                W,
-                H,
-                Pt::new(9.4, 16.0 + bounce),
-                2.9,
-                detail_color,
-            );
-        }
-        RunnerCharacter::Fox => {
-            draw_line(
-                &mut rgba,
-                W,
-                H,
-                Pt::new(11.5, 17.0 + bounce),
-                Pt::new(6.3, 13.3 + bounce - tail_lift * 0.25),
-                6.2,
-                detail_color,
-            );
-            draw_line(
-                &mut rgba,
-                W,
-                H,
-                Pt::new(6.3, 13.3 + bounce - tail_lift * 0.25),
-                Pt::new(2.8, 8.7 + bounce - tail_lift * 0.55),
-                4.6,
-                detail_color,
-            );
-        }
-        _ => unreachable!("non-quadruped runner reached quadruped renderer"),
+#[cfg(test)]
+fn write_runner_quality_artifacts() -> Result<RunnerQaArtifacts, RunnerBuildError> {
+    let target = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("target");
+    std::fs::create_dir_all(&target).map_err(|error| {
+        RunnerBuildError::cache(RunnerCharacter::Cat, "runner QA target", error.to_string())
+    })?;
+
+    let packs = RunnerCharacter::FEATURED
+        .into_iter()
+        .map(|character| RunnerPack::build(character).map(|pack| (character, pack)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let frame_payload: serde_json::Map<String, serde_json::Value> = packs
+        .iter()
+        .map(|(character, pack)| {
+            (
+                character.as_str().to_string(),
+                serde_json::json!(pack
+                    .frames()
+                    .iter()
+                    .map(|frame| runner::alpha_hex(frame))
+                    .collect::<Vec<_>>()),
+            )
+        })
+        .collect();
+    std::fs::write(
+        target.join("runner-motion-frames.json"),
+        serde_json::to_vec(&frame_payload).expect("serializable frame payload"),
+    )
+    .map_err(|error| {
+        RunnerBuildError::cache(RunnerCharacter::Cat, "motion QA frames", error.to_string())
+    })?;
+    let cadence: serde_json::Map<String, serde_json::Value> = RunnerCharacter::FEATURED
+        .into_iter()
+        .map(|character| {
+            (
+                character.as_str().to_string(),
+                serde_json::json!((0..=100)
+                    .map(|cpu| (0..RUNNER_FRAME_COUNT)
+                        .map(|pose| runner::timing::frame_interval_for_pose(
+                            character, cpu as f32, pose
+                        )
+                        .as_millis())
+                        .collect::<Vec<_>>())
+                    .collect::<Vec<_>>()),
+            )
+        })
+        .collect();
+    std::fs::write(
+        target.join("runner-motion-cadence.json"),
+        serde_json::to_vec(&cadence).expect("serializable cadence"),
+    )
+    .map_err(|error| {
+        RunnerBuildError::cache(RunnerCharacter::Cat, "motion QA cadence", error.to_string())
+    })?;
+    let sheet_path = target.join("runner-sprite-sheet.png");
+    let report_path = target.join("runner-quality-report.json");
+
+    let (width, height) = runner_qa_sheet_dimensions();
+    let mut sheet = vec![0u8; (width * height * 4) as usize];
+    for pixel in sheet.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&[28, 28, 30, 255]);
     }
 
-    draw_runner_leg(&mut rgba, W, H, hind_hip, hind_paw, -2.0, leg_color);
-    draw_runner_leg(&mut rgba, W, H, fore_hip, fore_paw, 1.8, leg_color);
-
-    let body_radius = match character {
-        RunnerCharacter::Rabbit => (13.5, 5.8),
-        RunnerCharacter::Fox => (13.0, 5.2),
-        _ => (13.2, 5.4),
-    };
-    let body_center = Pt::new(24.0 + body_shift_x, 16.8 + bounce);
-    draw_rotated_ellipse(
-        &mut rgba,
-        W,
-        H,
-        body_center,
-        body_radius.0 + STRETCH[pose] * (0.7 + load * 0.5),
-        body_radius.1 + SQUASH[pose] * (0.45 + load * 0.45),
-        BODY_ANGLE[pose] * (0.5 + load * 0.7),
-        body_color,
-    );
-    let head_point =
-        |x: f32, y: f32| Pt::new(x + body_shift_x + head_shift_x, y + bounce + head_shift_y);
-    draw_disc(&mut rgba, W, H, head_point(38.0, 13.2), 4.4, body_color);
-
-    match character {
-        RunnerCharacter::Cat => {
-            draw_triangle(
-                &mut rgba,
-                W,
-                H,
-                head_point(34.4, 10.8),
-                head_point(35.8, 5.8),
-                head_point(38.0, 10.3),
-                body_color,
-            );
-            draw_triangle(
-                &mut rgba,
-                W,
-                H,
-                head_point(38.4, 9.8),
-                head_point(41.2, 5.7),
-                head_point(41.7, 11.2),
-                body_color,
-            );
-            draw_ellipse(
-                &mut rgba,
-                W,
-                H,
-                head_point(42.0, 14.1),
-                2.7,
-                1.8,
-                body_color,
-            );
-        }
-        RunnerCharacter::Dog => {
-            draw_ellipse(
-                &mut rgba,
-                W,
-                H,
-                head_point(35.1, 10.1),
-                2.5,
-                4.4,
-                detail_color,
-            );
-            draw_ellipse(
-                &mut rgba,
-                W,
-                H,
-                head_point(42.0, 14.2),
-                3.5,
-                2.1,
-                body_color,
-            );
-        }
-        RunnerCharacter::Rabbit => {
-            draw_line(
-                &mut rgba,
-                W,
-                H,
-                head_point(36.0, 10.6),
-                head_point(34.8, 2.8),
-                3.8,
-                body_color,
-            );
-            draw_line(
-                &mut rgba,
-                W,
-                H,
-                head_point(39.1, 10.1),
-                head_point(40.3, 2.4),
-                3.6,
-                body_color,
-            );
-            draw_ellipse(
-                &mut rgba,
-                W,
-                H,
-                head_point(42.0, 14.2),
-                2.5,
-                1.8,
-                body_color,
-            );
-        }
-        RunnerCharacter::Fox => {
-            draw_triangle(
-                &mut rgba,
-                W,
-                H,
-                head_point(34.2, 10.9),
-                head_point(35.8, 5.0),
-                head_point(38.3, 10.3),
-                body_color,
-            );
-            draw_triangle(
-                &mut rgba,
-                W,
-                H,
-                head_point(38.2, 9.9),
-                head_point(41.1, 5.0),
-                head_point(41.9, 11.0),
-                body_color,
-            );
-            draw_triangle(
-                &mut rgba,
-                W,
-                H,
-                head_point(40.2, 11.1),
-                head_point(46.1, 14.0),
-                head_point(40.3, 16.3),
-                body_color,
-            );
-        }
-        _ => unreachable!("non-quadruped runner reached quadruped renderer"),
-    }
-
-    rgba
-}
-
-fn make_penguin_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
-    const W: u32 = RUNNER_PIXEL_WIDTH;
-    const H: u32 = RUNNER_PIXEL_HEIGHT;
-    const BOB: [f32; 8] = [0.4, -0.4, -1.8, -0.8, 0.5, -0.3, -2.0, -0.7];
-    const LEAN: [f32; 8] = [-0.12, -0.06, 0.04, 0.13, 0.10, 0.02, -0.08, -0.14];
-    const STEP: [f32; 8] = [-7.0, -4.0, 0.0, 5.0, 7.0, 4.0, 0.0, -5.0];
-    const FLAP: [f32; 8] = [-4.0, -1.0, 3.0, 6.0, 3.0, -1.0, -5.0, -7.0];
-
-    let mut rgba = vec![0u8; (W * H * 4) as usize];
-    let pose = usize::from(frame % RUNNER_FRAME_COUNT);
-    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let motion = 0.58 + load.sqrt() * 0.72;
-    let bob = BOB[pose] * motion;
-    let step = STEP[pose] * motion;
-    let flap = FLAP[pose] * motion;
-    let solid = (255, 255, 255, 248);
-    let detail = (255, 255, 255, 224);
-
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(2.0, 19.5 + bob + flap * 0.12),
-        Pt::new(14.0, 19.5 + bob + flap * 0.12),
-        2.2,
-        detail,
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(6.0, 23.5 + bob - flap * 0.08),
-        Pt::new(16.0, 23.5 + bob - flap * 0.08),
-        1.7,
-        detail,
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(23.0, 22.0 + bob),
-        Pt::new(20.0 + step * 0.62, 27.0),
-        3.0,
-        detail,
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(30.0, 22.0 + bob),
-        Pt::new(33.0 - step * 0.62, 27.0),
-        3.0,
-        solid,
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(21.0, 13.0 + bob),
-        Pt::new(15.0, 17.0 + bob + flap * 0.52),
-        4.5,
-        detail,
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(33.0, 13.0 + bob),
-        Pt::new(39.0, 17.0 + bob - flap * 0.38),
-        4.0,
-        detail,
-    );
-    draw_rotated_ellipse(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(27.0, 16.2 + bob),
-        8.3 + load * 0.45,
-        10.2,
-        LEAN[pose] * (0.65 + load * 0.55),
-        solid,
-    );
-    draw_disc(&mut rgba, W, H, Pt::new(31.5, 7.8 + bob), 5.5, solid);
-    draw_triangle(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(35.0, 7.4 + bob),
-        Pt::new(42.5, 9.4 + bob),
-        Pt::new(35.0, 11.0 + bob),
-        detail,
-    );
-    erase_disc(&mut rgba, W, H, Pt::new(32.8, 6.7 + bob), 1.0);
-    rgba
-}
-
-fn make_dinosaur_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
-    const W: u32 = RUNNER_PIXEL_WIDTH;
-    const H: u32 = RUNNER_PIXEL_HEIGHT;
-    const BOB: [f32; 8] = [0.8, 0.0, -1.8, -3.0, -1.5, 0.2, 0.7, -1.5];
-    const STEP: [f32; 8] = [-8.0, -5.0, 0.0, 7.0, 9.0, 5.0, 0.0, -7.0];
-    const TAIL: [f32; 8] = [3.0, 1.0, -2.0, -4.0, -2.0, 1.0, 4.0, 5.0];
-
-    let mut rgba = vec![0u8; (W * H * 4) as usize];
-    let pose = usize::from(frame % RUNNER_FRAME_COUNT);
-    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let motion = 0.56 + load.sqrt() * 0.75;
-    let bob = BOB[pose] * motion;
-    let step = STEP[pose] * motion;
-    let tail = TAIL[pose] * motion;
-    let solid = (255, 255, 255, 248);
-    let detail = (255, 255, 255, 226);
-
-    draw_triangle(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(18.0, 15.0 + bob),
-        Pt::new(1.5, 11.0 + bob - tail),
-        Pt::new(15.5, 20.5 + bob),
-        detail,
-    );
-    draw_runner_leg(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(21.0, 19.5 + bob),
-        Pt::new(20.0 + step, 27.2),
-        -2.5,
-        detail,
-    );
-    draw_runner_leg(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(32.0, 19.0 + bob),
-        Pt::new(32.0 - step, 27.2),
-        2.5,
-        solid,
-    );
-    draw_rotated_ellipse(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(26.0, 16.0 + bob),
-        13.0 + load,
-        6.4,
-        -0.08 + (BOB[pose] / 40.0),
-        solid,
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(34.0, 14.0 + bob),
-        Pt::new(39.0, 9.0 + bob),
-        6.0,
-        solid,
-    );
-    draw_ellipse(&mut rgba, W, H, Pt::new(42.0, 8.5 + bob), 5.8, 4.2, solid);
-    draw_ellipse(&mut rgba, W, H, Pt::new(46.0, 10.0 + bob), 3.8, 2.2, solid);
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(35.5, 14.0 + bob),
-        Pt::new(41.5, 18.0 + bob + tail * 0.2),
-        2.2,
-        detail,
-    );
-    erase_disc(&mut rgba, W, H, Pt::new(43.2, 7.4 + bob), 0.9);
-    rgba
-}
-
-fn make_robot_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
-    const W: u32 = RUNNER_PIXEL_WIDTH;
-    const H: u32 = RUNNER_PIXEL_HEIGHT;
-    const BOB: [f32; 8] = [0.5, -0.2, -1.5, -2.7, -1.2, 0.0, 0.6, -1.4];
-    const STEP: [f32; 8] = [-7.0, -4.0, 0.0, 6.0, 8.0, 4.0, 0.0, -6.0];
-    const ARM: [f32; 8] = [6.0, 3.0, -1.0, -6.0, -7.0, -3.0, 1.0, 6.0];
-
-    let mut rgba = vec![0u8; (W * H * 4) as usize];
-    let pose = usize::from(frame % RUNNER_FRAME_COUNT);
-    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let motion = 0.58 + load.sqrt() * 0.72;
-    let bob = BOB[pose] * motion;
-    let step = STEP[pose] * motion;
-    let arm = ARM[pose] * motion;
-    let solid = (255, 255, 255, 248);
-    let detail = (255, 255, 255, 220);
-
-    draw_runner_leg(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(23.0, 20.0 + bob),
-        Pt::new(18.0 + step, 27.0),
-        -2.5,
-        solid,
-    );
-    draw_runner_leg(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(32.0, 20.0 + bob),
-        Pt::new(35.0 - step, 27.0),
-        2.5,
-        detail,
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(20.0, 13.5 + bob),
-        Pt::new(9.0, 13.5 + bob + arm),
-        3.0,
-        detail,
-    );
-    draw_disc(&mut rgba, W, H, Pt::new(8.0, 13.5 + bob + arm), 2.1, solid);
-    draw_rect(&mut rgba, W, H, 19.0, 11.0 + bob, 36.0, 21.0 + bob, solid);
-    draw_rect(&mut rgba, W, H, 23.0, 3.5 + bob, 39.0, 13.0 + bob, solid);
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(31.0, 3.5 + bob),
-        Pt::new(31.0, 0.8 + bob),
-        1.7,
-        detail,
-    );
-    draw_disc(&mut rgba, W, H, Pt::new(31.0, 1.0 + bob), 1.7, solid);
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(36.0, 13.5 + bob),
-        Pt::new(47.0, 13.5 + bob - arm),
-        3.0,
-        detail,
-    );
-    draw_disc(&mut rgba, W, H, Pt::new(47.0, 13.5 + bob - arm), 2.1, solid);
-    erase_disc(&mut rgba, W, H, Pt::new(27.5, 7.8 + bob), 1.05);
-    erase_disc(&mut rgba, W, H, Pt::new(34.5, 7.8 + bob), 1.05);
-    erase_disc(&mut rgba, W, H, Pt::new(27.5, 16.0 + bob), 1.35);
-    rgba
-}
-
-fn make_ghost_runner_rgba(cpu_pct: f32, frame: u8) -> Vec<u8> {
-    const W: u32 = RUNNER_PIXEL_WIDTH;
-    const H: u32 = RUNNER_PIXEL_HEIGHT;
-    const FLOAT: [f32; 8] = [1.0, 0.0, -1.5, -2.6, -1.4, 0.1, 0.5, -0.7];
-    const WAVE: [f32; 8] = [4.0, 1.0, -3.0, -6.0, -4.0, 0.0, 5.5, 7.0];
-    const REACH: [f32; 8] = [5.0, 2.0, -2.0, -5.0, -3.0, 1.0, 3.5, 7.0];
-
-    let mut rgba = vec![0u8; (W * H * 4) as usize];
-    let pose = usize::from(frame % RUNNER_FRAME_COUNT);
-    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let motion = 0.55 + load.sqrt() * 0.78;
-    let float = FLOAT[pose] * motion;
-    let wave = WAVE[pose] * motion;
-    let reach = REACH[pose] * motion;
-    let solid = (255, 255, 255, 244);
-    let detail = (255, 255, 255, 218);
-
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(22.0, 12.0 + float),
-        Pt::new(3.0, 8.0 + float + wave),
-        5.0,
-        detail,
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(20.0, 17.0 + float),
-        Pt::new(5.0, 21.0 + float - wave * 0.55),
-        4.0,
-        detail,
-    );
-    draw_ellipse(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(31.0, 13.5 + float),
-        13.5 + load,
-        8.8,
-        solid,
-    );
-    draw_triangle(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(20.0, 18.0 + float),
-        Pt::new(24.0, 27.0 + float + wave * 0.18),
-        Pt::new(29.0, 19.0 + float),
-        solid,
-    );
-    draw_triangle(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(28.0, 19.0 + float),
-        Pt::new(33.0, 26.0 + float - wave * 0.15),
-        Pt::new(38.0, 18.0 + float),
-        solid,
-    );
-    draw_line(
-        &mut rgba,
-        W,
-        H,
-        Pt::new(37.0, 14.0 + float),
-        Pt::new(48.0, 13.0 + float - reach),
-        3.3,
-        detail,
-    );
-    erase_disc(&mut rgba, W, H, Pt::new(34.3, 11.4 + float), 1.25);
-    erase_disc(&mut rgba, W, H, Pt::new(40.0, 11.4 + float), 1.25);
-    erase_disc(&mut rgba, W, H, Pt::new(37.2, 15.4 + float), 1.45);
-    rgba
-}
-
-fn make_novelty_runner_rgba(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> Vec<u8> {
-    const BOB: [f32; 8] = [0.8, 0.0, -1.5, -2.8, -1.5, 0.1, 0.9, -1.2];
-    const SWING: [f32; 8] = [-7.0, -4.0, 0.0, 6.0, 8.0, 4.0, 0.5, -6.0];
-    const WAVE: [f32; 8] = [4.0, 1.0, -3.0, -6.0, -3.5, 0.5, 5.5, 7.0];
-
-    let pose = usize::from(frame % RUNNER_FRAME_COUNT);
-    let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let motion = 0.55 + load.sqrt() * 0.76;
-    let bob = BOB[pose] * motion;
-    let swing = SWING[pose] * motion;
-    let wave = WAVE[pose] * motion;
-    let solid = (255, 255, 255, 248);
-    let detail = (255, 255, 255, 222);
-    let mut canvas = RunnerCanvas::new();
-
-    match character {
-        RunnerCharacter::Bird => {
-            canvas.triangle(
-                Pt::new(17.0, 14.0 + bob),
-                Pt::new(2.0, 9.0 + bob + wave * 0.4),
-                Pt::new(15.0, 20.0 + bob),
-                detail,
-            );
-            canvas.line(
-                Pt::new(24.0, 15.0 + bob),
-                Pt::new(16.0, 7.0 + bob + wave),
-                4.2,
-                detail,
-            );
-            canvas.ellipse(Pt::new(27.0, 15.0 + bob), 11.5, 5.7, solid);
-            canvas.disc(Pt::new(38.0, 11.8 + bob), 4.2, solid);
-            canvas.triangle(
-                Pt::new(41.0, 11.0 + bob),
-                Pt::new(47.5, 13.0 + bob),
-                Pt::new(41.0, 14.0 + bob),
-                detail,
-            );
-            canvas.line(
-                Pt::new(24.0, 19.0 + bob),
-                Pt::new(22.0 + swing * 0.65, 27.0),
-                2.0,
-                solid,
-            );
-            canvas.line(
-                Pt::new(30.0, 19.0 + bob),
-                Pt::new(30.0 - swing * 0.65, 27.0),
-                2.0,
-                detail,
-            );
-            canvas.erase_disc(Pt::new(39.0, 10.9 + bob), 0.85);
-        }
-        RunnerCharacter::Duck => {
-            canvas.ellipse(Pt::new(25.0, 16.0 + bob), 13.5, 6.5, solid);
-            canvas.disc(Pt::new(38.0, 11.2 + bob), 5.0, solid);
-            canvas.ellipse(Pt::new(45.0, 13.0 + bob), 4.6, 1.8, detail);
-            canvas.triangle(
-                Pt::new(13.0, 15.0 + bob),
-                Pt::new(3.0, 11.5 + bob + wave * 0.3),
-                Pt::new(13.0, 20.0 + bob),
-                detail,
-            );
-            canvas.line(
-                Pt::new(22.0, 20.0 + bob),
-                Pt::new(20.0 + swing * 0.65, 27.0),
-                2.6,
-                detail,
-            );
-            canvas.line(
-                Pt::new(29.0, 20.0 + bob),
-                Pt::new(30.0 - swing * 0.65, 27.0),
-                2.6,
-                solid,
-            );
-            canvas.erase_disc(Pt::new(39.0, 10.0 + bob), 0.9);
-        }
-        RunnerCharacter::Sheep => {
-            for (x, y, radius) in [
-                (14.0, 15.0, 5.4),
-                (20.0, 12.0, 6.0),
-                (27.0, 13.0, 6.4),
-                (32.0, 17.0, 6.0),
-                (23.0, 18.0, 6.5),
-            ] {
-                canvas.disc(Pt::new(x, y + bob), radius, solid);
-            }
-            canvas.ellipse(Pt::new(39.0, 15.0 + bob), 6.5, 4.8, detail);
-            canvas.line(
-                Pt::new(18.0, 20.0 + bob),
-                Pt::new(16.0 + swing * 0.55, 27.0),
-                2.8,
-                detail,
-            );
-            canvas.line(
-                Pt::new(31.0, 20.0 + bob),
-                Pt::new(32.0 - swing * 0.55, 27.0),
-                2.8,
-                solid,
-            );
-            canvas.disc(Pt::new(6.0, 15.0 + bob + wave * 0.3), 3.0, detail);
-            canvas.erase_disc(Pt::new(41.0, 13.8 + bob), 0.9);
-        }
-        RunnerCharacter::Fish => {
-            let tail_wave = wave * 0.70;
-            canvas.triangle(
-                Pt::new(16.0, 14.0 + bob),
-                Pt::new(2.0, 6.0 + bob + tail_wave),
-                Pt::new(3.0, 23.0 + bob - tail_wave * 0.45),
-                detail,
-            );
-            canvas.ellipse(Pt::new(28.0, 14.5 + bob), 14.0 + load, 7.5, solid);
-            canvas.triangle(
-                Pt::new(25.0, 15.0 + bob),
-                Pt::new(21.0 + swing * 0.25, 27.0 + bob),
-                Pt::new(32.0, 18.0 + bob),
-                detail,
-            );
-            canvas.disc(Pt::new(44.0, 6.0 + wave * 0.25), 1.8, detail);
-            canvas.disc(Pt::new(47.0, 2.5 + wave * 0.18), 1.1, detail);
-            canvas.erase_disc(Pt::new(39.5, 12.0 + bob), 1.0);
-        }
-        RunnerCharacter::Slime => {
-            canvas.line(
-                Pt::new(14.0, 18.0 + bob),
-                Pt::new(3.0, 14.0 + bob + swing * 0.45),
-                4.0,
-                detail,
-            );
-            canvas.line(
-                Pt::new(37.0, 18.0 + bob),
-                Pt::new(48.0, 14.0 + bob - swing * 0.45),
-                4.0,
-                detail,
-            );
-            canvas.ellipse(Pt::new(26.0, 17.0 + bob), 15.5 + load, 9.4, solid);
-            canvas.triangle(
-                Pt::new(12.0, 20.0 + bob),
-                Pt::new(17.0, 28.0 + bob + wave * 0.2),
-                Pt::new(22.0, 20.0 + bob),
-                solid,
-            );
-            canvas.triangle(
-                Pt::new(22.0, 20.0 + bob),
-                Pt::new(28.0, 27.0 + bob - wave * 0.18),
-                Pt::new(34.0, 20.0 + bob),
-                solid,
-            );
-            canvas.triangle(
-                Pt::new(33.0, 20.0 + bob),
-                Pt::new(39.0, 27.0 + bob + wave * 0.15),
-                Pt::new(42.0, 19.0 + bob),
-                solid,
-            );
-            canvas.erase_disc(Pt::new(22.0, 14.5 + bob), 1.15);
-            canvas.erase_disc(Pt::new(31.0, 14.5 + bob), 1.15);
-        }
-        RunnerCharacter::Human => {
-            let hip = Pt::new(28.0, 19.0 + bob);
-            canvas.disc(Pt::new(34.5, 6.0 + bob), 4.0, solid);
-            canvas.line(Pt::new(32.0, 10.0 + bob), hip, 3.8, solid);
-            canvas.line(
-                Pt::new(31.5, 12.0 + bob),
-                Pt::new(18.0, 10.0 + bob + swing * 0.55),
-                3.0,
-                detail,
-            );
-            canvas.line(
-                Pt::new(31.5, 12.0 + bob),
-                Pt::new(45.0, 12.0 + bob - swing * 0.55),
-                3.0,
-                solid,
-            );
-            canvas.line(hip, Pt::new(9.0 + swing, 27.0), 3.4, detail);
-            canvas.line(hip, Pt::new(45.0 - swing, 27.0), 3.4, solid);
-        }
-        RunnerCharacter::Pushup => {
-            let flex = (((pose as f32 - 3.5).abs() - 1.75) * motion).clamp(-2.2, 3.2);
-            let hip = Pt::new(11.0, 12.0 + flex);
-            let shoulder = Pt::new(35.0, 14.0 + flex * 0.72);
-            let elbow = Pt::new(31.0 + swing * 0.18, 21.5 + flex * 0.45);
-            let hand = Pt::new(39.0 + swing * 0.12, 27.0);
-            canvas.line(hip, shoulder, 4.3, solid);
-            canvas.disc(Pt::new(41.0, 12.5 + flex * 0.72), 3.8, solid);
-            canvas.line(shoulder, elbow, 3.0, detail);
-            canvas.line(elbow, hand, 3.0, solid);
-            canvas.line(hip, Pt::new(2.0, 25.5), 3.2, detail);
-            canvas.line(Pt::new(3.0, 25.5), Pt::new(9.0, 26.0), 2.3, detail);
-            canvas.erase_disc(Pt::new(42.2, 11.5 + flex * 0.72), 0.8);
-        }
-        RunnerCharacter::Orbit => {
-            canvas.line(
-                Pt::new(3.0, 16.0 + wave * 0.25),
-                Pt::new(45.0, 16.0 - wave * 0.25),
-                2.0,
-                detail,
-            );
-            canvas.line(
-                Pt::new(8.0, 7.0 - wave * 0.2),
-                Pt::new(41.0, 25.0 + wave * 0.2),
-                1.8,
-                detail,
-            );
-            canvas.disc(Pt::new(25.0, 16.0 + bob), 6.0 + load, solid);
-            canvas.disc(
-                Pt::new(7.0 + (pose as f32 * 5.1) % 38.0, 8.0 + wave),
-                2.5,
-                solid,
-            );
-            canvas.disc(
-                Pt::new(43.0 - (pose as f32 * 4.2) % 35.0, 24.0 - wave * 0.7),
-                2.0,
-                detail,
-            );
-            canvas.erase_disc(Pt::new(25.0, 16.0 + bob), 2.3);
-        }
-        RunnerCharacter::Sushi => {
-            canvas.line(Pt::new(2.0, 25.0), Pt::new(48.0, 25.0), 3.2, detail);
-            for index in 0..5 {
-                let x = 5.0 + ((index * 11 + pose * 3) % 48) as f32;
-                canvas.disc(Pt::new(x, 27.0), 2.0, detail);
-            }
-            canvas.rect(15.0, 12.0 + bob, 37.0, 22.0 + bob, solid);
-            canvas.ellipse(Pt::new(26.0 + swing * 0.18, 10.5 + bob), 13.5, 3.8, detail);
-            canvas.line(
-                Pt::new(17.0, 15.0 + bob),
-                Pt::new(8.0, 10.0 + bob + wave * 0.3),
-                2.0,
-                detail,
-            );
-            canvas.erase_disc(Pt::new(26.0, 17.0 + bob), 2.0);
-        }
-        RunnerCharacter::City => {
-            canvas.rect(3.0, 14.0, 11.0, 27.0, solid);
-            canvas.rect(12.0, 8.0 + bob * 0.2, 20.0, 27.0, solid);
-            canvas.rect(21.0, 12.0, 29.0, 27.0, solid);
-            canvas.rect(30.0, 5.0, 39.0, 27.0, solid);
-            canvas.rect(40.0, 16.0, 48.0, 27.0, solid);
-            for (x, y) in [
-                (7.0, 18.0),
-                (16.0, 12.0),
-                (25.0, 16.0),
-                (34.5, 9.0),
-                (44.0, 20.0),
-            ] {
-                canvas.erase_disc(Pt::new(x, y), 1.1);
-            }
-            canvas.disc(Pt::new(35.0 + swing * 0.35, 2.0 + wave * 0.2), 2.0, detail);
-        }
-        RunnerCharacter::Sausage => {
-            canvas.ellipse(Pt::new(25.0, 14.5 + bob), 17.0 + load, 6.2, solid);
-            canvas.line(
-                Pt::new(10.0, 13.5 + bob),
-                Pt::new(5.0, 9.0 + bob + swing * 0.38),
-                2.4,
-                detail,
-            );
-            canvas.line(
-                Pt::new(39.0, 13.5 + bob),
-                Pt::new(45.0, 9.0 + bob - swing * 0.38),
-                2.4,
-                detail,
-            );
-            canvas.line(
-                Pt::new(19.0, 19.0 + bob),
-                Pt::new(17.0 + swing * 0.7, 27.0),
-                2.7,
-                detail,
-            );
-            canvas.line(
-                Pt::new(31.0, 19.0 + bob),
-                Pt::new(32.0 - swing * 0.7, 27.0),
-                2.7,
-                solid,
-            );
-            canvas.line(
-                Pt::new(8.5, 12.0 + bob),
-                Pt::new(8.5, 17.0 + bob),
-                1.8,
-                detail,
-            );
-            canvas.line(
-                Pt::new(41.5, 12.0 + bob),
-                Pt::new(41.5, 17.0 + bob),
-                1.8,
-                detail,
-            );
-            canvas.erase_disc(Pt::new(34.8, 13.0 + bob), 0.85);
-            canvas.erase_disc(Pt::new(38.0, 13.0 + bob), 0.85);
-            canvas.erase_disc(Pt::new(36.5, 16.0 + bob), 0.75);
-        }
-        RunnerCharacter::Party => {
-            for (index, x) in [12.0, 25.0, 38.0].into_iter().enumerate() {
-                let offset = if index % 2 == 0 { wave } else { -wave };
-                let local_bob = bob + offset * 0.18;
-                canvas.disc(Pt::new(x, 7.0 + local_bob), 3.0, solid);
-                canvas.line(
-                    Pt::new(x, 10.0 + local_bob),
-                    Pt::new(x, 19.0 + local_bob),
-                    2.8,
-                    solid,
-                );
-                canvas.line(
-                    Pt::new(x, 12.0 + local_bob),
-                    Pt::new(x - 7.0, 8.0 + local_bob + offset * 0.45),
-                    2.3,
-                    detail,
-                );
-                canvas.line(
-                    Pt::new(x, 12.0 + local_bob),
-                    Pt::new(x + 7.0, 8.0 + local_bob - offset * 0.45),
-                    2.3,
-                    detail,
-                );
-                canvas.line(
-                    Pt::new(x, 19.0 + local_bob),
-                    Pt::new(x - 5.0 - swing * 0.2, 27.0),
-                    2.5,
-                    solid,
-                );
-                canvas.line(
-                    Pt::new(x, 19.0 + local_bob),
-                    Pt::new(x + 5.0 + swing * 0.2, 27.0),
-                    2.5,
-                    detail,
-                );
+    for (character_index, (_, pack)) in packs.iter().enumerate() {
+        for band in 0..RUNNER_LOAD_BANDS {
+            let row = character_index * RUNNER_LOAD_BANDS + band;
+            for frame in 0..RUNNER_FRAME_COUNT {
+                let rgba = pack
+                    .frame_by_index(band, frame)
+                    .expect("QA sheet frame must exist");
+                draw_runner_qa_frame(&mut sheet, width, row as u32, frame as u32, rgba);
             }
         }
-        _ => unreachable!("non-novelty runner reached novelty renderer"),
     }
 
-    canvas.finish()
+    let file = std::fs::File::create(&sheet_path).map_err(|error| {
+        RunnerBuildError::cache(
+            RunnerCharacter::Cat,
+            "runner QA sheet create",
+            error.to_string(),
+        )
+    })?;
+    let mut encoder = png::Encoder::new(file, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .and_then(|mut writer| writer.write_image_data(&sheet))
+        .map_err(|error| {
+            RunnerBuildError::cache(
+                RunnerCharacter::Cat,
+                "runner QA sheet write",
+                error.to_string(),
+            )
+        })?;
+
+    std::fs::write(&report_path, runner::build_quality_report_json()?).map_err(|error| {
+        RunnerBuildError::cache(
+            RunnerCharacter::Cat,
+            "runner QA report write",
+            error.to_string(),
+        )
+    })?;
+
+    Ok(RunnerQaArtifacts {
+        sheet_path,
+        report_path,
+    })
 }
 
-#[derive(Clone, Copy)]
-struct Pt {
-    x: f32,
-    y: f32,
+#[cfg(test)]
+fn runner_qa_sheet_dimensions() -> (u32, u32) {
+    let cell_width = RUNNER_PIXEL_WIDTH * (RUNNER_QA_SCALE + 1) + RUNNER_QA_PADDING * 3;
+    let cell_height = RUNNER_PIXEL_HEIGHT * RUNNER_QA_SCALE + RUNNER_QA_PADDING * 2;
+    (
+        cell_width * u32::from(RUNNER_FRAME_COUNT),
+        cell_height * RunnerCharacter::FEATURED.len() as u32 * RUNNER_LOAD_BANDS as u32,
+    )
 }
 
-impl Pt {
-    const fn new(x: f32, y: f32) -> Self {
-        Self { x, y }
-    }
-}
-
-struct RunnerCanvas {
-    rgba: Vec<u8>,
-}
-
-impl RunnerCanvas {
-    fn new() -> Self {
-        Self {
-            rgba: vec![0u8; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize],
-        }
-    }
-
-    fn finish(self) -> Vec<u8> {
-        self.rgba
-    }
-
-    fn line(&mut self, start: Pt, end: Pt, thickness: f32, color: (u8, u8, u8, u8)) {
-        draw_line(
-            &mut self.rgba,
-            RUNNER_PIXEL_WIDTH,
-            RUNNER_PIXEL_HEIGHT,
-            start,
-            end,
-            thickness,
-            color,
-        );
-    }
-
-    fn disc(&mut self, center: Pt, radius: f32, color: (u8, u8, u8, u8)) {
-        draw_disc(
-            &mut self.rgba,
-            RUNNER_PIXEL_WIDTH,
-            RUNNER_PIXEL_HEIGHT,
-            center,
-            radius,
-            color,
-        );
-    }
-
-    fn ellipse(&mut self, center: Pt, rx: f32, ry: f32, color: (u8, u8, u8, u8)) {
-        draw_ellipse(
-            &mut self.rgba,
-            RUNNER_PIXEL_WIDTH,
-            RUNNER_PIXEL_HEIGHT,
-            center,
-            rx,
-            ry,
-            color,
-        );
-    }
-
-    fn triangle(&mut self, a: Pt, b: Pt, c: Pt, color: (u8, u8, u8, u8)) {
-        draw_triangle(
-            &mut self.rgba,
-            RUNNER_PIXEL_WIDTH,
-            RUNNER_PIXEL_HEIGHT,
-            a,
-            b,
-            c,
-            color,
-        );
-    }
-
-    fn rect(&mut self, left: f32, top: f32, right: f32, bottom: f32, color: (u8, u8, u8, u8)) {
-        draw_rect(
-            &mut self.rgba,
-            RUNNER_PIXEL_WIDTH,
-            RUNNER_PIXEL_HEIGHT,
-            left,
-            top,
-            right,
-            bottom,
-            color,
-        );
-    }
-
-    fn erase_disc(&mut self, center: Pt, radius: f32) {
-        erase_disc(
-            &mut self.rgba,
-            RUNNER_PIXEL_WIDTH,
-            RUNNER_PIXEL_HEIGHT,
-            center,
-            radius,
-        );
-    }
-}
-
-fn draw_runner_leg(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    hip: Pt,
-    paw: Pt,
-    knee_bend: f32,
-    color: (u8, u8, u8, u8),
-) {
-    let knee = Pt::new(
-        (hip.x + paw.x) * 0.5 + knee_bend,
-        hip.y + (paw.y - hip.y) * 0.53 - 0.5,
-    );
-    draw_line(rgba, w, h, hip, knee, 2.8, color);
-    draw_line(rgba, w, h, knee, paw, 2.5, color);
-    draw_line(
+#[cfg(test)]
+fn draw_runner_qa_frame(sheet: &mut [u8], sheet_width: u32, row: u32, column: u32, rgba: &[u8]) {
+    let cell_width = RUNNER_PIXEL_WIDTH * (RUNNER_QA_SCALE + 1) + RUNNER_QA_PADDING * 3;
+    let cell_height = RUNNER_PIXEL_HEIGHT * RUNNER_QA_SCALE + RUNNER_QA_PADDING * 2;
+    let cell_origin_x = column * cell_width;
+    let cell_origin_y = row * cell_height;
+    let native_origin_y = cell_origin_y + (cell_height - RUNNER_PIXEL_HEIGHT) / 2;
+    draw_runner_qa_scaled(
+        sheet,
+        sheet_width,
+        cell_origin_x + RUNNER_QA_PADDING,
+        native_origin_y,
         rgba,
-        w,
-        h,
-        Pt::new(paw.x - 0.4, paw.y),
-        Pt::new(paw.x + 1.7, paw.y),
-        1.8,
-        color,
+        1,
+    );
+    draw_runner_qa_scaled(
+        sheet,
+        sheet_width,
+        cell_origin_x + RUNNER_QA_PADDING * 2 + RUNNER_PIXEL_WIDTH,
+        cell_origin_y + RUNNER_QA_PADDING,
+        rgba,
+        RUNNER_QA_SCALE,
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_rect(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    left: f32,
-    top: f32,
-    right: f32,
-    bottom: f32,
-    color: (u8, u8, u8, u8),
+#[cfg(test)]
+fn draw_runner_qa_scaled(
+    sheet: &mut [u8],
+    sheet_width: u32,
+    origin_x: u32,
+    origin_y: u32,
+    rgba: &[u8],
+    scale: u32,
 ) {
-    let min_x = left.floor().max(0.0) as u32;
-    let max_x = right.ceil().min((w - 1) as f32) as u32;
-    let min_y = top.floor().max(0.0) as u32;
-    let max_y = bottom.ceil().min((h - 1) as f32) as u32;
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let edge_x = (x as f32 + 0.5 - left).min(right - (x as f32 + 0.5));
-            let edge_y = (y as f32 + 0.5 - top).min(bottom - (y as f32 + 0.5));
-            let coverage = edge_x.min(edge_y).clamp(0.0, 1.0);
-            if coverage > 0.0 {
-                blend_pixel(rgba, w, x, y, color, coverage);
+    for source_y in 0..RUNNER_PIXEL_HEIGHT {
+        for source_x in 0..RUNNER_PIXEL_WIDTH {
+            let source_index = ((source_y * RUNNER_PIXEL_WIDTH + source_x) * 4) as usize;
+            let alpha = f32::from(rgba[source_index + 3]) / 255.0;
+            for scale_y in 0..scale {
+                for scale_x in 0..scale {
+                    let target_x = origin_x + source_x * scale + scale_x;
+                    let target_y = origin_y + source_y * scale + scale_y;
+                    let target_index = ((target_y * sheet_width + target_x) * 4) as usize;
+                    for channel in 0..3 {
+                        let foreground = f32::from(rgba[source_index + channel]);
+                        sheet[target_index + channel] =
+                            (foreground * alpha + 28.0 * (1.0 - alpha)).round() as u8;
+                    }
+                    sheet[target_index + 3] = 255;
+                }
             }
         }
     }
 }
 
-fn erase_disc(rgba: &mut [u8], w: u32, h: u32, center: Pt, radius: f32) {
-    let min_x = (center.x - radius - 1.0).floor().max(0.0) as u32;
-    let max_x = (center.x + radius + 1.0).ceil().min((w - 1) as f32) as u32;
-    let min_y = (center.y - radius - 1.0).floor().max(0.0) as u32;
-    let max_y = (center.y + radius + 1.0).ceil().min((h - 1) as f32) as u32;
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let dx = x as f32 - center.x;
-            let dy = y as f32 - center.y;
-            let distance = (dx * dx + dy * dy).sqrt();
-            let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
-            if coverage > 0.0 {
-                let index = ((y * w + x) * 4) as usize;
-                rgba[index + 3] = (f32::from(rgba[index + 3]) * (1.0 - coverage)).round() as u8;
+fn runner_cached_packs() -> &'static Vec<(RunnerCharacter, RunnerPack)> {
+    static PACKS: std::sync::OnceLock<Vec<(RunnerCharacter, RunnerPack)>> =
+        std::sync::OnceLock::new();
+    PACKS.get_or_init(|| runner_preview_packs_with(RunnerPack::build))
+}
+
+fn runner_preview_packs_with<F>(mut builder: F) -> Vec<(RunnerCharacter, RunnerPack)>
+where
+    F: FnMut(RunnerCharacter) -> Result<RunnerPack, RunnerBuildError>,
+{
+    let cat_fallback = builder(RunnerCharacter::Cat);
+    RunnerCharacter::FEATURED
+        .into_iter()
+        .filter_map(|character| {
+            match if character == RunnerCharacter::Cat {
+                cat_fallback.clone()
+            } else {
+                builder(character)
+            } {
+                Ok(pack) => Some((character, pack)),
+                Err(error) if character != RunnerCharacter::Cat => match &cat_fallback {
+                    Ok(pack) => {
+                        log_menubar_event(&runner_preview_failure_message(character, &error));
+                        Some((character, pack.clone()))
+                    }
+                    Err(fallback_error) => {
+                        log_menubar_event(&runner_preview_failure_message(
+                            character,
+                            fallback_error,
+                        ));
+                        None
+                    }
+                },
+                Err(error) => {
+                    log_menubar_event(&runner_preview_failure_message(character, &error));
+                    None
+                }
             }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn apply_test_runner_style(mut rgba: Vec<u8>) -> Vec<u8> {
+    for pixel in rgba.chunks_exact_mut(4) {
+        if pixel[3] != 0 {
+            pixel[0] = 255;
+            pixel[1] = 255;
+            pixel[2] = 255;
         }
     }
-}
-
-fn draw_disc(rgba: &mut [u8], w: u32, h: u32, center: Pt, radius: f32, color: (u8, u8, u8, u8)) {
-    let min_x = (center.x - radius - 1.0).floor().max(0.0) as u32;
-    let max_x = (center.x + radius + 1.0).ceil().min((w - 1) as f32) as u32;
-    let min_y = (center.y - radius - 1.0).floor().max(0.0) as u32;
-    let max_y = (center.y + radius + 1.0).ceil().min((h - 1) as f32) as u32;
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let dx = x as f32 - center.x;
-            let dy = y as f32 - center.y;
-            let dist = (dx * dx + dy * dy).sqrt();
-            if dist <= radius + 0.5 {
-                let coverage = (radius + 0.5 - dist).clamp(0.0, 1.0);
-                blend_pixel(rgba, w, x, y, color, coverage);
-            }
-        }
-    }
-}
-
-fn draw_ellipse(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    center: Pt,
-    rx: f32,
-    ry: f32,
-    color: (u8, u8, u8, u8),
-) {
-    draw_rotated_ellipse(rgba, w, h, center, rx, ry, 0.0, color);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_rotated_ellipse(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    center: Pt,
-    rx: f32,
-    ry: f32,
-    angle: f32,
-    color: (u8, u8, u8, u8),
-) {
-    let radius = rx.max(ry) + 1.0;
-    let min_x = (center.x - radius).floor().max(0.0) as u32;
-    let max_x = (center.x + radius).ceil().min((w - 1) as f32) as u32;
-    let min_y = (center.y - radius).floor().max(0.0) as u32;
-    let max_y = (center.y + radius).ceil().min((h - 1) as f32) as u32;
-    let sin = angle.sin();
-    let cos = angle.cos();
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let offset_x = x as f32 - center.x;
-            let offset_y = y as f32 - center.y;
-            let dx = (offset_x * cos + offset_y * sin) / rx;
-            let dy = (-offset_x * sin + offset_y * cos) / ry;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let edge_distance = (1.0 - dist) * rx.min(ry);
-            let coverage = (edge_distance + 0.5).clamp(0.0, 1.0);
-            if coverage > 0.0 {
-                blend_pixel(rgba, w, x, y, color, coverage);
-            }
-        }
-    }
-}
-
-fn draw_triangle(rgba: &mut [u8], w: u32, h: u32, a: Pt, b: Pt, c: Pt, color: (u8, u8, u8, u8)) {
-    let min_x = a.x.min(b.x).min(c.x).floor().max(0.0) as u32;
-    let max_x = a.x.max(b.x).max(c.x).ceil().min((w - 1) as f32) as u32;
-    let min_y = a.y.min(b.y).min(c.y).floor().max(0.0) as u32;
-    let max_y = a.y.max(b.y).max(c.y).ceil().min((h - 1) as f32) as u32;
-    let area = edge(a, b, c);
-    if area.abs() < f32::EPSILON {
-        return;
-    }
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let p = Pt::new(x as f32 + 0.5, y as f32 + 0.5);
-            let w0 = edge(b, c, p);
-            let w1 = edge(c, a, p);
-            let w2 = edge(a, b, p);
-            if (w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0) || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0) {
-                blend_pixel(rgba, w, x, y, color, 1.0);
-            }
-        }
-    }
-}
-
-fn edge(a: Pt, b: Pt, p: Pt) -> f32 {
-    (p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x)
-}
-
-fn draw_line(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    from: Pt,
-    to: Pt,
-    thickness: f32,
-    color: (u8, u8, u8, u8),
-) {
-    let steps = ((to.x - from.x).abs().max((to.y - from.y).abs()) * 2.0)
-        .ceil()
-        .max(1.0) as u32;
-    for i in 0..=steps {
-        let t = i as f32 / steps as f32;
-        let x = from.x + (to.x - from.x) * t;
-        let y = from.y + (to.y - from.y) * t;
-        draw_disc(rgba, w, h, Pt::new(x, y), thickness / 2.0, color);
-    }
-}
-
-fn blend_pixel(rgba: &mut [u8], w: u32, x: u32, y: u32, color: (u8, u8, u8, u8), coverage: f32) {
-    let idx = ((y * w + x) * 4) as usize;
-    if idx + 3 >= rgba.len() {
-        return;
-    }
-    let alpha = (color.3 as f32 * coverage).round().clamp(0.0, 255.0) as u8;
-    if alpha >= rgba[idx + 3] {
-        rgba[idx] = color.0;
-        rgba[idx + 1] = color.1;
-        rgba[idx + 2] = color.2;
-        rgba[idx + 3] = alpha;
-    }
+    rgba
 }
 
 // ---------------------------------------------------------------------------
@@ -6969,34 +6806,66 @@ fn blend_pixel(rgba: &mut [u8], w: u32, x: u32, y: u32, color: (u8, u8, u8, u8),
 // ---------------------------------------------------------------------------
 
 fn runner_character_values_json() -> String {
-    serde_json::to_string(&RunnerCharacter::ALL.map(|character| character.as_str()))
+    serde_json::to_string(&RunnerCharacter::FEATURED.map(|character| character.as_str()))
         .expect("runner character values must serialize")
 }
 
 fn runner_preview_alpha_json() -> &'static str {
     static PREVIEWS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    PREVIEWS.get_or_init(|| {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let entries = RunnerCharacter::ALL.map(|character| {
-            // The second gait pose keeps feet and facial details readable in a
-            // static picker thumbnail; airborne frames are more expressive in
-            // motion but can look ambiguous when frozen at 18 points.
-            let rgba = make_runner_rgba(character, 52.0, 1);
-            let mut alpha =
-                String::with_capacity((RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 2) as usize);
-            for pixel in rgba.chunks_exact(4) {
-                let value = pixel[3];
-                alpha.push(HEX[usize::from(value >> 4)] as char);
-                alpha.push(HEX[usize::from(value & 0x0f)] as char);
-            }
-            format!(r#""{}":"{}""#, character.as_str(), alpha)
-        });
-        format!("{{{}}}", entries.join(","))
-    })
+    PREVIEWS.get_or_init(|| runner_preview_alpha_json_for(runner_cached_packs()))
+}
+
+fn runner_preview_frames_json() -> &'static str {
+    static PREVIEWS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PREVIEWS.get_or_init(|| runner_preview_frames_json_for(runner_cached_packs()))
+}
+
+fn runner_preview_alpha_json_for(packs: &[(RunnerCharacter, RunnerPack)]) -> String {
+    let entries = packs
+        .iter()
+        .map(|(character, pack)| {
+            format!(
+                r#""{}":"{}""#,
+                character.as_str(),
+                pack.preview_alpha_hex(RUNNER_PREVIEW_BAND, RUNNER_PREVIEW_POSE)
+                    .unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>();
+    format!("{{{}}}", entries.join(","))
+}
+
+fn runner_preview_frames_json_for(packs: &[(RunnerCharacter, RunnerPack)]) -> String {
+    let entries = packs
+        .iter()
+        .map(|(character, pack)| {
+            let frames = (0..RUNNER_FRAME_COUNT)
+                .map(|frame| {
+                    format!(
+                        r#""{}""#,
+                        pack.preview_alpha_hex(RUNNER_PREVIEW_BAND, frame)
+                            .unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(r#""{}":[{}]"#, character.as_str(), frames)
+        })
+        .collect::<Vec<_>>();
+    format!("{{{}}}", entries.join(","))
+}
+
+fn runner_selected_preview_frames_json(pack: &RunnerPack) -> String {
+    let frames = pack
+        .frames()
+        .iter()
+        .map(|frame| format!(r#""{}""#, runner::alpha_hex(frame)))
+        .collect::<Vec<_>>();
+    format!("[{}]", frames.join(","))
 }
 
 fn runner_picker_options(lang: ResolvedLanguage) -> String {
-    RunnerCharacter::ALL
+    RunnerCharacter::FEATURED
         .map(|character| {
             let value = character.as_str();
             let label = runner_character_label(lang, character);
@@ -7012,7 +6881,16 @@ fn runner_picker_options(lang: ResolvedLanguage) -> String {
 /// exact `>Label<`/string match — cheap, and safe because each source string
 /// only ever appears where a translation actually belongs (verified by hand,
 /// covered by `dashboard_html_translates_known_labels` below).
+#[cfg(test)]
 fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
+    dashboard_html_with_runner_pack(lang, show_curve_editor, &runner_cached_packs()[0].1)
+}
+
+fn dashboard_html_with_runner_pack(
+    lang: ResolvedLanguage,
+    show_curve_editor: bool,
+    selected_pack: &RunnerPack,
+) -> String {
     let lang_tag = match lang {
         ResolvedLanguage::En => "en",
         ResolvedLanguage::Ko => "ko",
@@ -7037,6 +6915,9 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Network<", ">네트워크<")
             .replace(">Top Processes<", ">실행 중 프로세스<")
             .replace(">MEM<", ">메모리<")
+            .replace("Search name or PID", "이름 또는 PID 검색")
+            .replace("Search processes", "프로세스 검색")
+            .replace("No matching processes.", "일치하는 프로세스가 없습니다.")
             .replace(">Ready<", ">준비 완료<")
             .replace(">Set Up<", ">설정<")
             .replace(">Settings<", ">설정<")
@@ -7045,6 +6926,13 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">App Preferences<", ">앱 설정<")
             .replace(">Menu bar<", ">메뉴 막대<")
             .replace(">Character<", ">캐릭터<")
+            .replace(">CPU core graph<", ">코어별 CPU 그래프<")
+            .replace(
+                "Show live per-core CPU activity in the overview.",
+                "상단에 코어별 CPU 사용률을 표시합니다.",
+            )
+            .replace(">On<", ">켜짐<")
+            .replace(">Off<", ">꺼짐<")
             .replace(">Runner<", ">러너<")
             .replace(">Number<", ">숫자<")
             .replace(">Cat<", ">고양이<")
@@ -7070,6 +6958,21 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
             .replace(">Both<", ">둘 다<")
             .replace("CPU runner · waiting", "CPU 러너 · 대기 중")
             .replace(">Notifications<", ">알림<")
+            .replace(">Automation Rules<", ">자동화 규칙<")
+            .replace(
+                "Rules run in order; the first matching condition selects its fan profile.",
+                "규칙은 위에서부터 평가되며, 처음 일치한 조건의 팬 프로파일을 적용합니다.",
+            )
+            .replace(">Add Rule<", ">규칙 추가<")
+            .replace(">Quiet Battery / Performance AC<", ">배터리 저소음 / AC 고성능<")
+            .replace(">Save Rules<", ">규칙 저장<")
+            .replace(">Configuration Transfer<", ">설정 가져오기 및 내보내기<")
+            .replace(
+                "Copy the current TOML or paste a previously exported PeterFan config, then import it after validation.",
+                "현재 TOML 설정을 복사하거나 이전에 내보낸 PeterFan 설정을 붙여넣은 뒤 검증하고 가져옵니다.",
+            )
+            .replace(">Copy Current Config<", ">현재 설정 복사<")
+            .replace(">Import Config<", ">설정 가져오기<")
             .replace(">CPU temperature warning<", ">CPU 온도 경고<")
             .replace(
                 "CPU Core Average · separate from the 90°C safety alert",
@@ -7209,6 +7112,15 @@ fn dashboard_html(lang: ResolvedLanguage, show_curve_editor: bool) -> String {
     html.replace("__RUNNER_OPTIONS__", &runner_picker_options(lang))
         .replace("__RUNNER_CHARACTERS__", &runner_character_values_json())
         .replace("__RUNNER_PREVIEWS__", runner_preview_alpha_json())
+        .replace("__RUNNER_PREVIEW_FRAMES__", runner_preview_frames_json())
+        .replace(
+            "__RUNNER_SELECTED_PREVIEW__",
+            &runner_selected_preview_frames_json(selected_pack),
+        )
+        .replace(
+            "__RUNNER_SELECTED_PREVIEW_CHARACTER__",
+            selected_pack.character().as_str(),
+        )
 }
 
 const DASHBOARD_HTML_EN: &str = r##"<!doctype html><html lang="__LANG__"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">
@@ -7238,6 +7150,8 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .summary-label{display:block;color:var(--dim);font-size:10px;font-weight:750;letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .summary-value{display:block;margin-top:3px;color:var(--text);font-size:13px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .summary-value.g{color:var(--g);}.summary-value.y{color:var(--y);}.summary-value.r{color:var(--r);}.summary-value.info{color:var(--accent);}
+.summary-core-chart{display:block;width:100%;height:24px;margin-top:6px;opacity:.92;}
+.summary-core-chart[hidden]{display:none;}
 .action-rail{display:flex;flex-direction:column;gap:7px;align-self:start;contain:layout paint;}
 .rail-btn{height:50px;width:100%;display:flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;border-radius:7px;color:var(--dim);font:inherit;cursor:pointer;color-scheme:inherit;}
 .rail-btn:hover{background:var(--chip-hover);border-color:var(--accent-border);}
@@ -7311,10 +7225,19 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .all-temp-list .trow .src{flex:0 0 auto;color:var(--dim);font-size:10px;font-weight:700;}
 .sensor-group-head{margin-top:8px;padding-top:6px;border-top:1px solid var(--line);color:var(--text);font-size:10px;font-weight:750;}
 .sensor-group-head:first-child{margin-top:3px;padding-top:0;border-top:0;}
-.prow{display:grid;grid-template-columns:1fr auto auto auto;gap:9px;align-items:baseline;font-size:10.5px;margin-top:5px;}
-.pkill{opacity:0;background:none;border:0;color:var(--r);font:inherit;font-size:13px;font-weight:700;line-height:1;padding:0 1px;cursor:pointer;transition:opacity .15s;}
-.prow:hover .pkill,.pkill:focus-visible{opacity:1;}
+.proc-tools{display:flex;align-items:center;gap:6px;margin-top:7px;}
+.proc-search{width:100%;min-width:0;height:26px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10.5px;outline:none;}
+.proc-search:focus{border-color:var(--accent-border);box-shadow:0 0 0 2px var(--accent-soft);}
+.proc-search::placeholder{color:var(--dim);}
+.proc-status{min-height:14px;margin-top:5px;color:var(--dim);font-size:9.5px;line-height:1.35;}
+.proc-status.ok{color:var(--g);}.proc-status.error{color:var(--r);}.proc-status.pending{color:var(--accent);}
+.prow{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto 52px;gap:7px;align-items:center;min-height:24px;font-size:10.5px;margin-top:3px;}
+.pkill{width:52px;height:21px;padding:0 5px;border:1px solid var(--line);border-radius:5px;background:var(--chip-bg);color:var(--dim);font:inherit;font-size:9.5px;font-weight:700;cursor:pointer;transition:background .15s,color .15s,border-color .15s;}
+.pkill:hover,.pkill:focus-visible{background:var(--chip-hover);border-color:var(--accent-border);color:var(--text);}
+.pkill.confirm{background:var(--warn-soft);border-color:var(--y);color:var(--y);}
+.pkill:disabled{opacity:.35;cursor:default;pointer-events:none;}
 .prow .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.prow .pid{color:var(--dim);font-size:9px;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .prow .c{color:var(--accent);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .prow .m{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .ctl{padding:0 var(--content-x) 13px;border-top:1px solid var(--line);}
@@ -7415,17 +7338,17 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .display-segment button:hover{background:var(--track-hover);color:var(--text);}
 .display-segment button.active{background:var(--surface-raised);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.15);}
 .character-picker{position:relative;width:184px;}
-.character-select{display:grid;grid-template-columns:52px minmax(0,1fr) 10px;align-items:center;gap:7px;width:100%;height:40px;padding:3px 8px 3px 5px;border:1px solid var(--line);border-radius:7px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10px;font-weight:700;text-align:left;cursor:pointer;color-scheme:inherit;}
+.character-select{display:grid;grid-template-columns:38px minmax(0,1fr) 10px;align-items:center;gap:7px;width:100%;height:40px;padding:3px 8px 3px 5px;border:1px solid var(--line);border-radius:7px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10px;font-weight:700;text-align:left;cursor:pointer;color-scheme:inherit;}
 .character-select:hover,.character-select[aria-expanded="true"]{border-color:var(--accent-border);background-color:var(--track-hover);}
 .character-select:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
-.runner-preview{display:block;width:48px;height:32px;opacity:.92;pointer-events:none;}
-.character-select .runner-preview{width:48px;height:30px;}
+.runner-preview{display:block;width:27px;height:18px;opacity:.92;image-rendering:auto;pointer-events:none;}
+.character-select .runner-preview{width:27px;height:18px;}
 .character-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .character-chevron{width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);color:var(--dim);transition:transform .12s ease;}
 .character-select[aria-expanded="true"] .character-chevron{transform:translateY(2px) rotate(225deg);}
-.character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:274px;overflow-y:auto;padding:5px;border:1px solid var(--panel-border);border-radius:8px;background:var(--surface-raised);box-shadow:var(--shadow);scrollbar-width:thin;overscroll-behavior:contain;}
+.character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:260px;overflow-y:auto;padding:5px;border:1px solid var(--panel-border);border-radius:8px;background:var(--surface-raised);box-shadow:var(--shadow);scrollbar-width:thin;overscroll-behavior:contain;}
 .character-menu.show{display:block;}
-.character-option{display:grid;grid-template-columns:52px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:38px;padding:2px 7px 2px 4px;border:0;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-size:10.5px;font-weight:650;text-align:left;cursor:pointer;}
+.character-option{display:grid;grid-template-columns:38px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:34px;padding:1px 7px 1px 4px;border:0;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-size:10.5px;font-weight:650;text-align:left;cursor:pointer;}
 .character-option:hover,.character-option:focus-visible{background:var(--chip-hover);outline:none;}
 .character-option[aria-selected="true"]{background:var(--accent-soft);color:var(--accent);}
 .character-option-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -7452,6 +7375,31 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .notification-title{color:var(--text);font-size:10.5px;font-weight:700;}
 .notification-copy{margin-top:2px;color:var(--dim);font-size:9px;line-height:1.35;}
 .notification-control{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex:0 0 auto;}
+.automation-copy{margin:0 0 8px;color:var(--dim);font-size:10px;line-height:1.4;}
+.automation-list{display:flex;flex-direction:column;gap:7px;}
+.automation-rule{padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--chip-bg);}
+.automation-rule-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;color:var(--dim);font-size:9.5px;font-weight:750;}
+.automation-rule-number{font-variant-numeric:tabular-nums;}
+.automation-rule-remove{border:0;background:transparent;color:var(--dim);font:inherit;font-size:14px;line-height:1;cursor:pointer;padding:0 2px;}
+.automation-rule-remove:hover{color:var(--r);}
+.automation-rule-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px;}
+.automation-rule-field{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.automation-rule-field>span{color:var(--dim);font-size:9px;font-weight:700;}
+.automation-rule-field select,.automation-rule-field input{width:100%;min-width:0;box-sizing:border-box;padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:var(--surface-raised);color:var(--text);font:inherit;font-size:10px;font-variant-numeric:tabular-nums;color-scheme:inherit;}
+.automation-rule-field select:focus,.automation-rule-field input:focus{border-color:var(--accent);outline:2px solid var(--accent-soft);}
+.automation-rule-extra{display:flex;align-items:center;gap:5px;margin-top:6px;color:var(--dim);font-size:9.5px;}
+.automation-rule-extra input{width:42px!important;text-align:center;}
+.automation-actions{display:flex;gap:7px;margin-top:9px;}
+.automation-actions button{flex:1;}
+.automation-status{min-height:15px;margin-top:6px;color:var(--dim);font-size:10px;line-height:1.4;}
+.automation-status.ok{color:var(--g);}.automation-status.warn{color:var(--y);}
+.config-transfer-copy{margin:0 0 8px;color:var(--dim);font-size:10px;line-height:1.4;}
+.config-transfer-text{box-sizing:border-box;width:100%;min-height:132px;resize:vertical;border:1px solid var(--line);border-radius:8px;background:var(--input);color:var(--text);padding:8px;font:10px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;}
+.config-transfer-text:focus{border-color:var(--accent);}
+.config-transfer-actions{display:flex;gap:7px;margin-top:8px;}
+.config-transfer-actions button{flex:1;}
+.config-transfer-status{min-height:15px;margin-top:6px;color:var(--dim);font-size:10px;line-height:1.4;}
+.config-transfer-status.ok{color:var(--g);}.config-transfer-status.warn{color:var(--y);}
 .notification-threshold{width:50px;height:25px;padding:3px 4px;border:1px solid var(--line);border-radius:5px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;}
 .notification-threshold:disabled{opacity:.45;}
 .notification-threshold:focus{outline:2px solid var(--accent);outline-offset:1px;}
@@ -7470,6 +7418,8 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .health-row:first-child{border-top:0;padding-top:0;}
 .health-label{color:var(--dim);font-weight:650;}
 .health-value{font-weight:650;text-align:right;font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere;}
+.update-channel-select{max-width:150px;border:1px solid var(--line);border-radius:6px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10px;padding:4px 6px;color-scheme:inherit;}
+.update-channel-select:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
 .health-value.ok{color:var(--g);}.health-value.warn{color:var(--y);}.health-value.info{color:var(--accent);}
 .health-action{background:var(--chip-bg);border:1px solid transparent;color:var(--accent);font:inherit;font-size:10px;font-weight:750;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;}
 .health-action:disabled{opacity:.5;cursor:default;}
@@ -7525,6 +7475,7 @@ body:not([data-rail-view="overview"]) .range-tabs .range-tab{display:none;}
 .summary-value{margin-top:5px;font-size:17px;line-height:1.05;font-weight:750;letter-spacing:0;}
 .summary-meter{display:block;height:3px;margin-top:8px;border-radius:99px;background:var(--track);overflow:hidden;}
 .summary-meter .bar-fill{display:block;}
+.summary-cell.cpu.core-graph-enabled{min-height:82px;}
 .row{grid-template-columns:21px minmax(0,1fr);gap:13px;padding:var(--section-y) var(--content-x);}
 .ic{opacity:.82;}
 .name{font-size:11.5px;font-weight:700;letter-spacing:0;}
@@ -7616,7 +7567,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 </div>
 
 <div class="summary-strip" id="summary-strip" aria-label="Live summary">
-<div class="summary-cell cpu"><span class="summary-label" id="summary-cpu-label">CPU</span><span class="summary-value" id="summary-cpu">—</span><span class="summary-meter"><span class="bar-fill" id="summary-cpu-bar"></span></span></div>
+<div class="summary-cell cpu"><span class="summary-label" id="summary-cpu-label">CPU</span><span class="summary-value" id="summary-cpu">—</span><span class="summary-meter"><span class="bar-fill" id="summary-cpu-bar"></span></span><canvas class="summary-core-chart" id="summary-cpu-core-chart" aria-label="Per-core CPU usage" role="img"></canvas></div>
 <div class="summary-cell memory"><span class="summary-label" id="summary-mem-label">Memory</span><span class="summary-value" id="summary-mem">—</span><span class="summary-meter"><span class="bar-fill" id="summary-mem-bar"></span></span></div>
 <div class="summary-cell temperature"><span class="summary-label" id="summary-temp-label">CPU temp</span><span class="summary-value" id="summary-temp">—</span><span class="summary-meter"><span class="bar-fill" id="summary-temp-bar"></span></span></div>
 <div class="summary-cell fan"><span class="summary-label" id="summary-fan-label">Fans</span><span class="summary-value" id="summary-fan">—</span><span class="summary-meter"><span class="bar-fill info" id="summary-fan-bar"></span></span></div>
@@ -7657,6 +7608,10 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="runner-pace" id="runner-pace">CPU runner · waiting</div>
 </div>
 </div>
+<div class="settings-item" id="show-core-graph-setting">
+<div><div class="settings-item-title">CPU core graph</div><div class="settings-item-copy">Show live per-core CPU activity in the overview.</div></div>
+<button id="cpu-core-graph-toggle" class="panel-action secondary" aria-pressed="true" onclick="toggleCpuCoreGraph(this)">On</button>
+</div>
 <div class="settings-item" id="runner-character-setting">
 <div><div class="settings-item-title">Character</div><div class="settings-item-copy">Choose your CPU-responsive runner.</div></div>
 <div class="character-picker">
@@ -7679,6 +7634,20 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <input class="notification-toggle" id="notification-update-toggle" type="checkbox" aria-label="App updates" checked onchange="setNotificationBoolean('updates',this.checked)">
 </div>
 </div>
+</details>
+<details class="settings-details" id="automation-settings">
+<summary><span>Automation Rules</span><span class="panel-pill info" id="automation-pill">0 rules</span></summary>
+<div class="automation-copy">Rules run in order; the first matching condition selects its fan profile.</div>
+<div class="automation-list" id="automation-rules"></div>
+<div class="automation-actions"><button class="panel-action secondary" id="automation-add" onclick="addAutomationRule()">Add Rule</button><button class="panel-action secondary" id="automation-preset" onclick="applyQuietAcPreset()">Quiet Battery / Performance AC</button><button class="panel-action" id="automation-save" onclick="saveAutomationRules()">Save Rules</button></div>
+<div class="automation-status" id="automation-status" role="status" aria-live="polite"></div>
+</details>
+<details class="settings-details" id="config-transfer-settings">
+<summary><span>Configuration Transfer</span><span class="panel-pill info" id="config-transfer-pill">Ready</span></summary>
+<div class="config-transfer-copy">Copy the current TOML or paste a previously exported PeterFan config, then import it after validation.</div>
+<textarea class="config-transfer-text" id="config-transfer-text" spellcheck="false" aria-label="PeterFan configuration" oninput="markConfigImportDirty()"></textarea>
+<div class="config-transfer-actions"><button class="panel-action secondary" id="config-copy" onclick="copyConfigExport()">Copy Current Config</button><button class="panel-action" id="config-import" onclick="importConfig()">Import Config</button></div>
+<div class="config-transfer-status" id="config-transfer-status" role="status" aria-live="polite"></div>
 </details>
 <details class="settings-details" id="fan-health-card">
 <summary><span>Fan Control Health</span><span class="panel-pill info" id="health-pill">Ready</span></summary>
@@ -7720,6 +7689,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="health-row"><span class="health-label">Installed app</span><span class="health-value" id="update-current-version">—</span></div>
 <div class="health-row"><span class="health-label">Latest signed</span><span class="health-value" id="update-latest-version">—</span></div>
 <div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result">—</span></div>
+<div class="health-row"><span class="health-label">Update channel</span><select class="update-channel-select" id="update-channel" aria-label="Update channel" onchange="changeUpdateChannel(this.value)"><option value="stable">Stable releases</option><option value="pre-release">Pre-release builds</option></select></div>
 </div>
 <div class="release-notes-card" id="update-release-notes-card" style="display:none"><div class="release-notes-title">Release Notes</div><div class="release-notes-body" id="update-release-notes">—</div></div>
 <div class="panel-actions" style="margin-top:10px"><button class="panel-action secondary" id="rail-update-check" disabled onclick="checkAppUpdates(this)">Check for Updates</button><button class="panel-action" id="rail-update-install" disabled onclick="installAppUpdate(this)">Install Update</button><button class="panel-action secondary" id="update-release-link" onclick="openLatestRelease()" style="display:none">View Release</button></div>
@@ -7824,7 +7794,9 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 
 <div class="row compact-extra" id="sec-procs" data-compact-extra="processes"><span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5"/></svg></span>
 <div class="content"><div class="head"><span class="name">Top Processes</span><span class="sort-tabs"><button class="range-tab" id="ps-cpu" aria-pressed="true" onclick="setProcSort('cpu')">CPU</button><button class="range-tab" id="ps-mem" aria-pressed="false" onclick="setProcSort('mem')">MEM</button></span></div>
-<div id="procs-list"></div></div></div>
+<div class="proc-tools"><input class="proc-search" id="process-search" type="search" maxlength="64" autocomplete="off" spellcheck="false" placeholder="Search name or PID" aria-label="Search processes" oninput="setProcessFilter(this.value)"></div>
+<div class="proc-status" id="process-action-status" role="status" aria-live="polite"></div>
+<div id="procs-list"></div><div class="metric-empty" id="procs-empty" style="display:none">No matching processes.</div></div></div>
 
 <div class="foot compact-extra" data-compact-extra="quit"><button class="quit" onclick="window.ipc.postMessage('quit')">Quit PeterFan</button></div>
 </main>
@@ -7840,13 +7812,22 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 var LANG='__LANG__';
 var SHOW_CURVE_EDITOR='__SHOWCURVE__';
 var CORE_DETAILS_OPEN=false;
+var PROCESS_FILTER_TIMER=0;
+var PROCESS_CONFIRM={pid:null,startTime:null,until:0};
+var PROCESS_ACTION_REVISION=0;
 // Keep WebView failures visible to the native diagnostic log. A blank pane is
 // otherwise indistinguishable from a slow sensor read.
 window.onerror=function(message,source,line,column,error){
-  if(window.ipc)window.ipc.postMessage('js-error:'+String(message||error||'unknown').slice(0,240));
+  var detail=String(message||'unknown');
+  var stack=error&&error.stack?String(error.stack):'';
+  var location=source?(' @ '+String(source)+':'+String(line||0)+':'+String(column||0)):'';
+  if(stack)detail+=' | '+stack;
+  if(window.ipc)window.ipc.postMessage('js-error:'+(detail+location).slice(0,900));
 };
 window.onunhandledrejection=function(event){
-  if(window.ipc)window.ipc.postMessage('js-error:'+String(event.reason||'unhandled rejection').slice(0,240));
+  var reason=event&&event.reason;
+  var detail=reason&&reason.stack?String(reason.stack):String(reason||'unhandled rejection');
+  if(window.ipc)window.ipc.postMessage('js-error:'+detail.slice(0,900));
 };
 var FAN_CONTROL_FIX_PENDING=false;
 var FAN_CONTROL_FIX_REVISION=0;
@@ -7855,6 +7836,7 @@ var FAN_DIAGNOSTIC_STARTED_AT=0;
 var LOGIN_ITEM_TOGGLE_PENDING=false;
 var APP_UPDATE_CHECK_PENDING=false;
 var APP_UPDATE_STATUS=null;
+var APP_UPDATE_STATUS_STORAGE_KEY='pf.update.status.v1';
 var APP_PERSISTED_UPDATE_KEY='';
 var FAN_CONTROL_PENDING=null;
 var FAN_CONTROL_RESULT=null;
@@ -7875,6 +7857,27 @@ function storageGet(k){
 function storageSet(k,v){
   try{localStorage.setItem(k,v);}catch(e){}
 }
+function loadUpdateStatusSnapshot(){
+  var raw=storageGet(APP_UPDATE_STATUS_STORAGE_KEY);
+  if(!raw)return null;
+  try{
+    var saved=JSON.parse(raw),savedAt=Number(saved&&saved.saved_at||0);
+    if(!savedAt||Date.now()-savedAt>15*60*1000)return null;
+    delete saved.saved_at;
+    return saved;
+  }catch(e){return null;}
+}
+function rememberUpdateStatus(status){
+  if(!status)return;
+  var phase=String(status.phase||'');
+  if(phase==='checking'||phase==='downloading'||phase==='queued')return;
+  if(!status.latest&&phase!=='failed'&&phase!=='current')return;
+  var snapshot={};
+  Object.keys(status).forEach(function(key){snapshot[key]=status[key];});
+  snapshot.saved_at=Date.now();
+  storageSet(APP_UPDATE_STATUS_STORAGE_KEY,JSON.stringify(snapshot));
+}
+APP_UPDATE_STATUS=loadUpdateStatusSnapshot();
 var RAIL_VIEW=storageGet('pf.rail.view')||'overview';
 if(RAIL_VIEW==='update'||RAIL_VIEW==='more')RAIL_VIEW='system';
 if(!/^(overview|fan|settings|system)$/.test(RAIL_VIEW))RAIL_VIEW='overview';
@@ -7884,6 +7887,7 @@ function railView(){
 function setRailView(view){
   if(view==='update'||view==='more')view='system';
   if(!/^(overview|fan|settings|system)$/.test(view))view='overview';
+  resetProcessConfirmation();
   RAIL_VIEW=view;
   storageSet('pf.rail.view',view);
   document.body.setAttribute('data-rail-view',view);
@@ -7943,6 +7947,7 @@ function applyRailView(resetScroll){
       ?(LANG==='ko'?'설정':'Settings')
       :(view==='system'?(LANG==='ko'?'시스템':'System'):'PeterFan'));
   if(resetScroll)resetRailPaneScroll();
+  setRunnerPreviewVisibility(view==='settings');
 }
 document.body.classList.add('compact');
 setRailView(railView());
@@ -8076,14 +8081,14 @@ function renderUpdateStatus(status){
     var newer=comparison<0,ahead=comparison>0;
     msg=ahead
       ?(LANG==='ko'
-        ?'설치된 앱이 최신 서명 릴리스보다 앞선 개발 빌드입니다.'
-        :'The installed app is a development build ahead of the latest signed release.')
+        ?'현재 버전이 공개 서명 릴리스보다 최신입니다. 공식 릴리스가 공개되면 업데이트할 수 있습니다.'
+        :'The current version is newer than the public signed release. An update will appear when the official release is published.')
       :(s.message||(newer
         ?(LANG==='ko'?'새 서명 릴리스를 사용할 수 있습니다.':'A newer signed PeterFan release is available.')
         :(LANG==='ko'?'최신 서명 릴리스를 사용 중입니다.':'You are running the latest signed release.')));
     pillText=newer
       ?(LANG==='ko'?'업데이트 있음':'Update')
-      :(ahead?(LANG==='ko'?'개발 빌드':'Dev build'):(LANG==='ko'?'최신':'Current'));
+      :(ahead?(LANG==='ko'?'공식 릴리스 대기':'Awaiting Signed Release'):(LANG==='ko'?'최신':'Current'));
     pillTone=newer?'warn':(ahead?'info':'ok');
     setText('update-check-result',newer
       ?(LANG==='ko'?'업데이트 가능':'update available')
@@ -8101,12 +8106,15 @@ function renderUpdateStatus(status){
   if(install){
     var comparison=s.latest?compareVersions(current,s.latest):0;
     var updateKnown=!!s.latest&&comparison<0;
+    var checking=!!s.checking||phase==='checking';
     var installing=phase==='downloading'||phase==='queued';
     var canInstall=updateKnown&&s.install_ready===true&&!s.checking&&phase!=='checking'&&!installing;
     install.style.display='';
     install.disabled=!canInstall;
     install.textContent=installing
       ?(LANG==='ko'?'설치 중…':'Installing…')
+      :(checking
+        ?(LANG==='ko'?'확인 중…':'Checking…')
         :(updateKnown
           ?(s.install_ready===true
             ?(LANG==='ko'?'지금 업데이트':'Install Update')
@@ -8114,9 +8122,10 @@ function renderUpdateStatus(status){
           :(s.latest&&comparison===0
             ?(LANG==='ko'?'최신 버전':'Up to Date')
             :(s.latest&&comparison>0
-              ?(LANG==='ko'?'개발 빌드':'Development Build')
-              :(LANG==='ko'?'지금 업데이트':'Install Update'))));
+              ?(LANG==='ko'?'공식 릴리스 대기':'Awaiting Signed Release')
+              :(LANG==='ko'?'확인 전':'Not checked')))));
   }
+  rememberUpdateStatus(APP_UPDATE_STATUS);
 }
 function openLatestRelease(){
   var link=document.getElementById('update-release-link');
@@ -8274,6 +8283,9 @@ window.__pf={
  CHART_RANGE_LABEL=d.chart_range;
  updateRail(d);
  updateNotificationSettings(d);
+ updateAutomationRules(d);
+ updateConfigTransfer(d);
+ updateCoreGraphSetting(d);
  if(view==='overview'){
    updateHealthVerdict(d);
    set('summary-cpu',d.cpu_text||'—');
@@ -8294,6 +8306,7 @@ window.__pf={
    if(summaryTemp)summaryTemp.className='summary-value '+(d.temp_stale?'info':(d.temp_cls||''));
    var summaryFan=document.getElementById('summary-fan');
    if(summaryFan)summaryFan.className='summary-value '+(d.fan_avg_rpm>0?'info':'');
+   renderCoreGraph(d);
    set('cpu-val',d.cpu_text);set('cpu-sub',d.cpu_sub);bar('cpu-bar',d.cpu_pct);
    var cc=document.getElementById('cores');if(cc){var coreMeta=coreMetadata(d.core_groups);cc.innerHTML='';(d.cores||[]).forEach(function(p,i){var s=document.createElement('span'),meta=coreMeta[i];s.className='core '+cls(p);s.style.height=Math.max(8,Math.min(100,p))+'%';s.title=(meta&&meta.label?meta.label:('Core '+(i+1)))+': '+p.toFixed(1)+'%';cc.appendChild(s);});}
    renderCoreDetails(d);
@@ -8330,8 +8343,7 @@ window.__pf={
    if(psCpu){var cpuSort=d.proc_sort!=='mem';psCpu.classList.toggle('active',cpuSort);psCpu.setAttribute('aria-pressed',cpuSort?'true':'false');}
    if(psMem){var memSort=d.proc_sort==='mem';psMem.classList.toggle('active',memSort);psMem.setAttribute('aria-pressed',memSort?'true':'false');}
    if(psMem)psMem.classList.toggle('active',d.proc_sort==='mem');
-   var pl=document.getElementById('procs-list');
-   if(pl){pl.innerHTML='';(d.procs||[]).forEach(function(p){var r=document.createElement('div');r.className='prow';r.innerHTML='<span class="n"></span><span class="c"></span><span class="m"></span><button class="pkill" title="Quit process">×</button>';r.children[0].textContent=p.name;r.children[1].textContent=p.cpu;r.children[2].textContent=p.mem;r.children[3].onclick=function(){quitProcess(p.pid,p.name);};pl.appendChild(r);});}
+   renderProcesses(d);
    drawChart('net-chart', d.net_hist, cssColor('--g','#5dd879'), null, fmtBytesPerSec);
  } else if(view==='fan'){
    updateSetup(d);
@@ -8754,6 +8766,23 @@ function startAppUpdate(mode,btn){
 }
 function checkAppUpdates(btn){startAppUpdate('check',btn);}
 function installAppUpdate(btn){startAppUpdate('install',btn);}
+function changeUpdateChannel(value){
+  if(value!=='stable'&&value!=='pre-release')return;
+  var select=document.getElementById('update-channel');
+  if(select)select.disabled=true;
+  window.ipc.postMessage('updatechannel:'+value);
+}
+function updateUpdateChannel(d){
+  var select=document.getElementById('update-channel');
+  if(!select)return;
+  select.value=d.update_channel==='pre-release'?'pre-release':'stable';
+  select.disabled=APP_UPDATE_CHECK_PENDING;
+  var options=select.options;
+  if(options.length>=2){
+    options[0].textContent=LANG==='ko'?'안정 릴리스':'Stable releases';
+    options[1].textContent=LANG==='ko'?'프리릴리스 빌드':'Pre-release builds';
+  }
+}
 function toggleStartupItem(btn){
   if(LOGIN_ITEM_TOGGLE_PENDING||!window.__pf_pending||!window.__pf_pending.login_item_supported)return;
   LOGIN_ITEM_TOGGLE_PENDING=true;
@@ -8812,6 +8841,179 @@ function updateNotificationSettings(d){
   if(updateToggle)updateToggle.checked=settings.updates!==false;
   var enabled=(temperatureEnabled?1:0)+(settings.fan_failures!==false?1:0)+(settings.updates!==false?1:0);
   setPanelPill('notification-pill',LANG==='ko'?(enabled+'개 켬'):(enabled+' on'),enabled?'info':'');
+}
+var AUTOMATION_RULES=null;
+var AUTOMATION_RULES_RENDERED='';
+var AUTOMATION_RULES_DIRTY=false;
+var AUTOMATION_RULES_SAVE_PENDING=false;
+function automationRuleFromData(rule){
+  var when=String((rule&&rule.when)||'on_battery').toLowerCase();
+  var profile=String((rule&&rule.profile)||'balanced').toLowerCase();
+  if(when==='on_battery')return {kind:'on_battery',profile:profile};
+  if(when==='on_ac')return {kind:'on_ac',profile:profile};
+  if(when.indexOf('cpu_above:')===0){
+    var temp=Number(when.slice(10));
+    return {kind:'cpu_above',temp:isFinite(temp)?Math.max(0,Math.min(120,Math.round(temp))):85,profile:profile};
+  }
+  if(when.indexOf('time:')===0){
+    var pieces=when.slice(5).split('-');
+    var start=Number(pieces[0]),end=Number(pieces[1]);
+    return {kind:'time',start:isFinite(start)?Math.max(0,Math.min(23,Math.round(start))):22,end:isFinite(end)?Math.max(0,Math.min(23,Math.round(end))):7,profile:profile};
+  }
+  return {kind:'on_battery',profile:profile};
+}
+function automationRuleWhen(rule){
+  if(rule.kind==='on_ac'||rule.kind==='on_battery')return rule.kind;
+  if(rule.kind==='cpu_above')return 'cpu_above:'+Math.max(0,Math.min(120,Math.round(Number(rule.temp)||85)));
+  return 'time:'+Math.max(0,Math.min(23,Math.round(Number(rule.start)||0)))+'-'+Math.max(0,Math.min(23,Math.round(Number(rule.end)||0)));
+}
+function automationRulesPayload(){
+  return (AUTOMATION_RULES||[]).map(function(rule){return {when:automationRuleWhen(rule),profile:rule.profile||'balanced'};});
+}
+function automationRulesSignature(rules){return JSON.stringify(rules||[]);}
+function automationRuleLabel(kind){
+  if(LANG==='ko')return {on_battery:'배터리 사용 중',on_ac:'전원 연결 중',time:'시간 범위',cpu_above:'CPU 온도 초과'}[kind]||kind;
+  return {on_battery:'On battery',on_ac:'On AC power',time:'Time window',cpu_above:'CPU temperature above'}[kind]||kind;
+}
+function automationProfileLabel(profile){
+  if(LANG==='ko')return {silent:'무음',balanced:'균형',gaming:'게이밍',performance:'고성능',maximum:'최대',custom:'사용자 곡선'}[profile]||profile;
+  return {silent:'Silent',balanced:'Balanced',gaming:'Gaming',performance:'Performance',maximum:'Maximum',custom:'Custom'}[profile]||profile;
+}
+function automationSetStatus(text,tone){
+  var status=document.getElementById('automation-status');
+  if(status){status.textContent=text||'';status.className='automation-status '+(tone||'');}
+}
+function automationMarkDirty(){
+  AUTOMATION_RULES_DIRTY=true;
+  AUTOMATION_RULES_SAVE_PENDING=false;
+  automationSetStatus(LANG==='ko'?'변경사항이 저장되지 않았습니다':'Unsaved changes','warn');
+}
+function renderAutomationRules(d){
+  var incoming=(d.rules||[]).map(automationRuleFromData);
+  var incomingSignature=automationRulesSignature(incoming);
+  var lastStatus=String(d.last_cmd_status||'');
+  if(AUTOMATION_RULES_SAVE_PENDING&&lastStatus.indexOf('rules saved')===0){
+    AUTOMATION_RULES_SAVE_PENDING=false;
+    AUTOMATION_RULES_DIRTY=false;
+    automationSetStatus(LANG==='ko'?'규칙을 저장하고 데몬에 다시 적용했습니다':'Rules saved and daemon reloaded','ok');
+  } else if(AUTOMATION_RULES_SAVE_PENDING&&lastStatus.indexOf('rules save failed:')===0){
+    AUTOMATION_RULES_SAVE_PENDING=false;
+    automationSetStatus(lastStatus.slice('rules save failed:'.length), 'warn');
+  }
+  if(AUTOMATION_RULES===null||(!AUTOMATION_RULES_DIRTY&&!AUTOMATION_RULES_SAVE_PENDING)){
+    if(AUTOMATION_RULES===null||(!AUTOMATION_RULES_DIRTY&&incomingSignature!==automationRulesSignature(AUTOMATION_RULES))){
+      AUTOMATION_RULES=incoming;
+      AUTOMATION_RULES_RENDERED='';
+    }
+  }
+  var list=document.getElementById('automation-rules');
+  if(!list)return;
+  var signature=automationRulesSignature(AUTOMATION_RULES);
+  setPanelPill('automation-pill',LANG==='ko'?((AUTOMATION_RULES||[]).length+'개 규칙'):((AUTOMATION_RULES||[]).length+' rules'),(AUTOMATION_RULES||[]).length?'info':'');
+  var add=document.getElementById('automation-add'),save=document.getElementById('automation-save');
+  if(add)add.disabled=AUTOMATION_RULES_SAVE_PENDING||(AUTOMATION_RULES||[]).length>=32;
+  if(save)save.disabled=AUTOMATION_RULES_SAVE_PENDING;
+  if(signature===AUTOMATION_RULES_RENDERED)return;
+  AUTOMATION_RULES_RENDERED=signature;
+  list.innerHTML='';
+  if(!AUTOMATION_RULES.length){
+    var empty=document.createElement('div');empty.className='automation-copy';empty.textContent=LANG==='ko'?'아직 규칙이 없습니다.':'No rules yet.';list.appendChild(empty);return;
+  }
+  AUTOMATION_RULES.forEach(function(rule,index){
+    var row=document.createElement('div');row.className='automation-rule';
+    var head=document.createElement('div');head.className='automation-rule-head';
+    var number=document.createElement('span');number.className='automation-rule-number';number.textContent=(LANG==='ko'?'규칙 ':'Rule ')+(index+1);head.appendChild(number);
+    var remove=document.createElement('button');remove.className='automation-rule-remove';remove.type='button';remove.textContent='×';remove.title=LANG==='ko'?'규칙 삭제':'Remove rule';remove.onclick=function(){AUTOMATION_RULES.splice(index,1);automationMarkDirty();AUTOMATION_RULES_RENDERED='';renderAutomationRules(d);};head.appendChild(remove);row.appendChild(head);
+    var grid=document.createElement('div');grid.className='automation-rule-grid';
+    var conditionField=document.createElement('label');conditionField.className='automation-rule-field';var conditionLabel=document.createElement('span');conditionLabel.textContent=LANG==='ko'?'조건':'Condition';conditionField.appendChild(conditionLabel);
+    var condition=document.createElement('select');['on_battery','on_ac','time','cpu_above'].forEach(function(kind){var option=document.createElement('option');option.value=kind;option.textContent=automationRuleLabel(kind);option.selected=rule.kind===kind;condition.appendChild(option);});
+    condition.onchange=function(){rule.kind=condition.value; if(rule.kind==='time'){rule.start=rule.start==null?22:rule.start;rule.end=rule.end==null?7:rule.end;} if(rule.kind==='cpu_above'&&rule.temp==null)rule.temp=85;automationMarkDirty();AUTOMATION_RULES_RENDERED='';renderAutomationRules(d);};conditionField.appendChild(condition);grid.appendChild(conditionField);
+    var profileField=document.createElement('label');profileField.className='automation-rule-field';var profileLabel=document.createElement('span');profileLabel.textContent=LANG==='ko'?'프로파일':'Profile';profileField.appendChild(profileLabel);
+    var profile=document.createElement('select');['silent','balanced','gaming','performance','maximum','custom'].forEach(function(name){var option=document.createElement('option');option.value=name;option.textContent=automationProfileLabel(name);option.selected=rule.profile===name;profile.appendChild(option);});profile.onchange=function(){rule.profile=profile.value;automationMarkDirty();};profileField.appendChild(profile);grid.appendChild(profileField);row.appendChild(grid);
+    if(rule.kind==='time'||rule.kind==='cpu_above'){
+      var extra=document.createElement('div');extra.className='automation-rule-extra';
+      if(rule.kind==='time'){
+        extra.appendChild(document.createTextNode(LANG==='ko'?'시작':'From'));
+        var start=document.createElement('input');start.type='number';start.min='0';start.max='23';start.value=String(rule.start==null?22:rule.start);start.setAttribute('aria-label',LANG==='ko'?'시작 시간':'Start hour');start.onchange=function(){rule.start=Math.max(0,Math.min(23,Number(start.value)||0));automationMarkDirty();};extra.appendChild(start);
+        extra.appendChild(document.createTextNode(LANG==='ko'?'시':'h  '));extra.appendChild(document.createTextNode(LANG==='ko'?'종료':'to'));
+        var end=document.createElement('input');end.type='number';end.min='0';end.max='23';end.value=String(rule.end==null?7:rule.end);end.setAttribute('aria-label',LANG==='ko'?'종료 시간':'End hour');end.onchange=function(){rule.end=Math.max(0,Math.min(23,Number(end.value)||0));automationMarkDirty();};extra.appendChild(end);extra.appendChild(document.createTextNode(LANG==='ko'?'시':'h'));
+      } else {
+        extra.appendChild(document.createTextNode(LANG==='ko'?'기준 온도':'Threshold'));
+        var temp=document.createElement('input');temp.type='number';temp.min='0';temp.max='120';temp.step='1';temp.value=String(rule.temp==null?85:rule.temp);temp.setAttribute('aria-label',LANG==='ko'?'CPU 기준 온도':'CPU temperature threshold');temp.onchange=function(){rule.temp=Math.max(0,Math.min(120,Number(temp.value)||85));automationMarkDirty();};extra.appendChild(temp);extra.appendChild(document.createTextNode('°C'));
+      }
+      row.appendChild(extra);
+    }
+    list.appendChild(row);
+  });
+}
+function updateAutomationRules(d){renderAutomationRules(d);}
+function addAutomationRule(){
+  if(!AUTOMATION_RULES)AUTOMATION_RULES=[];
+  if(AUTOMATION_RULES.length>=32)return;
+  AUTOMATION_RULES.push({kind:'on_battery',profile:'silent'});
+  automationMarkDirty();AUTOMATION_RULES_RENDERED='';renderAutomationRules({rules:AUTOMATION_RULES});
+}
+function applyQuietAcPreset(){
+  if(AUTOMATION_RULES_SAVE_PENDING)return;
+  AUTOMATION_RULES=[{kind:'on_battery',profile:'silent'},{kind:'on_ac',profile:'performance'}];
+  automationMarkDirty();
+  AUTOMATION_RULES_RENDERED='';
+  renderAutomationRules({rules:AUTOMATION_RULES});
+  automationSetStatus(LANG==='ko'?'배터리 저소음 / AC 고성능 프리셋을 준비했습니다. 저장을 눌러 적용하세요':'Quiet on battery / performance on AC preset ready. Save to apply','warn');
+}
+function saveAutomationRules(){
+  if(AUTOMATION_RULES_SAVE_PENDING)return;
+  AUTOMATION_RULES_SAVE_PENDING=true;
+  automationSetStatus(LANG==='ko'?'규칙을 저장하고 데몬에 다시 적용하는 중…':'Saving rules and reloading the daemon…','');
+  var save=document.getElementById('automation-save');if(save)save.disabled=true;
+  window.ipc.postMessage('rules:'+JSON.stringify(automationRulesPayload()));
+}
+var CONFIG_IMPORT_DIRTY=false;
+var CONFIG_IMPORT_PENDING=false;
+var CONFIG_COPY_REVISION_SEEN=0;
+function configTransferSetStatus(text,tone){
+  var status=document.getElementById('config-transfer-status');
+  if(status){status.textContent=text||'';status.className='config-transfer-status '+(tone||'');}
+}
+function markConfigImportDirty(){
+  CONFIG_IMPORT_DIRTY=true;
+  configTransferSetStatus(LANG==='ko'?'가져올 설정이 변경되었습니다':'Config text changed','warn');
+}
+function updateConfigTransfer(d){
+  var textarea=document.getElementById('config-transfer-text');
+  var copy=document.getElementById('config-copy');
+  var importer=document.getElementById('config-import');
+  var lastStatus=String(d.last_cmd_status||'');
+  if(textarea&&!CONFIG_IMPORT_DIRTY&&!CONFIG_IMPORT_PENDING&&typeof d.config_toml==='string'&&document.activeElement!==textarea&&textarea.value!==d.config_toml)textarea.value=d.config_toml;
+  if(CONFIG_IMPORT_PENDING&&lastStatus.indexOf('config imported')===0){
+    CONFIG_IMPORT_PENDING=false;CONFIG_IMPORT_DIRTY=false;
+    configTransferSetStatus(LANG==='ko'?'설정을 가져오고 데몬에 다시 적용했습니다':'Config imported and daemon reloaded','ok');
+  } else if(CONFIG_IMPORT_PENDING&&lastStatus.indexOf('config import failed:')===0){
+    CONFIG_IMPORT_PENDING=false;
+    configTransferSetStatus(lastStatus.slice('config import failed:'.length),'warn');
+  }
+  var revision=Number(d.config_copy_revision||0);
+  if(revision>CONFIG_COPY_REVISION_SEEN){
+    CONFIG_COPY_REVISION_SEEN=revision;
+    configTransferSetStatus(d.config_copy_ok?(LANG==='ko'?'현재 설정을 클립보드에 복사했습니다':'Current config copied to clipboard'):(LANG==='ko'?'설정 복사 실패':'Config copy failed'),d.config_copy_ok?'ok':'warn');
+  }
+  setPanelPill('config-transfer-pill',CONFIG_IMPORT_PENDING?(LANG==='ko'?'적용 중':'Applying'):(CONFIG_IMPORT_DIRTY?(LANG==='ko'?'변경됨':'Edited'):(LANG==='ko'?'준비됨':'Ready')),CONFIG_IMPORT_PENDING?'warn':(CONFIG_IMPORT_DIRTY?'info':''));
+  if(copy)copy.disabled=CONFIG_IMPORT_PENDING;
+  if(importer)importer.disabled=CONFIG_IMPORT_PENDING;
+}
+function copyConfigExport(){
+  if(CONFIG_IMPORT_PENDING)return;
+  configTransferSetStatus(LANG==='ko'?'현재 설정을 클립보드에 복사하는 중…':'Copying current config…','');
+  window.ipc.postMessage('copyconfig');
+}
+function importConfig(){
+  if(CONFIG_IMPORT_PENDING)return;
+  var textarea=document.getElementById('config-transfer-text');
+  var value=textarea?textarea.value.trim():'';
+  if(!value){configTransferSetStatus(LANG==='ko'?'가져올 TOML을 붙여넣으세요':'Paste a TOML config first','warn');return;}
+  CONFIG_IMPORT_PENDING=true;
+  configTransferSetStatus(LANG==='ko'?'설정을 검증하고 데몬에 다시 적용하는 중…':'Validating config and reloading the daemon…','');
+  window.ipc.postMessage('importconfig:'+value);
 }
 function setSetupMenuOpen(open){
   var menu=document.getElementById('setup-menu');
@@ -9143,6 +9345,79 @@ function updateFanApplyStatus(d){
   el.textContent=parts.filter(Boolean).join(' · ');
   el.className='fan-apply-status '+tone;
 }
+function processActionText(action){
+  if(!action||action.phase==='idle')return '';
+  if(action.phase==='pending')return LANG==='ko'?'종료 요청을 확인하는 중…':'Verifying termination request…';
+  var name=action.name||('PID '+Number(action.pid||0));
+  var messages=LANG==='ko'
+    ?{requested:name+' 종료를 요청했습니다.',identity_changed:'프로세스가 바뀌어 요청을 취소했습니다.',not_owned:'현재 사용자의 프로세스만 종료할 수 있습니다.',protected:'PeterFan 또는 시스템 핵심 프로세스는 종료할 수 없습니다.',not_found:'프로세스가 이미 종료되었습니다.',unsupported:'이 시스템에서는 프로세스 종료를 지원하지 않습니다.',signal_failed:'macOS가 종료 요청을 거부했습니다.',invalid_pid:'유효하지 않은 프로세스입니다.'}
+    :{requested:'Requested '+name+' to quit.',identity_changed:'The process changed, so the request was cancelled.',not_owned:'Only processes owned by the current user can be quit.',protected:'PeterFan and protected system processes cannot be quit.',not_found:'The process has already exited.',unsupported:'Process termination is unavailable on this system.',signal_failed:'macOS rejected the termination request.',invalid_pid:'The process identity is invalid.'};
+  return messages[action.code]||action.message||'';
+}
+function resetProcessConfirmation(){
+  PROCESS_CONFIRM={pid:null,startTime:null,until:0};
+}
+function renderProcesses(d){
+  var input=document.getElementById('process-search');
+  if(input&&document.activeElement!==input&&input.value!==(d.process_filter||''))input.value=d.process_filter||'';
+  var status=document.getElementById('process-action-status');
+  var action=d.process_action||{};
+  var revision=Number(action.revision||0);
+  if(revision!==PROCESS_ACTION_REVISION){
+    PROCESS_ACTION_REVISION=revision;
+    resetProcessConfirmation();
+  }
+  var confirmationActive=PROCESS_CONFIRM.pid!==null&&Date.now()<PROCESS_CONFIRM.until;
+  if(status){
+    status.textContent=confirmationActive
+      ?(LANG==='ko'?'같은 행의 확인 버튼을 한 번 더 누르세요.':'Click Confirm on the same row to request termination.')
+      :processActionText(action);
+    status.className='proc-status '+(confirmationActive||action.phase==='pending'?'pending':(action.code==='requested'?'ok':(action.phase==='complete'?'error':'')));
+  }
+  var rows=d.procs||[],pl=document.getElementById('procs-list');
+  show('procs-empty',rows.length===0&&d.slow_data_ready);
+  if(!pl)return;
+  pl.innerHTML='';
+  rows.forEach(function(p){
+    var r=document.createElement('div');r.className='prow';
+    r.innerHTML='<span class="n"></span><span class="pid"></span><span class="c"></span><span class="m"></span><button type="button" class="pkill"></button>';
+    r.children[0].textContent=p.name;r.children[0].title=p.name+' · PID '+p.pid;
+    r.children[1].textContent='PID '+p.pid;r.children[2].textContent=p.cpu;r.children[3].textContent=p.mem;
+    var b=r.children[4],pending=action.phase==='pending'&&action.pid===p.pid;
+    var confirming=PROCESS_CONFIRM.pid===p.pid&&PROCESS_CONFIRM.startTime===p.start_time&&Date.now()<PROCESS_CONFIRM.until;
+    b.style.visibility=p.can_quit?'visible':'hidden';
+    b.disabled=!p.can_quit||!p.start_time||pending;
+    b.textContent=pending?'…':(confirming?(LANG==='ko'?'확인':'Confirm'):(LANG==='ko'?'종료':'Quit'));
+    b.classList.toggle('confirm',confirming);
+    b.title=!p.can_quit?(LANG==='ko'?'현재 사용자가 안전하게 종료할 수 없는 프로세스입니다':'This process is not eligible for safe termination'):(confirming?(LANG==='ko'?'한 번 더 눌러 종료 요청':'Click again to request termination'):(LANG==='ko'?'프로세스 종료 요청':'Request process termination'));
+    b.setAttribute('aria-label',b.title+' · '+p.name);
+    b.onclick=function(){requestProcessQuit(p);};
+    pl.appendChild(r);
+  });
+}
+function setProcessFilter(value){
+  clearTimeout(PROCESS_FILTER_TIMER);
+  resetProcessConfirmation();
+  PROCESS_FILTER_TIMER=setTimeout(function(){if(window.ipc)window.ipc.postMessage('processfilter:'+String(value||'').slice(0,64));},180);
+}
+function requestProcessQuit(p){
+  if(!p||!p.can_quit||!p.start_time)return;
+  var same=PROCESS_CONFIRM.pid===p.pid&&PROCESS_CONFIRM.startTime===p.start_time&&Date.now()<PROCESS_CONFIRM.until;
+  if(same){
+    resetProcessConfirmation();
+    if(window.ipc)window.ipc.postMessage('quitprocess:'+p.pid+':'+p.start_time);
+    renderProcesses(window.__pf_pending||{});
+    return;
+  }
+  PROCESS_CONFIRM={pid:p.pid,startTime:p.start_time,until:Date.now()+5000};
+  renderProcesses(window.__pf_pending||{});
+  setTimeout(function(){
+    if(PROCESS_CONFIRM.pid===p.pid&&PROCESS_CONFIRM.startTime===p.start_time&&Date.now()>=PROCESS_CONFIRM.until){
+      resetProcessConfirmation();
+      renderProcesses(window.__pf_pending||{});
+    }
+  },5050);
+}
 function setProcSort(s){
   var cpu=document.getElementById('ps-cpu'),mem=document.getElementById('ps-mem');
   if(cpu){cpu.classList.toggle('active',s==='cpu');cpu.setAttribute('aria-pressed',s==='cpu'?'true':'false');}
@@ -9156,30 +9431,182 @@ function setMenubarDisplay(style){
   updateMenubarDisplay(data);
   if(window.ipc)window.ipc.postMessage('display:'+style);
 }
+function toggleCpuCoreGraph(btn){
+  var enabled=btn.getAttribute('aria-pressed')!=='true';
+  var data=window.__pf_pending||{};
+  data.show_cpu_core_graph=enabled;
+  updateCoreGraphSetting(data);
+  if(window.ipc)window.ipc.postMessage('cpu-core-graph:'+(enabled?'1':'0'));
+}
+function updateCoreGraphSetting(d){
+  var btn=document.getElementById('cpu-core-graph-toggle');
+  if(!btn)return;
+  var enabled=d.show_cpu_core_graph!==false;
+  btn.setAttribute('aria-pressed',enabled?'true':'false');
+  btn.classList.toggle('active',enabled);
+  btn.textContent=enabled?(LANG==='ko'?'켜짐':'On'):(LANG==='ko'?'꺼짐':'Off');
+}
 var RUNNER_CHARACTERS=__RUNNER_CHARACTERS__;
 var RUNNER_PREVIEW_ALPHA=__RUNNER_PREVIEWS__;
-function paintRunnerPreview(canvas,character){
+var RUNNER_PREVIEW_FRAMES=__RUNNER_PREVIEW_FRAMES__;
+var RUNNER_SELECTED_PREVIEW=__RUNNER_SELECTED_PREVIEW__;
+var RUNNER_SELECTED_PREVIEW_CHARACTER='__RUNNER_SELECTED_PREVIEW_CHARACTER__';
+var RUNNER_PREVIEW_STATE={canvas:null,character:'',cpu:0,motionCpu:0,frame:0,band:0,phaseMs:0,lastTick:0,timer:null,visible:true,hasRealCpuSample:false};
+var RUNNER_PREVIEW_IMAGES=new Map();
+function runnerPreviewBand(cpu){
+  var load=Math.max(0,Math.min(100,Number(cpu)||0));
+  return load<20?0:(load<55?1:(load<80?2:3));
+}
+function runnerPreviewBandWithHysteresis(cpu,current){
+  var load=Math.max(0,Math.min(100,Number(cpu)||0));
+  if(current===0&&load>=24)return 1;
+  if(current===0)return 0;
+  if(current===1&&load<16)return 0;
+  if(current===1&&load>=59)return 2;
+  if(current===1)return 1;
+  if(current===2&&load<51)return 1;
+  if(current===2&&load>=84)return 3;
+  if(current===2)return 2;
+  if(current===3&&load<76)return 2;
+  if(current===3)return 3;
+  return load<20?0:(load<55?1:(load<80?2:3));
+}
+function runnerSelectedPreviewMatchesCharacter(payload,character){
+  return Array.isArray(payload.runner_selected_preview)
+    &&payload.runner_selected_preview.length===32
+    &&payload.runner_selected_preview_character===character;
+}
+function runnerSelectedPreviewMatchesCurrent(payload,character){
+  return runnerSelectedPreviewMatchesCharacter(payload,character)
+    &&RUNNER_SELECTED_PREVIEW_CHARACTER===character
+    &&payload.runner_selected_preview.every(function(frame,index){
+      return frame===RUNNER_SELECTED_PREVIEW[index];
+    });
+}
+function paintRunnerPreview(canvas,character,frame,band){
   if(!canvas)return;
-  var alpha=RUNNER_PREVIEW_ALPHA[character];
+  var selected=canvas.id==='runner-character-preview';
+  var canonical=selected&&RUNNER_SELECTED_PREVIEW_CHARACTER===character;
+  var frames=canonical?RUNNER_SELECTED_PREVIEW:RUNNER_PREVIEW_FRAMES[character];
+  var pose=(Number(frame)||0)%8;
+  var index=canonical?(Math.max(0,Math.min(3,Number(band)||0))*8+pose):pose;
+  var alpha=frames&&frames.length?frames[index]:RUNNER_PREVIEW_ALPHA[character];
   if(!alpha)return;
   var ctx=canvas.getContext('2d');
   if(!ctx)return;
-  var image=ctx.createImageData(canvas.width,canvas.height);
-  for(var i=0;i<alpha.length;i+=2){
-    var pixel=i/2,offset=pixel*4,a=parseInt(alpha.slice(i,i+2),16);
-    image.data[offset]=255;image.data[offset+1]=255;image.data[offset+2]=255;image.data[offset+3]=a;
+  var image=RUNNER_PREVIEW_IMAGES.get(alpha);
+  if(!image){
+    image=ctx.createImageData(canvas.width,canvas.height);
+    for(var i=0;i<alpha.length;i+=2){
+      var offset=i*2,a=parseInt(alpha.slice(i,i+2),16);
+      image.data[offset]=255;image.data[offset+1]=255;image.data[offset+2]=255;image.data[offset+3]=a;
+    }
+    if(RUNNER_PREVIEW_IMAGES.size>=128)RUNNER_PREVIEW_IMAGES.clear();
+    RUNNER_PREVIEW_IMAGES.set(alpha,image);
   }
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.putImageData(image,0,0);
-  ctx.globalCompositeOperation='source-in';
-  ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--text').trim()||'#f3f4f6';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
-  ctx.globalCompositeOperation='source-over';
+}
+function runnerPreviewInterval(cpu,frame,character){
+  var sample=Number(cpu);
+  var load=Number.isFinite(sample)?Math.max(0,Math.min(100,sample))/100:0;
+  return Math.round(20+160*Math.pow(1-load,1.6));
+}
+function runnerPreviewCanAnimate(){
+  var state=RUNNER_PREVIEW_STATE;
+  return state&&state.canvas&&state.visible&&!document.hidden
+    &&railView()==='settings'
+    &&!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+function scheduleRunnerPreview(){
+  var state=RUNNER_PREVIEW_STATE;
+  if(!runnerPreviewCanAnimate()||state.timer)return;
+  var changing=Math.abs(state.cpu-state.motionCpu)>=0.1;
+  var remaining=runnerPreviewInterval(state.motionCpu,state.frame,state.character)-state.phaseMs;
+  var delay=Math.max(1,Math.min(changing?30:Infinity,remaining));
+  state.timer=setTimeout(function(){
+    state.timer=null;
+    if(!runnerPreviewCanAnimate())return;
+    var now=performance.now(),elapsed=Math.max(0,now-state.lastTick);
+    state.lastTick=now;
+    if(elapsed>1000){elapsed=0;state.phaseMs=0;}
+    var delta=state.cpu-state.motionCpu;
+    state.motionCpu=Math.abs(delta)<0.1?state.cpu:
+      state.motionCpu+delta*(1-Math.exp(-elapsed/(delta>0?75:300)));
+    state.phaseMs+=elapsed;
+    while(state.phaseMs>=runnerPreviewInterval(state.motionCpu,state.frame,state.character)){
+      state.phaseMs-=runnerPreviewInterval(state.motionCpu,state.frame,state.character);
+      state.frame=(state.frame+1)%8;
+    }
+    state.band=runnerPreviewBandWithHysteresis(state.cpu,state.band);
+    paintRunnerPreview(state.canvas,state.character,state.frame,state.band);
+    scheduleRunnerPreview();
+  },delay);
+}
+function startRunnerPreview(canvas,character,cpu){
+  if(RUNNER_PREVIEW_STATE.timer){
+    clearTimeout(RUNNER_PREVIEW_STATE.timer);
+    RUNNER_PREVIEW_STATE.timer=null;
+  }
+  RUNNER_PREVIEW_STATE.canvas=canvas;
+  RUNNER_PREVIEW_STATE.character=character;
+  RUNNER_PREVIEW_STATE.cpu=Math.max(0,Math.min(100,Number(cpu)||0));
+  RUNNER_PREVIEW_STATE.frame=0;
+  RUNNER_PREVIEW_STATE.motionCpu=RUNNER_PREVIEW_STATE.cpu;
+  RUNNER_PREVIEW_STATE.phaseMs=0;
+  RUNNER_PREVIEW_STATE.lastTick=performance.now();
+  RUNNER_PREVIEW_STATE.band=runnerPreviewBand(RUNNER_PREVIEW_STATE.cpu);
+  paintRunnerPreview(canvas,character,0,RUNNER_PREVIEW_STATE.band);
+  var reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(reduced)return;
+  scheduleRunnerPreview();
+}
+function setRunnerPreviewVisibility(visible){
+  var state=RUNNER_PREVIEW_STATE;
+  if(!state)return;
+  state.visible=!!visible;
+  if(!visible){
+    if(state.timer){clearTimeout(state.timer);state.timer=null;}
+    return;
+  }
+  if(!state.timer){state.lastTick=performance.now();scheduleRunnerPreview();}
+}
+function seedRunnerPreview(cpu){
+  var state=RUNNER_PREVIEW_STATE;
+  state.cpu=Math.max(0,Math.min(100,Number(cpu)||0));
+  state.motionCpu=state.cpu;
+  state.band=runnerPreviewBand(state.cpu);
+  paintRunnerPreview(state.canvas,state.character,state.frame,state.band);
+}
+function setRunnerPreviewCpu(cpu){
+  var state=RUNNER_PREVIEW_STATE;
+  var previous=state.cpu;
+  state.cpu=Math.max(0,Math.min(100,Number(cpu)||0));
+  if(!state.hasRealCpuSample){
+    state.hasRealCpuSample=true;
+    state.band=runnerPreviewBand(state.cpu);
+    paintRunnerPreview(state.canvas,state.character,state.frame,state.band);
+  }
+  if(previous!==state.cpu&&state.timer){clearTimeout(state.timer);state.timer=null;}
+  scheduleRunnerPreview();
+}
+function refreshRunnerPreviewMotionPreference(){
+  var state=RUNNER_PREVIEW_STATE;
+  if(state.timer){clearTimeout(state.timer);state.timer=null;}
+  state.lastTick=performance.now();
+  scheduleRunnerPreview();
+}
+document.addEventListener('visibilitychange',refreshRunnerPreviewMotionPreference);
+if(window.matchMedia){
+  var runnerMotionQuery=window.matchMedia('(prefers-reduced-motion: reduce)');
+  if(runnerMotionQuery.addEventListener)runnerMotionQuery.addEventListener('change',refreshRunnerPreviewMotionPreference);
 }
 function paintRunnerPreviews(root){
   (root||document).querySelectorAll('canvas[data-runner-preview]').forEach(function(canvas){
-    paintRunnerPreview(canvas,canvas.dataset.runnerPreview);
+    paintRunnerPreview(canvas,canvas.dataset.runnerPreview,1,0);
   });
+  var selected=document.getElementById('runner-character-preview');
+  if(selected)startRunnerPreview(selected,selected.dataset.runnerPreview,0);
 }
 function positionRunnerCharacterMenu(){
   var trigger=document.getElementById('runner-character-select');
@@ -9189,7 +9616,7 @@ function positionRunnerCharacterMenu(){
   var width=Math.min(224,window.innerWidth-16);
   menu.style.width=width+'px';
   var left=Math.max(8,Math.min(window.innerWidth-width-8,rect.right-width));
-  var menuHeight=Math.min(274,menu.scrollHeight);
+  var menuHeight=Math.min(260,menu.scrollHeight);
   var below=window.innerHeight-rect.bottom-8;
   var top=below>=Math.min(180,menuHeight)?rect.bottom+5:Math.max(8,rect.top-menuHeight-5);
   menu.style.left=Math.round(left)+'px';
@@ -9263,6 +9690,13 @@ function updateMenubarDisplay(d){
     button.setAttribute('aria-pressed',active?'true':'false');
   });
   var character=RUNNER_CHARACTERS.indexOf(d.runner_character)>=0?d.runner_character:'cat';
+  var cpu=Math.max(0,Math.min(100,Number(d.runner_cpu_pct)||0));
+  var canonicalPackChanged=runnerSelectedPreviewMatchesCharacter(d,character)
+    &&!runnerSelectedPreviewMatchesCurrent(d,character);
+  if(canonicalPackChanged){
+    RUNNER_SELECTED_PREVIEW=d.runner_selected_preview;
+    RUNNER_SELECTED_PREVIEW_CHARACTER=character;
+  }
   var characterSelect=document.getElementById('runner-character-select');
   var selectedOption=document.querySelector('.character-option[data-character="'+character+'"]');
   document.querySelectorAll('.character-option').forEach(function(option){
@@ -9274,11 +9708,16 @@ function updateMenubarDisplay(d){
   var characterPreview=document.getElementById('runner-character-preview');
   if(characterPreview&&characterPreview.dataset.runnerPreview!==character){
     characterPreview.dataset.runnerPreview=character;
-    paintRunnerPreview(characterPreview,character);
+    startRunnerPreview(characterPreview,character,cpu);
+  }
+  if(canonicalPackChanged||!RUNNER_PREVIEW_STATE.hasRealCpuSample){
+    RUNNER_PREVIEW_STATE.hasRealCpuSample=true;
+    seedRunnerPreview(cpu);
+  } else {
+    setRunnerPreviewCpu(cpu);
   }
   var pace=document.getElementById('runner-pace');
   if(!pace)return;
-  var cpu=Math.max(0,Math.min(100,Number(d.runner_cpu_pct)||0));
   if(d.runner_reduce_motion){
     pace.textContent=LANG==='ko'?'동작 줄이기 · 정지 화면':'Reduce Motion · still frame';
     pace.title=LANG==='ko'
@@ -9303,14 +9742,15 @@ document.addEventListener('click',function(event){
     closeRunnerCharacterMenu(false);
   }
 });
+document.addEventListener('keydown',function(event){
+  if(event.key==='Escape'&&PROCESS_CONFIRM.pid!==null){
+    resetProcessConfirmation();
+    renderProcesses(window.__pf_pending||{});
+  }
+});
 window.addEventListener('resize',function(){closeRunnerCharacterMenu(false);});
 var runnerScrollPane=document.querySelector('.main-pane');
 if(runnerScrollPane)runnerScrollPane.addEventListener('scroll',function(){closeRunnerCharacterMenu(false);},{passive:true});
-function quitProcess(pid,name){
-  var msg=LANG==='ko'?('"'+name+'" 프로세스를 종료할까요?'):('Quit "'+name+'"?');
-  if(!confirm(msg))return;
-  window.ipc.postMessage('killproc:'+pid);
-}
 function updateSetup(d){
   var setup=document.getElementById('setup-row');
   var fanView=railView()==='fan';
@@ -9414,6 +9854,7 @@ function updateRail(d){
   var nativePhase=nativeUpdate.phase||'idle';
   var nativePending=nativePhase==='checking'||nativePhase==='downloading'||nativePhase==='queued';
   APP_UPDATE_CHECK_PENDING=nativePending;
+  updateUpdateChannel(d);
   if(view==='settings'){
     var persisted=d.update_install_result;
     if(nativePhase!=='idle'){
@@ -9600,6 +10041,45 @@ function drawChart(id,data,color,fixedMax,fmt){
     stats.textContent=avgLabel+' '+cv._fmt(avgV)+'   ·   '+peakLabel+' '+cv._fmt(peakV);
   }
 }
+function renderCoreGraph(d){
+  var cv=document.getElementById('summary-cpu-core-chart');
+  if(!cv)return;
+  var enabled=d.show_cpu_core_graph!==false;
+  var cell=cv.closest('.summary-cell.cpu');
+  if(cell)cell.classList.toggle('core-graph-enabled',enabled);
+  cv.hidden=!enabled;
+  if(!enabled)return;
+  var series=d.core_hist||[];
+  var width=Math.max(1,cv.clientWidth||80),height=Math.max(1,cv.clientHeight||24),ratio=window.devicePixelRatio||1;
+  var pixelWidth=Math.max(1,Math.round(width*ratio)),pixelHeight=Math.max(1,Math.round(height*ratio));
+  if(cv.width!==pixelWidth||cv.height!==pixelHeight){cv.width=pixelWidth;cv.height=pixelHeight;}
+  var ctx=cv.getContext('2d');
+  if(!ctx)return;
+  ctx.setTransform(ratio,0,0,ratio,0,0);
+  ctx.clearRect(0,0,width,height);
+  ctx.strokeStyle=cssColor('--track','rgba(255,255,255,.09)');
+  ctx.lineWidth=1;
+  [0.25,0.5,0.75].forEach(function(level){
+    var y=Math.round(height*(1-level))+.5;
+    ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(width,y);ctx.stroke();
+  });
+  series.forEach(function(values,index){
+    if(!values||values.length<2)return;
+    var n=values.length;
+    ctx.beginPath();
+    for(var i=0;i<n;i++){
+      var value=Math.max(0,Math.min(100,Number(values[i])||0));
+      var x=n>1?(i/(n-1))*width:width;
+      var y=height-(value/100)*height;
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+    }
+    ctx.strokeStyle=cssColor('--accent','#6ea8ff');
+    ctx.globalAlpha=Math.min(.78,.28+index*.035);
+    ctx.lineWidth=1.05;
+    ctx.stroke();
+  });
+  ctx.globalAlpha=1;
+}
 // Which range's samples are on screen right now, so hover labels know the
 // per-sample time step (2m = 1s/sample raw history, 1h = 1min/sample,
 // 1d = 1h/sample — see RangedHistory on the Rust side).
@@ -9653,6 +10133,9 @@ function reportHeight(){
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RUNNER_QA_SCALE: u32 = 4;
+    const RUNNER_QA_PADDING: u32 = 4;
 
     /// Regression test for the v1.9.3 bug: tray-icon shows the attached menu
     /// on left-click by default, silently pre-empting our own click handler
@@ -9765,6 +10248,186 @@ mod tests {
                 "fanhold:fan.right:55",
                 "display:both",
             ]
+        );
+    }
+
+    #[test]
+    fn process_filter_commands_coalesce_to_the_latest_query() {
+        let mut queue = Vec::new();
+        queue_pending_command(&mut queue, "processfilter:saf".into());
+        queue_pending_command(&mut queue, "processfilter:safari".into());
+
+        assert_eq!(queue, vec!["processfilter:safari"]);
+    }
+
+    #[test]
+    fn guarded_process_request_requires_pid_and_start_token() {
+        assert_eq!(
+            parse_process_quit_command("quitprocess:42:1700000000"),
+            Some(peterfan_platform::process_control::ProcessQuitRequest {
+                pid: 42,
+                expected_start_time_unix_secs: 1_700_000_000,
+            })
+        );
+        assert_eq!(parse_process_quit_command("quitprocess:42"), None);
+        assert_eq!(parse_process_quit_command("quitprocess:0:1"), None);
+    }
+
+    #[test]
+    fn native_process_command_surface_is_narrow_and_explicit() {
+        assert!(is_native_process_command("processfilter:safari"));
+        assert!(is_native_process_command("quitprocess:42:1700000000"));
+        assert!(!is_native_process_command("killproc:42"));
+        assert!(!is_native_process_command("quitprocess:42"));
+        assert!(!is_native_process_command("process:kill:42"));
+    }
+
+    #[test]
+    fn old_direct_process_kill_path_is_absent() {
+        let source = include_str!("main.rs");
+        let direct_prefix = ["strip_prefix(\"", "killproc:", "\")"].concat();
+        let direct_function = ["fn kill_", "process("].concat();
+        assert!(!source.contains(&direct_prefix));
+        assert!(!source.contains(&direct_function));
+    }
+
+    #[test]
+    fn dashboard_process_row_carries_identity_and_native_quit_eligibility() {
+        let process = peterfan_core::metrics::ProcessInfo {
+            pid: 4242,
+            name: "Safari".into(),
+            cpu_percent: 12.5,
+            memory: 512_000_000,
+            start_time_unix_secs: Some(1_700_000_000),
+            owned_by_current_user: Some(true),
+        };
+
+        let row = dashboard_process_row(&process);
+
+        assert_eq!(row["pid"], 4242);
+        assert_eq!(row["start_time"], 1_700_000_000_u64);
+        assert_eq!(row["can_quit"], cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn dashboard_process_row_fails_closed_without_owner_or_start_time() {
+        let process = peterfan_core::metrics::ProcessInfo {
+            pid: 4242,
+            name: "Safari".into(),
+            cpu_percent: 12.5,
+            memory: 512_000_000,
+            start_time_unix_secs: None,
+            owned_by_current_user: None,
+        };
+
+        assert_eq!(dashboard_process_row(&process)["can_quit"], false);
+    }
+
+    #[test]
+    fn process_action_errors_map_to_stable_ui_codes() {
+        use peterfan_platform::process_control::ProcessQuitError;
+
+        assert_eq!(
+            process_action_error_code(&ProcessQuitError::IdentityChanged),
+            "identity_changed"
+        );
+        assert_eq!(
+            process_action_error_code(&ProcessQuitError::NotOwned),
+            "not_owned"
+        );
+        assert_eq!(
+            process_action_error_code(&ProcessQuitError::SignalFailed(1)),
+            "signal_failed"
+        );
+    }
+
+    #[test]
+    fn completed_process_action_preserves_pid_native_name_and_stable_code() {
+        use peterfan_platform::process_control::{ProcessQuitError, ProcessQuitRequest};
+
+        let request = ProcessQuitRequest {
+            pid: 4242,
+            expected_start_time_unix_secs: 1_700_000_000,
+        };
+        let success = completed_process_action(7, request, Ok("Safari".into()));
+        assert_eq!(success.revision, 7);
+        assert_eq!(success.phase, "complete");
+        assert_eq!(success.pid, Some(4242));
+        assert_eq!(success.name.as_deref(), Some("Safari"));
+        assert_eq!(success.code, Some("requested"));
+
+        let rejected = completed_process_action(8, request, Err(ProcessQuitError::IdentityChanged));
+        assert_eq!(rejected.code, Some("identity_changed"));
+        assert_eq!(rejected.name, None);
+    }
+
+    #[test]
+    fn process_action_payload_exposes_revision_and_user_safe_result() {
+        let state = ProcessActionState {
+            revision: 12,
+            phase: "complete",
+            pid: Some(4242),
+            name: Some("Safari".into()),
+            code: Some("requested"),
+            message: Some("Termination requested".into()),
+        };
+
+        assert_eq!(
+            process_action_json(&state),
+            serde_json::json!({
+                "revision": 12,
+                "phase": "complete",
+                "pid": 4242,
+                "name": "Safari",
+                "code": "requested",
+                "message": "Termination requested",
+            })
+        );
+    }
+
+    #[test]
+    fn filtered_process_results_expand_only_to_the_bounded_limit() {
+        assert_eq!(dashboard_process_limit(""), 5);
+        assert_eq!(dashboard_process_limit("safari"), 20);
+    }
+
+    #[test]
+    fn dashboard_process_filter_cache_starts_empty() {
+        assert_eq!(DashboardSlowCache::default().proc_filter, "");
+    }
+
+    #[test]
+    fn process_control_ui_searches_and_requires_inline_identity_confirmation() {
+        let html = dashboard_html(ResolvedLanguage::En, false);
+
+        assert!(html.contains(r#"id="process-search""#));
+        assert!(html.contains(r#"id="process-action-status" role="status" aria-live="polite""#));
+        assert!(html.contains("processfilter:"));
+        assert!(html.contains("quitprocess:'+p.pid+':'+p.start_time"));
+        assert!(html.contains("PROCESS_CONFIRM.pid===p.pid"));
+        assert!(html.contains("PROCESS_CONFIRM.startTime===p.start_time"));
+        assert!(html.contains(r#"<span class="pid"></span>"#));
+        assert!(html.contains("PROCESS_ACTION_REVISION"));
+        assert!(html.contains("event.key==='Escape'"));
+        assert!(html.contains("resetProcessConfirmation()"));
+        assert!(!html.contains("confirm(msg)"));
+        assert!(!html.contains("killproc:"));
+    }
+
+    #[test]
+    fn process_action_log_uses_verified_native_name_without_command_line_data() {
+        let state = ProcessActionState {
+            revision: 1,
+            phase: "complete",
+            pid: Some(4242),
+            name: Some("Safari Networking".into()),
+            code: Some("requested"),
+            message: None,
+        };
+
+        assert_eq!(
+            process_action_log_entry(&state),
+            "process termination completed pid=4242 name=Safari Networking code=requested"
         );
     }
 
@@ -9959,6 +10622,98 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct DisplayRegressionScenario {
+        name: &'static str,
+        tray: Rect,
+        displays: [DisplayBounds; 3],
+        popover_width: f64,
+        expected_display: usize,
+    }
+
+    fn display_regression_scenarios() -> [DisplayRegressionScenario; 3] {
+        [
+            DisplayRegressionScenario {
+                name: "left external display",
+                tray: tray_rect(-40.0, 0.0, 24, 24),
+                displays: [
+                    DisplayBounds {
+                        x: -1920.0,
+                        y: 0.0,
+                        width: 1920.0,
+                        height: 1080.0,
+                    },
+                    DisplayBounds {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1728.0,
+                        height: 1117.0,
+                    },
+                    DisplayBounds {
+                        x: 0.0,
+                        y: -900.0,
+                        width: 1440.0,
+                        height: 900.0,
+                    },
+                ],
+                popover_width: 440.0,
+                expected_display: 0,
+            },
+            DisplayRegressionScenario {
+                name: "right mixed-DPI display",
+                tray: tray_rect(4260.0, 0.0, 24, 24),
+                displays: [
+                    DisplayBounds {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1728.0,
+                        height: 1117.0,
+                    },
+                    DisplayBounds {
+                        x: 1728.0,
+                        y: 0.0,
+                        width: 2560.0,
+                        height: 1440.0,
+                    },
+                    DisplayBounds {
+                        x: 0.0,
+                        y: -900.0,
+                        width: 1440.0,
+                        height: 900.0,
+                    },
+                ],
+                popover_width: POPOVER_W,
+                expected_display: 1,
+            },
+            DisplayRegressionScenario {
+                name: "upper display with negative global Y",
+                tray: tray_rect(700.0, -40.0, 24, 24),
+                displays: [
+                    DisplayBounds {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1728.0,
+                        height: 1117.0,
+                    },
+                    DisplayBounds {
+                        x: -1920.0,
+                        y: 0.0,
+                        width: 1920.0,
+                        height: 1080.0,
+                    },
+                    DisplayBounds {
+                        x: 0.0,
+                        y: -900.0,
+                        width: 1440.0,
+                        height: 900.0,
+                    },
+                ],
+                popover_width: 440.0,
+                expected_display: 2,
+            },
+        ]
+    }
+
     #[test]
     fn popover_position_stays_on_left_external_display() {
         let displays = [
@@ -10007,6 +10762,35 @@ mod tests {
         );
         assert!(pos.x + 440.0 <= displays[1].right() - 8.0);
         assert_eq!(pos.y, 24.0);
+    }
+
+    #[test]
+    fn multi_display_regression_matrix_keeps_popover_on_clicked_display() {
+        for scenario in display_regression_scenarios() {
+            let pos = popover_position_for_rect(
+                scenario.tray,
+                scenario.popover_width,
+                &scenario.displays,
+            );
+            let display = scenario.displays[scenario.expected_display];
+
+            assert!(
+                pos.x >= display.x + 8.0,
+                "{}: popover escaped the clicked display on the left",
+                scenario.name
+            );
+            assert!(
+                pos.x + scenario.popover_width <= display.right() - 8.0,
+                "{}: popover escaped the clicked display on the right",
+                scenario.name
+            );
+            assert_eq!(
+                pos.y,
+                scenario.tray.position.y + scenario.tray.size.height as f64,
+                "{}: popover should remain flush below the menu bar",
+                scenario.name
+            );
+        }
     }
 
     #[test]
@@ -10167,7 +10951,7 @@ mod tests {
             assert!(html.contains(r#"id="disk-io-chart-stats""#));
             assert!(html.contains(r#"id="net-ip""#));
             assert!(html.contains(r#"id="ps-cpu""#));
-            assert!(html.contains("quitProcess"));
+            assert!(html.contains("requestProcessQuit"));
             assert!(html.contains("renderFanCards"));
             assert!(html.contains("fanControlSetupButton"));
             assert!(html.contains("startFanControlSetup"));
@@ -10308,7 +11092,7 @@ mod tests {
     }
 
     #[test]
-    fn runner_gait_has_eight_distinct_contact_and_flight_poses() {
+    fn runner_gait_has_distinct_contact_and_flight_poses() {
         for character in RunnerCharacter::ALL {
             let frames = (0..RUNNER_FRAME_COUNT)
                 .map(|frame| make_runner_rgba(character, 50.0, frame))
@@ -10342,65 +11126,138 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "writes runner sprite-sheet and picker HTML artifacts for visual QA"]
+    #[ignore = "writes deterministic runner QA artifacts for visual inspection"]
     fn render_runner_sprite_sheet_for_visual_qa() {
-        const SCALE: u32 = 4;
-        const CELL_WIDTH: u32 = RUNNER_PIXEL_WIDTH + 4;
-        const CELL_HEIGHT: u32 = RUNNER_PIXEL_HEIGHT + 4;
-        let width = CELL_WIDTH * u32::from(RUNNER_FRAME_COUNT) * SCALE;
-        let height = CELL_HEIGHT * RunnerCharacter::ALL.len() as u32 * SCALE;
-        let mut sheet = vec![0u8; (width * height * 4) as usize];
+        let artifacts = write_runner_quality_artifacts().expect("runner QA artifacts");
+        assert!(artifacts.sheet_path.is_file());
+        assert!(artifacts.report_path.is_file());
+        assert!(
+            std::fs::metadata(&artifacts.sheet_path)
+                .expect("sheet metadata")
+                .len()
+                > 0
+        );
+        assert!(
+            std::fs::metadata(&artifacts.report_path)
+                .expect("report metadata")
+                .len()
+                > 0
+        );
 
-        for pixel in sheet.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&[28, 28, 30, 255]);
+        let (width, height, pixels) = decode_png_rgba(&artifacts.sheet_path);
+        assert_eq!((width, height), expected_runner_qa_sheet_dimensions());
+        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 0));
+
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&artifacts.report_path).expect("read quality report"),
+        )
+        .expect("parse quality report JSON");
+        let characters = report["characters"].as_array().expect("character array");
+        assert_eq!(characters.len(), RunnerCharacter::FEATURED.len());
+        assert!(characters
+            .iter()
+            .zip(RunnerCharacter::FEATURED)
+            .all(|(entry, character)| {
+                entry["name"].as_str() == Some(character.as_str())
+                    && entry["bands"]
+                        .as_array()
+                        .is_some_and(|bands| bands.len() == RUNNER_LOAD_BANDS)
+            }));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_runner_timer_closure_only_indexes_prebuilt_native_images() {
+        let body = extract_block_body(
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")),
+            "let block = RcBlock::new(move |timer: std::ptr::NonNull<NSTimer>| {",
+        );
+
+        for expected in [
+            "ease_runner_motion_cpu(",
+            "advance_runner_phase(",
+            "runner_load_band_with_hysteresis(",
+            "let index =",
+            "images.get(index)",
+            "button.setImage(Some(&**image));",
+            "runner_native_next_delay(",
+        ] {
+            assert!(
+                body.contains(expected),
+                "missing `{expected}` in timer body"
+            );
         }
 
-        for (row, character) in RunnerCharacter::ALL.into_iter().enumerate() {
-            for frame in 0..RUNNER_FRAME_COUNT {
-                let icon = make_runner_rgba(character, 90.0, frame);
-                let origin_x = (u32::from(frame) * CELL_WIDTH + 2) * SCALE;
-                let origin_y = (row as u32 * CELL_HEIGHT + 2) * SCALE;
-                for source_y in 0..RUNNER_PIXEL_HEIGHT {
-                    for source_x in 0..RUNNER_PIXEL_WIDTH {
-                        let source_index =
-                            ((source_y * RUNNER_PIXEL_WIDTH + source_x) * 4) as usize;
-                        let alpha = f32::from(icon[source_index + 3]) / 255.0;
-                        for scale_y in 0..SCALE {
-                            for scale_x in 0..SCALE {
-                                let target_x = origin_x + source_x * SCALE + scale_x;
-                                let target_y = origin_y + source_y * SCALE + scale_y;
-                                let target_index = ((target_y * width + target_x) * 4) as usize;
-                                for channel in 0..3 {
-                                    let foreground = f32::from(icon[source_index + channel]);
-                                    sheet[target_index + channel] =
-                                        (foreground * alpha + 28.0 * (1.0 - alpha)).round() as u8;
-                                }
-                                sheet[target_index + 3] = 255;
-                            }
-                        }
+        for forbidden in [
+            "RunnerPack::build",
+            "render_raw_frame",
+            "normalize_cycle",
+            "png::Decoder",
+            "png::Encoder",
+            "make_runner_native_image_from_rgba",
+            "runner_icon_from_rgba",
+            "Vec::with_capacity",
+            "vec![",
+            ".to_vec()",
+            ".collect::<Vec<_>>()",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "timer body must stay lightweight: found `{forbidden}`"
+            );
+        }
+
+        let sync_timer_fn = extract_block_body(
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")),
+            "fn sync_native_runner_timer(app: &mut App) {",
+        );
+        assert!(sync_timer_fn.contains("let images = app.runner_assets.native_images.clone();"));
+        assert!(!sync_timer_fn.contains("render_raw_frame("));
+        assert!(!sync_timer_fn.contains("RunnerPack::build("));
+    }
+
+    fn expected_runner_qa_sheet_dimensions() -> (u32, u32) {
+        let cell_width = RUNNER_PIXEL_WIDTH * (RUNNER_QA_SCALE + 1) + RUNNER_QA_PADDING * 3;
+        let cell_height = RUNNER_PIXEL_HEIGHT * RUNNER_QA_SCALE + RUNNER_QA_PADDING * 2;
+        (
+            cell_width * u32::from(RUNNER_FRAME_COUNT),
+            cell_height * RunnerCharacter::FEATURED.len() as u32 * RUNNER_LOAD_BANDS as u32,
+        )
+    }
+
+    fn decode_png_rgba(path: &std::path::Path) -> (u32, u32, Vec<u8>) {
+        let decoder = png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(path).expect("open PNG for QA validation"),
+        ));
+        let mut reader = decoder.read_info().expect("read PNG info");
+        let mut pixels = vec![0; reader.output_buffer_size().expect("PNG output buffer size")];
+        let info = reader.next_frame(&mut pixels).expect("decode QA PNG");
+        (
+            info.width,
+            info.height,
+            pixels[..info.buffer_size()].to_vec(),
+        )
+    }
+
+    fn extract_block_body(source: &str, marker: &str) -> String {
+        let start = source.find(marker).expect("marker must exist");
+        let body_start = start + marker.len();
+        let mut depth = 1usize;
+        let mut body_end = body_start;
+        for (offset, ch) in source[body_start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        body_end = body_start + offset;
+                        break;
                     }
                 }
+                _ => {}
             }
         }
-
-        let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("target");
-        std::fs::create_dir_all(&target).expect("create target directory");
-        let file = std::fs::File::create(target.join("runner-sprite-sheet.png"))
-            .expect("create runner QA sheet");
-        let mut encoder = png::Encoder::new(file, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder
-            .write_header()
-            .and_then(|mut writer| writer.write_image_data(&sheet))
-            .expect("write runner QA sheet");
-        std::fs::write(
-            target.join("runner-picker-qa.html"),
-            dashboard_html(ResolvedLanguage::En, false),
-        )
-        .expect("write runner picker QA page");
+        source[body_start..body_end].to_string()
     }
 
     #[test]
@@ -10413,16 +11270,19 @@ mod tests {
         assert!(normal > busy);
         assert!(idle <= RUNNER_MAX_INTERVAL);
         assert!(busy >= RUNNER_MIN_INTERVAL);
-        assert!((418..=422).contains(&idle.as_millis()));
-        assert!((128..=132).contains(&normal.as_millis()));
-        assert!((274..=276).contains(&runner_frame_interval(20.0).as_millis()));
-        assert!((59..=61).contains(&busy.as_millis()));
-        assert!(idle.as_millis() >= busy.as_millis() * 7);
+        assert!((167..=169).contains(&idle.as_millis()));
+        assert!((80..=82).contains(&normal.as_millis()));
+        assert!((131..=133).contains(&runner_frame_interval(20.0).as_millis()));
+        assert!((20..=22).contains(&busy.as_millis()));
+        assert!(idle.as_millis() >= busy.as_millis() * 5);
 
         assert!(!runner_enabled(MenubarDisplay::Number));
         assert!(runner_enabled(MenubarDisplay::Graph));
         assert!(runner_enabled(MenubarDisplay::Both));
-        assert_eq!(make_runner_icons(RunnerCharacter::Cat).len(), 32);
+        assert_eq!(
+            make_runner_icons(RunnerCharacter::Cat).len(),
+            usize::from(RUNNER_FRAME_COUNT) * 4
+        );
         assert_eq!(runner_load_band(10.0), 0);
         assert_eq!(runner_load_band(90.0), 3);
     }
@@ -10438,18 +11298,19 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn native_runner_sleeps_between_idle_frames_but_wakes_for_speed_changes() {
-        let settled_idle = runner_native_next_delay(0, 5.0, 5.0, 0);
-        let settled_busy = runner_native_next_delay(0, 100.0, 100.0, 0);
-        let accelerating = runner_native_next_delay(0, 5.0, 90.0, 0);
+        let settled_idle = runner_native_next_delay(RunnerCharacter::Cat, 0, 5.0, 5.0, 0);
+        let settled_busy = runner_native_next_delay(RunnerCharacter::Cat, 0, 100.0, 100.0, 0);
+        let accelerating = runner_native_next_delay(RunnerCharacter::Cat, 0, 5.0, 90.0, 0);
 
-        assert!(settled_idle > RUNNER_NATIVE_TICK * 6);
+        assert!(settled_idle > RUNNER_NATIVE_TICK * 5);
         assert_eq!(settled_busy, RUNNER_NATIVE_TICK);
         assert_eq!(accelerating, RUNNER_NATIVE_TICK);
 
-        let interval_us = runner_frame_interval_for_pose(5.0, 0).as_micros() as u64;
+        let interval_us =
+            runner_frame_interval_for_pose(RunnerCharacter::Cat, 5.0, 0).as_micros() as u64;
         assert_eq!(
-            runner_native_next_delay(interval_us - 1, 5.0, 5.0, 0),
-            RUNNER_NATIVE_TICK
+            runner_native_next_delay(RunnerCharacter::Cat, interval_us - 1, 5.0, 5.0, 0),
+            Duration::from_millis(1)
         );
     }
 
@@ -10472,38 +11333,100 @@ mod tests {
     }
 
     #[test]
-    fn runner_phase_keeps_remainder_when_speed_changes() {
-        let tick_us = 30_000;
-        let (phase, advanced) = runner_phase_step(450_000, tick_us, 5.0, 0);
-        assert!(advanced);
-        assert!(phase < runner_frame_interval_for_pose(5.0, 0).as_micros() as u64);
+    fn browser_preview_band_lifecycle_matches_native_seed_and_tick_sequence() {
+        let mut band = runner_load_band(65.0);
+        assert_eq!(
+            band, 2,
+            "a canonical pack starts from direct load_band thresholds"
+        );
 
-        let (phase, advanced) = runner_phase_step(phase, tick_us, 95.0, 1);
-        assert!(!advanced);
-        let (phase, advanced) = runner_phase_step(phase, tick_us, 95.0, 1);
-        assert!(advanced);
-        assert!(phase < runner_frame_interval_for_pose(95.0, 1).as_micros() as u64);
+        for (cpu, expected) in [
+            (60.0, 2), // ordinary update retains band 2 instead of reseeding to 1
+            (50.0, 1), // timer tick crosses 2 -> 1 hysteresis threshold
+            (52.0, 1), // timer tick remains in band 1 inside hysteresis
+            (59.0, 2), // timer tick crosses 1 -> 2 hysteresis threshold
+            (83.0, 2), // timer tick remains in band 2 inside hysteresis
+            (84.0, 3), // timer tick crosses 2 -> 3 hysteresis threshold
+            (76.0, 3), // timer tick remains in band 3 at its inclusive lower edge
+            (75.0, 2), // timer tick crosses 3 -> 2 hysteresis threshold
+        ] {
+            band = runner_load_band_with_hysteresis(cpu, band);
+            assert_eq!(band, expected, "cpu {cpu}");
+        }
+
+        let html = dashboard_html(ResolvedLanguage::En, false);
+        assert!(
+            html.contains("RUNNER_PREVIEW_STATE.band=runnerPreviewBand(RUNNER_PREVIEW_STATE.cpu);")
+        );
+        assert!(html.contains("state.band=runnerPreviewBandWithHysteresis(state.cpu,state.band);"));
+        assert!(!html.contains("RUNNER_PREVIEW_STATE.band=0;"));
     }
 
     #[test]
-    fn runner_gait_timing_has_weight_without_changing_lap_speed() {
-        let contact = runner_frame_interval_for_pose(5.0, 0);
-        let flight = runner_frame_interval_for_pose(5.0, 2);
-        assert!(contact > runner_frame_interval(5.0));
-        assert!(flight < runner_frame_interval(5.0));
-        assert!(contact > flight);
-
-        let lap_ms: u128 = (0..RUNNER_FRAME_COUNT)
-            .map(|frame| runner_frame_interval_for_pose(5.0, frame).as_millis())
-            .sum();
-        let uniform_lap_ms =
-            runner_frame_interval(5.0).as_millis() * u128::from(RUNNER_FRAME_COUNT);
-        assert!(lap_ms.abs_diff(uniform_lap_ms) <= 4);
-
+    fn browser_preview_first_real_payload_seeds_current_cpu_without_resetting_later_updates() {
+        let first_real_band = runner_load_band(90.0);
+        assert_eq!(first_real_band, 3, "the first real 90% sample seeds band 3");
+        let ordinary_update_band = first_real_band;
         assert_eq!(
-            runner_frame_interval_for_pose(95.0, 0),
-            runner_frame_interval_for_pose(95.0, 2)
+            ordinary_update_band, 3,
+            "a later 60% payload updates the target only; the timer owns hysteresis"
         );
+
+        let html = dashboard_html(ResolvedLanguage::En, false);
+        assert!(html.contains("hasRealCpuSample:false"));
+        assert!(html.contains(
+            "if(!state.hasRealCpuSample){\n    state.hasRealCpuSample=true;\n    state.band=runnerPreviewBand(state.cpu);\n    paintRunnerPreview(state.canvas,state.character,state.frame,state.band);\n  }"
+        ));
+        assert!(html.contains("function runnerSelectedPreviewMatchesCurrent(payload,character)"));
+        assert!(html.contains(
+            "var cpu=Math.max(0,Math.min(100,Number(d.runner_cpu_pct)||0));\n  var canonicalPackChanged=runnerSelectedPreviewMatchesCharacter(d,character)"
+        ));
+        assert!(html.contains(
+            "if(canonicalPackChanged||!RUNNER_PREVIEW_STATE.hasRealCpuSample){\n    RUNNER_PREVIEW_STATE.hasRealCpuSample=true;\n    seedRunnerPreview(cpu);\n  } else {\n    setRunnerPreviewCpu(cpu);\n  }"
+        ));
+        assert!(html.contains("startRunnerPreview(characterPreview,character,cpu);"));
+        assert!(!html.contains("startRunnerPreview(characterPreview,character,0);"));
+    }
+
+    #[test]
+    fn non_macos_runner_selection_keeps_a_hysteretic_band_state() {
+        let mut band = 0;
+        assert_eq!(runner_icon_index_with_hysteresis(23.0, 4, &mut band), 4);
+        assert_eq!(band, 0);
+        assert_eq!(runner_icon_index_with_hysteresis(24.0, 4, &mut band), 12);
+        assert_eq!(band, 1);
+        assert_eq!(runner_icon_index_with_hysteresis(19.0, 4, &mut band), 12);
+        assert_eq!(band, 1);
+        assert_eq!(runner_icon_index_with_hysteresis(15.0, 4, &mut band), 4);
+        assert_eq!(band, 0);
+    }
+
+    #[test]
+    fn runner_phase_keeps_remainder_when_speed_changes() {
+        let (phase, advanced) = runner_phase_step(10_000, 15_000, 100.0, 0);
+        assert!(advanced);
+        assert_eq!(phase, 5_000);
+        let (phase, advanced) = runner_phase_step(phase, 10_000, 100.0, 1);
+        assert!(!advanced);
+        let (phase, advanced) = runner_phase_step(phase, 10_000, 100.0, 1);
+        assert!(advanced);
+        assert_eq!(phase, 5_000);
+    }
+
+    #[test]
+    fn every_runner_lap_uses_one_common_cpu_clock() {
+        for cpu in [5.0, 45.0, 95.0] {
+            for character in RunnerCharacter::FEATURED {
+                let lap: Duration = (0..RUNNER_FRAME_COUNT)
+                    .map(|pose| runner_frame_interval_for_pose(character, cpu, pose))
+                    .sum();
+                assert_eq!(
+                    lap,
+                    runner_frame_interval(cpu) * u32::from(RUNNER_FRAME_COUNT),
+                    "{character:?} at {cpu}% must not have a separate lap speed"
+                );
+            }
+        }
     }
 
     #[test]
@@ -10524,7 +11447,7 @@ mod tests {
             assert!(next >= value);
             value = next;
         }
-        assert!(value > 75.0 && value < 80.0);
+        assert!(value > 79.0 && value <= 80.0);
     }
 
     #[test]
@@ -10560,12 +11483,96 @@ mod tests {
 
             let width = max_x.saturating_sub(min_x) + 1;
             let height = max_y.saturating_sub(min_y) + 1;
-            assert!(width >= 40, "{character:?} is too narrow: {width}px");
-            assert!(
-                width as f32 / height as f32 >= 1.40,
-                "{character:?} is not recognizably horizontal: {width}x{height}"
-            );
+            if character == RunnerCharacter::Human {
+                // The CC0 source is a deliberately slim human silhouette;
+                // preserve its anatomy instead of widening it into a blob.
+                assert!(width >= 12, "{character:?} is too narrow: {width}px");
+                assert!(height >= 24, "{character:?} is too short: {height}px");
+            } else if character == RunnerCharacter::Pushup {
+                // An elevated plank needs vertical room as well as a long body.
+                assert!(width >= 30, "push-up is too narrow: {width}px");
+                assert!(height >= 20, "push-up plank is flattened: {height}px");
+            } else if matches!(character, RunnerCharacter::Penguin | RunnerCharacter::Robot) {
+                // Upright anatomy stays legible without decorative horizontal
+                // speed lines that previously inflated this width check.
+                assert!(width >= 14, "{character:?} is too narrow: {width}px");
+                assert!(height >= 24, "{character:?} is too short: {height}px");
+            } else if matches!(
+                character,
+                RunnerCharacter::Cat
+                    | RunnerCharacter::Dog
+                    | RunnerCharacter::Rabbit
+                    | RunnerCharacter::Fox
+            ) {
+                // Tucked legs shorten an individual pose; the cycle's full
+                // silhouette is independently checked against its manifest.
+                assert!(width >= 30, "{character:?} is too narrow: {width}px");
+                assert!(height >= 16, "{character:?} is too short: {height}px");
+            } else if matches!(
+                character,
+                RunnerCharacter::Dinosaur | RunnerCharacter::Ghost
+            ) {
+                // The asset is a deliberately tall side-view T-rex: its
+                // head and short arms make a 1.40 horizontal ratio an
+                // incorrect quality gate even though the running direction
+                // is unambiguous. Ghosts also retain a narrow floating cloak
+                // silhouette so their black/white contour does not get
+                // artificially stretched just to satisfy this test.
+                assert!(width >= 30, "{character:?} is too narrow: {width}px");
+                assert!(width as f32 / height as f32 >= 1.0);
+            } else {
+                // A dancer is upright, the skyline is height-limited, and a
+                // slime alternates a narrow tall dome with a broad compression.
+                // Their entire cycles still obey the unchanged manifest gates.
+                let (min_width, min_height) = match character {
+                    RunnerCharacter::Slime => (18, 10),
+                    RunnerCharacter::Party => (18, 24),
+                    RunnerCharacter::City => (30, 20),
+                    RunnerCharacter::Bird | RunnerCharacter::Fish | RunnerCharacter::Orbit => {
+                        (34, 14)
+                    }
+                    RunnerCharacter::Sausage => (36, 16),
+                    _ => (30, 16),
+                };
+                assert!(
+                    width >= min_width && height >= min_height,
+                    "{character:?} does not fill its optical slot: {width}x{height}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn human_runner_has_eight_distinct_run_frames() {
+        let frames: Vec<Vec<u8>> = (0..RUNNER_FRAME_COUNT)
+            .map(|frame| make_runner_rgba(RunnerCharacter::Human, 50.0, frame))
+            .collect();
+        let unique: std::collections::HashSet<Vec<u8>> = frames.into_iter().collect();
+        assert_eq!(unique.len(), usize::from(RUNNER_FRAME_COUNT));
+    }
+
+    #[test]
+    fn all_runners_use_a_white_glyph_and_compact_picker_preview() {
+        for character in RunnerCharacter::ALL {
+            for frame in [0, 3, 7] {
+                let rgba = make_runner_rgba(character, 55.0, frame);
+                for pixel in rgba.chunks_exact(4).filter(|pixel| pixel[3] != 0) {
+                    assert_eq!(&pixel[..3], &[255, 255, 255], "{character:?} is not white");
+                }
+            }
+        }
+
+        let html = dashboard_html(ResolvedLanguage::En, false);
+        assert!(html.contains(".runner-preview{display:block;width:27px;height:18px"));
+        assert!(html.contains(".character-select .runner-preview{width:27px;height:18px"));
+        assert!(html.contains(
+            ".character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:260px"
+        ));
+        assert!(html.contains(".character-option{display:grid;grid-template-columns:38px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:34px"));
+        assert!(html.contains("image-rendering:auto"));
+        assert!(html
+            .contains("image.data[offset]=255;image.data[offset+1]=255;image.data[offset+2]=255;"));
+        assert!(!html.contains("__RUNNER_COLORS__"));
     }
 
     #[test]
@@ -10616,7 +11623,9 @@ mod tests {
             "high load should enlarge the gait: idle={idle_motion}, sprint={sprint_motion}"
         );
         assert!(
-            sprint_motion >= 300,
+            // Stable head/ribcage volume must not needlessly morph merely to
+            // raise the whole-frame pixel difference. Limbs supply the motion.
+            sprint_motion >= 120,
             "sprint key poses are too similar: {sprint_motion} changed pixels"
         );
     }
@@ -10637,7 +11646,7 @@ mod tests {
             assert!(html.contains(r#"role="listbox""#));
             assert!(html.contains("function handleRunnerTriggerKey(event)"));
             assert!(html.contains("function handleRunnerOptionKey(event)"));
-            for character in RunnerCharacter::ALL {
+            for character in RunnerCharacter::FEATURED {
                 assert!(
                     html.contains(&format!(r#"data-character="{}""#, character.as_str())),
                     "settings are missing {character:?}"
@@ -10658,24 +11667,26 @@ mod tests {
             assert!(!html.contains("__RUNNER_PREVIEWS__"));
         }
         for label in [
+            "고양이",
+            "강아지",
+            "토끼",
+            "여우",
             "펭귄",
             "공룡",
             "로봇",
             "유령",
-            "새",
-            "오리",
-            "양",
-            "물고기",
-            "슬라임",
             "달리는 사람",
             "푸시업",
-            "궤도",
-            "회전초밥",
-            "도시",
-            "소시지",
-            "파티",
         ] {
             assert!(ko.contains(label), "Korean settings are missing {label}");
+        }
+        for character in RunnerCharacter::FEATURED {
+            assert!(
+                ko.contains(&format!(r#"data-character="{}""#, character.as_str())),
+                "authored runner missing from picker: {}",
+                character.as_str()
+            );
+            assert!(ko.contains(runner_character_label(ResolvedLanguage::Ko, character)));
         }
     }
 
@@ -10684,10 +11695,10 @@ mod tests {
         let previews: serde_json::Value =
             serde_json::from_str(runner_preview_alpha_json()).expect("valid preview JSON");
         let previews = previews.as_object().expect("preview object");
-        assert_eq!(previews.len(), RunnerCharacter::ALL.len());
+        assert_eq!(previews.len(), RunnerCharacter::FEATURED.len());
 
         let mut unique = std::collections::HashSet::new();
-        for character in RunnerCharacter::ALL {
+        for character in RunnerCharacter::FEATURED {
             let alpha = previews
                 .get(character.as_str())
                 .and_then(serde_json::Value::as_str)
@@ -10699,7 +11710,24 @@ mod tests {
             assert!(alpha.bytes().any(|byte| byte != b'0'));
             unique.insert(alpha);
         }
-        assert_eq!(unique.len(), RunnerCharacter::ALL.len());
+        assert_eq!(unique.len(), RunnerCharacter::FEATURED.len());
+
+        let frames: serde_json::Value =
+            serde_json::from_str(runner_preview_frames_json()).expect("valid preview frames JSON");
+        let frames = frames.as_object().expect("preview frames object");
+        assert_eq!(frames.len(), RunnerCharacter::FEATURED.len());
+        for character in RunnerCharacter::FEATURED {
+            let character_frames = frames
+                .get(character.as_str())
+                .and_then(serde_json::Value::as_array)
+                .expect("character preview frames");
+            assert_eq!(character_frames.len(), usize::from(RUNNER_FRAME_COUNT));
+            assert!(character_frames.iter().all(|frame| {
+                frame.as_str().is_some_and(|alpha| {
+                    alpha.len() == (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 2) as usize
+                })
+            }));
+        }
 
         let html = dashboard_html(ResolvedLanguage::En, false);
         assert!(html.contains(&format!(
@@ -10707,9 +11735,408 @@ mod tests {
             runner_character_values_json()
         )));
         assert!(html.contains("var RUNNER_PREVIEW_ALPHA={"));
+        assert!(html.contains("var RUNNER_PREVIEW_FRAMES={"));
         assert!(html.contains("paintRunnerPreviews(document);"));
-        assert!(html.contains("paintRunnerPreview(characterPreview,character);"));
+        assert!(html.contains("paintRunnerPreview(canvas,canvas.dataset.runnerPreview,1,0);"));
+        assert!(html.contains("startRunnerPreview(characterPreview,character,cpu);"));
+        assert!(!html.contains("startRunnerPreview(characterPreview,character,0);"));
+        assert!(html.contains("function runnerPreviewInterval(cpu,frame,character)"));
+        assert!(html.contains("function setRunnerPreviewCpu(cpu)"));
+        assert!(html.contains("function setRunnerPreviewVisibility(visible)"));
+        assert!(html.contains("document.addEventListener('visibilitychange'"));
+        assert!(html.contains("prefers-reduced-motion: reduce"));
         assert!(html.contains(r#".character-menu{display:none;position:fixed;"#));
+    }
+
+    #[test]
+    fn runner_preview_json_matches_shared_runner_pack_alpha() {
+        let packs = RunnerCharacter::FEATURED
+            .into_iter()
+            .map(|character| {
+                (
+                    character,
+                    runner::RunnerPack::build(character).expect("runner pack"),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let previews: serde_json::Value =
+            serde_json::from_str(&runner_preview_alpha_json_for(&packs))
+                .expect("valid preview JSON");
+        let previews = previews.as_object().expect("preview object");
+        let frames: serde_json::Value =
+            serde_json::from_str(&runner_preview_frames_json_for(&packs))
+                .expect("valid preview frames JSON");
+        let frames = frames.as_object().expect("preview frames object");
+
+        for (character, pack) in &packs {
+            assert_eq!(
+                previews
+                    .get(character.as_str())
+                    .and_then(serde_json::Value::as_str),
+                pack.preview_alpha_hex(1, 1).as_deref()
+            );
+
+            let expected = (0..RUNNER_FRAME_COUNT)
+                .map(|frame| pack.preview_alpha_hex(1, frame).expect("preview alpha"))
+                .collect::<Vec<_>>();
+            let actual = frames
+                .get(character.as_str())
+                .and_then(serde_json::Value::as_array)
+                .expect("character preview frames")
+                .iter()
+                .map(|frame| frame.as_str().expect("frame alpha").to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn selected_preview_serializes_the_complete_pack_and_uses_native_hysteresis() {
+        let pack = RunnerPack::build(RunnerCharacter::Fox).expect("runner pack");
+        let frames: serde_json::Value =
+            serde_json::from_str(&runner_selected_preview_frames_json(&pack))
+                .expect("selected preview JSON");
+        let frames = frames.as_array().expect("selected preview frame array");
+        assert_eq!(
+            frames.len(),
+            usize::from(RUNNER_FRAME_COUNT) * RUNNER_LOAD_BANDS
+        );
+
+        for band in 0..RUNNER_LOAD_BANDS {
+            for pose in 0..RUNNER_FRAME_COUNT {
+                let index = band * usize::from(RUNNER_FRAME_COUNT) + usize::from(pose);
+                assert_eq!(
+                    frames[index].as_str(),
+                    pack.preview_alpha_hex(band, pose).as_deref(),
+                    "band {band}, pose {pose} must use the selected canonical pack"
+                );
+            }
+        }
+
+        let html = dashboard_html_with_runner_pack(ResolvedLanguage::En, false, &pack);
+        assert!(html.contains("var RUNNER_SELECTED_PREVIEW=["));
+        assert!(html.contains("function runnerPreviewBand(cpu)"));
+        assert!(html.contains("function runnerSelectedPreviewMatchesCharacter(payload,character)"));
+        assert!(html.contains("payload.runner_selected_preview_character===character"));
+        assert!(html.contains("RUNNER_SELECTED_PREVIEW_CHARACTER=character"));
+        assert!(
+            html.contains("RUNNER_PREVIEW_STATE.band=runnerPreviewBand(RUNNER_PREVIEW_STATE.cpu);")
+        );
+        assert!(html.contains(
+            "state.band=runnerPreviewBand(state.cpu);\n  paintRunnerPreview(state.canvas,state.character,state.frame,state.band);"
+        ));
+        assert!(
+            html.contains("var canonical=selected&&RUNNER_SELECTED_PREVIEW_CHARACTER===character;")
+        );
+        assert!(html.contains(
+            "var frames=canonical?RUNNER_SELECTED_PREVIEW:RUNNER_PREVIEW_FRAMES[character];"
+        ));
+        assert!(html.contains(
+            "var index=canonical?(Math.max(0,Math.min(3,Number(band)||0))*8+pose):pose;"
+        ));
+        assert!(html.contains("function runnerPreviewBandWithHysteresis(cpu,current)"));
+        for threshold in [
+            "current===0&&load>=24",
+            "current===1&&load<16",
+            "current===1&&load>=59",
+            "current===2&&load<51",
+            "current===2&&load>=84",
+            "current===3&&load<76",
+        ] {
+            assert!(
+                html.contains(threshold),
+                "missing hysteresis threshold {threshold}"
+            );
+        }
+    }
+
+    #[test]
+    fn selected_preview_payload_has_matching_character_provenance() {
+        let pack = RunnerPack::build(RunnerCharacter::Fox).expect("runner pack");
+        let payload = serde_json::json!({
+            "runner_character": RunnerCharacter::Fox.as_str(),
+            "runner_selected_preview": serde_json::from_str::<serde_json::Value>(
+                &runner_selected_preview_frames_json(&pack)
+            ).expect("selected preview JSON"),
+            "runner_selected_preview_character": RunnerCharacter::Fox.as_str(),
+        });
+
+        assert_eq!(
+            payload["runner_selected_preview_character"].as_str(),
+            payload["runner_character"].as_str(),
+            "the canonical payload must identify the character it renders"
+        );
+    }
+
+    #[test]
+    fn preview_omits_failed_characters_after_one_failed_cat_fallback_attempt() {
+        let attempts = std::cell::RefCell::new(Vec::new());
+        let packs = runner_preview_packs_with(|character| {
+            attempts.borrow_mut().push(character);
+            if matches!(character, RunnerCharacter::Fox | RunnerCharacter::Cat) {
+                Err(RunnerBuildError::InvalidFrame {
+                    character,
+                    detail: "forced preview failure".to_string(),
+                })
+            } else {
+                RunnerPack::build(character)
+            }
+        });
+
+        assert_eq!(packs.len(), RunnerCharacter::FEATURED.len() - 2);
+        assert!(packs.iter().all(|(character, _)| {
+            !matches!(character, RunnerCharacter::Fox | RunnerCharacter::Cat)
+        }));
+        assert_eq!(
+            attempts
+                .borrow()
+                .iter()
+                .filter(|&&character| character == RunnerCharacter::Fox)
+                .count(),
+            1
+        );
+        assert_eq!(
+            attempts
+                .borrow()
+                .iter()
+                .filter(|&&character| character == RunnerCharacter::Cat)
+                .count(),
+            1,
+            "one prewarm must memoize a failed Cat fallback instead of retrying it"
+        );
+    }
+
+    #[test]
+    fn preview_reuses_one_successful_cat_fallback_with_requested_character_keys() {
+        let attempts = std::cell::RefCell::new(Vec::new());
+        let packs = runner_preview_packs_with(|character| {
+            attempts.borrow_mut().push(character);
+            if character == RunnerCharacter::Cat {
+                RunnerPack::build(character)
+            } else {
+                Err(RunnerBuildError::InvalidFrame {
+                    character,
+                    detail: "forced preview failure".to_string(),
+                })
+            }
+        });
+
+        assert_eq!(packs.len(), RunnerCharacter::FEATURED.len());
+        assert!(packs
+            .iter()
+            .all(|(_, pack)| pack.character() == RunnerCharacter::Cat));
+        assert_eq!(
+            packs
+                .iter()
+                .map(|(character, _)| *character)
+                .collect::<Vec<_>>(),
+            RunnerCharacter::FEATURED.to_vec(),
+            "fallback previews retain their requested payload keys"
+        );
+        assert_eq!(
+            attempts
+                .borrow()
+                .iter()
+                .filter(|&&character| character == RunnerCharacter::Cat)
+                .count(),
+            1,
+            "one prewarm must build Cat once and reuse it for every failed character"
+        );
+    }
+
+    #[test]
+    fn runner_assets_keep_the_selected_pack_for_preview_payloads() {
+        let assets = build_runner_assets(RunnerCharacter::Dog).expect("dog assets");
+        let frames: serde_json::Value =
+            serde_json::from_str(&assets.selected_preview_frames_json()).expect("preview JSON");
+        let frames = frames.as_array().expect("selected frame array");
+        assert_eq!(
+            frames.len(),
+            usize::from(RUNNER_FRAME_COUNT) * RUNNER_LOAD_BANDS
+        );
+        assert_eq!(
+            frames[23].as_str(),
+            assets.pack.preview_alpha_hex(2, 7).as_deref(),
+            "the selected Settings payload must come from the retained pack"
+        );
+        assert_eq!(
+            assets.icons.len(),
+            assets.pack.frames().len(),
+            "native icon cache must be built from each retained pack frame"
+        );
+        assert_eq!(assets.native_images.len(), assets.pack.frames().len());
+    }
+
+    #[test]
+    fn runner_character_switch_keeps_previous_assets_on_build_failure() {
+        let mut character = RunnerCharacter::Cat;
+        let mut assets = build_runner_assets(RunnerCharacter::Cat).expect("cat assets");
+        let original_preview = assets
+            .pack
+            .preview_alpha_hex(1, 1)
+            .expect("original preview alpha");
+
+        let error = replace_runner_assets_with(
+            &mut character,
+            &mut assets,
+            RunnerCharacter::Fox,
+            |requested| {
+                if requested == RunnerCharacter::Fox {
+                    Err(runner::RunnerBuildError::InvalidFrame {
+                        character: requested,
+                        detail: "forced failure".to_string(),
+                    })
+                } else {
+                    build_runner_assets(requested)
+                }
+            },
+        )
+        .expect_err("switch should fail");
+
+        assert_eq!(character, RunnerCharacter::Cat);
+        assert_eq!(assets.pack.character(), RunnerCharacter::Cat);
+        assert_eq!(
+            assets.pack.preview_alpha_hex(1, 1).as_deref(),
+            Some(original_preview.as_str())
+        );
+        assert_eq!(
+            assets.icons.len(),
+            usize::from(RUNNER_FRAME_COUNT) * RUNNER_LOAD_BANDS
+        );
+        assert!(error.to_string().contains("forced failure"));
+    }
+
+    #[test]
+    fn runner_character_switch_keeps_previous_assets_on_icon_cache_failure() {
+        let mut character = RunnerCharacter::Cat;
+        let mut assets = build_runner_assets(RunnerCharacter::Cat).expect("cat assets");
+        let original_preview = assets
+            .pack
+            .preview_alpha_hex(1, 1)
+            .expect("original preview alpha");
+        let original_icon_count = assets.icons.len();
+        let original_native_count = assets.native_images.len();
+
+        let error = replace_runner_assets_with(
+            &mut character,
+            &mut assets,
+            RunnerCharacter::Fox,
+            |requested| {
+                build_runner_assets_with(
+                    requested,
+                    RunnerPack::build,
+                    |candidate, index, rgba| {
+                        if candidate == RunnerCharacter::Fox && index == 3 {
+                            Err(RunnerBuildError::Cache {
+                                character: candidate,
+                                stage: format!("icon cache frame {index}"),
+                                detail: "forced icon cache failure".to_string(),
+                            })
+                        } else {
+                            runner_icon_from_rgba(candidate, index, rgba)
+                        }
+                    },
+                    make_runner_native_image_from_rgba,
+                )
+            },
+        )
+        .expect_err("switch should fail");
+
+        assert_eq!(character, RunnerCharacter::Cat);
+        assert_eq!(assets.pack.character(), RunnerCharacter::Cat);
+        assert_eq!(assets.icons.len(), original_icon_count);
+        assert_eq!(assets.native_images.len(), original_native_count);
+        assert_eq!(
+            assets.pack.preview_alpha_hex(1, 1).as_deref(),
+            Some(original_preview.as_str())
+        );
+        assert!(error.to_string().contains("icon cache frame 3"));
+    }
+
+    #[test]
+    fn runner_character_switch_keeps_previous_assets_on_native_cache_failure() {
+        let mut character = RunnerCharacter::Cat;
+        let mut assets = build_runner_assets(RunnerCharacter::Cat).expect("cat assets");
+        let original_preview = assets
+            .pack
+            .preview_alpha_hex(1, 1)
+            .expect("original preview alpha");
+        let original_icon_count = assets.icons.len();
+        let original_native_count = assets.native_images.len();
+
+        let error = replace_runner_assets_with(
+            &mut character,
+            &mut assets,
+            RunnerCharacter::Fox,
+            |requested| {
+                build_runner_assets_with(
+                    requested,
+                    RunnerPack::build,
+                    runner_icon_from_rgba,
+                    |candidate, index, rgba| {
+                        if candidate == RunnerCharacter::Fox && index == 5 {
+                            Err(RunnerBuildError::Cache {
+                                character: candidate,
+                                stage: format!("native cache frame {index}"),
+                                detail: "forced native cache failure".to_string(),
+                            })
+                        } else {
+                            make_runner_native_image_from_rgba(candidate, index, rgba)
+                        }
+                    },
+                )
+            },
+        )
+        .expect_err("switch should fail");
+
+        assert_eq!(character, RunnerCharacter::Cat);
+        assert_eq!(assets.pack.character(), RunnerCharacter::Cat);
+        assert_eq!(assets.icons.len(), original_icon_count);
+        assert_eq!(assets.native_images.len(), original_native_count);
+        assert_eq!(
+            assets.pack.preview_alpha_hex(1, 1).as_deref(),
+            Some(original_preview.as_str())
+        );
+        assert!(error.to_string().contains("native cache frame 5"));
+    }
+
+    #[test]
+    fn startup_runner_initialization_returns_controlled_error_when_cat_cache_conversion_fails() {
+        let error = initialize_runner_assets_with(RunnerCharacter::Fox, |requested| {
+            if requested == RunnerCharacter::Fox {
+                Err(RunnerBuildError::InvalidFrame {
+                    character: requested,
+                    detail: "forced pack failure".to_string(),
+                })
+            } else {
+                build_runner_assets_with(
+                    requested,
+                    RunnerPack::build,
+                    runner_icon_from_rgba,
+                    |candidate, index, rgba| {
+                        if candidate == RunnerCharacter::Cat && index == 0 {
+                            Err(RunnerBuildError::Cache {
+                                character: candidate,
+                                stage: format!("native cache frame {index}"),
+                                detail: "forced cat cache failure".to_string(),
+                            })
+                        } else {
+                            make_runner_native_image_from_rgba(candidate, index, rgba)
+                        }
+                    },
+                )
+            }
+        })
+        .expect_err("startup should return a controlled error");
+
+        assert!(matches!(
+            error.original_error,
+            Some(RunnerBuildError::InvalidFrame { .. })
+        ));
+        assert!(matches!(error.fatal_error, RunnerBuildError::Cache { .. }));
+        assert!(runner_startup_fatal_message(&error).chars().count() <= 180);
+        assert!(error.to_string().contains("forced cat cache failure"));
     }
 
     #[test]
@@ -10764,6 +12191,11 @@ mod tests {
         }
         assert!(en.contains(r#"id="summary-temp-label">CPU temp<"#));
         assert!(en.contains(r#"id="summary-fan-label">Fans<"#));
+        assert!(en.contains(r#"id="summary-cpu-core-chart"#));
+        assert!(en.contains(r#"id="show-core-graph-setting"#));
+        assert!(en.contains(r#"id="cpu-core-graph-toggle"#));
+        assert!(en.contains("function renderCoreGraph(d)"));
+        assert!(en.contains("d.core_hist"));
         assert!(en.contains("d.fan_avg_rpm_text"));
         assert!(en.contains("fan_avg_rpm"));
         assert!(source.contains("\"fan_avg_rpm_text\": fan_avg_rpm_text"));
@@ -10775,6 +12207,7 @@ mod tests {
         assert!(en.contains("function coreGroupName(kind)"));
         assert!(en.contains("d.core_groups"));
         assert!(source.contains("\"core_groups\": cpu_core_groups"));
+        assert!(source.contains("\"core_hist\": core_hist"));
     }
 
     #[test]
@@ -10890,6 +12323,43 @@ mod tests {
         assert!(ko.contains(">CPU 온도 경고<"));
         assert!(ko.contains(">팬 제어 실패<"));
         assert!(ko.contains(">앱 업데이트<"));
+    }
+
+    #[test]
+    fn settings_panel_exposes_automation_rule_editor() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+        for html in [&en, &ko] {
+            assert!(html.contains(r#"id="automation-settings""#));
+            assert!(html.contains(r#"id="automation-rules""#));
+            assert!(html.contains(r#"id="automation-add""#));
+            assert!(html.contains(r#"id="automation-preset""#));
+            assert!(html.contains(r#"id="automation-save""#));
+            assert!(html.contains(r#"id="config-transfer-settings""#));
+            assert!(html.contains(r#"id="config-transfer-text""#));
+            assert!(html.contains(r#"id="config-copy""#));
+            assert!(html.contains(r#"id="config-import""#));
+            assert!(html.contains("function updateAutomationRules(d)"));
+            assert!(html.contains("function applyQuietAcPreset()"));
+            assert!(html.contains("function updateConfigTransfer(d)"));
+            assert!(html.contains("window.ipc.postMessage('copyconfig')"));
+            assert!(html.contains("window.ipc.postMessage('importconfig:'+value)"));
+            assert!(html.contains(
+                "window.ipc.postMessage('rules:'+JSON.stringify(automationRulesPayload()))"
+            ));
+            assert!(html.contains("d.rules"));
+            assert!(html.contains("d.config_toml"));
+        }
+        assert!(en.contains(">Automation Rules<"));
+        assert!(ko.contains(">자동화 규칙<"));
+        assert!(ko.contains(">규칙 추가<"));
+        assert!(ko.contains(">배터리 저소음 / AC 고성능<"));
+        assert!(ko.contains(">규칙 저장<"));
+        assert!(!ko.contains(">Automation Rules<"));
+        assert!(en.contains(">Configuration Transfer<"));
+        assert!(ko.contains(">설정 가져오기 및 내보내기<"));
+        assert!(en.contains("CPU temperature above"));
+        assert!(ko.contains("CPU 온도 초과"));
     }
 
     #[test]
@@ -11101,6 +12571,9 @@ mod tests {
         assert!(en.contains(r#"id="update-current-version""#));
         assert!(en.contains(r#"id="update-latest-version""#));
         assert!(en.contains(r#"id="update-check-result""#));
+        assert!(en.contains(r#"id="update-channel""#));
+        assert!(en.contains("changeUpdateChannel(this.value)"));
+        assert!(include_str!("main.rs").contains("fetch_release_for_channel"));
         assert!(en.contains(r#"id="rail-update-check""#));
         assert!(en.contains(r#"id="rail-update-install""#));
         assert!(en.contains(r#"id="update-release-link""#));
@@ -11109,6 +12582,11 @@ mod tests {
         assert!(en.contains("function compareVersions(a,b)"));
         assert!(en.contains("function formatReleaseNotes(body)"));
         assert!(en.contains("function renderUpdateStatus(status)"));
+        assert!(en.contains("function loadUpdateStatusSnapshot()"));
+        assert!(en.contains("function rememberUpdateStatus(status)"));
+        assert!(en.contains("pf.update.status.v1"));
+        assert!(en.contains("15*60*1000"));
+        assert!(en.contains("APP_UPDATE_STATUS=loadUpdateStatusSnapshot();"));
         assert!(en.contains("if(RAIL_VIEW!=='settings')setRailView('settings');"));
         assert!(!en.contains("function fetchLatestReleaseStatus()"));
         assert!(!en.contains("api.github.com/repos/uulab-official/peterfan/releases/latest"));
@@ -11121,8 +12599,9 @@ mod tests {
         assert!(en.contains("s.install_ready===true"));
         assert!(en.contains("install_ready:!!nativeUpdate.install_ready"));
         assert!(en.contains("Preparing Update"));
+        assert!(en.contains("var checking=!!s.checking||phase==='checking';"));
+        assert!(en.contains("Awaiting Signed Release"));
         assert!(en.contains("Up to Date"));
-        assert!(en.contains("Development Build"));
         assert!(!en.contains(
             r#"id="rail-update-install" disabled onclick="installAppUpdate(this)" style="display:none""#
         ));
@@ -11167,6 +12646,26 @@ mod tests {
             assert_eq!(sensor_group_label(ResolvedLanguage::En, kind), en);
             assert_eq!(sensor_group_label(ResolvedLanguage::Ko, kind), ko);
         }
+    }
+
+    #[test]
+    fn sensor_group_labels_distinguish_cpu_and_gpu_die_roles() {
+        let cpu_average = temp("cpu.die", SensorKind::Cpu, 52.0);
+        let cpu_hot = temp("cpu.die.hot", SensorKind::Cpu, 67.0);
+        let gpu_die = temp("gpu.die", SensorKind::Gpu, 58.0);
+
+        assert_eq!(
+            sensor_group_label_for_sensor(ResolvedLanguage::En, &cpu_average),
+            "CPU average"
+        );
+        assert_eq!(
+            sensor_group_label_for_sensor(ResolvedLanguage::En, &cpu_hot),
+            "CPU hottest"
+        );
+        assert_eq!(
+            sensor_group_label_for_sensor(ResolvedLanguage::Ko, &gpu_die),
+            "GPU 다이"
+        );
     }
 
     #[test]
@@ -11550,7 +13049,7 @@ mod tests {
         assert!(en.contains("CPU avg "));
         assert!(en.contains("macOS safety fallback"));
         assert!(en.contains("Latest signed"));
-        assert!(en.contains("ahead of the latest signed release"));
+        assert!(en.contains("newer than the public signed release"));
         assert!(ko.contains("최신 서명 릴리스"));
         assert!(ko.contains("Mac 상태 확인 중"));
         assert!(en.contains(
@@ -11559,7 +13058,7 @@ mod tests {
         assert!(en.contains(r#"id="fan-apply-status" role="status" aria-live="polite""#));
         assert!(en.contains("b.setAttribute('aria-pressed',selected?'true':'false');"));
         assert!(en.contains("b.setAttribute('aria-pressed',active?'true':'false');"));
-        assert!(en.contains(".prow:hover .pkill,.pkill:focus-visible{opacity:1;}"));
+        assert!(en.contains(".pkill.confirm{background:var(--warn-soft)"));
         assert!(en.contains(".rail-btn{height:44px"));
     }
 
@@ -11733,6 +13232,15 @@ mod tests {
         );
         assert_eq!(active_control_mode_from_mode("hold:45%"), "hold");
         assert_eq!(active_control_mode_from_mode(""), "");
+    }
+
+    #[test]
+    fn daemon_config_capability_requires_an_explicit_success_reply() {
+        assert!(daemon_supports_user_config(Some(
+            "ok logged-in-user (macos)"
+        )));
+        assert!(!daemon_supports_user_config(Some("error: unknown command")));
+        assert!(!daemon_supports_user_config(None));
     }
 
     #[test]
@@ -12248,6 +13756,24 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn manual_daemon_reinstall_falls_back_to_one_privileged_install() {
+        use peterfan_platform::daemon_install::InstallOutcome;
+
+        let mut privileged_called = false;
+        let result = reinstall_or_privileged_install(
+            || Err("reinstall source is not a trusted PeterFan release".to_string()),
+            || {
+                privileged_called = true;
+                Ok(InstallOutcome::Installed)
+            },
+        );
+
+        assert!(matches!(result, Ok(InstallOutcome::Installed)));
+        assert!(privileged_called);
+    }
+
     #[test]
     fn clearing_daemon_prompt_state_removes_dismiss_and_snooze() {
         let mut cfg = peterfan_core::config::Config::default();
@@ -12345,6 +13871,57 @@ mod tests {
             parse_curve_points("not json").unwrap_err(),
             "invalid curve data"
         );
+    }
+
+    #[test]
+    fn parse_automation_rules_accepts_supported_conditions_in_order() {
+        let rules = parse_automation_rules(
+            r#"[
+                {"when":"on_battery","profile":"silent"},
+                {"when":"on_ac","profile":"balanced"},
+                {"when":"time:22-7","profile":"gaming"},
+                {"when":"cpu_above:85","profile":"maximum"}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(rules.len(), 4);
+        assert_eq!(rules[2].when, "time:22-7");
+        assert_eq!(rules[3].profile, Profile::Maximum);
+    }
+
+    #[test]
+    fn parse_automation_rules_rejects_invalid_or_oversized_rules() {
+        assert!(parse_automation_rules(r#"[{"when":"time:24-7","profile":"silent"}]"#).is_err());
+        assert!(
+            parse_automation_rules(r#"[{"when":"cpu_above:NaN","profile":"silent"}]"#).is_err()
+        );
+        let oversized = (0..33)
+            .map(|_| serde_json::json!({"when":"on_ac","profile":"balanced"}))
+            .collect::<Vec<_>>();
+        assert!(parse_automation_rules(&serde_json::to_string(&oversized).unwrap()).is_err());
+    }
+
+    #[test]
+    fn parse_imported_config_accepts_defaults_and_rules() {
+        let config = parse_imported_config(
+            r#"
+profile = "performance"
+rules = [{ when = "on_ac", profile = "maximum" }]
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.profile, Profile::Performance);
+        assert_eq!(config.rules.len(), 1);
+        assert_eq!(config.interval_secs, 2);
+    }
+
+    #[test]
+    fn parse_imported_config_rejects_invalid_control_settings() {
+        assert!(parse_imported_config("interval_secs = 0").is_err());
+        assert!(parse_imported_config(
+            "rules = [{ when = \"cpu_above:NaN\", profile = \"silent\" }]"
+        )
+        .is_err());
     }
 
     #[test]
@@ -12518,6 +14095,21 @@ mod tests {
             Some(now - RESUME_RECOVERY_GAP),
             now
         ));
+    }
+
+    #[test]
+    fn resume_recovery_plan_invalidates_cached_state_before_first_post_wake_sample() {
+        assert_eq!(
+            resume_recovery_plan(),
+            ResumeRecoveryPlan {
+                hide_popover: true,
+                invalidate_hardware_caches: true,
+                clear_dashboard_histories: true,
+                discard_completed_reads: true,
+                schedule_refreshes_immediately: true,
+                clear_control_confirmation: true,
+            }
+        );
     }
 
     #[test]

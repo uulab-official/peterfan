@@ -52,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.27.78.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.32.2.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -69,7 +69,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 | 팬 **제어** | ⚙️ SMC 쓰기, **root 권한 필요** (`sudo peterfan fan set N` 또는 데몬 사용). `fan set`은 **RPM을 다시 읽어들여 검증**하므로 가짜 "성공" 메시지가 아니라 진짜 ✓/✗를 확인할 수 있습니다. Intel에서는 검증 완료, Apple Silicon에서는 시도 및 검증되지만(일부 모델은 펌웨어가 이를 무시할 수 있음) |
 | CLI — `status`/`cpu`/`memory`/`disk`/`network`/`top`/`battery`/`system`/`temps`/`temps --all`/`fans`/`fan`/`profile`/`curve`/`hardware`/`doctor`/`integrity`/`config`/`serve`/`benchmark`/`log`/`alert`/`completions`, 전역 `--watch` & `--json` | ✅ 실행 가능 — `doctor`는 CPU 대표/최고/summary/aggregate/hotspot/P-core 온도 후보까지 진단, `integrity`는 설치된 앱의 서명/공증/Gatekeeper 상태를 진단 |
 | TUI 시스템 대시보드(ratatui) — CPU/메모리/디스크/네트워크/배터리/프로세스 + 온도/팬/전력 | ✅ 실행 가능 |
-| **메뉴바 앱** — RunCat처럼 CPU 사용량에 따라 동작 폭과 속도가 변하는 독립 8프레임 메뉴바 러너 20종(동물/공룡/로봇/유령/슬라임/사람/운동/궤도/초밥/도시/파티 등 및 온도/러너/둘 다 선택 가능), 상단 온도는 CPU 평균 기준, 로그인/라이선스 없이 바로 쓰는 간결한 팝오버, Apple Silicon P/E 코어 그룹 평균·피크와 코어별 사용률 상세, Settings의 **시작 시 자동 실행 토글**, 호버 시 간단 요약 툴팁, 2분/1시간/1일 히스토리 차트(호버로 정확한 값 + 평균/피크 확인), **각 팬의 실제 범위에 맞춰진 RPM 슬라이더로 팬별 Auto/Manual 제어**, 프로파일/Auto/Rules 제어, 개인정보 없이 센서·팬·데몬 상태를 JSON으로 복사하는 진단 리포트, Top Processes에서 프로세스 종료, 영어/한국어 지원, 별도의 크기 조절 가능한 상세 창, 라이트/다크 모드 | ✅ 실행 가능 |
+| **메뉴바 앱** — RunCat처럼 CPU 사용량에 따라 동작 폭과 속도가 변하는 20종 러너(사람은 투명 픽셀아트 8프레임 주행 시트, 나머지도 각각 8프레임 동작), 동물/공룡/로봇/유령/슬라임/운동/궤도/초밥/도시/파티 등 및 온도/러너/둘 다 선택 가능, 상단 온도는 CPU 평균 기준, 로그인/라이선스 없이 바로 쓰는 간결한 팝오버, Apple Silicon P/E 코어 그룹 평균·피크와 코어별 사용률 상세, Settings의 **시작 시 자동 실행 토글**, 호버 시 간단 요약 툴팁, 2분/1시간/1일 히스토리 차트(호버로 정확한 값 + 평균/피크 확인), **각 팬의 실제 범위에 맞춰진 RPM 슬라이더로 팬별 Auto/Manual 제어**, 프로파일/Auto/Rules 제어, 상세 창의 **배터리·AC·시간·CPU 온도 자동화 규칙 편집기**, **배터리 저소음 / AC 고성능 프리셋**, **TOML 설정 가져오기·내보내기**, 개인정보 없이 센서·팬·데몬 상태를 JSON으로 복사하는 진단 리포트, Top Processes에서 프로세스 종료, 영어/한국어 지원, 별도의 크기 조절 가능한 상세 창, 라이트/다크 모드 | ✅ 실행 가능 |
 | **네이티브 알림** — 선택형 CPU 코어 평균 온도 경고(3°C 히스테리시스), 팬 쓰기·RPM 검증 실패, 새 서명 업데이트 발견 알림. 데몬의 90°C 임계 안전 알림은 사용자 설정과 별도로 항상 유지 | ✅ macOS + Windows |
 | **데몬**(`peterfand`) — 지속적인 커브 적용 + 종료 시 복원 + 임계 온도 오버라이드 + IPC 서버, LaunchDaemon 설치 지원 | ✅ 실행 가능 |
 | **자동 업데이트 & 무결성** — 설정에서 `업데이트 확인`으로 새 서명 릴리스를 찾으면 `지금 업데이트`가 나타나고, 간단 메뉴의 `지금 업데이트`는 확인부터 설치·재실행까지 한 번에 진행. GitHub asset digest + `checksums.txt` SHA-256 대조 + UULab Developer ID/Bundle ID + code signature + 공증 ticket 검증 후에만 제자리에서 교체합니다. CLI에서는 `peterfan update --install`을 사용합니다. `peterfan integrity`로 현재 설치된 앱을, `peterfan integrity --latest`/`--tag`로 GitHub 릴리즈 산출물을, `peterfan integrity --dmg ~/Downloads/PeterFan-vX.Y.Z.dmg --checksums ~/Downloads/checksums.txt`로 내려받은 DMG를, `peterfan integrity --release-dir dist/local-release/vX.Y.Z`로 배포 폴더 전체를 같은 기준으로 검증 가능. 릴리즈 폴더 검증은 DMG/tar.gz/checksums/내부 앱 버전이 서로 어긋나면 실패 | ✅ 실행 가능 |
@@ -89,6 +89,28 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 미리 빌드된 바이너리는 각 [GitHub 릴리즈](https://github.com/uulab-official/peterfan/releases/latest)에
 첨부되어 있습니다. macOS(Apple Silicon + Intel, 유니버설) 릴리즈는 로컬 릴리즈
 머신에서 Developer ID 서명/공증 후 업로드하며, Windows 빌드는 별도 산출물로 제공됩니다:
+
+macOS 메뉴바 앱만 설치하려면 Homebrew Cask도 사용할 수 있습니다. 공식 tap에
+게시된 릴리스의 경우 다음처럼 설치합니다:
+
+```sh
+brew tap uulab-official/peterfan
+brew install --cask peterfan
+```
+
+CLI/TUI가 필요하면 기존 Formula를 사용합니다:
+
+```sh
+brew install uulab-official/peterfan/peterfan
+```
+
+Cask는 공식 서명·공증 DMG와 그 SHA-256에 고정됩니다. tap 유지보수자는 최종
+릴리스 DMG를 만든 뒤 `scripts/update-homebrew-cask.sh`를 실행해야 합니다.
+
+릴리스 Mac을 교체해야 한다면 [`docs/MACOS_DISTRIBUTION.md`](./docs/MACOS_DISTRIBUTION.md)의
+“Move the existing certificate to another Mac” 절차를 따르세요. `.p12`는
+`import-p12`로 Keychain에 넣고, `verify`로 인증서·Team ID·번들 ID·공증 프로필을
+검증한 뒤에만 릴리스를 만듭니다.
 
 | 자산 | 포함 내용 | 이런 분께 적합 |
 | --- | --- | --- |
@@ -195,7 +217,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.27.78
+PeterFan v1.32.2
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
@@ -282,7 +304,7 @@ peterfan/
 │   └── icongen/          generates the app icon PNG — dev-only, excluded from workspace
 ├── apps/
 │   └── landing/     static marketing website (open apps/landing/index.html)
-├── packaging/       LaunchDaemon plist · Homebrew formula · scripts/ install helpers
+├── packaging/       LaunchDaemon plist · Homebrew formula/cask · scripts/ install helpers
 ├── docs/            architecture, roadmap, CLI reference, research notes
 └── (planned) apps/desktop (Tauri GUI)
 ```

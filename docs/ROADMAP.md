@@ -43,6 +43,7 @@ working product map we use to decide what to polish next.
       [`GSTACK_PRODUCT_CHECKLIST.md`](./GSTACK_PRODUCT_CHECKLIST.md)
 - [x] iStat/RunCat capability matrix in
       [`ISTAT_RUNCAT_PARITY.md`](./ISTAT_RUNCAT_PARITY.md)
+- [x] Homebrew cask source and release checksum update flow
 
 ## Now
 
@@ -84,6 +85,8 @@ These are the highest-leverage improvements before adding large new surfaces.
       macOS automatic control when a write fails
 - [x] Refresh the Fan Control Health panel from the live settings update path
       and log rail navigation requests for support diagnostics
+- [x] Load automation rules and custom curves from the logged-in user's config
+      in the root LaunchDaemon, then wake the control loop immediately on reload
 - [x] Focus the popover only on explicit user open so WebView controls receive
       input without stealing focus during app startup
 - [x] Wait for the previous menu-bar process to exit before OTA replacement so
@@ -108,9 +111,9 @@ These are the highest-leverage improvements before adding large new surfaces.
 
 ### v1.28 — Sensor Accuracy
 
-- [ ] Split CPU average, CPU hottest, GPU die, SSD, battery, and board sensors
+- [x] Split CPU average, CPU hottest, GPU die, SSD, battery, and board sensors
       into named groups
-- [ ] Distinguish Apple Silicon GPU die sensors from CPU die sensors
+- [x] Distinguish Apple Silicon GPU die sensors from CPU die sensors
 - [x] Add sensor-source metadata to JSON output (`iohid`, `smc`, `battery`)
 - [x] Add "sensor debugger" output for comparing PeterFan with iStat/Stats
 - [x] Make benchmark/log commands record both average and hottest temperature
@@ -124,7 +127,7 @@ These are the highest-leverage improvements before adding large new surfaces.
 
 ### v1.30 — Glanceable System Monitor
 
-- [x] Twenty selectable eight-frame menu-bar runners whose pace follows smoothed CPU usage
+- [x] Twenty selectable CPU-responsive menu-bar runners with distinct eight-frame cycles, including an imported transparent human run cycle
 - [x] Adaptive macOS runner timer that sleeps until the next visible pose at
       steady load and wakes immediately when CPU speed changes
 - [x] Menu-bar temperature / runner / combined selector in Settings
@@ -143,29 +146,29 @@ These are the highest-leverage improvements before adding large new surfaces.
 - [x] In-app update panel shows current/latest version and check result
 - [x] In-app release notes preview before install
 - [x] One-click native check, verification, install, rollback, and relaunch
-- [ ] Homebrew cask
-- [ ] Update channel preference: stable / pre-release
+- [x] Homebrew cask
+- [x] Update channel preference: stable / pre-release
 - [x] Rollback path when an update fails after download
-- [ ] Clearer docs for moving signing material to another Mac
+- [x] Clearer docs for moving signing material to another Mac
 
 ## Next
 
 ### v1.31 — Automation
 
-- [ ] Rule editor in the detail window: battery, AC power, time, CPU temp
+- [x] Rule editor in the detail window: battery, AC power, time, CPU temp
 - [x] Per-profile curve previews in the popover
-- [ ] Import/export config from the UI
+- [x] Import/export config from the UI
 - [x] Native notifications for optional CPU-average warnings, fan command
       failures, and updates; the critical daemon safety alert remains mandatory
-- [ ] "Quiet on battery, performance on AC" preset
+- [x] "Quiet on battery, performance on AC" preset
 
 ### v1.32 — Power-User Surfaces
 
-- [ ] Local HTTP API hardening and docs examples for Raycast/Hammerspoon
+- [x] Local HTTP API hardening and docs examples for Raycast/Hammerspoon
 - [ ] Stream Deck / BetterTouchTool snippets
-- [ ] CLI `doctor --json` focused on release/support diagnostics
+- [x] CLI `doctor --json` focused on release/support diagnostics
 - [ ] TUI curve editor parity with the detail window
-- [ ] Process list filtering and "quit process" safeguards
+- [x] Process list filtering and "quit process" safeguards
 
 ### v1.33 — Platform Reach
 

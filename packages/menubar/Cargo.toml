@@ -18,11 +18,12 @@ peterfan-platform = { workspace = true }
 tray-icon = { workspace = true }
 tao = { workspace = true }
 wry = "0.55.1"
+serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
+png = "0.18.1"
 
 [dev-dependencies]
-png = "0.18.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -32,4 +33,3 @@ block2 = "0.6.2"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAccessibility", "NSButton", "NSImage", "NSEvent", "NSScreen", "NSStatusItem", "NSWindow", "NSWorkspace"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSData", "NSDate", "NSGeometry", "NSRunLoop", "NSString", "NSTimer", "block2"] }
-png = "0.18.1"

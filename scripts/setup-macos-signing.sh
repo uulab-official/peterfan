@@ -8,6 +8,10 @@
 #   3. Download the .cer from Apple.
 #   4. scripts/setup-macos-signing.sh import ~/Downloads/developerID_application.cer
 #   5. scripts/setup-macos-signing.sh notary
+#
+# To move an existing identity to a trusted second Mac:
+#   scripts/setup-macos-signing.sh import-p12 /secure-transfer/developer-id.p12
+#   scripts/setup-macos-signing.sh verify dist/PeterFan.app
 
 set -euo pipefail
 
@@ -28,7 +32,9 @@ usage:
   scripts/setup-macos-signing.sh teams
   scripts/setup-macos-signing.sh csr
   scripts/setup-macos-signing.sh import [downloaded-developer-id.cer]
+  scripts/setup-macos-signing.sh import-p12 [developer-id.p12]
   scripts/setup-macos-signing.sh notary
+  scripts/setup-macos-signing.sh verify [PeterFan.app]
 
 This keeps signing material local:
   - .env is gitignored
@@ -57,6 +63,41 @@ set_env_value() {
 
 developer_id_identity() {
   security find-identity -p codesigning -v 2>/dev/null | awk -F\" '/Developer ID Application/ {print $2; exit}'
+}
+
+configured_team_id() {
+  printf '%s' "${APPLE_TEAM_ID:-${PETERFAN_TEAM_ID:-}}"
+}
+
+verify_identity() {
+  local identity expected_identity expected_team identity_team
+  identity="$(developer_id_identity)"
+  if [[ -z "$identity" ]]; then
+    echo "error: no valid Developer ID Application identity is installed" >&2
+    return 1
+  fi
+  expected_identity="${PETERFAN_SIGN_IDENTITY:-}"
+  expected_team="$(configured_team_id)"
+  if [[ -n "$expected_identity" && "$identity" != "$expected_identity" ]]; then
+    echo "error: installed identity does not match PETERFAN_SIGN_IDENTITY" >&2
+    echo "       expected: $expected_identity" >&2
+    echo "       found:    $identity" >&2
+    return 1
+  fi
+  if [[ "$identity" =~ \(([A-Z0-9]{10})\)$ ]]; then
+    identity_team="${BASH_REMATCH[1]}"
+  else
+    echo "error: could not read the Team ID from the installed identity" >&2
+    return 1
+  fi
+  if [[ -n "$expected_team" && "$identity_team" != "$expected_team" ]]; then
+    echo "error: installed identity Team ID does not match APPLE_TEAM_ID" >&2
+    echo "       expected: $expected_team" >&2
+    echo "       found:    $identity_team" >&2
+    return 1
+  fi
+  echo "Developer ID identity: $identity"
+  echo "Team ID:               $identity_team"
 }
 
 list_local_teams() {
@@ -165,6 +206,33 @@ case "$CMD" in
     fi
     ;;
 
+  import-p12)
+    require_cmd security
+    P12_PATH="${2:-}"
+    if [[ -z "$P12_PATH" ]]; then
+      P12_PATH=$(find "$HOME/Downloads" -maxdepth 1 \( -name '*.p12' -o -name '*.P12' \) -print -mtime -7 2>/dev/null | sort -r | head -n 1)
+    fi
+    if [[ -z "$P12_PATH" || ! -f "$P12_PATH" ]]; then
+      echo "error: pass the password-protected .p12 identity archive" >&2
+      usage
+      exit 2
+    fi
+    KEYCHAIN="${PETERFAN_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
+    echo "Importing Developer ID identity into the login Keychain."
+    echo "Keychain will prompt for the archive password; it is never passed as an argument."
+    security import "$P12_PATH" -k "$KEYCHAIN" -T /usr/bin/codesign -T /usr/bin/security
+    if identity="$(developer_id_identity)" && [[ -n "$identity" ]]; then
+      set_env_value PETERFAN_SIGN_IDENTITY "$identity"
+      echo "imported Developer ID identity:"
+      echo "  $identity"
+      echo "updated .env: PETERFAN_SIGN_IDENTITY"
+      echo "delete the .p12 transfer copy after this Mac passes verify"
+    else
+      echo "error: the archive imported, but no valid Developer ID Application identity was found" >&2
+      exit 1
+    fi
+    ;;
+
   notary)
     require_cmd xcrun
     PROFILE="${NOTARYTOOL_PROFILE:-peterfan-notary}"
@@ -189,6 +257,51 @@ case "$CMD" in
       --apple-id "$APPLE_ID" \
       --team-id "$APPLE_TEAM_ID"
     set_env_value NOTARYTOOL_PROFILE "$PROFILE"
+    ;;
+
+  verify)
+    require_cmd security
+    require_cmd codesign
+    require_cmd xcrun
+    APP_PATH="${2:-}"
+    verify_identity
+
+    PROFILE="${NOTARYTOOL_PROFILE:-peterfan-notary}"
+    if xcrun notarytool history --keychain-profile "$PROFILE" --output-format json >/dev/null 2>&1; then
+      echo "Notary profile:        $PROFILE (available)"
+    else
+      echo "error: notary profile is unavailable: $PROFILE" >&2
+      echo "       run scripts/setup-macos-signing.sh notary on this Mac" >&2
+      exit 1
+    fi
+
+    if [[ -n "$APP_PATH" ]]; then
+      if [[ ! -d "$APP_PATH" ]]; then
+        echo "error: app bundle not found: $APP_PATH" >&2
+        exit 1
+      fi
+      if ! codesign --verify --deep --strict "$APP_PATH" >/dev/null 2>&1; then
+        echo "error: app bundle signature is invalid: $APP_PATH" >&2
+        exit 1
+      fi
+      DETAILS="$(codesign -dvvv "$APP_PATH" 2>&1)"
+      BUNDLE_ID="$(printf '%s\n' "$DETAILS" | awk -F= '/^Identifier=/ {print $2; exit}')"
+      APP_TEAM_ID="$(printf '%s\n' "$DETAILS" | awk -F= '/^TeamIdentifier=/ {print $2; exit}')"
+      EXPECTED_BUNDLE_ID="${PETERFAN_BUNDLE_ID:-kr.co.uulab.peterfan}"
+      EXPECTED_TEAM_ID="$(configured_team_id)"
+      if [[ "$BUNDLE_ID" != "$EXPECTED_BUNDLE_ID" ]]; then
+        echo "error: app bundle ID mismatch: ${BUNDLE_ID:-missing}" >&2
+        exit 1
+      fi
+      if [[ -n "$EXPECTED_TEAM_ID" && "$APP_TEAM_ID" != "$EXPECTED_TEAM_ID" ]]; then
+        echo "error: app Team ID mismatch: ${APP_TEAM_ID:-missing}" >&2
+        exit 1
+      fi
+      echo "App bundle:            $APP_PATH (signature, bundle ID, Team ID valid)"
+    else
+      echo "App bundle:            not supplied (identity-only verification)"
+    fi
+    echo "signing environment is ready"
     ;;
 
   -h|--help|help)

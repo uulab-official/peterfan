@@ -10,6 +10,8 @@ pub const REPO: &str = "uulab-official/peterfan";
 pub const EXPECTED_BUNDLE_ID: &str = "kr.co.uulab.peterfan";
 pub const EXPECTED_TEAM_ID: &str = "N99FMBQ662";
 
+use peterfan_core::config::UpdateChannel;
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UpdateInstallResult {
     /// `pending`, `installed`, `rolled_back`, or `failed`.
@@ -289,6 +291,23 @@ pub fn fetch_latest_release() -> Result<ReleaseInfo, String> {
     ))
 }
 
+/// Fetch the release selected by the user's update-channel preference.
+///
+/// GitHub's `/releases/latest` endpoint intentionally excludes prereleases,
+/// so the preview channel uses the ordered releases endpoint and ignores
+/// drafts while retaining the newest published release.
+pub fn fetch_release_for_channel(channel: UpdateChannel) -> Result<ReleaseInfo, String> {
+    match channel {
+        UpdateChannel::Stable => fetch_latest_release(),
+        UpdateChannel::PreRelease => {
+            let body = fetch_release_body(&format!(
+                "https://api.github.com/repos/{REPO}/releases?per_page=20"
+            ))?;
+            parse_release_list_response(&body)
+        }
+    }
+}
+
 pub fn fetch_release_by_tag(tag: &str) -> Result<ReleaseInfo, String> {
     let tag = if tag.starts_with('v') {
         tag.to_string()
@@ -301,6 +320,11 @@ pub fn fetch_release_by_tag(tag: &str) -> Result<ReleaseInfo, String> {
 }
 
 fn fetch_release_api(url: &str) -> Result<ReleaseInfo, String> {
+    let body = fetch_release_body(url)?;
+    parse_release_response(&body)
+}
+
+fn fetch_release_body(url: &str) -> Result<Vec<u8>, String> {
     let mut command = std::process::Command::new("curl");
     command.args([
         "-sS",
@@ -326,7 +350,7 @@ fn fetch_release_api(url: &str) -> Result<ReleaseInfo, String> {
             String::from_utf8_lossy(&out.stderr)
         ));
     }
-    parse_release_response(&out.stdout)
+    Ok(out.stdout)
 }
 
 fn github_api_token() -> Option<String> {
@@ -341,6 +365,21 @@ fn github_api_token() -> Option<String> {
 fn parse_release_response(body: &[u8]) -> Result<ReleaseInfo, String> {
     let val: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| format!("unexpected GitHub response: {e}"))?;
+    parse_release_value(&val)
+}
+
+fn parse_release_list_response(body: &[u8]) -> Result<ReleaseInfo, String> {
+    let val: serde_json::Value =
+        serde_json::from_slice(body).map_err(|e| format!("unexpected GitHub response: {e}"))?;
+    let releases = val.as_array().ok_or("response has no release list")?;
+    let release = releases
+        .iter()
+        .find(|release| !release["draft"].as_bool().unwrap_or(false))
+        .ok_or_else(|| "release list has no published releases".to_string())?;
+    parse_release_value(release)
+}
+
+fn parse_release_value(val: &serde_json::Value) -> Result<ReleaseInfo, String> {
     let tag = val["tag_name"]
         .as_str()
         .ok_or("response has no tag_name")?
@@ -1493,7 +1532,7 @@ fn install_downloaded_update(
     } else {
         extract_app_from_archive(download, tmp_dir)?
     };
-    validate_update_app(&new_app)?;
+    validate_update_app(&new_app, target_version)?;
 
     // A detached script rather than doing the replace in-process: this
     // process's own executable is inside the bundle being replaced, and the
@@ -1876,7 +1915,8 @@ fn validate_update_dmg(dmg: &std::path::Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn validate_update_app(app: &std::path::Path) -> Result<(), String> {
+fn validate_update_app(app: &std::path::Path, expected_version: &str) -> Result<(), String> {
+    validate_update_app_contents(app, expected_version)?;
     if !silent_status(
         std::process::Command::new("codesign")
             .args(["--verify", "--deep", "--strict", "--verbose=2"])
@@ -1903,6 +1943,33 @@ fn validate_update_app(app: &std::path::Path) -> Result<(), String> {
         return Err("Gatekeeper rejected the downloaded PeterFan.app".into());
     }
 
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn validate_update_app_contents(
+    app: &std::path::Path,
+    expected_version: &str,
+) -> Result<(), String> {
+    // Bind the extracted payload to the selected release before queuing any
+    // replacement. Both archive and DMG installs pass through this gate.
+    if expected_version.is_empty() {
+        return Err("downloaded PeterFan.app has no expected release version".into());
+    }
+    let version = plist_value(app, "CFBundleShortVersionString")
+        .ok_or("downloaded PeterFan.app is missing a readable bundle version")?;
+    if version != expected_version {
+        return Err(format!(
+            "downloaded PeterFan.app has version {version}, expected {expected_version}"
+        ));
+    }
+
+    let helper = app.join("Contents/MacOS/peterfand");
+    if !helper.is_file() || !is_executable(&helper) {
+        return Err(
+            "downloaded PeterFan.app is missing an executable bundled peterfand helper".into(),
+        );
+    }
     Ok(())
 }
 
@@ -2240,6 +2307,18 @@ mod tests {
     }
 
     #[test]
+    fn prerelease_channel_uses_newest_published_release_and_skips_drafts() {
+        let body = br#"[
+            {"tag_name":"v3.0.0-draft","draft":true,"html_url":"https://example.com/draft","assets":[]},
+            {"tag_name":"v2.9.0-beta.1","prerelease":true,"html_url":"https://example.com/beta","assets":[]},
+            {"tag_name":"v2.8.0","prerelease":false,"html_url":"https://example.com/stable","assets":[]}
+        ]"#;
+        let info = parse_release_list_response(body).unwrap();
+        assert_eq!(info.version, "2.9.0-beta.1");
+        assert_eq!(info.tag, "v2.9.0-beta.1");
+    }
+
+    #[test]
     fn parse_github_sha256_digest_accepts_only_sha256_hex() {
         assert_eq!(
             parse_github_sha256_digest(Some(
@@ -2534,6 +2613,97 @@ TeamIdentifier=N99FMBQ662
             "rolled_back"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "macos")]
+    struct UpdateAppFixture(std::path::PathBuf);
+
+    #[cfg(target_os = "macos")]
+    impl UpdateAppFixture {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "peterfan-update-validation-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(root.join("Contents/MacOS")).unwrap();
+            let fixture = Self(root);
+            fixture.write_version(Some("1.31.32"));
+            fixture.write_helper(0o755);
+            fixture
+        }
+
+        fn write_version(&self, version: Option<&str>) {
+            let entry = version
+                .map(|v| format!("<key>CFBundleShortVersionString</key><string>{v}</string>"))
+                .unwrap_or_default();
+            std::fs::write(
+                self.0.join("Contents/Info.plist"),
+                format!(
+                    "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>{entry}</dict></plist>"
+                ),
+            )
+            .unwrap();
+        }
+
+        fn write_helper(&self, mode: u32) {
+            use std::os::unix::fs::PermissionsExt;
+            let helper = self.0.join("Contents/MacOS/peterfand");
+            std::fs::write(&helper, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(helper, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for UpdateAppFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn update_app_contents_accepts_exact_release_version_and_executable_helper() {
+        let app = UpdateAppFixture::new();
+        assert_eq!(validate_update_app_contents(&app.0, "1.31.32"), Ok(()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn update_app_contents_rejects_mismatched_or_missing_bundle_version() {
+        let app = UpdateAppFixture::new();
+        assert!(validate_update_app_contents(&app.0, "1.31.33")
+            .unwrap_err()
+            .contains("version"));
+        app.write_version(None);
+        assert!(validate_update_app_contents(&app.0, "1.31.32")
+            .unwrap_err()
+            .contains("version"));
+        std::fs::write(app.0.join("Contents/Info.plist"), "invalid plist").unwrap();
+        assert!(validate_update_app_contents(&app.0, "1.31.32").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn update_app_contents_rejects_empty_expected_version() {
+        let app = UpdateAppFixture::new();
+        assert!(validate_update_app_contents(&app.0, "").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn update_app_contents_rejects_missing_nonexecutable_or_directory_helper() {
+        let app = UpdateAppFixture::new();
+        let helper = app.0.join("Contents/MacOS/peterfand");
+        app.write_helper(0o644);
+        assert!(validate_update_app_contents(&app.0, "1.31.32")
+            .unwrap_err()
+            .contains("helper"));
+        std::fs::remove_file(&helper).unwrap();
+        assert!(validate_update_app_contents(&app.0, "1.31.32").is_err());
+        std::fs::create_dir(&helper).unwrap();
+        assert!(validate_update_app_contents(&app.0, "1.31.32").is_err());
     }
 
     #[test]

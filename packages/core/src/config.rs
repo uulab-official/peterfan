@@ -125,6 +125,32 @@ impl NotificationConfig {
     }
 }
 
+/// Which GitHub release stream the app should check for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpdateChannel {
+    #[default]
+    Stable,
+    PreRelease,
+}
+
+impl UpdateChannel {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "stable" | "release" | "releases" => Some(Self::Stable),
+            "pre-release" | "prerelease" | "preview" | "beta" => Some(Self::PreRelease),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::PreRelease => "pre-release",
+        }
+    }
+}
+
 /// Which live metric the menu-bar item shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -221,6 +247,10 @@ pub enum RunnerCharacter {
 }
 
 impl RunnerCharacter {
+    /// Authored, quality-checked production picker roster.
+    pub const FEATURED: [Self; 20] = Self::ALL;
+
+    /// Every value understood by the persisted configuration format.
     pub const ALL: [Self; 20] = [
         Self::Cat,
         Self::Dog,
@@ -243,6 +273,10 @@ impl RunnerCharacter {
         Self::Sausage,
         Self::Party,
     ];
+
+    pub fn is_featured(self) -> bool {
+        Self::FEATURED.contains(&self)
+    }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
@@ -395,13 +429,21 @@ impl TemperatureSource {
 }
 
 /// Menu-bar item appearance, persisted so it survives a relaunch.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+fn default_show_cpu_core_graph() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MenubarConfig {
     pub metric: MenubarMetric,
     pub display: MenubarDisplay,
     pub character: RunnerCharacter,
     pub temperature_source: TemperatureSource,
+    pub update_channel: UpdateChannel,
+    /// Show the compact per-core CPU activity graph in the overview header.
+    #[serde(default = "default_show_cpu_core_graph")]
+    pub show_cpu_core_graph: bool,
     /// User picked "Don't Ask Again" on the first-run fan-control setup
     /// prompt — stop offering it automatically (still reachable via the
     /// right-click menu).
@@ -416,12 +458,31 @@ pub struct MenubarConfig {
     pub language: Language,
 }
 
+impl Default for MenubarConfig {
+    fn default() -> Self {
+        Self {
+            metric: MenubarMetric::default(),
+            display: MenubarDisplay::default(),
+            character: RunnerCharacter::default(),
+            temperature_source: TemperatureSource::default(),
+            update_channel: UpdateChannel::default(),
+            show_cpu_core_graph: default_show_cpu_core_graph(),
+            setup_prompt_dismissed: false,
+            daemon_update_prompt_dismissed_for: None,
+            daemon_update_prompt_snoozed_until_unix: None,
+            language: Language::default(),
+        }
+    }
+}
+
 impl MenubarConfig {
     pub fn is_default(&self) -> bool {
         self.metric == MenubarMetric::Temp
             && self.display == MenubarDisplay::Both
             && self.character == RunnerCharacter::Cat
             && self.temperature_source == TemperatureSource::CoreAverage
+            && self.update_channel == UpdateChannel::Stable
+            && self.show_cpu_core_graph
             && !self.setup_prompt_dismissed
             && self.daemon_update_prompt_dismissed_for.is_none()
             && self.daemon_update_prompt_snoozed_until_unix.is_none()
@@ -522,13 +583,16 @@ impl Condition {
                 "on_ac" => Some(Condition::OnAc),
                 _ => None,
             },
-            Some(("cpu_above", v)) => v.trim().parse::<f32>().ok().map(Condition::CpuAbove),
+            Some(("cpu_above", v)) => {
+                let value = v.trim().parse::<f32>().ok()?;
+                (value.is_finite() && (0.0..=120.0).contains(&value))
+                    .then_some(Condition::CpuAbove(value))
+            }
             Some(("time", v)) => {
                 let (a, b) = v.split_once('-')?;
-                Some(Condition::Time(
-                    a.trim().parse().ok()?,
-                    b.trim().parse().ok()?,
-                ))
+                let start = a.trim().parse().ok()?;
+                let end = b.trim().parse().ok()?;
+                (start < 24 && end < 24).then_some(Condition::Time(start, end))
             }
             _ => None,
         }
@@ -560,6 +624,39 @@ pub struct RuleContext {
 }
 
 impl Config {
+    /// Validate the subset of settings that can affect the privileged fan
+    /// control loop. The daemon calls this before accepting a user's config,
+    /// so a malformed file cannot disable sensible polling or thermal limits.
+    pub fn validate_for_control(&self) -> Result<(), String> {
+        if !(1..=60).contains(&self.interval_secs) {
+            return Err("interval_secs must be between 1 and 60".to_string());
+        }
+        if !self.critical_temp_c.is_finite() || !(70.0..=110.0).contains(&self.critical_temp_c) {
+            return Err("critical_temp_c must be between 70 and 110".to_string());
+        }
+        if self
+            .custom_curve
+            .as_ref()
+            .is_some_and(|curve| curve.to_fan_curve().is_none())
+        {
+            return Err("custom_curve is invalid".to_string());
+        }
+        if let Some((name, _)) = self
+            .named_curves
+            .iter()
+            .find(|(_, curve)| curve.to_fan_curve().is_none())
+        {
+            return Err(format!("named curve '{name}' is invalid"));
+        }
+        if let Some(rule) = self.rules.iter().find(|rule| rule.condition().is_none()) {
+            return Err(format!("automation rule '{}' is invalid", rule.when));
+        }
+        if self.rules.len() > 32 {
+            return Err("automation rules cannot contain more than 32 entries".to_string());
+        }
+        Ok(())
+    }
+
     /// Parse a config from TOML text.
     pub fn from_toml(s: &str) -> Result<Self, String> {
         toml::from_str(s).map_err(|e| e.to_string())
@@ -630,6 +727,24 @@ mod tests {
     }
 
     #[test]
+    fn privileged_control_config_rejects_unsafe_values() {
+        let mut cfg = Config::default();
+        assert!(cfg.validate_for_control().is_ok());
+
+        cfg.interval_secs = 0;
+        assert!(cfg.validate_for_control().is_err());
+        cfg.interval_secs = 2;
+        cfg.critical_temp_c = 150.0;
+        assert!(cfg.validate_for_control().is_err());
+        cfg.critical_temp_c = 90.0;
+        cfg.rules.push(Rule {
+            when: "sometimes".to_string(),
+            profile: Profile::Silent,
+        });
+        assert!(cfg.validate_for_control().is_err());
+    }
+
+    #[test]
     fn legacy_license_section_is_ignored_and_removed_on_save() {
         let cfg = Config::from_toml(
             "profile = \"balanced\"\n[license]\nkey = \"PFAN1-old\"\nfirst_run_unix = 1\n",
@@ -684,11 +799,13 @@ mod tests {
     fn menubar_config_roundtrips_and_omits_when_default() {
         let mut cfg = Config::default();
         assert!(!cfg.to_toml().contains("[menubar]"));
+        assert!(cfg.menubar.show_cpu_core_graph);
 
         cfg.menubar.metric = MenubarMetric::Network;
         cfg.menubar.display = MenubarDisplay::Graph;
         cfg.menubar.character = RunnerCharacter::Fox;
         cfg.menubar.temperature_source = TemperatureSource::IohidTdie;
+        cfg.menubar.show_cpu_core_graph = false;
         let toml = cfg.to_toml();
         assert!(toml.contains("[menubar]"));
         assert!(toml.contains("display = \"cat\""));
@@ -702,6 +819,7 @@ mod tests {
             back.menubar.temperature_source,
             TemperatureSource::IohidTdie
         );
+        assert!(!back.menubar.show_cpu_core_graph);
 
         let legacy = Config::from_toml("[menubar]\ndisplay = \"graph\"\n").unwrap();
         assert_eq!(legacy.menubar.display, MenubarDisplay::Graph);
@@ -710,6 +828,7 @@ mod tests {
             legacy.menubar.temperature_source,
             TemperatureSource::CoreAverage
         );
+        assert!(legacy.menubar.show_cpu_core_graph);
     }
 
     #[test]
@@ -718,6 +837,24 @@ mod tests {
         assert_eq!(MenubarDisplay::parse("runner"), Some(MenubarDisplay::Graph));
         assert_eq!(MenubarDisplay::parse("graph"), Some(MenubarDisplay::Graph));
         assert_eq!(MenubarDisplay::Graph.as_str(), "cat");
+    }
+
+    #[test]
+    fn update_channel_parses_and_roundtrips() {
+        assert_eq!(UpdateChannel::parse("stable"), Some(UpdateChannel::Stable));
+        assert_eq!(
+            UpdateChannel::parse("preview"),
+            Some(UpdateChannel::PreRelease)
+        );
+        assert_eq!(UpdateChannel::Stable.as_str(), "stable");
+        assert_eq!(UpdateChannel::PreRelease.as_str(), "pre-release");
+
+        let mut cfg = Config::default();
+        cfg.menubar.update_channel = UpdateChannel::PreRelease;
+        let toml = cfg.to_toml();
+        assert!(toml.contains("update_channel = \"pre-release\""));
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(back.menubar.update_channel, UpdateChannel::PreRelease);
     }
 
     #[test]
@@ -748,6 +885,26 @@ mod tests {
             Some(RunnerCharacter::Sausage)
         );
         assert_eq!(RunnerCharacter::parse("unknown"), None);
+        for character in RunnerCharacter::ALL {
+            assert_eq!(RunnerCharacter::parse(character.as_str()), Some(character));
+        }
+    }
+
+    #[test]
+    fn every_authored_character_is_selectable_and_round_trips() {
+        assert_eq!(RunnerCharacter::FEATURED.len(), 20);
+        for character in RunnerCharacter::ALL {
+            assert!(character.is_featured(), "missing {}", character.as_str());
+            assert_eq!(RunnerCharacter::parse(character.as_str()), Some(character));
+        }
+        let names = RunnerCharacter::FEATURED.map(|c| c.as_str());
+        assert_eq!(
+            names
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            20
+        );
     }
 
     #[test]
@@ -784,6 +941,10 @@ mod tests {
         // night wraps past midnight
         assert!(Condition::parse("time:22-7").unwrap().matches(&ctx));
         assert_eq!(Condition::parse("bogus"), None);
+        assert_eq!(Condition::parse("cpu_above:NaN"), None);
+        assert_eq!(Condition::parse("cpu_above:121"), None);
+        assert_eq!(Condition::parse("time:24-7"), None);
+        assert_eq!(Condition::parse("time:22-24"), None);
     }
 
     #[test]

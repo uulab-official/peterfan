@@ -47,6 +47,108 @@ impl SensorKind {
     }
 }
 
+/// A more precise named group for temperature diagnostics.
+///
+/// `SensorKind` remains the broad component classification used by existing
+/// clients. This finer group is derived from the stable sensor id/label so it
+/// can be added to JSON and UI payloads without changing the wire shape of
+/// `TempSensor` or breaking older daemons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SensorGroup {
+    CpuAverage,
+    CpuHottest,
+    CpuCore,
+    CpuDie,
+    GpuDie,
+    Gpu,
+    Memory,
+    Storage,
+    Battery,
+    Mainboard,
+    Other,
+}
+
+impl SensorGroup {
+    /// Derive the most useful named group from a sensor's stable identity.
+    pub fn from_sensor(sensor: &TempSensor) -> Self {
+        let id = sensor.id.to_ascii_lowercase();
+        let label = sensor.label.to_ascii_lowercase();
+
+        match sensor.kind {
+            SensorKind::Cpu => {
+                if id.ends_with(".hot")
+                    || id.contains("hotspot")
+                    || label.contains("hottest")
+                    || label.contains("hotspot")
+                {
+                    SensorGroup::CpuHottest
+                } else if id == "cpu.die"
+                    || id == "cpu.smc.die"
+                    || id.contains("smc.aggregate")
+                    || id.contains("smc.summary")
+                    || id.contains("iohid.tdie")
+                    || id.contains("iohid.cpu")
+                    || label.contains("average")
+                    || label.contains("aggregate")
+                    || label.contains("summary")
+                {
+                    SensorGroup::CpuAverage
+                } else if id.contains("core") || label.contains("core") {
+                    SensorGroup::CpuCore
+                } else {
+                    SensorGroup::CpuDie
+                }
+            }
+            SensorKind::Gpu => {
+                if id == "gpu.die" || id.contains("tdie") || label.contains("die") {
+                    SensorGroup::GpuDie
+                } else {
+                    SensorGroup::Gpu
+                }
+            }
+            SensorKind::Memory => SensorGroup::Memory,
+            SensorKind::Storage => SensorGroup::Storage,
+            SensorKind::Battery => SensorGroup::Battery,
+            SensorKind::Mainboard => SensorGroup::Mainboard,
+            SensorKind::Other if is_board_like_label(&label) => SensorGroup::Mainboard,
+            SensorKind::Other => SensorGroup::Other,
+        }
+    }
+
+    pub fn short(&self) -> &'static str {
+        match self {
+            SensorGroup::CpuAverage => "CPU average",
+            SensorGroup::CpuHottest => "CPU hottest",
+            SensorGroup::CpuCore => "CPU core",
+            SensorGroup::CpuDie => "CPU die",
+            SensorGroup::GpuDie => "GPU die",
+            SensorGroup::Gpu => "GPU",
+            SensorGroup::Memory => "Memory",
+            SensorGroup::Storage => "Storage",
+            SensorGroup::Battery => "Battery",
+            SensorGroup::Mainboard => "Mainboard",
+            SensorGroup::Other => "Other",
+        }
+    }
+}
+
+fn is_board_like_label(label: &str) -> bool {
+    [
+        "ambient",
+        "airport",
+        "board",
+        "heatpipe",
+        "heatsink",
+        "palm rest",
+        "power supply",
+        "proximity",
+        "wireless",
+    ]
+    .iter()
+    .any(|part| label.contains(part))
+}
+
 /// Hardware or subsystem that produced a temperature reading.
 ///
 /// `Unknown` is the serde default so a new app can still read snapshots from
@@ -154,5 +256,65 @@ mod tests {
         let value = serde_json::to_value(sensor).expect("sensor should serialize");
 
         assert_eq!(value["source"], "smc");
+    }
+
+    #[test]
+    fn sensor_groups_separate_cpu_and_gpu_die_roles() {
+        let sensor = |id: &str, label: &str, kind| TempSensor {
+            id: id.into(),
+            label: label.into(),
+            kind,
+            source: SensorSource::Smc,
+            value: Celsius(50.0),
+        };
+
+        assert_eq!(
+            SensorGroup::from_sensor(&sensor("cpu.die", "CPU Core Average", SensorKind::Cpu)),
+            SensorGroup::CpuAverage
+        );
+        assert_eq!(
+            SensorGroup::from_sensor(&sensor("cpu.die.hot", "CPU Core Hottest", SensorKind::Cpu)),
+            SensorGroup::CpuHottest
+        );
+        assert_eq!(
+            SensorGroup::from_sensor(&sensor(
+                "cpu.performance-core.1",
+                "CPU Performance Core 1",
+                SensorKind::Cpu
+            )),
+            SensorGroup::CpuCore
+        );
+        assert_eq!(
+            SensorGroup::from_sensor(&sensor("cpu.smc.die", "CPU die", SensorKind::Cpu)),
+            SensorGroup::CpuAverage
+        );
+        assert_eq!(
+            SensorGroup::from_sensor(&sensor("gpu.die", "GPU die", SensorKind::Gpu)),
+            SensorGroup::GpuDie
+        );
+    }
+
+    #[test]
+    fn sensor_groups_name_storage_battery_and_board_readings() {
+        let sensor = |id: &str, label: &str, kind| TempSensor {
+            id: id.into(),
+            label: label.into(),
+            kind,
+            source: SensorSource::Iohid,
+            value: Celsius(35.0),
+        };
+
+        assert_eq!(
+            SensorGroup::from_sensor(&sensor("ssd", "SSD", SensorKind::Storage)),
+            SensorGroup::Storage
+        );
+        assert_eq!(
+            SensorGroup::from_sensor(&sensor("battery", "Battery", SensorKind::Battery)),
+            SensorGroup::Battery
+        );
+        assert_eq!(
+            SensorGroup::from_sensor(&sensor("smc.raw.Ta0", "Ambient sensor", SensorKind::Other)),
+            SensorGroup::Mainboard
+        );
     }
 }

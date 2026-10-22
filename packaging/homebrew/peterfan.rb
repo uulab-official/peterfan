@@ -1,52 +1,33 @@
 # Homebrew formula for PeterFan.
 #
 # To install from this tap:
-#   brew tap uulab/peterfan
+#   brew tap uulab-official/peterfan
 #   brew install peterfan
 #
 # Or directly:
-#   brew install uulab/peterfan/peterfan
+#   brew install uulab-official/peterfan/peterfan
 #
 # To update this formula after a release:
 #   1. Download the new Universal tarball and compute SHA256:
 #      curl -sL <url> | sha256sum
 #   2. Update `url`, `sha256`, and `version` below.
-#   3. Run `brew audit --new-formula peterfan` to check.
+#   3. Run `brew audit --formula --strict uulab-official/peterfan/peterfan` to check.
 
 class Peterfan < Formula
   desc "Tiny hardware monitor & fan controller for developers"
-  homepage "https://github.com/uulab/peterfan"
-  version "1.2.1"
-
-  on_macos do
-    if Hardware::CPU.intel?
-      url "https://github.com/uulab/peterfan/releases/download/v#{version}/peterfan-v#{version}-universal-apple-darwin.tar.gz"
-      sha256 "PLACEHOLDER_SHA256_UNIVERSAL"
-    else
-      url "https://github.com/uulab/peterfan/releases/download/v#{version}/peterfan-v#{version}-universal-apple-darwin.tar.gz"
-      sha256 "PLACEHOLDER_SHA256_UNIVERSAL"
-    end
-  end
-
-  on_linux do
-    url "https://github.com/uulab/peterfan/releases/download/v#{version}/peterfan-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "PLACEHOLDER_SHA256_LINUX"
-  end
-
+  homepage "https://github.com/uulab-official/peterfan"
+  url "https://github.com/uulab-official/peterfan/releases/download/v1.27.78/peterfan-v1.27.78-universal-apple-darwin.tar.gz"
+  sha256 "bfa5a812190ee152795fe01fd574157c3ab963422f739c9c2ae1f4731de696b4"
   license "MIT"
+
+  depends_on :macos
 
   def install
     bin.install "peterfan"
     bin.install "peterfan-tui"
     bin.install "peterfand"
-    # peterfan-menubar is a GUI app; only install on macOS
-    if OS.mac?
-      bin.install "peterfan-menubar"
-      # If the tarball contains the .app bundle, install it too.
-      if File.directory?("PeterFan.app")
-        prefix.install "PeterFan.app"
-      end
-    end
+    bin.install "peterfan-menubar"
+    prefix.install "PeterFan.app"
   end
 
   def caveats

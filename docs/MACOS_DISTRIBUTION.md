@@ -116,18 +116,74 @@ NOTARYTOOL_PROFILE=peterfan-notary
 
 ### Option B: Move the existing certificate to another Mac
 
-Use this only for a trusted personal release machine.
+Use this only for a trusted personal release machine. A `.cer` by itself is
+not enough: the exported archive must contain the Developer ID certificate and
+its matching private key.
 
-1. Open Keychain Access on the current release Mac.
-2. Find `Developer ID Application: Choi Tae Ho (N99FMBQ662)`.
-3. Export it as a password-protected `.p12`.
-4. Move the `.p12` to the other Mac through a secure channel.
-5. Import it into that Mac's login Keychain.
-6. Run `scripts/setup-macos-signing.sh notary` on that Mac and create a local
-   `peterfan-notary` profile with a fresh app-specific password.
-7. Run `scripts/check-macos-release.sh`.
+1. On the current release Mac, open Keychain Access and locate
+   `Developer ID Application: Choi Tae Ho (N99FMBQ662)`.
+2. Export the identity as a password-protected `.p12`. Use a different secure
+   channel for the archive and its password; do not put either in chat, email,
+   git, or a shared download folder.
+3. On the destination Mac, clone the same tagged source and create `.env` from
+   `.env.example`. Set `PETERFAN_BUNDLE_ID`, `APPLE_TEAM_ID`, and the expected
+   `PETERFAN_SIGN_IDENTITY` value locally.
+4. Import the archive into the destination user's login Keychain. The helper
+   prompts for the `.p12` password and never accepts it as a command-line
+   argument:
 
-Never commit or upload the `.p12`. Delete the transfer copy after import.
+   ```bash
+   scripts/setup-macos-signing.sh import-p12 /secure-transfer/PeterFan-Developer-ID.p12
+   ```
+
+5. Create a new local notarization profile on the destination Mac. Do not try
+   to copy a Keychain profile from the old Mac:
+
+   ```bash
+   scripts/setup-macos-signing.sh notary
+   ```
+
+   Use a fresh app-specific password or an App Store Connect API key. The
+   profile name may remain `peterfan-notary`, but its secret stays in the new
+   Mac's Keychain.
+6. Verify the imported identity, Team ID, bundle ID, and notary profile before
+   building. If a bundle already exists, the command verifies its signature too:
+
+   ```bash
+   scripts/setup-macos-signing.sh verify dist/PeterFan.app
+   ```
+
+7. Run a no-upload signed dry run, then validate the final DMG:
+
+   ```bash
+   scripts/release-local-macos.sh vX.Y.Z --no-upload --skip-windows
+   scripts/check-macos-release.sh dist/local-release/vX.Y.Z/PeterFan-vX.Y.Z.dmg
+   ```
+
+8. Delete the `.p12` from the transfer location and empty the Trash on both
+   Macs. Keep only the Keychain identity and the notary profile on the
+   authorized destination Mac. If a backup is required, store it in the
+   organization's encrypted secrets vault, never in this repository.
+
+Never commit or upload the `.p12`, private key, app-specific password, API key,
+or `.env`. If the identity cannot be exported safely, use Option A and create a
+new Developer ID certificate on the destination Mac instead.
+
+### Destination Mac verification checklist
+
+Before allowing the destination Mac to publish a release, all of these must
+pass without printing credentials:
+
+```text
+Developer ID identity is present and matches the configured Team ID
+PETERFAN_BUNDLE_ID is kr.co.uulab.peterfan
+notarytool can read the local peterfan-notary Keychain profile
+an existing PeterFan.app is signed with the expected identity, when supplied
+the final DMG passes signature, stapling, bundle ID, and Gatekeeper checks
+```
+
+The `verify` subcommand performs the first four checks. The final DMG check is
+intentionally separate because it requires a completed notarization ticket.
 
 ## Release Flow
 

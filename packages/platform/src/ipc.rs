@@ -8,6 +8,8 @@
 //! - `profile <name>` — switch the active curve profile
 //! - `auto`           — hand fans back to the OS
 //! - `ping`           — liveness check
+//! - `reload`         — reload the logged-in user's validated config
+//! - `config-source`  — confirm support for user-aware config loading
 //!
 //! Responses are a single line: `ok ...` or `error: ...`.
 //!

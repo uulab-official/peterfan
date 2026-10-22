@@ -168,6 +168,7 @@ Expose metrics (and fan control) as a localhost JSON API for integrations
 ```bash
 peterfan serve --port 9847        # then:
 curl localhost:9847/api/v1/status
+curl localhost:9847/api/v1/doctor
 curl localhost:9847/api/v1/cpu
 curl -X POST localhost:9847/api/v1/profile -d '{"name":"gaming"}'
 curl -X POST localhost:9847/api/v1/fan -d '{"action":"set","percent":60}'
@@ -175,9 +176,25 @@ curl -X POST localhost:9847/api/v1/fan -d '{"action":"set","percent":60}'
 
 `GET /` serves a small human-readable index of the routes. Data endpoints:
 `GET /api/v1/{status,system,cpu,memory,disks,network,battery,temps,fans,power,processes}`;
+`GET /api/v1/doctor` returns a stable `schema_version: 1` support snapshot with
+health, readiness, daemon, and update-install fields;
 `POST /api/v1/profile` `{"name":"…"}`; `POST /api/v1/fan` `{"action":"auto"|"set","percent":N}`.
-Responses are JSON with `Access-Control-Allow-Origin: *`. Control endpoints
-apply only where fan control is available (Intel Macs).
+The server binds to `127.0.0.1` only, does not cache responses, rejects POST
+bodies larger than 64 KiB, and returns `X-Content-Type-Options: nosniff`.
+Control endpoints apply only where fan control is available (Intel Macs).
+
+For Raycast, use a Script Command with `/usr/bin/curl -s
+http://127.0.0.1:9847/api/v1/status` and parse `.cpu.usage_percent` or
+`.memory.used_percent` from the JSON. For Hammerspoon, a minimal poller is:
+
+```lua
+hs.http.asyncGet("http://127.0.0.1:9847/api/v1/status", nil, function(_, body)
+  local snapshot = hs.json.decode(body)
+  if snapshot then
+    hs.menubar.setTitle(string.format("%.0f%%", snapshot.cpu.usage_percent))
+  end
+end)
+```
 
 ### `benchmark` — stress test
 

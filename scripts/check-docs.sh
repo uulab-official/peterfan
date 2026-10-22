@@ -33,10 +33,28 @@ else
   fail "could not read workspace package version from Cargo.toml"
 fi
 
+if [[ "$version" == "1.32.2" ]]; then
+  ok "safe process control release version is v1.32.2"
+else
+  fail "safe process control release must use workspace version v1.32.2"
+fi
+
 if grep -q "^## \\[$version\\]" "$ROOT/CHANGELOG.md"; then
   ok "CHANGELOG.md has a v$version section"
 else
   fail "CHANGELOG.md is missing a [${version}] section"
+fi
+
+if grep -q 'Process list filtering and "quit process" safeguards' "$ROOT/docs/ROADMAP.md"; then
+  ok "roadmap tracks process filtering and quit safeguards"
+else
+  fail "roadmap is missing process filtering and quit safeguards"
+fi
+
+if grep -qi 'safe process control' "$ROOT/docs/PRODUCTION_CHECKLIST.md"; then
+  ok "production checklist records safe process control"
+else
+  fail "production checklist is missing safe process control evidence"
 fi
 
 if grep -q "v${version}" "$ROOT/README.ko.md"; then
@@ -157,6 +175,14 @@ if [[ -x "$ROOT/scripts/soak-test-macos.sh" ]] && \
   ok "macOS six-hour soak gate is documented and executable"
 else
   fail "macOS six-hour soak gate is incomplete"
+fi
+
+if grep -q 'import-p12' "$ROOT/scripts/setup-macos-signing.sh" && \
+   grep -q 'setup-macos-signing.sh verify' "$ROOT/docs/MACOS_DISTRIBUTION.md" && \
+   grep -q 'Move the existing certificate to another Mac' "$ROOT/docs/MACOS_DISTRIBUTION.md"; then
+  ok "second-Mac signing transfer and verification runbook is present"
+else
+  fail "second-Mac signing transfer runbook is incomplete"
 fi
 
 echo

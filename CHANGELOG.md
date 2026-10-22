@@ -4,7 +4,425 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.2] — 2026-10-22 · 러너 동작과 반응성 개선
+
+- 새·오리·양·물고기·슬라임·궤도·초밥·도시·소시지·파티를 오리지널 8프레임으로 새로 제작하고 선택 가능한 러너를 20종으로 확대
+- 푸시업·고스트·파티댄서를 포함한 20종의 개별 속도 제한을 제거하고 동일한 CPU 속도 곡선(20–180ms)으로 통일; 네이티브·미리보기 전체 속도 일치 검증 추가
+
+- 팔굽혀펴기를 손·발 고정, 일직선 몸통, 일정한 팔 길이의 관절 모델로 교체하고 공통 CPU 반복 속도 적용
+
+- 고양이·강아지·토끼·여우·펭귄·로봇·유령을 몸 형태가 유지되는 오리지널 8프레임 동작으로 개선
+- CPU만 250ms 간격으로 읽고, 포즈 간격을 20–180ms로 조정해 낮은 부하에서도 끊기지 않으며 높은 부하에서는 더 빠르게 반응
+- 네이티브 타이머가 실제 경과 시간을 사용해 지연된 콜백을 보정하고, CPU 갱신이 임박한 프레임을 뒤로 미루지 않도록 수정
+- 설정 미리보기 이미지 캐시와 화면·동작 줄이기 설정에 따른 타이머 정지/재개 적용
+- OTA 설치 전에 다운로드한 앱 버전과 릴리스 버전을 대조하고 실행 가능한 팬 제어 헬퍼 포함 여부를 확인
+- `check-runner-preview.mjs` 회귀 검사와 세 가지 CPU 부하의 `runner-motion-qa.html` 비교 화면 추가
+
+## [1.32.1] — 안정성 및 배포 검증 보강
+
+- 수동 팬 제어 데몬 재설치가 ad-hoc 로컬 서명에서 실패해도 관리자 재설치로 안전하게 폴백
+- 개발 버전과 공개 Homebrew cask 버전을 혼동하지 않도록 cask 검증 기준 분리
+- macOS 릴리스 검사기의 `private/` ignore 검증 오탐 수정
+
+## [1.32.0] — 안전한 프로세스 검색과 종료
+
+### Added
+
+- System 화면에서 전체 네이티브 프로세스 스냅샷을 이름 또는 정확한 PID로
+  검색하고 CPU·메모리 기준으로 정렬할 수 있습니다.
+- 현재 사용자가 소유한 프로세스만 인라인 2단계 확인 후 macOS `SIGTERM`으로
+  종료 요청할 수 있으며, 결과를 같은 화면에서 확인할 수 있습니다.
+
+### Security
+
+- PID와 시작 시각을 신호 직전에 다시 확인해 PID 재사용으로 다른 프로세스를
+  종료하는 문제를 차단합니다.
+- 소유권을 확인할 수 없거나 다른 사용자가 소유한 프로세스, PeterFan 구성
+  요소와 보호된 시스템 프로세스는 기본적으로 거부합니다.
+
+## [1.31.32] — RunCat급 러너 품질 시스템
+
+### Changed
+
+- 20종 러너를 공통 48×32 정규화 파이프라인과 품질 게이트로 통합했습니다.
+- 메뉴바와 설정 미리보기가 동일한 캐시 프레임을 사용하도록 정리했습니다.
+- 프레임 중심, 바닥선, 방향, 형태 인식도와 CPU 비용을 자동 검증합니다.
+
+## [1.31.31] — 상단 코어별 CPU 그래프
+
+### Added
+
+- 상단 요약 영역에 코어별 CPU 사용률 히스토리 그래프를 추가했습니다.
+- 설정에서 코어별 CPU 그래프 표시를 켜거나 끌 수 있습니다.
+
+## [1.31.30] — 팬 가감속 추가 완화
+
+### Changed
+
+- 정상 구간의 팬 duty 변화율을 상승 초당 4%, 하강 초당 3%로 더 낮춰
+  짧은 온도 변동에도 팬 속도가 튀지 않도록 했습니다.
+- 임계온도 안전 오버라이드는 기존처럼 즉시 100%로 동작합니다.
+
+## [1.31.29] — 팬 속도 램프 제어
+
+### Changed
+
+- 온도·프로파일 변화가 팬 duty에 즉시 전달되지 않도록 상승/하강 속도를
+  시간 기준으로 제한해 자연스럽게 가감속하도록 했습니다.
+- 임계온도 안전 오버라이드는 기존처럼 즉시 100%로 동작합니다.
+
+## [1.31.28] — 로컬 API 연동 보강
+
+### Added
+
+- localhost API에 `GET /api/v1/doctor` 지원 스냅샷을 추가했습니다.
+- Raycast와 Hammerspoon에서 바로 사용할 수 있는 예시를 CLI 문서에 추가했습니다.
+
+### Changed
+
+- API 응답을 캐시하지 않고 `nosniff`·CSP 헤더를 적용했습니다.
+- POST 요청 본문을 64 KiB로 제한해 과도한 입력이 팬 제어 경로에 도달하지
+  않도록 했습니다.
+
+## [1.31.27] — 진단 JSON 고도화
+
+### Added
+
+- `peterfan doctor --json`에 안정적인 `schema_version`, 앱 버전, 전체 상태,
+  문제 목록, 핵심 readiness 체크, 실행 바이너리·Team ID·업데이트 결과를
+  추가해 지원 도구와 Raycast 같은 자동화에서 바로 사용할 수 있게 했습니다.
+- 기존 사람이 읽는 `peterfan doctor` 출력과 종료 동작은 유지했습니다.
+
+## [1.31.26] — 러너 선택창 밀도 개선
+
+### Changed
+
+- 러너 선택 목록의 행 높이와 최대 높이를 줄여 한 화면에 더 많은 캐릭터가
+  보이도록 정리했습니다.
+- 목록 썸네일은 선택된 러너와 동일한 기준 포즈를 사용해 캐릭터별 비교가
+  일관되도록 했습니다.
+
+## [1.31.25] — 업데이트 결과 유지 보강
+
+### Fixed
+
+- 업데이트 확인 결과를 WebView 재생성 후에도 15분 동안 유지해, 잠깐
+  표시되었다가 다음 상태 갱신에서 사라지는 현상을 줄였습니다.
+- `확인 중`·`설치 중` 상태는 저장하지 않아 오래된 진행 상태가 새 실행에
+  남지 않도록 했습니다.
+
+## [1.31.24] — 러너 미리보기 축소 품질 개선
+
+### Changed
+
+- 선택창의 48×32 러너 프레임을 33×22로 축소할 때 브라우저 보간을 사용해
+  계단처럼 끊기는 외곽선을 줄이고 얇은 다리·꼬리 형태가 더 잘 보이도록 했습니다.
+- 실제 메뉴바 아이콘의 선명한 픽셀 렌더링과 러너 프레임 데이터는 변경하지 않았습니다.
+
+## [1.31.23] — 러너 프레임 정렬 고도화
+
+### Changed
+
+- 공개 스프라이트 시트의 프레임마다 남아 있던 투명 여백 차이를 자동 보정해
+  러너의 수평 중심과 발선이 사이클 전체에서 안정적으로 유지됩니다.
+- 원본의 달리기 동작과 CPU 부하별 바운스는 유지하면서, 메뉴바와 선택창에서
+  프레임 전환 시 좌우로 튀거나 발이 들쭉날쭉해 보이는 현상을 줄였습니다.
+
+## [1.31.22] — 러너 미리보기 팝오버 연동
+
+### Changed
+
+- 네이티브 팝오버 show/hide 이벤트를 WebView에 전달해, 문서 가시성만으로
+  감지되지 않는 macOS 팝오버 닫힘에서도 미리보기 타이머가 확실히 중지됩니다.
+- 팝오버를 다시 열면 현재 CPU 속도와 선택 포즈에서 자연스럽게 재개됩니다.
+
+## [1.31.21] — 러너 미리보기 수명주기 정리
+
+### Changed
+
+- 팝오버 WebView가 숨겨지면 선택 러너 미리보기 타이머를 즉시 중지하고,
+  다시 표시될 때만 재개하도록 해 백그라운드 작업을 줄였습니다.
+- 기존 CPU 속도 곡선과 Reduce Motion 정지 정책은 그대로 유지했습니다.
+
+## [1.31.20] — 러너 속도 곡선 통합
+
+### Changed
+
+- 선택 화면 미리보기의 CPU 속도식을 메뉴바 러너와 동일한 60–480ms 곡선으로
+  통합했습니다.
+- 접지·비행 포즈 가중치도 동일하게 적용해 선택 화면과 실제 메뉴바 아이콘의
+  체감 보폭과 속도가 어긋나지 않도록 했습니다.
+
+## [1.31.19] — 러너 미리보기 CPU 반응성
+
+### Changed
+
+- 선택된 러너 미리보기의 프레임 간격도 CPU 사용률에 맞춰 저부하에서는
+  느리게, 고부하에서는 빠르게 동작하도록 연결했습니다.
+- 반복 타이머 대신 가변 지연 스케줄러를 사용해 부하 변화 시 다음 프레임부터
+  속도가 자연스럽게 바뀌며, Reduce Motion에서는 계속 정지합니다.
+
+## [1.31.18] — 러너 선택 미리보기 애니메이션
+
+### Changed
+
+- 선택된 러너 미리보기에 8프레임 애니메이션을 연결해 실제 보행·점프·부유
+  동작을 확인할 수 있게 했습니다.
+- 옵션 목록은 정적 썸네일로 유지하고 선택된 한 개만 170ms 간격으로 갱신해
+  WebView 비용을 제한했으며, Reduce Motion 환경에서는 자동으로 정지합니다.
+
+## [1.31.17] — 러너 선택 미리보기 선명도 개선
+
+### Changed
+
+- 러너 선택 미리보기를 33×22로 정규화해 48×32 원본의 1.5:1 비율을
+  유지하고, 선택 영역에서 불필요하게 크게 보이던 폭을 줄였습니다.
+- 픽셀 렌더링을 고정해 축소된 흰색 러너의 외곽선과 발 모양이 흐려지지 않도록
+  했습니다.
+
+## [1.31.16] — 고스트 러너 표시 고도화
+
+### Changed
+
+- Ghost 원본 시트의 좌우 빈 여백을 정규화해 선택 미리보기와 메뉴바에서
+  망토 실루엣이 더 크게 읽히도록 조정했습니다.
+- 머리·꼬리 클리핑 없이 기존 8프레임 보간, CPU 부하 속도, 흰색 출력 정책을
+  유지했습니다.
+
+## [1.31.15] — 고스트 러너 에셋 고도화
+
+### Changed
+
+- Ghost 러너를 공개 CC0 6프레임 사이드뷰 워크 사이클로 교체해 기존 절차
+  도형보다 망토의 물결과 부유 동작이 선명하게 보이도록 했습니다.
+- RGBA 러너의 검은 외곽선을 투명 매트로 오인해 지우던 공통 디코더를 보정하고,
+  CPU 부하 기반 프레임 속도·바운스는 기존 8프레임 런타임 경로로 유지했습니다.
+
+## [1.31.14] — 공룡 러너 에셋 고도화
+
+### Changed
+
+- Dinosaur 러너를 공개 CC0 사이드뷰 런 시트로 교체해 머리·꼬리·발 동작이
+  프레임마다 실제로 변하도록 했습니다.
+- 대형 원본 PNG 프레임을 메뉴바용 48×32 알파 프레임으로 정규화하고 CPU
+  부하 기반 바운스를 적용했습니다.
+
+## [1.31.13] — 동물 러너 프레임 고도화
+
+### Changed
+
+- Dog·Rabbit·Fox에도 공개 CC0 측면 러닝 스프라이트를 적용해 절차 도형과
+  실제 프레임이 섞여 보이던 편차를 줄였습니다.
+- 서로 다른 원본 프레임 수와 시트 행을 8프레임으로 보간·정규화하고, CPU
+  부하에 따른 속도와 수직 모션을 동일한 런타임 경로로 통합했습니다.
+- 자산의 투명 배경·픽셀 여백·가로 비율을 메뉴바 슬롯에 맞게 정리했습니다.
+
+## [1.31.12] — 실제 스프라이트 러너 고도화
+
+### Changed
+
+- 공개 CC0 고양이 러닝 스프라이트를 좌→우 8프레임 메뉴바 러너로 연결하고,
+  원본 여백을 정규화해 작은 크기에서도 실루엣이 분명하게 보이도록 했습니다.
+- CPU 사용률에 따라 프레임 간격뿐 아니라 접지·도약 수직 모션도 자연스럽게
+  변화하도록 보강했습니다.
+- 러너 프레임의 CPU 캐시 오염을 방지하고, 폭·접지·중심 유지·흰색 출력에
+  대한 회귀 테스트를 추가했습니다.
+
+## [1.31.11] — 러너 흰색 표시 고정
+
+### Changed
+
+- 설정 선택 미리보기까지 테마 색상에 영향을 받지 않고 흰색으로 표시되도록
+  고정했습니다.
+
+## [1.31.10] — 흰색 러너 형태 보강
+
+### Changed
+
+- 흰색 변환 시 Human 시트의 어두운 외곽선이 팔다리를 붙이지 않도록
+  외곽선 알파를 낮춰 형태를 더 선명하게 했습니다.
+- CPU별 프레임 속도와 네이티브 타이머의 저부하·고부하 간격 차이를 회귀
+  테스트로 계속 고정했습니다.
+
+## [1.31.9] — 흰색 러너와 속도·미리보기 정리
+
+### Changed
+
+- 모든 러너와 캐릭터 선택 미리보기를 흰색으로 통일했습니다.
+- 선택 버튼과 목록의 러너 미리보기 표시 크기를 줄였습니다.
+- CPU 사용률에 따른 러너 프레임 속도 변화는 유지하고, 저부하에서는 느리게,
+  고부하에서는 빠르게 움직이는 경로를 테스트로 확인했습니다.
+
+## [1.31.8] — 좌→우 컬러 러너 리워크
+
+### Changed
+
+- 모든 러너를 왼쪽에서 오른쪽으로 진행하는 공통 기준으로 유지하고, 메뉴바에서
+  머리·꼬리·팔·다리의 방향성이 뒤집히지 않도록 전 프레임을 시각 QA했습니다.
+- 절차적 러너에 캐릭터별 컬러 팔레트와 얇은 외곽선을 적용해, 작은 메뉴바에서도
+  캐릭터 실루엣과 얼굴의 빈 공간이 뭉개지지 않도록 개선했습니다.
+- 모든 macOS 네이티브 러너를 컬러 이미지로 표시하고, 캐릭터 선택 미리보기에도
+  동일한 팔레트를 적용했습니다.
+
+## [1.31.7] — 얇은 컬러 러너 표시
+
+### Changed
+
+- 절차적으로 그리던 `Human` 메뉴바 러너를 OpenGameArt의 투명 CC-BY
+  러닝 시트로 교체했습니다.
+- 8개 주행 포즈를 최근접 축소하고 프레임별 중심을 정규화해 팔·다리와 발
+  접지가 흐려지거나 좌우로 미끄러지지 않도록 했습니다.
+- `Human` 러너는 원본 색상과 명암을 유지하고 macOS 템플릿 모드를 해제해
+  작은 메뉴바에서도 몸통과 팔다리 형태가 붙지 않도록 했습니다.
+- 원본 라이선스와 다운로드 출처를 `assets/runner/README.md`에 기록했습니다.
+
+### Tests
+
+- 공개 러너의 8개 포즈가 중복되지 않는지 검사하는 회귀 테스트를 추가했습니다.
+
+## [1.31.3] — 업데이트 상태 표시 정리
+
+### Fixed
+
+- 업데이트 확인 중 잠깐 `지금 업데이트`가 보이던 오표시를 제거했습니다.
+- 현재 앱이 공개 서명 릴리스보다 앞선 경우 설치 버튼을 `공식 릴리스 대기`로
+  표시해, 실제로 설치 가능한 업데이트처럼 보이지 않게 했습니다.
+
+## [1.31.2] — 배터리·AC 자동화 프리셋
+
+### Added
+
+- 자동화 규칙 편집기에 `배터리 저소음 / AC 고성능` 프리셋을 추가했습니다.
+  프리셋은 배터리에서는 `silent`, AC에서는 `performance`를 사용하며,
+  편집기에 미저장 상태로 준비된 뒤 사용자가 저장할 때만 적용됩니다.
+
+### Tests
+
+- 프리셋 버튼, 영어/한국어 라벨, 미저장 적용 흐름 회귀 검사를 추가했습니다.
+
+## [1.31.1] — 설정 TOML 가져오기·내보내기
+
+### Added
+
+- 상세 창 Settings에서 현재 TOML 설정을 클립보드로 복사하고, 붙여넣은
+  설정을 검증한 뒤 가져올 수 있게 했습니다.
+- 가져온 설정은 저장 후 실행 중인 데몬에 `reload`를 보내며, 잘못된 TOML,
+  제어 범위를 벗어난 값, 잘못된 자동화 규칙은 원본 설정을 건드리지 않습니다.
+
+### Tests
+
+- 설정 전송 UI, TOML 기본값 보완, 안전성 검증, 클립보드 IPC 회귀 테스트를
+  추가했습니다.
+
+## [1.31.0] — 상세 창 자동화 규칙 편집기
+
+### Added
+
+- 상세 창 Settings에 배터리, AC 전원, 시간 구간, CPU 온도 초과 조건을
+  추가·삭제·편집하고 팬 프로파일을 선택하는 규칙 편집기를 추가했습니다.
+- 규칙은 위에서부터 평가되며, 저장 시 사용자 설정을 검증하고 실행 중인
+  데몬에 `reload`를 보내 즉시 적용합니다. 잘못된 조건과 32개 초과 규칙은
+  저장하지 않습니다.
+
+### Tests
+
+- 조건 파싱, 범위 검증, 규칙 저장 IPC, 영어/한국어 편집기 렌더링 회귀 테스트를
+  추가했습니다.
+
+## [1.30.1] — 다른 Mac 서명 환경 이전 런북
+
+### Added
+
+- 기존 Developer ID 인증서를 다른 Mac으로 옮길 때 사용하는
+  `setup-macos-signing.sh import-p12` 명령을 추가했습니다.
+- 인증서, Team ID, 번들 ID, 공증 Keychain 프로필, 선택한 앱 번들을 한 번에
+  검증하는 `setup-macos-signing.sh verify` 명령을 추가했습니다.
+- 서명 자료 이전 순서와 폐기·검증 절차를 macOS 배포 문서에 명시했습니다.
+
+### Safety
+
+- `.p12`, 개인 키, Apple 앱 전용 암호는 저장소나 전송 디렉터리에 남기지
+  않도록 이전 런북에 삭제 확인 단계를 추가했습니다.
+
+## [1.30.0] — Homebrew cask 배포 준비
+
+### Added
+
+- macOS 앱 설치용 Homebrew cask를 추가했습니다. 공식 유니버설 DMG를
+  `/Applications`에 설치하며, 기존 CLI용 Formula와 역할을 분리합니다.
+- 릴리스 DMG의 실제 SHA-256으로 cask를 갱신하는 스크립트와 cask 검증을
+  릴리스 체크 흐름에 추가했습니다.
+
+### Changed
+
+- 프로젝트 버전을 `v1.30.0`으로 올리고 릴리스/설치 문서를 현재 배포 경로에
+  맞게 갱신했습니다.
+
 ## [Unreleased]
+
+### Fixed
+
+- macOS LaunchDaemon이 `/var/root`의 기본 설정을 읽어 로그인한 사용자가
+  저장한 자동화 규칙, 기본 프로필, 사용자 팬 곡선을 무시하던 문제를
+  수정했습니다. 이제 콘솔 사용자의 `Application Support` 설정을 읽고,
+  앱 시작 및 `reload` 직후 제어 루프를 깨워 변경을 바로 적용합니다.
+- 규칙 모드에서 설정을 재로드해도 최초 실행 시의 기본 프로필로 되돌아가던
+  문제를 수정했습니다. 재로드된 기본 프로필과 규칙이 같은 제어 주기부터
+  사용됩니다.
+
+### Safety
+
+- 루트 데몬이 사용자 설정을 적용하기 전에 갱신 주기, 임계온도, 사용자
+  곡선과 자동화 조건을 검증합니다. 손상되거나 비정상적으로 큰 설정 파일은
+  팬 제어에 사용하지 않고 안전한 기본값으로 복구합니다.
+
+### Tests
+
+- 사용자 설정 경로, 기능 지원 확인, 설정 안전성 검증, 재로드된 기본 프로필
+  선택을 회귀 테스트로 추가했습니다. 전체 워크스페이스 테스트 277개와 스모크 검사
+  42개, Clippy 경고 0개를 통과했습니다.
+
+## [1.29.0] — 안정 릴리스와 프리릴리스 업데이트 채널
+
+### Added
+
+- Updates 패널에서 `Stable releases`와 `Pre-release builds` 채널을 선택할 수
+  있게 했습니다. 선택값은 사용자 설정에 저장되어 다음 실행에도 유지됩니다.
+- 프리릴리스 채널은 GitHub의 draft 릴리스는 건너뛰고 최신 공개 릴리스를
+  조회합니다. 설치 전 기존 서명·체크섬 검증 흐름은 그대로 사용합니다.
+
+### Safety
+
+- macOS 시스템 전체 GPU 사용률은 공개 API와 Activity Monitor 기준을 동시에
+  만족하는 안정적인 방법이 없어 제품 지표로 올리지 않았습니다. 관련 IOReport
+  연구 코드는 실험 플래그와 연구 문서에 남겨 부정확한 수치를 표시하지 않습니다.
+
+## [1.28.1] — 센서 그룹 정확도 고도화
+
+### Added
+
+- 온도 진단 payload에 `group` 메타데이터를 추가해 CPU 평균, CPU 최고점,
+  CPU 코어, CPU 다이, GPU 다이, GPU, 메모리, SSD, 배터리, 메인보드 센서를
+  명시적으로 구분합니다.
+- 메뉴바의 전체 센서 목록과 CLI JSON 출력이 같은 센서 그룹 분류를 공유해
+  iStat/Stats와 값을 비교할 때 CPU와 GPU 다이를 혼동하지 않도록 했습니다.
+
+### Tests
+
+- Apple Silicon CPU 평균/최고점/코어와 GPU 다이, SSD·배터리·보드 센서의
+  그룹 분류 회귀 테스트를 추가했습니다.
+
+## [1.28.0] — 시스템 제어형 아이콘과 안정적인 설정 재로드
+
+### Changed
+
+- PeterFan 아이콘을 시스템 냉각 팬, 속도 게이지, 중앙 제어 허브가 보이는
+  정사각형 풀블리드 디자인으로 고도화했습니다. macOS용 `AppIcon.icns`도
+  새 원본에서 다시 생성했습니다.
+- 설정값을 바꾼 뒤 WebView를 새로 로드해도 팝오버와 상세 창이 기존 위치와
+  크기를 유지하도록 개선했습니다. 화면 중앙으로 튀는 현상을 막습니다.
+- 메뉴바 앱 시작 시 현재 로그인한 사용자의 설정과 규칙을 데몬에 즉시
+  동기화해, 시스템 데몬이 먼저 시작된 환경에서도 최신 설정을 적용합니다.
 
 ## [1.27.78] — 한 번에 복사하는 안전한 진단 리포트
 
@@ -3737,7 +4155,45 @@ ship a control that does nothing, PeterFan now says so.
   CPU-temperature sparkline.
 - Documentation: README, architecture, roadmap, CLI reference, contributing.
 
-[Unreleased]: https://github.com/uulab-official/peterfan/compare/v1.27.78...HEAD
+[Unreleased]: https://github.com/uulab-official/peterfan/compare/v1.31.22...HEAD
+[1.31.31]: https://github.com/uulab-official/peterfan/compare/v1.31.30...v1.31.31
+[1.31.32]: https://github.com/uulab-official/peterfan/compare/v1.31.31...v1.31.32
+[1.31.30]: https://github.com/uulab-official/peterfan/compare/v1.31.29...v1.31.30
+[1.31.29]: https://github.com/uulab-official/peterfan/compare/v1.31.28...v1.31.29
+[1.31.28]: https://github.com/uulab-official/peterfan/compare/v1.31.27...v1.31.28
+[1.31.27]: https://github.com/uulab-official/peterfan/compare/v1.31.26...v1.31.27
+[1.31.26]: https://github.com/uulab-official/peterfan/compare/v1.31.25...v1.31.26
+[1.31.25]: https://github.com/uulab-official/peterfan/compare/v1.31.24...v1.31.25
+[1.31.24]: https://github.com/uulab-official/peterfan/compare/v1.31.23...v1.31.24
+[1.31.23]: https://github.com/uulab-official/peterfan/compare/v1.31.22...v1.31.23
+[1.31.22]: https://github.com/uulab-official/peterfan/compare/v1.31.21...v1.31.22
+[1.31.21]: https://github.com/uulab-official/peterfan/compare/v1.31.20...v1.31.21
+[1.31.20]: https://github.com/uulab-official/peterfan/compare/v1.31.19...v1.31.20
+[1.31.19]: https://github.com/uulab-official/peterfan/compare/v1.31.18...v1.31.19
+[1.31.18]: https://github.com/uulab-official/peterfan/compare/v1.31.17...v1.31.18
+[1.31.17]: https://github.com/uulab-official/peterfan/compare/v1.31.16...v1.31.17
+[1.31.16]: https://github.com/uulab-official/peterfan/compare/v1.31.15...v1.31.16
+[1.31.15]: https://github.com/uulab-official/peterfan/compare/v1.31.14...v1.31.15
+[1.31.14]: https://github.com/uulab-official/peterfan/compare/v1.31.13...v1.31.14
+[1.31.13]: https://github.com/uulab-official/peterfan/compare/v1.31.12...v1.31.13
+[1.31.12]: https://github.com/uulab-official/peterfan/compare/v1.31.11...v1.31.12
+[1.31.11]: https://github.com/uulab-official/peterfan/compare/v1.31.10...v1.31.11
+[1.31.10]: https://github.com/uulab-official/peterfan/compare/v1.31.9...v1.31.10
+[1.31.9]: https://github.com/uulab-official/peterfan/compare/v1.31.8...v1.31.9
+[1.31.8]: https://github.com/uulab-official/peterfan/compare/v1.31.7...v1.31.8
+[1.31.7]: https://github.com/uulab-official/peterfan/compare/v1.31.6...v1.31.7
+[1.31.6]: https://github.com/uulab-official/peterfan/compare/v1.31.5...v1.31.6
+[1.31.5]: https://github.com/uulab-official/peterfan/compare/v1.31.4...v1.31.5
+[1.31.4]: https://github.com/uulab-official/peterfan/compare/v1.31.3...v1.31.4
+[1.31.3]: https://github.com/uulab-official/peterfan/compare/v1.31.2...v1.31.3
+[1.31.2]: https://github.com/uulab-official/peterfan/compare/v1.31.1...v1.31.2
+[1.31.1]: https://github.com/uulab-official/peterfan/compare/v1.31.0...v1.31.1
+[1.31.0]: https://github.com/uulab-official/peterfan/compare/v1.30.1...v1.31.0
+[1.30.1]: https://github.com/uulab-official/peterfan/compare/v1.30.0...v1.30.1
+[1.30.0]: https://github.com/uulab-official/peterfan/compare/v1.29.0...v1.30.0
+[1.29.0]: https://github.com/uulab-official/peterfan/compare/v1.28.1...v1.29.0
+[1.28.1]: https://github.com/uulab-official/peterfan/compare/v1.28.0...v1.28.1
+[1.28.0]: https://github.com/uulab-official/peterfan/compare/v1.27.78...v1.28.0
 [1.27.78]: https://github.com/uulab-official/peterfan/compare/v1.27.77...v1.27.78
 [1.27.77]: https://github.com/uulab-official/peterfan/compare/v1.27.76...v1.27.77
 [1.27.76]: https://github.com/uulab-official/peterfan/compare/v1.27.75...v1.27.76

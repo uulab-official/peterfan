@@ -20,9 +20,11 @@ automated test or a recorded visual check.
       each have one job and preserve a stable popover frame; runner appearance
       is controlled in Settings and deeper observability stays in System.
 - [x] **Keyboard semantics** — Sensor disclosure, chart ranges, profile modes,
-      process actions, and navigation expose native button semantics and state.
+      guarded process actions, and navigation expose native button semantics
+      and state; process termination requires an inline identity-bound confirm.
 - [x] **Assistive feedback** — Live health and fan-control results use polite
-      status announcements without stealing focus.
+      status announcements without stealing focus, including safe process
+      control pending and completion results.
 - [x] **Readable compact UI** — Utility text, hit targets, focus indicators, and
       dark/light contrast use the compact PeterFan type and spacing floor.
 - [x] **Release truth** — Updates distinguish the installed app from the latest
@@ -40,4 +42,5 @@ source-tree check cannot prove.
 - [ ] Sleep/wake and mixed-DPI multi-display run on release hardware.
 - [ ] Signed and notarized DMG installed from the public GitHub asset.
 - [ ] OTA update from the previous public release with rollback drill.
-- [ ] Signing and notarization from a second authorized Mac.
+- [ ] Signing and notarization from a second authorized Mac; the transfer
+      runbook and verification command are documented and ready to execute.

@@ -3,6 +3,95 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
+## v1.32.2 release candidate — 2026-10-22
+
+- [x] Local v1.32.1 runner candidate: 20 original/reviewed characters, one CPU
+      clock, 403 workspace tests, 42 smoke checks and fresh launch evidence.
+- [x] Stable update metadata currently resolves public v1.27.78, including
+      GitHub asset digests and checksums.txt. No newer candidate is public yet.
+- [x] Existing direct Apple notarization credentials work (submission history
+      read back successfully); the configured Keychain notary profile is absent.
+- [x] Existing Developer ID Application certificate and matching private key
+      restored to the login Keychain for Team N99FMBQ662; hardened-runtime
+      signing probe verified with the expected identity and full Apple chain.
+- [ ] v1.32.2 exact-source local tests, Windows verification and release assets.
+- [ ] Signed/notarized universal macOS DMG/archive verified before publication.
+- [ ] Public v1.32.2 asset readback and actual OTA replacement/relaunch receipt.
+
+## Bugfix Verification — 2026-08-13
+
+- [x] Workspace source and local app bundle are v1.32.1.
+- [x] Manual stale-daemon reinstall falls back to one privileged install when
+      a local ad-hoc bundle cannot satisfy the production signature check.
+- [x] Homebrew cask remains pinned to the documented public v1.27.78 DMG and
+      its recorded SHA-256 while v1.32.1 is not publicly signed/notarized.
+- [x] macOS release checker validates the ignored `private/` directory path.
+- [x] Local install keeps one running menu-bar PID and preserves the previous
+      app bundle at `/Applications/PeterFan.app.backup-pre-bugfix-20260813`.
+- [ ] Developer ID signing, notarization, and public v1.32.1 upload remain
+      release-machine work because this Mac has no Developer ID identity or
+      notary credentials.
+
+## Current Release Verification — 2026-08-10
+
+### Public artifact status carried forward from 2026-08-05 verification
+
+- [x] Public latest release identified as `v1.27.78`:
+      https://github.com/uulab-official/peterfan/releases/tag/v1.27.78
+- [x] Public DMG downloaded and SHA-256 matched GitHub `checksums.txt`:
+      `d3308bc93293f4e27102723b68973577d615e18f317f89ccce750dd6844fe9d8`
+- [x] Public DMG code signature valid.
+- [x] Public DMG stapled notarization ticket valid.
+- [x] Gatekeeper accepted the public DMG and the embedded `PeterFan.app`.
+- [x] DMG volume, filesystem, bundle ID, and bundled `peterfand` verified.
+
+### Current source build
+
+- [x] Workspace source version is `v1.32.0`.
+- [x] `cargo fmt --all -- --check`, `./scripts/check-runner-quality.sh`,
+      `./scripts/check-sleep-display-regressions.sh`, `./scripts/check-docs.sh`,
+      and `git diff --check` pass.
+- [x] `cargo test --workspace`: 376 passed, 0 failed, 6 ignored.
+- [x] `cargo clippy --workspace --all-targets -- -D warnings`: 0 warnings.
+- [x] `cargo build --release --workspace` succeeded.
+- [x] The staged bundle and canonical
+      `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app`
+      both report `peterfan-menubar 1.32.0`,
+      `CFBundleShortVersionString=1.32.0`, and `CFBundleVersion=1.32.0`.
+- [x] `codesign --verify --deep --strict` succeeds for the canonical local
+      bundle. The signature is local/ad-hoc only
+      (`Signature=adhoc`, `TeamIdentifier=not set`), so this build is neither
+      Developer ID signed nor notarized.
+- [x] The previous canonical bundle was preserved recoverably at
+      `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app.backup-pre-v1.32.0-20260810-134838`
+      before replacement.
+- [x] The post-audit local replacement also preserved its immediate predecessor
+      at `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app.backup-pre-v1.32.0-audit-20260810-135521`.
+- [x] The canonical app relaunch was verified with exactly one live PID from
+      `/Users/uulab/Documents/workspace/uulab/peterfan/dist/PeterFan.app/Contents/MacOS/PeterFan`,
+      and `~/Library/Logs/PeterFan/menubar.log` recorded `startup mock=false`,
+      `tray created`, `popover webview created`, and `popover webview ready`.
+- [x] The release bundle includes `peterfand`, but this local-install task did
+      not replace the system LaunchDaemon; production daemon rollout remains a
+      separate release-machine step.
+- [ ] Publish `v1.32.0` as a new official release.
+- [ ] Sign the new release with a Developer ID identity on an authorized Mac.
+- [ ] Notarize/staple the new DMG and rerun the artifact gate.
+- [ ] Upload the new DMG, universal archive, and `checksums.txt` to GitHub.
+
+### Current release-machine blockers
+
+- [ ] Developer ID Application identity available in the current Keychain —
+      none found; only an Apple Distribution identity is installed.
+- [ ] `peterfan-notary` profile or App Store Connect credentials available —
+      `notarytool` reports no Keychain item for that profile.
+- [ ] `gh` authenticated for release upload — the `gh` CLI is unavailable on
+      this Mac.
+
+The public v1.27.78 release is production-trusted. The local v1.32.0 bundle
+is a development/ad-hoc build until the unchecked release-machine items above
+are completed; it must not replace the public DMG in distribution links.
+
 ## P0 - Hardware Safety
 
 - [x] Reject missing, non-finite, and non-physical control temperatures.
@@ -26,16 +115,28 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Keep the previous app until the replacement passes an execution health check.
 - [x] Roll back automatically when copy, signature validation, launch, or startup fails.
 - [x] Persist a user-visible update result after the updater process exits.
-- [ ] Add stable and prerelease update channels.
+- [x] Add stable and prerelease update channels.
 
 ## P1 - Reliability And Performance
 
+- [x] Safe process control filters the complete native snapshot, revalidates
+      PID/start-time identity and current-user ownership immediately before
+      macOS `SIGTERM`, protects PeterFan/system targets, and requires inline
+      two-step confirmation without exposing a direct WebView kill path.
 - [x] Enforce one menu-bar app instance.
 - [x] Keep the privileged daemon update path passwordless after first approval.
 - [x] Keep expensive system metrics out of fast refresh ticks.
 - [x] Keep fan-control notifications incident-based so repeated hardware retries
       cannot flood Notification Center before a confirmed recovery.
 - [x] Route CLI profile changes through the running daemon before direct SMC access.
+- [x] Keep the root daemon synchronized with the logged-in user's validated
+      automation rules, base profile, and custom fan curve.
+- [x] Edit, validate, save, and daemon-reload ordered automation rules from the
+      detail window for battery, AC power, time windows, and CPU temperature.
+- [x] Copy the current TOML config and import a validated TOML config from the
+      detail window with daemon reload confirmation.
+- [x] Offer a non-destructive quiet-on-battery / performance-on-AC automation
+      preset that remains pending until the user explicitly saves it.
 - [x] Keep Settings limited to preferences/safety and System limited to metrics.
 - [x] Drive the menu-bar runner cadence from CPU load with tested idle/busy bounds.
 - [x] Avoid fixed-rate runner polling at steady load; schedule only the next
@@ -45,7 +146,9 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Provide a 6-hour macOS menu-bar soak test with bounded CPU, RSS, thread
       growth, process-liveness assertions, and CSV evidence. It can monitor an
       existing PID without launching a duplicate menu-bar item.
-- [ ] Add sleep/wake and multi-display regression automation.
+- [x] Add deterministic sleep/wake and multi-display regression automation via
+      `./scripts/check-sleep-display-regressions.sh`; real sleep/wake and
+      mixed-DPI hardware evidence remains tracked in the external gate below.
 - [x] Persist bounded diagnostic logs across app and daemon restarts: the
       menu-bar app rotates `~/Library/Logs/PeterFan/menubar.log`, while the
       daemon uses the installed `newsyslog` policy for `/var/log/peterfand.log`.
@@ -76,9 +179,12 @@ by an automated test, a release-script check, or a recorded real-Mac result.
       then publish macOS and Windows assets with one shared `checksums.txt`.
 - [x] Select the Windows ZIP for Windows update checks and verify its GitHub
       digest, checksum manifest, and embedded CLI version before reinstalling.
+- [x] Keep the Homebrew cask pinned to the official DMG URL and release SHA-256;
+      update it from the exact notarized DMG before publishing a new version.
 - [x] Never substitute mock temperatures or fans on a production backend.
 - [x] Enforce RustSec policy in CI and remove or isolate allowed warnings.
-- [ ] Test release signing and notarization from a second authorized Mac.
+- [ ] Run the credentialed signing/notarization test on a second authorized
+      release Mac; the transfer runbook and verification command are ready.
 
 ## Release Evidence
 
@@ -92,3 +198,4 @@ For every public release, record these results in the release task or changelog:
 - App/daemon process counts
 - Sensor count, fan count, and `control_health` state
 - OTA current/latest version and artifact SHA-256
+- Homebrew cask version, DMG URL, and SHA-256
