@@ -344,7 +344,7 @@ enum RuleAction {
     List,
     /// Append a new rule: `peterfan rule add on_battery silent`.
     Add {
-        /// Condition: on_battery | on_ac | cpu_above:<°C> | time:<start>-<end>
+        /// Condition: `on_battery`, `on_ac`, `cpu_above:<°C>` or `time:<start>-<end>`.
         condition: String,
         /// Profile: silent | balanced | gaming | performance | maximum
         profile: String,

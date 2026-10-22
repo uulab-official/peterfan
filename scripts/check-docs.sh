@@ -33,12 +33,6 @@ else
   fail "could not read workspace package version from Cargo.toml"
 fi
 
-if [[ "$version" == "1.32.4" ]]; then
-  ok "production polish release version is v1.32.4"
-else
-  fail "production polish release must use workspace version v1.32.4"
-fi
-
 if grep -q "^## \\[$version\\]" "$ROOT/CHANGELOG.md"; then
   ok "CHANGELOG.md has a v$version section"
 else

@@ -665,3 +665,127 @@ fn humantime(secs: u64) -> String {
         format!("{m}m")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn mock_dashboard() -> Dashboard<'static> {
+        // Explicit mock constructors only: no native monitoring, IPC, terminal,
+        // or fan writes are needed to exercise the complete presentation path.
+        let mut monitor = peterfan_platform::mock_monitor::MockMonitor::new();
+        let provider = peterfan_platform::mock::MockProvider::new();
+        monitor.refresh();
+        Dashboard {
+            backend: "mock",
+            system: monitor.system_info(),
+            cpu: monitor.cpu(),
+            memory: monitor.memory(),
+            disks: monitor.disks(),
+            nets: monitor.networks(),
+            battery: monitor.battery(),
+            procs: monitor.processes(12, ProcSort::Cpu),
+            temps: provider.temperatures().expect("mock temperatures"),
+            fans: provider.fans().expect("mock fans"),
+            power: provider.power_watts(),
+            cpu_history: &[10, 20, 50, 75, 40],
+            fan_status: "auto (simulated)".into(),
+            can_control: true,
+            hold_input: None,
+        }
+    }
+
+    fn render(width: u16, height: u16, dashboard: &Dashboard) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|frame| ui(frame, dashboard))
+            .expect("render dashboard");
+        let buffer = terminal.backend().buffer();
+        let mut output = String::new();
+        for y in 0..height {
+            for x in 0..width {
+                output.push_str(buffer[(x, y)].symbol());
+            }
+            output.push('\n');
+        }
+        output
+    }
+
+    #[test]
+    fn full_dashboard_renders_metrics_thermals_processes_and_controls() {
+        let dashboard = mock_dashboard();
+        let output = render(120, 40, &dashboard);
+        for text in [
+            "PeterFan",
+            "Simulated OS",
+            "Mock CPU",
+            "Memory",
+            "Disk",
+            "Network",
+            "CPU history",
+            "Battery",
+            "Thermals",
+            "auto (simulated)",
+            "CPU Fan",
+            "RPM",
+            "Top processes (by CPU)",
+            "PID",
+            "NAME",
+            "rust-analyzer",
+            "14.1",
+            "76% discharging",
+            "1-5: profile",
+            "h: hold %",
+        ] {
+            assert!(output.contains(text), "missing {text:?} in:\n{output}");
+        }
+    }
+
+    #[test]
+    fn small_and_empty_viewports_render_without_out_of_bounds_writes() {
+        let dashboard = mock_dashboard();
+        for (width, height) in [(40, 12), (10, 3), (1, 1), (0, 0)] {
+            let output = render(width, height, &dashboard);
+            assert_eq!(output.lines().count(), usize::from(height));
+            if width >= 40 {
+                assert!(
+                    output.contains("PeterFan"),
+                    "title lost at {width}x{height}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_optional_metrics_and_hold_prompt_render_honestly() {
+        let mut dashboard = mock_dashboard();
+        dashboard.battery = None;
+        dashboard.fans.clear();
+        dashboard.temps.clear();
+        dashboard.disks.clear();
+        dashboard.nets.clear();
+        dashboard.procs.clear();
+        dashboard.hold_input = Some("75".into());
+        let output = render(120, 40, &dashboard);
+        for text in [
+            "no battery",
+            "no fan data",
+            "Hold fans at:",
+            "75_%",
+            "Enter: confirm",
+            "Esc: cancel",
+        ] {
+            assert!(output.contains(text), "missing {text:?} in:\n{output}");
+        }
+        assert!(!output.contains("1-5: profile"));
+
+        dashboard.hold_input = None;
+        dashboard.can_control = false;
+        let read_only = render(120, 40, &dashboard);
+        assert!(read_only.contains("refreshing every 1s"));
+        assert!(!read_only.contains("1-5: profile"));
+        assert!(!read_only.contains("Hold fans at:"));
+    }
+}

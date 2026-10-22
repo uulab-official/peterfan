@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "assets": [
+    {
+      "file": "runner-sheet.png",
+      "author": "David Harrington / Blue Yeti Studios",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/runner-character",
+      "usage": "reference",
+      "sha256": "746034cd52da6740c4883c384c1bf283d5a54d2f94a049ef28ae40eb8470b55c"
+    },
+    {
+      "file": "cat-run-cc0.png",
+      "author": "alizard",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/pixel-cat-0",
+      "usage": "reference",
+      "sha256": "8038394ab76fec0d6e10eb179ad26d9d7093ba1e913d8f8106626f0aa5e24ec6"
+    },
+    {
+      "file": "dog-run-cc0.png",
+      "author": "rmazanek (based on Shepardskin and Hellkipz)",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/dog-3",
+      "usage": "reference",
+      "sha256": "77a32e17840c921f939a754cc5d73622334e568a0bc2c40d55d534b487d2a58a"
+    },
+    {
+      "file": "fox-run-cc0.png",
+      "author": "ScratchIO",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/animated-wild-animals",
+      "usage": "reference",
+      "sha256": "0639fa9c0e8aacf706458c0691b8705bc3f194d505b3bf409c8c408bcb7aea4e"
+    },
+    {
+      "file": "rabbit-run-cc0.png",
+      "author": "ScratchIO",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/animated-wild-animals",
+      "usage": "reference",
+      "sha256": "a597b20e73fd098d433117157c9bd371798b10d98803d3a85bf03b289a72a3f7"
+    },
+    {
+      "file": "ghost-run-cc0.png",
+      "author": "ImogiaGames (remixed from Balmer)",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/ghost-monster",
+      "usage": "reference",
+      "sha256": "593eb2c830c787e45e5c943527c9c745b079c9c57452dafbff51b733f2982a11"
+    },
+    {
+      "file": "dino-run-1-cc0.png",
+      "author": "pzUH",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/free-dino-sprites",
+      "usage": "runtime",
+      "sha256": "2e4c0cf2c85a09f1dd19ee2e65711eb0fb6ec987f68a8e13c9b0ea3bfd9bc59c"
+    },
+    {
+      "file": "dino-run-2-cc0.png",
+      "author": "pzUH",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/free-dino-sprites",
+      "usage": "runtime",
+      "sha256": "93837be2ef65ccc7301a3f1ae2f96f0eb8991965822cdaf9fec7e03898acb32d"
+    },
+    {
+      "file": "dino-run-3-cc0.png",
+      "author": "pzUH",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/free-dino-sprites",
+      "usage": "runtime",
+      "sha256": "c9c6e4ef056bcbab9dd91a45a510d8e59c64cedd1b8c14a657a9476c5beb88b2"
+    },
+    {
+      "file": "dino-run-4-cc0.png",
+      "author": "pzUH",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/free-dino-sprites",
+      "usage": "runtime",
+      "sha256": "a146cf5ae8377aae844d8721a3ba8302cace04da7802635a5ee4fa58734252e0"
+    },
+    {
+      "file": "dino-run-5-cc0.png",
+      "author": "pzUH",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/free-dino-sprites",
+      "usage": "runtime",
+      "sha256": "5b73d5afc7a70a633b6d4a28c2fe387a7872dc6aeb04323b601cce778828d60c"
+    },
+    {
+      "file": "dino-run-6-cc0.png",
+      "author": "pzUH",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/free-dino-sprites",
+      "usage": "runtime",
+      "sha256": "e4dce4e72590553a504c6cd7348986ffd850d5983cccd8353a5c897795e562d8"
+    },
+    {
+      "file": "dino-run-7-cc0.png",
+      "author": "pzUH",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/free-dino-sprites",
+      "usage": "runtime",
+      "sha256": "f4fa88e1772464f2c17ac9054898a5ec76bee3391a5ebf9f2bafd9e2b8cc04dd"
+    },
+    {
+      "file": "dino-run-8-cc0.png",
+      "author": "pzUH",
+      "license": "CC0-1.0",
+      "source": "https://opengameart.org/content/free-dino-sprites",
+      "usage": "runtime",
+      "sha256": "18d15a1d81380bfa89a345e37a93aa9d91490f43066243dbc13fe24f087551c3"
+    }
+  ]
+}

@@ -2,13 +2,13 @@
 //!
 //! Hardware backends that implement [`peterfan_core::HardwareProvider`].
 //!
-//! - [`mock`] — a fully simulated machine. Always available, used for the demo
+//! - [`mod@mock`] — a fully simulated machine. Always available, used for the demo
 //!   experience, for `--mock`, and as the substrate for tests.
 //! - `macos` — real SMC/IOHID temperatures, fan RPM, and guarded fan control.
 //! - `windows` — real system information and ACPI/WMI thermal zones where the
 //!   firmware exposes them; fan RPM and fan control remain hardware-dependent.
 //!
-//! Use [`detect`] to get the best backend for the current OS, or [`mock`] to
+//! Use [`detect`] to get the best backend for the current OS, or [`mock()`] to
 //! force the simulated one.
 
 pub mod config;

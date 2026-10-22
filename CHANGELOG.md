@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Open-source contributor experience
+
+- Replace stale setup/backend guidance in four languages and document mock-first,
+  credential-free contributor checks, supported platforms and current release limits.
+- Declare the verified Rust 1.88 minimum; check minimum Rust on macOS/Windows,
+  portable core on Linux, locked dependencies and Rust documentation in CI.
+- Upgrade Ratatui to 0.30.2 with patched LRU while retaining layout caching;
+  remove obsolete TUI advisory exceptions and deny new audit warnings in CI.
+- Make the development launcher preserve installed/other-checkout instances and
+  build successfully before restarting only its own app.
+- Add security/support/conduct policies, issue forms, a PR template and reviewed
+  weekly dependency-update proposals.
+- Record per-file runner sources/licenses/hashes; remove two unused comparison
+  images without recorded provenance from the current tree.
+- Validate release tags against main, pin source commits and restrict write tokens
+  to artifact publication jobs; cover rejection paths with offline tests.
+
 ## [1.32.4] — 2026-10-22 · 프로덕션 상태·접근성·업데이트 개선
 
 - 프리릴리스·정식 버전·빌드 메타데이터의 버전 비교를 네이티브와 설정 화면에서 일치시키고 잘못된 버전 정보는 설치 불가 처리

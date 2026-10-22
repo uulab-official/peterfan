@@ -658,7 +658,7 @@ struct TrayMenu {
     /// headline/menu-bar temperature.
     temperature_source_items: Vec<(TemperatureSource, tray_icon::menu::CheckMenuItem)>,
     /// "Fan Speed" submenu — direct RPM presets, mapped to the same command
-    /// strings `execute_control` already understands ("auto", "hold:<pct>").
+    /// strings `execute_control` already understands (`auto`, `hold:<pct>`).
     fan_speed_items: Vec<(String, tray_icon::menu::MenuId)>,
     /// One-time privileged daemon install — lets fan control work without a
     /// terminal (macOS only; `None` elsewhere).

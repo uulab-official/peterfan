@@ -23,7 +23,7 @@ if [[ "$fail" != "0" ]]; then
   exit 1
 fi
 
-VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="peterfan-menubar") | .version')"
+VERSION="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="peterfan-menubar") | .version')"
 CASK_VERSION="$(ruby -ne 'puts $1 if $_ =~ /^\s*version\s+\"([^\"]+)\"/' "$CASK" | head -1)"
 PUBLIC_VERSION="$(sed -n 's/.*Public latest release identified as `v\([^`]*\)`.*/\1/p' "$ROOT/docs/PRODUCTION_CHECKLIST.md" | head -1)"
 if [[ -z "$CASK_VERSION" || ! "$CASK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then

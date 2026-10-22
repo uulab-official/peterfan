@@ -1,0 +1,6 @@
+# Keep shell scripts, Rust formatting and source/documentation checks consistent
+# between native Windows, macOS and Linux checkouts. Binary files remain binary.
+* text=auto eol=lf
+*.png binary
+*.icns binary
+*.ico binary

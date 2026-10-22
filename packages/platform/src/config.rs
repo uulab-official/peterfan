@@ -1,6 +1,6 @@
 //! Config file location and IO (the OS-specific half of configuration).
 //!
-//! The [`Config`](peterfan_core::config::Config) type lives in the core; here we
+//! The [`Config`] type lives in the core; here we
 //! resolve its path (`~/.config/peterfan/config.toml` and the platform
 //! equivalents, via `dirs`) and read/write it.
 

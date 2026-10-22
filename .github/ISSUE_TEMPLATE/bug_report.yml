@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a reproducible PeterFan problem.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: "For vulnerabilities, use SECURITY.md instead of a public issue. Remove private machine identifiers and credentials from all attachments."
+  - type: input
+    id: version
+    attributes:
+      label: Version or source commit
+      placeholder: "peterfan --version, app version, or git commit"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Other (portable core / source build)
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS version, architecture and hardware model
+      description: "For example: macOS version, arm64, Mac model. Do not include a serial number or hostname."
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected interface
+      options:
+        - Menu bar / system tray
+        - CLI
+        - TUI
+        - Daemon / fan control
+        - Build / installation / update
+        - Documentation / other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: "Include a minimal command or sequence and whether this uses --mock or real hardware. Keep hardware safety mechanisms enabled."
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics or screenshots
+      description: "Optional. Review Copy Report output; redact usernames, local paths, IP addresses and other private details from raw logs."

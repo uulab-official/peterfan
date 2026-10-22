@@ -14,30 +14,71 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  source-preflight:
+    name: Resolve CI or reviewed release source
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.source.outputs.release || 'false' }}
+      tag: ${{ steps.source.outputs.tag }}
+      sha: ${{ steps.source.outputs.sha || steps.ci.outputs.sha }}
+    steps:
+      - name: Preserve normal CI source
+        id: ci
+        if: github.event_name != 'workflow_dispatch' || inputs.tag == ''
+        env:
+          RELEASE_CI_SHA: ${{ github.sha }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          const sha = process.env.RELEASE_CI_SHA;
+          if (!/^[0-9a-f]{40}$/.test(sha) || sha.length !== 40) throw new Error('Invalid CI commit SHA.');
+          appendFileSync(process.env.GITHUB_OUTPUT, `sha=${sha}\n`);
+          NODE
+      - uses: actions/checkout@v5
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve immutable source
+        id: source
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        env:
+          RELEASE_EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_WORKFLOW_REF: ${{ github.ref }}
+          RELEASE_CI_SHA: ${{ github.sha }}
+        run: node scripts/check-release-source.mjs
+
   build-test-package:
     name: Build, test, and package Windows x64
+    needs: source-preflight
     runs-on: windows-2022
+    outputs:
+      artifact_name: peterfan-windows-x64-v${{ steps.version.outputs.version }}
+    env:
+      RELEASE_TAG: ${{ needs.source-preflight.outputs.tag }}
     steps:
-      - name: Resolve source ref
-        id: source
-        shell: pwsh
-        run: |
-          $Ref = "${{ github.event.release.tag_name || inputs.tag || github.sha }}"
-          "ref=$Ref" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
       - uses: actions/checkout@v5
         with:
-          ref: ${{ steps.source.outputs.ref }}
+          # Preflight preserves github.sha for push/PR CI, including PR merge refs.
+          ref: ${{ needs.source-preflight.outputs.sha }}
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
 
       - uses: actions/cache@v5
         with:
@@ -52,22 +93,23 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $Metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $Metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
           $Version = ($Metadata.packages | Where-Object name -eq "peterfan-menubar").version
           if (-not $Version) {
             throw "Could not resolve peterfan-menubar version."
           }
-          $RequestedTag = "${{ github.event.release.tag_name || inputs.tag }}"
+          $RequestedTag = $env:RELEASE_TAG
           if ($RequestedTag -and $RequestedTag -ne "v$Version") {
             throw "Requested tag $RequestedTag does not match Cargo version v$Version."
           }
           "version=$Version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: Test workspace
-        run: cargo test --workspace --all-features --target x86_64-pc-windows-msvc
+      - name: Contributor checks (Git Bash)
+        shell: bash
+        run: scripts/check-contributor.sh
 
       - name: Build release binaries
-        run: cargo build --workspace --release --target x86_64-pc-windows-msvc
+        run: cargo build --locked --workspace --release --target x86_64-pc-windows-msvc
 
       - name: Package Windows release
         id: package
@@ -91,27 +133,61 @@ jobs:
           path: ${{ steps.package.outputs.archive }}
           if-no-files-found: error
 
-      - name: Attach to GitHub Release
-        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
+  attach-release:
+    name: Attach verified Windows release artifact
+    needs: [source-preflight, build-test-package]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.tag != '' && needs.source-preflight.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-assets-${{ needs.source-preflight.outputs.tag }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.source-preflight.outputs.tag }}
+      RELEASE_SHA: ${{ needs.source-preflight.outputs.sha }}
+    steps:
+      # This write-enabled job never checks out or runs selected-source scripts.
+      - name: Download verified Windows archive
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build-test-package.outputs.artifact_name }}
+          path: dist
+
+      - name: Confirm release tag still points to the verified commit
+        shell: bash
         run: |
-          $Tag = "${{ github.event.release.tag_name || inputs.tag }}"
-          $Archive = "${{ steps.package.outputs.archive }}"
-          $AssetName = "${{ steps.package.outputs.asset_name }}"
-          $Hash = "${{ steps.package.outputs.sha256 }}"
-          $ChecksumDir = Join-Path $env:RUNNER_TEMP "peterfan-release-checksums"
-          New-Item -ItemType Directory -Force -Path $ChecksumDir | Out-Null
-          $Checksums = Join-Path $ChecksumDir "checksums.txt"
+          ACTUAL_SHA="$(gh api "repos/$GH_REPO/commits/tags/$RELEASE_TAG" --jq .sha)"
+          if [[ "$ACTUAL_SHA" != "$RELEASE_SHA" ]]; then
+            echo "error: release tag moved after preflight; refusing attachment." >&2
+            exit 1
+          fi
 
-          gh release download $Tag --pattern "checksums.txt" --dir $ChecksumDir 2>$null
-          if (-not (Test-Path $Checksums)) {
-            New-Item -ItemType File -Path $Checksums | Out-Null
-          }
-          $Existing = @(Get-Content $Checksums | Where-Object { $_ -and $_ -notmatch [regex]::Escape($AssetName) })
-          $Combined = @($Existing + "$Hash  $AssetName") | Sort-Object
-          Set-Content -Path $Checksums -Value $Combined -Encoding utf8NoBOM
-
-          gh release upload $Tag $Archive $Checksums --clobber
-          Write-Host "Attached $AssetName and refreshed checksums.txt on $Tag."
+      - name: Attach archive and refresh release checksums
+        shell: bash
+        run: |
+          ASSET_NAME="peterfan-${RELEASE_TAG}-x86_64-pc-windows-msvc.zip"
+          ARCHIVE="dist/$ASSET_NAME"
+          if [[ ! -f "$ARCHIVE" || -L "$ARCHIVE" ]]; then
+            echo "error: verified Windows archive is missing." >&2
+            exit 1
+          fi
+          CHECKSUM_DIR="$RUNNER_TEMP/peterfan-release-checksums"
+          mkdir -p "$CHECKSUM_DIR"
+          CHECKSUMS="$CHECKSUM_DIR/checksums.txt"
+          # Fail on API/download errors rather than silently discarding other
+          # platform checksums when a release already has checksums.txt.
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > "$CHECKSUM_DIR/assets.txt"
+          if grep -Fxq 'checksums.txt' "$CHECKSUM_DIR/assets.txt"; then
+            gh release download "$RELEASE_TAG" --pattern checksums.txt --dir "$CHECKSUM_DIR"
+          else
+            : > "$CHECKSUMS"
+          fi
+          awk -v name="$ASSET_NAME" 'NF && $2 != name' "$CHECKSUMS" > "$CHECKSUM_DIR/combined.txt"
+          HASH="$(sha256sum "$ARCHIVE" | cut -d ' ' -f1)"
+          printf '%s  %s\n' "$HASH" "$ASSET_NAME" >> "$CHECKSUM_DIR/combined.txt"
+          sort -k2 "$CHECKSUM_DIR/combined.txt" > "$CHECKSUMS"
+          gh release upload "$RELEASE_TAG" "$ARCHIVE" "$CHECKSUMS" --clobber
+          echo "Attached $ASSET_NAME and refreshed checksums.txt on $RELEASE_TAG."

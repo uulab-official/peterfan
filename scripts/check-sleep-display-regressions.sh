@@ -10,8 +10,11 @@ if [[ -n "${PETERFAN_RUST_BIN:-}" ]]; then
   RUST_BIN="$PETERFAN_RUST_BIN"
 elif STABLE_RUSTC=$(rustup which --toolchain stable rustc 2>/dev/null); then
   RUST_BIN="$(dirname "$STABLE_RUSTC")"
+elif system_rustc=$(command -v rustc); then
+  RUST_BIN="$(dirname "$system_rustc")"
 else
-  RUST_BIN="/Users/uulab/.rustup/toolchains/stable-aarch64-apple-darwin/bin"
+  echo "Install Rust or set PETERFAN_RUST_BIN to a toolchain bin directory." >&2
+  exit 1
 fi
 
 if [[ ! -x "$RUST_BIN/rustc" ]]; then
@@ -35,8 +38,8 @@ echo
 
 for test_name in "${TESTS[@]}"; do
   echo "[run] $test_name"
-  env RUSTC="$RUST_BIN/rustc" PATH="$RUST_BIN:/usr/bin:/bin" \
-    cargo test -p peterfan-menubar "tests::$test_name" -- --exact --nocapture
+  env RUSTC="$RUST_BIN/rustc" PATH="$RUST_BIN:$PATH" \
+    cargo test --locked -p peterfan-menubar "tests::$test_name" -- --exact --nocapture
 done
 
 echo

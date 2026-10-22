@@ -6,7 +6,7 @@
 > 갖춘 크로스플랫폼 팬 컨트롤러이자 하드웨어 모니터 — Rust로 만들었습니다.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 ![Status: beta](https://img.shields.io/badge/status-beta-yellow.svg)
 
 ![PeterFan 메뉴바 대시보드와 CLI 진단 화면](./docs/images/peterfan-readme-overview.png)
@@ -182,7 +182,21 @@ TG Pro와 정확히 같은 방식입니다. 매번 `sudo`를 입력하는 대신
 
 ## 소스에서 빌드하기
 
-[Rust 툴체인](https://rustup.rs)(1.80+)이 필요합니다.
+처음 참여한다면 [개발 환경과 검사 명령](docs/DEVELOPMENT.md),
+[기여 가이드](CONTRIBUTING.md)를 먼저 확인하세요. Node.js 22+가 필요하며,
+일반 기여자 검사는 앱 실행·관리자 승인·팬 쓰기 없이 동작합니다.
+
+```bash
+scripts/check-contributor.sh
+# Linux / 헤드리스 환경에서 코어만 검사:
+scripts/check-contributor.sh --core-only
+```
+
+보안 제보는 [SECURITY.md](SECURITY.md), 일반 문의는 [SUPPORT.md](SUPPORT.md),
+참여 규칙은 [행동 규정](CODE_OF_CONDUCT.md)을 참고하세요.
+외부 그림의 개별 라이선스·출처는 [저작권 안내](THIRD_PARTY_NOTICES.md)에 있습니다.
+
+[Rust 툴체인](https://rustup.rs)(1.88+)이 필요합니다.
 
 ```bash
 # 전체 빌드
