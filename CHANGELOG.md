@@ -68,6 +68,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Validate release tags against main, pin source commits and restrict write tokens
   to artifact publication jobs; cover rejection paths with offline tests.
 
+## [1.32.6] — 2026-10-23 · Verified signed-helper update
+
+- Correct inline code-signing requirement arguments in both private staging and
+  the bounded version probe. Verify the actual native codesign argument parser
+  with an Apple-signed system binary before release.
+- v1.32.5 remained a private draft after this issue was found during signed-artifact
+  verification. This release includes its fan activation and update improvements.
+- 비공개 배포 후보 검증에서 발견한 codesign 인수 형식을 수정하고, Apple 서명
+  시스템 파일로 실제 검증 명령을 확인합니다. v1.32.5는 공개하지 않았으며,
+  해당 버전의 팬 활성화·업데이트 개선을 함께 제공합니다.
+
 ## [1.32.5] — 2026-10-23 · Fan control activation and update recovery
 
 Changes since public v1.32.2 / 공개 v1.32.2 이후 변경 사항.
