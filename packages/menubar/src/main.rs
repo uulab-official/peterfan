@@ -5884,22 +5884,24 @@ enum FanControlInstallPlan {
     AlreadyReady,
     SelfReinstall,
     PrivilegedInstall,
-    InstalledButUnavailable,
 }
 
 #[cfg(any(target_os = "macos", test))]
 fn fan_control_install_plan(
     installed_version: Option<&str>,
+    running_version: Option<&str>,
     daemon_reachable: bool,
 ) -> FanControlInstallPlan {
     match (installed_version, daemon_reachable) {
-        (Some(version), true) if !peterfan_platform::daemon_update_required(version) => {
+        (Some(version), true)
+            if !peterfan_platform::daemon_update_required(version)
+                && running_version == Some(version) =>
+        {
             FanControlInstallPlan::AlreadyReady
         }
         (Some(version), true) if peterfan_platform::daemon_self_reinstall_supported(version) => {
             FanControlInstallPlan::SelfReinstall
         }
-        (Some(_), false) => FanControlInstallPlan::InstalledButUnavailable,
         _ => FanControlInstallPlan::PrivilegedInstall,
     }
 }
@@ -5939,27 +5941,41 @@ fn install_fan_control() {
     report_fan_control_install_stage(peterfan_platform::daemon_install::InstallStage::Preflight);
     let old_version = peterfan_platform::installed_daemon_version();
     let daemon_reachable = peterfan_platform::daemon_reachable();
-    let plan = fan_control_install_plan(old_version.as_deref(), daemon_reachable);
+    let resident_version = peterfan_platform::running_daemon_version();
+    let plan = fan_control_install_plan(
+        old_version.as_deref(),
+        resident_version.as_deref(),
+        daemon_reachable,
+    );
     let updating_existing = old_version.is_some();
     clear_daemon_version_cache();
     let install_result = match plan {
         FanControlInstallPlan::AlreadyReady => {
-            peterfan_platform::daemon_install::verify_existing_with_progress(report_fan_control_install_stage)
-                .map(|()| InstallOutcome::Installed)
-        },
-        FanControlInstallPlan::SelfReinstall => {
-            reinstall_or_privileged_install(
-                || peterfan_platform::daemon_install::reinstall_via_running_daemon_with_progress(false, report_fan_control_install_stage),
-                || peterfan_platform::daemon_install::install_with_progress(false, report_fan_control_install_stage),
+            peterfan_platform::daemon_install::verify_existing_with_progress(
+                report_fan_control_install_stage,
+            )
+            .map(|()| InstallOutcome::Installed)
+        }
+        FanControlInstallPlan::SelfReinstall => reinstall_or_privileged_install(
+            || {
+                peterfan_platform::daemon_install::reinstall_via_running_daemon_with_progress(
+                    false,
+                    report_fan_control_install_stage,
+                )
+            },
+            || {
+                peterfan_platform::daemon_install::install_with_progress(
+                    false,
+                    report_fan_control_install_stage,
+                )
+            },
+        ),
+        FanControlInstallPlan::PrivilegedInstall => {
+            peterfan_platform::daemon_install::install_with_progress(
+                false,
+                report_fan_control_install_stage,
             )
         }
-        FanControlInstallPlan::PrivilegedInstall => {
-            peterfan_platform::daemon_install::install_with_progress(false, report_fan_control_install_stage)
-        }
-        FanControlInstallPlan::InstalledButUnavailable => Err(
-            "Fan control is installed but the daemon is not responding. No administrator changes were made; run Diagnostics and retry."
-                .into(),
-        ),
     };
     let (ok, message) = match install_result {
         Ok(InstallOutcome::Installed) if plan == FanControlInstallPlan::AlreadyReady => (
@@ -5997,9 +6013,7 @@ fn install_fan_control() {
         "fan control install plan={plan:?} ok={ok} result={message}"
     ));
     let (action_label, notification_title) = match plan {
-        FanControlInstallPlan::AlreadyReady | FanControlInstallPlan::InstalledButUnavailable => {
-            ("check fan control", "Fan Control")
-        }
+        FanControlInstallPlan::AlreadyReady => ("check fan control", "Fan Control"),
         FanControlInstallPlan::SelfReinstall => ("reinstall fan control", "Reinstall Fan Control"),
         FanControlInstallPlan::PrivilegedInstall if updating_existing => {
             ("reinstall fan control", "Reinstall Fan Control")
@@ -15163,24 +15177,47 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
     #[test]
     fn fan_control_install_avoids_reapproval_for_existing_daemons() {
         assert_eq!(
-            fan_control_install_plan(Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION), true),
+            fan_control_install_plan(
+                Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION),
+                Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION),
+                true
+            ),
             FanControlInstallPlan::AlreadyReady
         );
         assert_eq!(
             fan_control_install_plan(
+                Some(peterfan_platform::MIN_SELF_REINSTALL_DAEMON_VERSION),
                 Some(peterfan_platform::MIN_SELF_REINSTALL_DAEMON_VERSION),
                 true
             ),
             FanControlInstallPlan::SelfReinstall
         );
         assert_eq!(
-            fan_control_install_plan(Some("1.27.29"), false),
-            FanControlInstallPlan::InstalledButUnavailable
-        );
-        assert_eq!(
-            fan_control_install_plan(None, false),
+            fan_control_install_plan(None, None, false),
             FanControlInstallPlan::PrivilegedInstall
         );
+    }
+
+    #[test]
+    fn explicit_activation_repairs_an_installed_but_unreachable_daemon() {
+        for version in ["1.27.29", "1.31.30", env!("CARGO_PKG_VERSION")] {
+            assert_eq!(
+                fan_control_install_plan(Some(version), None, false),
+                FanControlInstallPlan::PrivilegedInstall,
+                "explicit activation must offer approved repair for unreachable v{version}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_activation_repairs_unknown_or_mismatched_resident_versions() {
+        for (disk, resident) in [("1.32.2", None), ("1.32.4", Some("1.31.30"))] {
+            assert_eq!(
+                fan_control_install_plan(Some(disk), resident, true),
+                FanControlInstallPlan::SelfReinstall,
+                "a reachable legacy or stale resident must be repaired before completion"
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]

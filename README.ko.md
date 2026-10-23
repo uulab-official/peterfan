@@ -52,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.32.4.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — 개발 소스 v1.32.5.** 아래 표는 현재 소스의 구현 상태입니다. 공개 배포 파일과 버전이 다를 수 있으므로 [Releases](https://github.com/uulab-official/peterfan/releases/latest)에서 다운로드 버전을 확인하세요:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -231,7 +231,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.32.4
+PeterFan v1.32.5
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max

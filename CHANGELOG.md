@@ -68,6 +68,52 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Validate release tags against main, pin source commits and restrict write tokens
   to artifact publication jobs; cover rejection paths with offline tests.
 
+## [1.32.5] — 2026-10-23 · Fan control activation and update recovery
+
+Changes since public v1.32.2 / 공개 v1.32.2 이후 변경 사항.
+
+### English
+
+- Refine runner motion and small-size silhouettes; add saved random character
+  selection with a shuffled one-minute rotation that respects Reduce Motion.
+- Restore macOS menu-bar click delivery and event-loop wakeups; keep a second
+  click closed when the first press dismisses the popover through focus loss.
+- Open Settings before fan-control setup. Require an explicit activation or
+  reinstall action, report actual installation stages with smooth 1% labels,
+  and reach 100% only after installed and resident daemon health checks pass.
+- Offer administrator-approved repair for an installed but unreachable daemon;
+  preserve compatible helpers and verify resident versions before claiming success.
+- Check for updates periodically with bounded retries and channel-specific check
+  history across restarts; background discovery does not install updates.
+- Require per-launch native startup readiness before completing an update.
+  Preserve recovery backups and recover interrupted Windows apply/rollback work
+  from a validated durable journal without network access.
+- Serialize atomic partial configuration edits across app and CLI writers;
+  preserve invalid files and failed-save drafts, and reject invalid alert values
+  and excess automation rules before applying them.
+- Recover runner cadence, cached readings and update scheduling after sleep;
+  reduce native redraw cost and tighten release, contributor and dependency checks.
+
+### 한국어
+
+- 작은 메뉴바 크기의 캐릭터 동작과 실루엣을 개선하고, 선택을 저장하는
+  ‘랜덤 · 1분마다’ 순환을 추가했습니다. 동작 줄이기 설정도 반영합니다.
+- macOS 메뉴바 클릭 전달과 UI 이벤트 깨우기를 복구하고, 두 번째 클릭으로
+  팝오버를 닫을 때 초점 이동 때문에 다시 열리는 현상을 수정했습니다.
+- 팬 제어 설정은 먼저 Settings를 열고 명시적인 활성화·재설치 선택 후 실행합니다.
+  실제 설치 단계를 1% 단위로 부드럽게 표시하며, 디스크와 실행 중인 데몬의
+  상태 확인이 끝나야 100%를 표시합니다.
+- 설치되어 있지만 응답하지 않는 데몬은 관리자 승인 후 복구할 수 있습니다.
+  호환되는 기존 헬퍼는 유지하고 실행 중인 버전을 확인한 뒤 성공을 표시합니다.
+- 주기적인 업데이트 확인, 제한된 재시도, 채널별 확인 이력의 재시작 복원을
+  추가했습니다. 백그라운드 확인만으로 업데이트를 설치하지 않습니다.
+- 업데이트 완료 전에 새 프로세스의 네이티브 시작 준비를 확인합니다.
+  복구 백업을 보존하고 Windows의 중단된 적용·롤백을 검증된 기록으로 복구합니다.
+- 앱·CLI의 부분 설정 저장을 원자적으로 직렬화하고, 잘못된 기존 파일과
+  저장 실패한 편집 내용을 보존합니다. 잘못된 알림 값과 과도한 규칙도 거부합니다.
+- 잠자기 후 동작 속도·센서 캐시·업데이트 예약을 복구하고, 메뉴바 그리기 비용과
+  릴리스·기여자·의존성 검증을 개선했습니다.
+
 ## [1.32.4] — 2026-10-22 · 프로덕션 상태·접근성·업데이트 개선
 
 - 프리릴리스·정식 버전·빌드 메타데이터의 버전 비교를 네이티브와 설정 화면에서 일치시키고 잘못된 버전 정보는 설치 불가 처리
