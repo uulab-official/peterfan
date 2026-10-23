@@ -8474,7 +8474,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="setup" id="setup-row">
 <div class="setup-copy"><div class="setup-main"><span class="setup-dot" id="setup-dot"></span><span id="setup-title">Ready</span></div><div class="setup-sub" id="setup-detail"></div><div class="setup-progress" id="setup-progress" style="display:none"><div class="setup-progress-label" id="setup-progress-label" role="status" aria-live="polite"></div><span class="setup-progress-percent" id="setup-progress-percent" aria-hidden="true">0%</span><div class="setup-progress-track" id="setup-progress-track" role="progressbar" aria-label="Installation stages" aria-valuemin="0" aria-valuemax="100"><div class="setup-progress-fill" id="setup-progress-fill"></div></div></div></div>
 <div class="setup-actions">
-<button id="setup-fan" class="primary" disabled onclick="startFanControlSetup(this)">Set Up</button>
+<button id="setup-fan" class="primary" disabled onclick="handleFanSetupAction(this)">Set Up</button>
 <div class="setup-menu-wrap">
 <button id="setup-more" class="setup-more" disabled onclick="toggleSetupMenu(event)" onkeydown="handleSetupMoreKey(event)" aria-label="Setup actions" aria-haspopup="menu" aria-expanded="false" title="Setup actions">…</button>
 <div class="setup-menu" id="setup-menu" role="menu" onkeydown="handleSetupMenuKey(event)">
@@ -8831,6 +8831,7 @@ function applyRailView(resetScroll){
     setVisible('fan-control-section',true);
     if(SHOW_CURVE_EDITOR==='1')setVisible('curve-editor-section',true);
   } else if(view==='settings'){
+    setVisible('setup-row',true);
     ['rail-settings-panel','rail-update-panel'].forEach(function(id){setVisible(id,true);});
   } else if(view==='system'){
     ['rail-more-panel','sec-storage','sec-batt','sec-network','sec-procs','foot'].forEach(function(id){setVisible(id,true);});
@@ -9580,7 +9581,7 @@ function cancelSetupProgressFrame(){
   SETUP_PROGRESS.started=null;
 }
 function setupProgressCanAnimate(){
-  return !document.hidden&&railView()==='fan'
+  return !document.hidden&&(railView()==='fan'||railView()==='settings')
     &&!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 }
 function paintSetupProgress(){
@@ -9664,6 +9665,19 @@ function fanControlSetupButton(label){
     fixBtn.onclick=function(){startFanControlSetup(fixBtn);};
   }
   return fixBtn;
+}
+function handleFanSetupAction(btn){
+  if(railView()!=='settings'){
+    closeSetupMenu();
+    setRailView('settings');
+    updateSetup(window.__pf_pending||{});
+    requestAnimationFrame(function(){
+      var action=document.getElementById('setup-fan');
+      if(action)action.focus();
+    });
+    return;
+  }
+  startFanControlSetup(btn);
 }
 function startFanControlSetup(btn){
   if(FAN_CONTROL_FIX_PENDING)return;
@@ -10875,7 +10889,7 @@ function updateSetup(d){
     :(readOnly
       ?(LANG==='ko'?'RPM 모니터링만 가능':'RPM monitoring only')
       :(LANG==='ko'?'이 시스템에서는 RPM 읽기만 지원':'This system exposes RPM monitoring only'));
-  if(setup)setup.style.display=fanView?'flex':'none';
+  if(setup)setup.style.display=fanView||railView()==='settings'?'flex':'none';
   var title=document.getElementById('setup-title');
   if(title){
     title.textContent=!stateReady
@@ -10899,12 +10913,15 @@ function updateSetup(d){
     var showSetup=stateReady&&supported&&controllableCount>0&&(d.fan_setup_needed||d.daemon_update_needed);
     fan.style.display=showSetup?'':'none';
     fan.disabled=FAN_CONTROL_FIX_PENDING||!showSetup;
-    fan.title=d.daemon_update_needed
-      ?(LANG==='ko'?'팬 제어 재설치':'Reinstall fan control')
-      :(LANG==='ko'?'팬 제어 설정':'Set up fan control');
+    fan.title=fanView
+      ?(LANG==='ko'?'팬 제어 설정 열기':'Open fan-control settings')
+      :(d.daemon_update_needed
+        ?(LANG==='ko'?'팬 제어 재설치':'Reinstall fan control')
+        :(LANG==='ko'?'팬 제어 활성화':'Enable fan control'));
     fan.textContent=FAN_CONTROL_FIX_PENDING
       ?(LANG==='ko'?'설치 중…':'Installing…')
-      :(d.daemon_update_needed?(LANG==='ko'?'재설치':'Reinstall'):(LANG==='ko'?'설정하기':'Set Up'));
+      :(fanView?(LANG==='ko'?'설정하기':'Set Up')
+        :(d.daemon_update_needed?(LANG==='ko'?'팬 제어 재설치':'Reinstall Fan Control'):(LANG==='ko'?'팬 제어 활성화':'Enable Fan Control')));
   }
   var more=document.getElementById('setup-more');
   if(more){
@@ -14141,7 +14158,9 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
         assert!(en.contains(
             "if(view==='fan'){\n    setVisible('setup-row',true);\n    setVisible('fan-control-section',true);"
         ));
-        assert!(en.contains("if(setup)setup.style.display=fanView?'flex':'none';"));
+        assert!(en.contains(
+            "if(setup)setup.style.display=fanView||railView()==='settings'?'flex':'none';"
+        ));
         assert!(en.contains("var stateReady=d.fan_control_state_ready!==false;"));
         assert!(en.contains("var fanCount=Number(d.fan_count||0);"));
         assert!(en.contains("var controllableCount=Number(d.controllable_fan_count||0);"));

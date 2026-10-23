@@ -67,3 +67,24 @@ Local evidence (ignored build artifacts): `target/menubar-click-final-*.log`,
 `target/menubar-click-final-native-cycles.json`,
 `target/menubar-click-toggle-red.log`, and
 `target/menubar-progress-browser-result.log`.
+
+## Set Up navigation follow-up
+
+The fan view's Korean “설정하기” / English “Set Up” button previously called the
+privileged installation command directly and never opened Settings. It now opens
+Settings and focuses the fan-control action without requesting installation.
+Settings keeps the setup status and progress visible, and labels the subsequent
+action explicitly “Enable Fan Control” or “Reinstall Fan Control”. Progress
+animation runs on both visible fan and settings views and stops on other views.
+
+Two executable regressions failed before this correction and passed afterward;
+the dashboard behavior suite now has 12 checks. Actual-renderer browser clicks at
+440×520 in light/dark appearance confirmed navigation, focus, zero installation
+commands on the first click, one command on explicit keyboard activation, and
+visible progress reaching the reported stage without JavaScript errors. The
+browser's command sink is a fixture and performs no privileged installation.
+The final notarized app was also installed locally: native pointer clicks on
+Fans → Set Up opened Settings with the explicit activation action visible.
+Owned-window captures are `target/fan-setup-native-fans.png` and
+`target/fan-setup-native-settings.png`; no activation button was pressed in the
+real app, and the configuration bytes remained unchanged.

@@ -6,6 +6,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — Open-source contributor experience
 
+- Make the fan view's Set Up action open Settings first. Show an explicit
+  Enable/Reinstall Fan Control action and installation progress at the destination,
+  so opening settings never requests administrator installation by itself.
 - Restore macOS 27 menu-bar left-click delivery with the upstream tray fix and
   wake the UI event loop for click/menu callbacks. Keep a second click closed
   when the same tray press first causes the popover to lose focus.
