@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — Open-source contributor experience
 
+- Restore macOS 27 menu-bar left-click delivery with the upstream tray fix and
+  wake the UI event loop for click/menu callbacks. Keep a second click closed
+  when the same tray press first causes the popover to lose focus.
+- Show real fan-control installation stages with smoothly interpolated 1% labels;
+  reach 100% only after disk and running-daemon health checks succeed. Preserve
+  compatible existing helpers and stop progress cleanly on failure or retry.
 - Keep Windows update snapshots and a validated on-disk transaction journal.
   Replace existing files atomically and recover interrupted apply/rollback work
   on the next helper invocation, without a downloaded payload or network access.
