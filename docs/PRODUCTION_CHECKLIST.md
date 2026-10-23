@@ -18,7 +18,11 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Full contributor gate: 450 Rust tests passed, 7 ignored; 56 Node tests
       passed. Native/Windows Clippy and Rust 1.88 check passed. Browser fixtures
       confirmed visible failures, manual recovery and disabled incomplete assets.
-- [ ] Installed native app automatic-check readback and new candidate signing.
+- [x] Local arm64 candidate from `6c3f279` is Developer ID signed, notarized,
+      stapled and Gatekeeper accepted. Installed app/helper hashes match the
+      candidate, one native process runs and configuration bytes are preserved.
+      Its real automatic check completed 20 seconds after startup and scheduled
+      the next check exactly 21,600 seconds after success.
 - [ ] Public release and OTA to a newer published version.
 
 See [check policy and verification boundaries](AUTOMATIC_UPDATES.md). Notification

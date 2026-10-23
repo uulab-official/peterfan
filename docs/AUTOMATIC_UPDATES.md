@@ -56,3 +56,26 @@ launch health and transactional rollback require separate Windows verification;
 a generated-script check or cross-compilation is not that evidence.
 The installer requires a directory writable by the current user; it does not
 request elevation for installations under protected locations such as Program Files.
+
+## Local verification — 2026-10-23
+
+The full contributor gate passed: 450 Rust tests, 7 ignored, 56 Node tests, native
+runner/frontend comparisons, formatting, Clippy and Rust documentation. Windows
+MSVC cross Clippy and Rust 1.88 workspace checks passed. All 43 mock/package smoke
+checks passed. Browser QA at 440×520 observed visible failed-check details, retry
+history, manual recovery, and disabled installation while assets are incomplete.
+These browser states use fixtures and send no requests to the actual installer.
+
+A local arm64 candidate from `6c3f279` was Developer ID signed, notarized (Apple
+submission `667ef41c-807f-457c-86e9-7e0e9c3a3216` Accepted), stapled and accepted by
+Gatekeeper. `/Applications/PeterFan.app` has matching executable/helper bytes,
+one native process and unchanged user configuration, with the previous app/config
+backed up. Native startup logs show its automatic check began 20 seconds after
+startup, completed successfully and scheduled the next check 21,600 seconds after
+success. The real feed returned public v1.32.2 while this local app is v1.32.4, so
+no upgrade was offered. No new public release or newer-version OTA was performed.
+
+Local receipts: `target/auto-update-runtime-verification.json`,
+`target/automatic-update-install.json`, `target/auto-update-contributor.log`,
+`target/auto-update-{windows-clippy,msrv,smoke,notary}.log` and
+`target/automatic-update/` browser screenshots.
