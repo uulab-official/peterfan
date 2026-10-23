@@ -1,111 +1,104 @@
 # Architecture
 
-PeterFan is organized around one rule:
-
-> **The core knows nothing about any operating system.**
-> It knows only the `HardwareProvider` trait.
-
-Everything else follows from that.
-
-## Layers
+PeterFan separates portable domain logic from operating-system access. The core
+knows the `HardwareProvider` and `SystemMonitor` traits, not their platform
+implementations.
 
 ```text
-┌─────────────────────────────────────────────┐
-│  Presentation:  CLI · TUI · GUI · HTTP API    │  portable, OS-unaware
-├─────────────────────────────────────────────┤
-│  Application / Core:  peterfan-core           │  types, curves, profiles
-│      depends only on ▼                        │
-│  Seam:  HardwareProvider (trait)              │  the single boundary
-├─────────────────────────────────────────────┤
-│  Platform backends:  mock · macOS · Windows   │  implement the trait
-├─────────────────────────────────────────────┤
-│  OS / hardware:  SMC · EC · sysfs · sensors   │
-└─────────────────────────────────────────────┘
+CLI · TUI · menu-bar/tray UI · local HTTP API
+                     │
+            core models and policies
+                     │
+       HardwareProvider · SystemMonitor
+                     │
+      mock · macOS · Windows · system metrics
+                     │
+          OS APIs and supported hardware
 ```
 
-Dependencies point **downward and inward only**. `peterfan-core` must never
-`use` a platform crate; doing so would break portability and is the one
-architectural invariant to defend in review.
+`peterfan-core` must not import a platform crate or use OS-specific APIs.
+Presentation crates may depend on both core and platform utilities. The diagram
+shows responsibilities rather than a claim that every UI is OS-independent:
+the native tray/window integration has platform-specific code.
 
 ## Crates
 
 | Crate | Path | Responsibility |
 | --- | --- | --- |
-| `peterfan-core` | `packages/core` | Domain types, system `metrics`, fan `curve`s, `profile`s, and the two backend traits (`HardwareProvider`, `SystemMonitor`). Pure, no OS deps. Unit-tested. |
-| `peterfan-platform` | `packages/platform` | Backend implementations: `system` (real cross-platform metrics via `sysinfo` + `battery`), `mock`/`mock_monitor` (simulated), `macos` (real read-only thermal info via `sysctl`). `detect()`/`system_monitor()` pick real backends; `mock()`/`mock_monitor()` force simulation. |
-| `peterfan-cli` | `packages/cli` | The `peterfan` binary. Pure presentation over core + a provider. |
-| `peterfan-tui` | `packages/tui` | `peterfan-tui` binary: a ratatui dashboard polling a `SystemMonitor`. |
-| `peterfan-menubar` | `packages/menubar` | `peterfan-menubar` binary: a macOS menu-bar (Windows tray) app — live CPU in the bar, a left-click WebView popover dashboard, and a right-click native menu. Built on `tray-icon` + `tao` + `wry`. |
-| `peterfan-daemon` | `packages/daemon` | The privileged `peterfand` control loop: applies profiles continuously, serves IPC, restores fans to auto on exit, and forces 100% duty above the critical temperature. |
+| `peterfan-core` | `packages/core` | Domain types, metrics, curves, profiles, configuration models, and backend traits. |
+| `peterfan-platform` | `packages/platform` | Real and mock providers, system metrics, TOML persistence, daemon IPC/install support, startup integration, and verified update utilities. |
+| `peterfan-cli` | `packages/cli` | The `peterfan` CLI and local HTTP API. |
+| `peterfan-tui` | `packages/tui` | Terminal dashboard over system and hardware providers. |
+| `peterfan-menubar` | `packages/menubar` | Native macOS menu bar / Windows tray, WebView dashboard, settings, and CPU-responsive runner rendering. |
+| `peterfan-daemon` | `packages/daemon` | The `peterfand` privileged control loop, profiles, local IPC, safety checks, and automatic-control restoration. |
 
-Planned work is tracked in [ROADMAP](./ROADMAP.md): UI polish, fan-control
-health diagnostics, sensor accuracy, distribution improvements, and future
-platform backends.
+See [DEVELOPMENT.md](./DEVELOPMENT.md) for contributor commands and
+[ROADMAP.md](./ROADMAP.md) for remaining work.
 
-## Two seams: `SystemMonitor` and `HardwareProvider`
+## Two backend seams
 
-PeterFan has two backend traits because the data has two very different access
-stories:
+`SystemMonitor` provides general CPU, memory, disk, network, process, and battery
+metrics. The real implementation uses `sysinfo` and `battery`, with platform
+extensions where needed. Availability varies by operating system and machine.
 
-- **`SystemMonitor`** — general system metrics (CPU, memory, disk, network,
-  processes, battery). These are available cross-platform through `sysinfo`/
-  `battery` without any per-OS code or privileges, so the real backend
-  (`SysinfoMonitor`) already works on macOS and Windows today.
-- **`HardwareProvider`** — thermal hardware (temperatures, fans, control). This
-  needs per-OS native access (SMC on macOS, EC on Windows) and is where the
-  platform-specific work and the safety model live.
+`HardwareProvider` provides machine information, temperature sensors, fans, and
+optional fan duty/automatic-mode writes. Capabilities describe the operations a
+provider can support; each operation can still fail or return no sensors.
+Callers must handle both errors and empty readings.
 
-Both follow the same capability + mock-fallback philosophy below.
+| Backend | Implemented behavior | Boundary |
+| --- | --- | --- |
+| macOS | Real SMC/IOHID temperature inventory, fan RPM, and guarded SMC fan writes. | Sensor availability and write acceptance depend on model, permissions, and firmware. Fanless Macs have no fans to control. |
+| Windows | Real hardware/system information and firmware ACPI thermal zones when exposed through Windows. | Thermal zones are system temperatures, not CPU-core temperatures. Fan RPM and fan control are unsupported. |
+| Mock | Simulated hardware, metrics, and control for demos/tests. | Must remain clearly identified as simulated; mock success is not hardware evidence. |
 
-## The `HardwareProvider` trait
+`detect()` selects the OS hardware provider; `system_monitor()` selects real
+system metrics. Explicit `--mock` paths use simulated providers. Some callers
+can fall back to labeled simulation when a real provider cannot initialize;
+others show unsupported/unavailable readings. Do not assume every missing
+sensor causes a mock fallback or substitute fabricated values in a real backend.
 
-This is the heart of the thermal design. A backend reports:
+## Configuration and presentation
 
-- `name()` / `capabilities()` — what it is and what it can do **right now**;
-- `hardware_info()` — static machine description;
-- `temperatures()` / `fans()` — live readings;
-- `set_fan_duty()` — control (defaults to `Unsupported`, so read-only backends
-  are correct for free).
+Configuration models live in core; `peterfan-platform::config` loads and saves
+TOML. The CLI and app share settings for profiles, startup, notifications, and
+menu-bar presentation. Configuration changes are distinct from installing a
+privileged helper. Monitoring and source builds do not require that helper.
 
-### Capabilities, not exceptions
+The menu-bar UI combines native window/tray integration with an HTML dashboard.
+Runner rendering and cadence follow CPU load; fixture-based browser checks can
+verify layout and interaction logic, while native runtime and performance
+checks require their own evidence.
 
-Backends advertise `Capabilities { read_temps, read_fans, control_fans }` up
-front. The UI uses this to stay honest:
+## Fan curves, control, and recovery
 
-- It disables controls a backend can't perform instead of failing on use.
-- When `read_temps` is false (e.g. macOS today, where SMC reading isn't
-  implemented), the CLI/TUI fall back to the **mock** backend for sensor values
-  and label them `simulated`. Real `hardware_info()` is still shown, because
-  that part *is* real.
+A [`FanCurve`](../packages/core/src/curve.rs) is a sorted set of temperature/duty
+points, evaluated with interpolation and endpoint clamping. A
+[`Profile`](../packages/core/src/profile.rs) resolves a named preset or custom
+curve to requested fan duties.
 
-This keeps the "everything works in a demo" experience without ever lying about
-whether a number came from real silicon.
+Monitoring is read-only by default. Persistent macOS control uses a separately
+installed root daemon, reached over local IPC. Hardware writes require supported
+capabilities and validated requests; callers must preserve RPM readback and
+report rejected or unverified writes honestly.
 
-## Fan curves & profiles
+The daemon handles critical temperatures, distinguishes RPM read errors from
+stalled fans, and limits repeated recovery attempts with cooldown behavior.
+It attempts to restore OS automatic control on supported shutdown/error paths.
+This is not an unconditional guarantee after power loss, forced termination,
+or firmware failure. Unit tests using mock providers do not establish real
+machine thermal safety. See the [production checklist](./PRODUCTION_CHECKLIST.md)
+for hardware and release validation gates.
 
-- A [`FanCurve`](../packages/core/src/curve.rs) is a sorted list of
-  `(temp, duty%)` points. `duty_at(temp)` does linear interpolation and clamps
-  outside the defined range. This is exactly the model the GUI's drag-to-edit
-  curve editor will produce.
-- A [`Profile`](../packages/core/src/profile.rs) (Silent / Balanced / Gaming /
-  Performance / Maximum / Custom) is a named preset that resolves to a default
-  curve. Applying a profile evaluates its curve at the current temperature and
-  drives controllable fans to that duty.
+## Update and trust boundary
 
-## Safety model
+Update checking and installation are explicit actions. Version precedence,
+release metadata, asset verification, code signature/notarization checks, and
+replacement/relaunch each have distinct failure cases. A successful download
+or a newer version string is not proof that installation succeeded. Daemon
+installation also distinguishes the executable on disk from the version of the
+process answering IPC.
 
-Fan control writes to hardware and can be dangerous. The design commits to:
-
-1. **Read-only by default.** Monitoring needs no elevated privileges.
-2. **Explicit, separate control.** Writes go through a backend that has
-   declared `control_fans = true`.
-3. **Restore on exit / crash.** The daemon owns active control and hands fans
-   back to OS-default behavior on shutdown or crash, and force-ramps on
-   critical temperatures. The CLI never leaves fans in a custom state it can't
-   recover from.
-
-## Why Rust
-
-Memory safety for code that pokes at hardware, a first-class CLI ecosystem
-(`clap`, `ratatui`), easy single-binary distribution, straightforward FFI to
-each OS's native APIs, and a clean story for an eventual long-running daemon.
+Security reports belong in [SECURITY.md](../SECURITY.md). Contribution workflow
+and participation expectations are in [CONTRIBUTING.md](../CONTRIBUTING.md) and
+[CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md).

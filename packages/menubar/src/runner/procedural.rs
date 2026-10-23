@@ -70,8 +70,82 @@ fn render_pose(character: RunnerCharacter, cpu_pct: f32, frame: u8) -> RgbaFrame
     }
 }
 
-// Original side-view gallop. Each entry is an authored joint/foot pair, rather
-// than a translated duplicate. The head and ribcage retain their volume while
+// Feet move backwards at constant speed while planted. The lifted return is
+// sinusoidal, so the cycle closes without a snapping last-to-first transition.
+fn animal_leg(hip: Pt, phase: usize, reach: f32, hind: bool) -> (Pt, Pt) {
+    let t = (phase % 8) as f32 / 8.0;
+    let (x, lift) = if t < 0.5 {
+        (5.0 - 20.0 * t, 0.0)
+    } else {
+        (
+            -5.0 + 20.0 * (t - 0.5),
+            ((t - 0.5) * std::f32::consts::TAU).sin() * 5.4,
+        )
+    };
+    let paw = Pt::new(hip.x + x * reach, 27.0 - lift);
+    let dx = paw.x - hip.x;
+    let dy = paw.y - hip.y;
+    let distance = dx.hypot(dy);
+    let upper: f32 = 6.4;
+    let lower: f32 = 6.4;
+    let along = (upper * upper - lower * lower + distance * distance) / (2.0 * distance);
+    let bend = (upper * upper - along * along).max(0.0).sqrt();
+    let side = if hind { 1.0 } else { -1.0 };
+    let joint = Pt::new(
+        hip.x + (dx * along + side * dy * bend) / distance,
+        hip.y + (dy * along - side * dx * bend) / distance,
+    );
+    (joint, paw)
+}
+
+fn runner_arm(shoulder: Pt, phase: usize, reach: f32) -> (Pt, Pt) {
+    let swing = ((phase % 8) as f32 * std::f32::consts::FRAC_PI_4).cos() * 0.85 * reach;
+    let elbow = Pt::new(
+        shoulder.x + swing.sin() * 5.4,
+        shoulder.y + swing.cos() * 5.4,
+    );
+    let forearm = swing + 1.7;
+    let hand = Pt::new(elbow.x + forearm.sin() * 4.2, elbow.y + forearm.cos() * 4.2);
+    (elbow, hand)
+}
+
+// Purpose-drawn athletic silhouette: a small head, forward chest, bent arms,
+// and legs that keep their length while the recovering foot clears the ground.
+pub(crate) fn human_source_cycle(cpu_pct: f32) -> [RgbaFrame; 8] {
+    std::array::from_fn(|pose| {
+        let mut canvas = RunnerCanvas::new();
+        let white = (255, 255, 255, 255);
+        let far = (255, 255, 255, 205);
+        let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
+        let reach = 0.75 + load * 0.5;
+        let bob = [0.0, -0.6, -1.2, -0.6, 0.0, -0.6, -1.2, -0.6][pose];
+        let hip = Pt::new(23.0, 19.5 + bob);
+        let shoulder = Pt::new(26.0, 12.0 + bob);
+        let leg = |canvas: &mut RunnerCanvas, phase: usize, color| {
+            let (knee, foot) = animal_leg(hip, phase, reach * 1.2, true);
+            canvas.line(hip, knee, 3.5, color);
+            canvas.line(knee, foot, 2.6, color);
+            canvas.line(foot, Pt::new(foot.x + 2.4, foot.y), 2.6, color);
+        };
+        let arm = |canvas: &mut RunnerCanvas, phase: usize, color| {
+            let (elbow, hand) = runner_arm(shoulder, phase, reach);
+            canvas.line(shoulder, elbow, 2.7, color);
+            canvas.line(elbow, hand, 2.5, color);
+        };
+        leg(&mut canvas, (pose + 4) % 8, far);
+        arm(&mut canvas, pose, far);
+        canvas.line(hip, shoulder, 5.6, white);
+        canvas.line(shoulder, Pt::new(27.0, 9.0 + bob), 2.6, white);
+        canvas.disc(Pt::new(27.6, 6.3 + bob), 3.1, white);
+        canvas.ellipse(Pt::new(29.8, 6.8 + bob), 1.5, 1.0, white);
+        leg(&mut canvas, pose, white);
+        arm(&mut canvas, (pose + 4) % 8, white);
+        canvas.erase_disc(Pt::new(28.5, 5.7 + bob), 0.7);
+        canvas.finish()
+    })
+}
+
+// Original side-view run. The head and ribcage retain their volume while
 // the limbs progress through reach, contact, push-off, tuck and suspension.
 pub(crate) fn animal_source_cycle(character: RunnerCharacter, cpu_pct: f32) -> [RgbaFrame; 8] {
     std::array::from_fn(|pose| {
@@ -81,44 +155,32 @@ pub(crate) fn animal_source_cycle(character: RunnerCharacter, cpu_pct: f32) -> [
         let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
         let reach = 0.88 + load * 0.32;
         let bob = [0.0, -0.7, -1.7, -0.8, 0.0, -0.5, -1.4, -0.6][pose];
-        // Knee X/Y and paw X/Y relative to the hip.
-        const HIND: [[f32; 4]; 8] = [
-            [-4.0, 3.0, -7.0, 8.0],
-            [-5.0, 2.5, -9.0, 5.0],
-            [-2.0, 3.0, 1.0, 5.0],
-            [3.0, 4.0, 6.0, 7.0],
-            [4.0, 3.0, 5.0, 8.0],
-            [2.0, 4.0, 0.0, 8.0],
-            [-1.0, 3.0, -4.0, 5.0],
-            [-4.0, 2.0, -7.0, 5.0],
-        ];
-        const FRONT: [[f32; 4]; 8] = [
-            [3.0, 3.0, 6.0, 9.0],
-            [1.0, 4.0, -1.0, 9.0],
-            [-3.0, 3.0, -5.0, 5.0],
-            [-4.0, 2.0, -1.0, 4.0],
-            [-2.0, 3.0, 2.0, 9.0],
-            [2.0, 3.0, 6.0, 8.0],
-            [4.0, 2.0, 8.0, 4.0],
-            [4.0, 2.0, 8.0, 6.0],
-        ];
-        let limb = |canvas: &mut RunnerCanvas, hip: Pt, joints: [f32; 4], color| {
-            let knee = Pt::new(hip.x + joints[0] * reach, hip.y + joints[1]);
-            let paw = Pt::new(hip.x + joints[2] * reach, hip.y + joints[3]);
-            canvas.line(hip, knee, 3.1, color);
-            canvas.line(knee, paw, 2.5, color);
-            canvas.line(paw, Pt::new(paw.x + 1.8, paw.y), 2.5, color);
+        // A closed foot trajectory has a planted half-stride and a lifted
+        // recovery half-stride. Both joints come from fixed-length IK instead
+        // of unrelated pose tables, including the transition from pose 7 to 0.
+        let limb = |canvas: &mut RunnerCanvas, hip: Pt, phase: usize, hind: bool, color| {
+            let (joint, paw) = animal_leg(hip, phase, reach, hind);
+            canvas.line(hip, joint, if hind { 3.5 } else { 2.8 }, color);
+            canvas.line(joint, paw, 2.2, color);
+            canvas.line(paw, Pt::new(paw.x + 2.0, paw.y), 2.2, color);
+        };
+        let far_phase = if character == RunnerCharacter::Rabbit {
+            1
+        } else {
+            4
         };
         limb(
             &mut canvas,
-            Pt::new(18.0, 19.0 + bob),
-            HIND[(pose + 2) % 8],
+            Pt::new(18.0, 18.8 + bob),
+            (pose + far_phase) % 8,
+            true,
             far,
         );
         limb(
             &mut canvas,
-            Pt::new(29.0, 18.0 + bob),
-            FRONT[(pose + 2) % 8],
+            Pt::new(30.0, 17.5 + bob),
+            (pose + far_phase + 2) % 8,
+            false,
             far,
         );
         // The tail follows the spine with a small delayed wave, never a detached dash.
@@ -126,7 +188,8 @@ pub(crate) fn animal_source_cycle(character: RunnerCharacter, cpu_pct: f32) -> [
         match character {
             RunnerCharacter::Rabbit => {
                 canvas.disc(Pt::new(12.5, 17.0 + bob), 3.0, solid);
-                canvas.ellipse(Pt::new(22.0, 18.0 + bob), 9.0, 5.8, solid);
+                canvas.ellipse(Pt::new(23.5, 17.5 + bob), 8.5, 4.6, solid);
+                canvas.ellipse(Pt::new(17.5, 18.5 + bob), 5.4, 5.6, solid);
                 canvas.disc(Pt::new(33.0, 13.5 + bob), 5.0, solid);
                 canvas.line(
                     Pt::new(30.5, 11.0 + bob),
@@ -155,9 +218,14 @@ pub(crate) fn animal_source_cycle(character: RunnerCharacter, cpu_pct: f32) -> [
                     3.8,
                     solid,
                 );
-                canvas.ellipse(Pt::new(23.0, 17.5 + bob), 10.0, 5.2, solid);
-                canvas.ellipse(Pt::new(31.5, 15.0 + bob), 5.5, 5.1, solid);
-                canvas.disc(Pt::new(35.0, 12.0 + bob), 4.5, solid);
+                canvas.ellipse(Pt::new(23.0, 17.5 + bob), 9.3, 4.3, solid);
+                canvas.line(
+                    Pt::new(29.0, 17.0 + bob),
+                    Pt::new(33.0, 12.0 + bob),
+                    6.2,
+                    solid,
+                );
+                canvas.disc(Pt::new(35.0, 11.6 + bob), 4.2, solid);
                 canvas.ellipse(Pt::new(39.5, 14.0 + bob), 4.1, 2.6, solid);
                 // Long drooping ear, deliberately distinct from the cat's spikes.
                 canvas.line(
@@ -181,7 +249,13 @@ pub(crate) fn animal_source_cycle(character: RunnerCharacter, cpu_pct: f32) -> [
                     5.0,
                     solid,
                 );
-                canvas.ellipse(Pt::new(23.0, 17.0 + bob), 10.0, 4.8, solid);
+                canvas.ellipse(Pt::new(23.0, 17.0 + bob), 9.5, 3.9, solid);
+                canvas.line(
+                    Pt::new(29.0, 16.0 + bob),
+                    Pt::new(32.0, 12.0 + bob),
+                    5.4,
+                    solid,
+                );
                 canvas.ellipse(Pt::new(33.0, 13.5 + bob), 5.7, 4.0, solid);
                 canvas.triangle(
                     Pt::new(34.0, 12.0 + bob),
@@ -215,9 +289,14 @@ pub(crate) fn animal_source_cycle(character: RunnerCharacter, cpu_pct: f32) -> [
                     3.0,
                     solid,
                 );
-                canvas.ellipse(Pt::new(23.0, 17.0 + bob), 10.0, 5.1, solid);
-                canvas.ellipse(Pt::new(31.0, 15.0 + bob), 5.2, 5.2, solid);
-                canvas.disc(Pt::new(35.0, 12.5 + bob), 5.0, solid);
+                canvas.ellipse(Pt::new(23.0, 17.0 + bob), 9.2, 4.1, solid);
+                canvas.line(
+                    Pt::new(29.0, 16.5 + bob),
+                    Pt::new(33.0, 12.5 + bob),
+                    5.1,
+                    solid,
+                );
+                canvas.disc(Pt::new(35.0, 12.5 + bob), 4.5, solid);
                 canvas.triangle(
                     Pt::new(30.7, 10.0 + bob),
                     Pt::new(31.0, 5.8 + bob),
@@ -234,8 +313,14 @@ pub(crate) fn animal_source_cycle(character: RunnerCharacter, cpu_pct: f32) -> [
             }
             _ => unreachable!("non-quadruped in authored animal renderer"),
         }
-        limb(&mut canvas, Pt::new(17.0, 19.0 + bob), HIND[pose], solid);
-        limb(&mut canvas, Pt::new(30.0, 18.0 + bob), FRONT[pose], solid);
+        limb(&mut canvas, Pt::new(17.5, 18.8 + bob), pose, true, solid);
+        limb(
+            &mut canvas,
+            Pt::new(30.0, 17.5 + bob),
+            (pose + 2) % 8,
+            false,
+            solid,
+        );
         let eye = match character {
             RunnerCharacter::Rabbit => Pt::new(34.5, 12.5 + bob),
             RunnerCharacter::Fox => Pt::new(35.3, 12.0 + bob),
@@ -262,38 +347,49 @@ pub(crate) fn ghost_source_cycle(cpu_pct: f32) -> [RgbaFrame; 8] {
     std::array::from_fn(|pose| {
         let solid = (255, 255, 255, 255);
         let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-        let amplitude = 1.0 + load * 1.2;
+        let amplitude = 1.0 + load * 1.6;
         let wave = [0.0, 0.7, 1.0, 0.7, 0.0, -0.7, -1.0, -0.7];
         let bob = [0.0, -0.6, -1.2, -0.6, 0.0, -0.6, -1.2, -0.6][pose];
         let mut canvas = RunnerCanvas::new();
         canvas.disc(Pt::new(25.0, 12.0 + bob), 8.0, solid);
-        canvas.rect(17.0, 12.0 + bob, 33.0, 22.0 + bob, solid);
-        for segment in 0..4 {
-            let x = 17.0 + segment as f32 * 4.0;
-            let flutter = wave[(pose + segment * 2) % 8] * amplitude;
-            canvas.triangle(
-                Pt::new(x, 21.0 + bob),
-                Pt::new(x + 4.0, 21.0 + bob),
-                Pt::new(x + 2.0 + flutter * 0.5, 26.0 + bob + flutter),
-                solid,
-            );
+        canvas.rect(17.0, 12.0 + bob, 33.0, 21.5 + bob, solid);
+        // One broad cloth panel, with two travelling folds joined to the
+        // belly. Separate hanging discs read as tentacles at menu-bar size.
+        let hem = |x: f32| {
+            let phase = (x - 17.0) * std::f32::consts::TAU / 8.0
+                - pose as f32 * std::f32::consts::FRAC_PI_4;
+            23.0 + bob + phase.cos() * (0.85 + load * 0.95)
+        };
+        for segment in 0..16 {
+            let left = 17.0 + segment as f32;
+            let right = left + 1.0;
+            let a = Pt::new(left, 20.0 + bob);
+            let b = Pt::new(right, 20.0 + bob);
+            let c = Pt::new(right, hem(right));
+            let d = Pt::new(left, hem(left));
+            canvas.triangle(a, b, c, solid);
+            canvas.triangle(a, c, d, solid);
         }
-        let hand_wave = wave[pose] * amplitude;
+        // Increased load lifts and opens these short sleeves, making effort
+        // readable after rasterization without lengthening them into tentacles.
+        let hand_wave = wave[pose] * amplitude * 0.65;
+        let sleeve_reach = load * 1.5;
         canvas.line(
-            Pt::new(18.0, 15.0 + bob),
-            Pt::new(12.5, 18.0 + bob + hand_wave),
-            4.0,
+            Pt::new(18.0, 15.2 + bob),
+            Pt::new(14.5 - sleeve_reach, 17.2 + bob + hand_wave),
+            3.7,
             solid,
         );
         canvas.line(
-            Pt::new(32.0, 15.0 + bob),
-            Pt::new(37.5, 17.0 + bob - hand_wave),
-            4.0,
+            Pt::new(32.0, 15.2 + bob),
+            Pt::new(35.0 + sleeve_reach, 16.8 + bob - hand_wave),
+            3.7,
             solid,
         );
-        canvas.erase_disc(Pt::new(24.5, 11.5 + bob), 1.2);
-        canvas.erase_disc(Pt::new(29.5, 11.5 + bob), 1.2);
-        canvas.erase_disc(Pt::new(27.5, 16.0 + bob), 1.4);
+        // Eye separation and cavity area survive the actual 27×18 tray scale.
+        canvas.erase_disc(Pt::new(24.3, 11.5 + bob), 1.5);
+        canvas.erase_disc(Pt::new(29.5, 11.5 + bob), 1.5);
+        canvas.erase_disc(Pt::new(27.5, 16.0 + bob), 1.2);
         canvas.finish()
     })
 }
@@ -348,10 +444,10 @@ fn make_penguin_runner_rgba(cpu_pct: f32, frame: u8) -> RgbaFrame {
         Pt::new(33.0, 11.5 + bob),
         solid,
     );
-    canvas.line(
-        Pt::new(29.0, 13.5 + bob),
-        Pt::new(32.0 + swing * 0.75, 19.0 + bob - swing * 0.45),
-        3.7,
+    canvas.triangle(
+        Pt::new(28.0, 12.5 + bob),
+        Pt::new(31.0, 14.0 + bob),
+        Pt::new(32.0 + swing * 0.75, 21.0 + bob - swing * 0.45),
         solid,
     );
     foot(&mut canvas, pose, 28.0, solid);
@@ -364,56 +460,29 @@ fn make_penguin_runner_rgba(cpu_pct: f32, frame: u8) -> RgbaFrame {
 fn make_robot_runner_rgba(cpu_pct: f32, frame: u8) -> RgbaFrame {
     let pose = usize::from(frame % FRAME_COUNT);
     let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let reach = 0.9 + load * 0.2;
+    let reach = 0.72 + load * 0.5;
     let bob = [0.0, -0.8, -1.7, -0.8, 0.0, -0.8, -1.7, -0.8][pose];
-    // Hip/knee/ankle chains follow an actual run, with the rear knee folding
-    // under the pelvis rather than stretching opposite corners of a box.
-    const LEG: [[f32; 4]; 8] = [
-        [4.0, 3.5, 7.0, 9.0],
-        [0.0, 5.0, -2.0, 9.0],
-        [-4.0, 2.0, -7.0, 4.0],
-        [-4.0, 0.0, -2.0, 1.0],
-        [-1.0, 3.0, 5.0, 9.0],
-        [3.0, 3.5, 7.0, 7.0],
-        [5.0, 1.0, 7.0, 3.0],
-        [5.0, 1.5, 8.0, 6.0],
-    ];
-    const ARM: [[f32; 4]; 8] = [
-        [-5.0, 3.0, -3.0, 6.0],
-        [-3.0, 4.0, 0.0, 6.0],
-        [0.0, 4.0, 4.0, 3.0],
-        [4.0, 3.0, 7.0, 0.0],
-        [5.0, 2.0, 6.0, -1.0],
-        [3.0, 4.0, 5.0, 1.0],
-        [0.0, 4.0, 2.0, 6.0],
-        [-4.0, 3.0, -2.0, 6.0],
-    ];
     let solid = (255, 255, 255, 255);
     let far = (255, 255, 255, 215);
     let mut canvas = RunnerCanvas::new();
-    let joint_chain = |canvas: &mut RunnerCanvas, root: Pt, offsets: [f32; 4], width, color| {
-        let joint = Pt::new(root.x + offsets[0] * reach, root.y + offsets[1]);
-        let end = Pt::new(root.x + offsets[2] * reach, root.y + offsets[3]);
-        canvas.line(root, joint, width, color);
-        canvas.line(joint, end, width, color);
-        canvas.disc(joint, width * 0.55, color);
-        end
+    let leg = |canvas: &mut RunnerCanvas, phase: usize, x: f32, color| {
+        let hip = Pt::new(x, 19.0 + bob);
+        let (knee, foot) = animal_leg(hip, phase, reach * 1.1, true);
+        canvas.line(hip, knee, 3.0, color);
+        canvas.line(knee, foot, 2.8, color);
+        canvas.disc(knee, 1.6, color);
+        canvas.line(foot, Pt::new(foot.x + 2.5, foot.y), 2.8, color);
     };
-    let rear_foot = joint_chain(
-        &mut canvas,
-        Pt::new(24.0, 19.0 + bob),
-        LEG[(pose + 4) % 8],
-        3.0,
-        far,
-    );
-    canvas.line(rear_foot, Pt::new(rear_foot.x + 2.5, rear_foot.y), 2.8, far);
-    joint_chain(
-        &mut canvas,
-        Pt::new(26.0, 12.0 + bob),
-        ARM[(pose + 4) % 8],
-        2.8,
-        far,
-    );
+    let arm = |canvas: &mut RunnerCanvas, phase: usize, x: f32, color| {
+        let shoulder = Pt::new(x, 12.5 + bob);
+        let (elbow, hand) = runner_arm(shoulder, phase, reach);
+        canvas.line(shoulder, elbow, 2.9, color);
+        canvas.line(elbow, hand, 2.7, color);
+        canvas.disc(elbow, 1.6, color);
+        canvas.disc(hand, 1.7, color);
+    };
+    leg(&mut canvas, (pose + 4) % 8, 24.0, far);
+    arm(&mut canvas, pose, 26.0, far);
     canvas.rect(22.0, 11.0 + bob, 31.0, 20.0 + bob, solid);
     canvas.line(
         Pt::new(27.0, 10.0 + bob),
@@ -421,7 +490,7 @@ fn make_robot_runner_rgba(cpu_pct: f32, frame: u8) -> RgbaFrame {
         3.0,
         solid,
     );
-    canvas.rect(23.0, 4.7 + bob, 34.0, 12.5 + bob, solid);
+    canvas.rect(23.0, 4.7 + bob, 35.0, 12.5 + bob, solid);
     canvas.line(
         Pt::new(27.0, 5.2 + bob),
         Pt::new(26.0, 3.5 + bob),
@@ -429,28 +498,9 @@ fn make_robot_runner_rgba(cpu_pct: f32, frame: u8) -> RgbaFrame {
         solid,
     );
     canvas.disc(Pt::new(26.0, 3.5 + bob), 1.1, solid);
-    let near_foot = joint_chain(
-        &mut canvas,
-        Pt::new(27.0, 19.0 + bob),
-        LEG[pose],
-        3.3,
-        solid,
-    );
-    canvas.line(
-        near_foot,
-        Pt::new(near_foot.x + 2.5, near_foot.y),
-        3.0,
-        solid,
-    );
-    let hand = joint_chain(
-        &mut canvas,
-        Pt::new(29.0, 12.5 + bob),
-        ARM[pose],
-        3.0,
-        solid,
-    );
-    canvas.disc(hand, 1.6, solid);
-    canvas.erase_rect(27.5, 7.0 + bob, 32.5, 10.0 + bob);
+    leg(&mut canvas, pose, 27.0, solid);
+    arm(&mut canvas, (pose + 4) % 8, 29.0, solid);
+    canvas.erase_rect(26.5, 7.0 + bob, 31.8, 10.5 + bob);
     canvas.erase_disc(Pt::new(26.0, 15.0 + bob), 1.1);
     canvas.finish()
 }
@@ -468,13 +518,14 @@ struct PushupPose {
 }
 
 fn pushup_pose(cpu_pct: f32, frame: u8) -> PushupPose {
-    // Rotate a rigid toe-to-shoulder chain. Independent Y curves made the old
-    // character sag and stretch instead of lowering a straight plank.
-    const ANGLES: [f32; 8] = [33.4, 27.0, 21.0, 15.0, 12.0, 18.0, 24.0, 28.0];
-    let angle = ANGLES[usize::from(frame % FRAME_COUNT)];
+    // A shallow, rigid plank rotates around the planted toes. The chest
+    // lowers by about five source pixels, rather than tipping from a steep
+    // incline into a different exercise. Load changes exertion subtly while
+    // the shared runner clock remains responsible for repetition speed.
+    const LOWERING: [f32; 8] = [0.0, 0.15, 0.50, 0.85, 1.0, 0.75, 0.40, 0.10];
     let effort = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let depth = [0.0, -0.8, -2.0, -3.5, -4.5, -2.8, -1.5, -0.3][usize::from(frame % FRAME_COUNT)];
-    let angle = (angle + depth * effort).to_radians();
+    let lowering = LOWERING[usize::from(frame % FRAME_COUNT)];
+    let angle = (21.0 + effort - lowering * (9.0 + effort)).to_radians();
     let direction = Pt::new(angle.cos(), -angle.sin());
     let toe = Pt::new(3.8, 27.7);
     let on_spine = |distance: f32| {
@@ -491,8 +542,8 @@ fn pushup_pose(cpu_pct: f32, frame: u8) -> PushupPose {
     let dx = hand.x - shoulder.x;
     let dy = hand.y - shoulder.y;
     let distance = dx.hypot(dy);
-    let along = (9.15_f32.powi(2) - 9.35_f32.powi(2) + distance.powi(2)) / (2.0 * distance);
-    let bend = (9.15_f32.powi(2) - along.powi(2)).max(0.0).sqrt();
+    let along = (6.05_f32.powi(2) - 6.25_f32.powi(2) + distance.powi(2)) / (2.0 * distance);
+    let bend = (6.05_f32.powi(2) - along.powi(2)).max(0.0).sqrt();
     let elbow = Pt::new(
         shoulder.x + (dx * along - dy * bend) / distance,
         shoulder.y + (dy * along + dx * bend) / distance,
@@ -522,7 +573,23 @@ fn make_pushup_runner_rgba(cpu_pct: f32, frame: u8) -> RgbaFrame {
     // size; overlapping pairs of arms previously filled it into a prone bar.
     canvas.line(pose.toe, pose.knee, 2.7, solid);
     canvas.line(pose.knee, pose.hip, 3.0, solid);
-    canvas.line(pose.hip, pose.shoulder, 4.6, solid);
+    // A fitted torso has a chest and waist, rather than a single stick.
+    // Keep its underside clear of the elbow throughout the rep.
+    let dx = (pose.shoulder.x - pose.hip.x) / 17.0;
+    let dy = (pose.shoulder.y - pose.hip.y) / 17.0;
+    let normal = Pt::new(dy, -dx);
+    let upper_hip = Pt::new(pose.hip.x + normal.x * 1.8, pose.hip.y + normal.y * 1.8);
+    let upper_chest = Pt::new(
+        pose.shoulder.x + normal.x * 3.2,
+        pose.shoulder.y + normal.y * 3.2,
+    );
+    let lower_chest = Pt::new(
+        pose.shoulder.x - normal.x * 1.7,
+        pose.shoulder.y - normal.y * 1.7,
+    );
+    canvas.triangle(upper_hip, upper_chest, lower_chest, solid);
+    canvas.triangle(upper_hip, lower_chest, pose.hip, solid);
+    canvas.line(pose.hip, pose.shoulder, 3.6, solid);
     canvas.line(pose.shoulder, pose.neck, 2.7, solid);
     canvas.line(pose.neck, pose.head, 2.5, solid);
     canvas.disc(pose.head, 3.0, solid);
@@ -570,6 +637,43 @@ mod tests {
     }
 
     #[test]
+    fn animal_stride_plants_the_paw_and_keeps_both_bones_the_same_length() {
+        let distance = |a: super::Pt, b: super::Pt| (a.x - b.x).hypot(a.y - b.y);
+        for reach in [0.88, 1.0, 1.2] {
+            for hip in [super::Pt::new(17.5, 18.8), super::Pt::new(30.0, 15.8)] {
+                for hind in [false, true] {
+                    for phase in 0..8 {
+                        let (joint, paw) = super::animal_leg(hip, phase, reach, hind);
+                        assert!((distance(hip, joint) - 6.4).abs() < 0.001);
+                        assert!((distance(joint, paw) - 6.4).abs() < 0.001);
+                        if phase <= 4 {
+                            assert_eq!(paw.y, 27.0, "planted paw slides vertically");
+                        } else {
+                            assert!(paw.y < 24.0, "recovery paw must clear the ground");
+                        }
+                        let next = super::animal_leg(hip, (phase + 1) % 8, reach, hind).1;
+                        assert!(
+                            (paw.x - next.x).abs() <= 2.5 * reach + 0.001,
+                            "paw snaps at stride boundary {phase}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn running_arm_preserves_bone_lengths_and_bends_forward() {
+        let shoulder = super::Pt::new(26.0, 12.0);
+        for phase in 0..8 {
+            let (elbow, hand) = super::runner_arm(shoulder, phase, 1.0);
+            assert!(((elbow.x - shoulder.x).hypot(elbow.y - shoulder.y) - 5.4).abs() < 0.001);
+            assert!(((hand.x - elbow.x).hypot(hand.y - elbow.y) - 4.2).abs() < 0.001);
+            assert!(hand.x > elbow.x, "hand folds backwards at phase {phase}");
+        }
+    }
+
+    #[test]
     fn pushup_keeps_contacts_spine_and_limb_lengths_throughout_each_rep() {
         let distance = |a: super::Pt, b: super::Pt| (a.x - b.x).hypot(a.y - b.y);
         for cpu in [0.0, 30.0, 65.0, 90.0] {
@@ -578,8 +682,8 @@ mod tests {
                 assert!((p.toe.x - 3.8).abs() < 0.01 && (p.toe.y - 27.7).abs() < 0.01);
                 assert!((p.hand.x - 36.0).abs() < 0.01 && (p.hand.y - 27.7).abs() < 0.01);
                 assert!((distance(p.toe, p.shoulder) - 32.0).abs() < 0.01);
-                assert!((distance(p.shoulder, p.elbow) - 9.15).abs() < 0.01);
-                assert!((distance(p.elbow, p.hand) - 9.35).abs() < 0.01);
+                assert!((distance(p.shoulder, p.elbow) - 6.05).abs() < 0.01);
+                assert!((distance(p.elbow, p.hand) - 6.25).abs() < 0.01);
                 for joint in [p.knee, p.hip] {
                     let area = (joint.x - p.toe.x) * (p.shoulder.y - p.toe.y)
                         - (joint.y - p.toe.y) * (p.shoulder.x - p.toe.x);
@@ -620,10 +724,10 @@ mod tests {
 
     #[test]
     fn pushup_top_pose_extends_the_arm_instead_of_holding_half_a_rep() {
-        let p = super::pushup_pose(0.0, 0);
+        let p = super::pushup_pose(100.0, 0);
         let upper = super::Pt::new(p.elbow.x - p.shoulder.x, p.elbow.y - p.shoulder.y);
         let lower = super::Pt::new(p.hand.x - p.elbow.x, p.hand.y - p.elbow.y);
-        let alignment = (upper.x * lower.x + upper.y * lower.y) / (9.15 * 9.35);
+        let alignment = (upper.x * lower.x + upper.y * lower.y) / (6.05 * 6.25);
         assert!(
             alignment > 0.98,
             "top pose arm is still bent: alignment={alignment}"
@@ -631,22 +735,22 @@ mod tests {
     }
 
     #[test]
-    fn pushup_has_a_raised_plank_and_a_visibly_lower_bottom() {
-        let top = super::make_pushup_runner_rgba(0.0, 0);
-        let bottom = super::make_pushup_runner_rgba(0.0, 4);
-        let top_bounds = crate::runner::measure_frame(&top).expect("top").bounds;
-        let low_bounds = crate::runner::measure_frame(&bottom)
-            .expect("bottom")
-            .bounds;
-        assert!(
-            top_bounds.min_y <= 8,
-            "plank is flattened at y={}",
-            top_bounds.min_y
-        );
-        assert!(
-            low_bounds.min_y >= top_bounds.min_y + 9,
-            "full body must visibly descend"
-        );
+    fn pushup_has_a_shallow_plank_and_a_controlled_chest_stroke() {
+        for cpu in [0.0, 30.0, 65.0, 100.0] {
+            let top = super::pushup_pose(cpu, 0);
+            let bottom = super::pushup_pose(cpu, 4);
+            let stroke = bottom.shoulder.y - top.shoulder.y;
+            assert!((4.0..=6.0).contains(&stroke), "chest stroke {stroke}");
+            for frame in 0..8 {
+                let p = super::pushup_pose(cpu, frame);
+                let angle = (p.toe.y - p.shoulder.y)
+                    .atan2(p.shoulder.x - p.toe.x)
+                    .to_degrees();
+                assert!((11.99..=22.01).contains(&angle), "inclined plank {angle}");
+                assert!(p.elbow.y < p.hand.y, "elbow folds below the floor");
+                assert!(p.elbow.x < p.hand.x, "elbow folds ahead of the wrist");
+            }
+        }
     }
 
     #[test]
@@ -697,6 +801,83 @@ mod tests {
                     }
                 }
                 assert!(visor_pixels >= 2, "robot pose {pose} at {cpu_pct}% loses its visible visor ({visor_pixels} dark pixels)");
+            }
+        }
+    }
+
+    // Area sampling models the loss of detail at the physical 27×18 tray
+    // footprint, rather than testing only the enlarged source artwork.
+    fn tray_alpha(frame: &[u8]) -> Vec<u8> {
+        let mut result = vec![0; 27 * 18];
+        for y in 0..18 {
+            for x in 0..27 {
+                let left = x as f32 * crate::runner::PIXEL_WIDTH as f32 / 27.0;
+                let right = (x + 1) as f32 * crate::runner::PIXEL_WIDTH as f32 / 27.0;
+                let top = y as f32 * crate::runner::PIXEL_HEIGHT as f32 / 18.0;
+                let bottom = (y + 1) as f32 * crate::runner::PIXEL_HEIGHT as f32 / 18.0;
+                let mut alpha = 0.0;
+                for sy in top.floor() as u32..bottom.ceil() as u32 {
+                    for sx in left.floor() as u32..right.ceil() as u32 {
+                        let area = (right.min(sx as f32 + 1.0) - left.max(sx as f32))
+                            * (bottom.min(sy as f32 + 1.0) - top.max(sy as f32));
+                        alpha += area
+                            * f32::from(
+                                frame[((sy * crate::runner::PIXEL_WIDTH + sx) * 4 + 3) as usize],
+                            );
+                    }
+                }
+                result[y * 27 + x] = (alpha / ((right - left) * (bottom - top))).round() as u8;
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn ghost_keeps_two_separate_eyes_at_the_actual_tray_footprint() {
+        for cpu in [0.0, 30.0, 65.0, 100.0] {
+            let cycle = crate::runner::assets::build_cycle(RunnerCharacter::Ghost, cpu)
+                .expect("ghost cycle");
+            for (pose, frame) in cycle.iter().enumerate() {
+                let tiny = tray_alpha(frame);
+                let has_two_eyes = (2..10).any(|y| {
+                    let mut cavities = 0;
+                    let mut inside_cavity = false;
+                    for x in 2..25 {
+                        let dark = tiny[y * 27 + x] < 150
+                            && tiny[(y - 2) * 27 + x] > 180
+                            && tiny[(y + 2) * 27 + x] > 180;
+                        if dark && !inside_cavity {
+                            cavities += 1;
+                        }
+                        inside_cavity = dark;
+                    }
+                    cavities >= 2
+                });
+                assert!(
+                    has_two_eyes,
+                    "ghost eyes merge or vanish at {cpu}%, pose {pose}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ghost_hem_remains_a_connected_sheet_instead_of_separate_tentacles() {
+        for cpu in [0.0, 100.0] {
+            for frame in super::ghost_source_cycle(cpu) {
+                // Across the whole belly the hem starts with continuous cloth.
+                // Each column terminates once, without a gap then a hanging disc.
+                for x in 18..33 {
+                    let mut entered_cloth = false;
+                    let mut left_cloth = false;
+                    for y in 18..28 {
+                        let solid =
+                            frame[((y * crate::runner::PIXEL_WIDTH + x) * 4 + 3) as usize] > 128;
+                        assert!(!(solid && left_cloth), "disconnected cloth at {x},{y}");
+                        left_cloth |= entered_cloth && !solid;
+                        entered_cloth |= solid;
+                    }
+                }
             }
         }
     }

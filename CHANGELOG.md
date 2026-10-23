@@ -4,6 +4,58 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Open-source contributor experience
+
+- Reduce single-screen macOS runner redraw cost with a native layer mask while
+  retaining CPU cadence, native button behavior and multi-screen image fallback.
+  Add native compositing regressions and a safe manual ABBA benchmark with
+  explicit performance/quality targets.
+- Rework push-up contact and shallow plank geometry, the ghost's cloth/eyes and
+  the party dancer's support-foot weight transfer; add tiny-scale and loop checks
+  plus before/after, pause and eight-pose motion QA controls.
+- Check for releases periodically while the menu-bar app runs, retry failed
+  checks with bounded backoff and share one update lock across automatic/manual
+  checks, installation and channel changes. Show check history and next retry in
+  Settings; background discovery never installs updates.
+- Match settings save/import acknowledgements to the originating window and request;
+  retain drafts during pending, failed or unconfirmed operations, and distinguish
+  disk persistence from confirmed daemon reload.
+- Preserve focused notification temperature edits across live refreshes and reset
+  the Windows runner frame deadline for random selections as for fixed selections.
+- Replace stale setup/backend guidance in four languages and document mock-first,
+  credential-free contributor checks, supported platforms and current release limits.
+- Declare the verified Rust 1.88 minimum; check minimum Rust on macOS/Windows,
+  portable core on Linux, locked dependencies and Rust documentation in CI.
+- Upgrade Ratatui to 0.30.2 with patched LRU while retaining layout caching;
+  remove obsolete TUI advisory exceptions and deny new audit warnings in CI.
+- Make the development launcher preserve installed/other-checkout instances and
+  build successfully before restarting only its own app.
+- Add security/support/conduct policies, issue forms, a PR template and reviewed
+  weekly dependency-update proposals.
+- Record per-file runner sources/licenses/hashes; remove two unused comparison
+  images without recorded provenance from the current tree.
+- Validate release tags against main, pin source commits and restrict write tokens
+  to artifact publication jobs; cover rejection paths with offline tests.
+
+## [1.32.4] — 2026-10-22 · 프로덕션 상태·접근성·업데이트 개선
+
+- 프리릴리스·정식 버전·빌드 메타데이터의 버전 비교를 네이티브와 설정 화면에서 일치시키고 잘못된 버전 정보는 설치 불가 처리
+- 설정·시스템 화면의 프로세스 목록 갱신 중 발생하던 JavaScript 범위 오류 수정, 빈 목록·반복 갱신 회귀 검사 추가
+- 팬 감지 중·팬 없음·읽기 전용 상태를 구분하고 아직 확인되지 않은 팬 모드·설정 안내를 표시하지 않도록 개선
+- 한국어 시작 설정·업데이트 채널·화면 읽기 레이블 정리, 팬별 목표 속도 입력·슬라이더에 이름과 단위 제공
+- 요약 팬 RPM에서 단위를 분리해 잘림을 줄이고 전체 값은 도움말과 접근성 이름으로 제공
+- 데몬 설치 완료는 디스크 파일과 실제 실행 중인 데몬의 버전 응답을 함께 확인
+- 팬 RPM 센서 읽기 실패와 실제 RPM 정체 진단을 분리하면서 macOS 자동 복귀와 재시도 대기 유지
+- CPU 연동 속도를 유지하면서 메뉴바 반복 그리기에 네이티브 이미지 래스터 캐시 사용
+
+## [1.32.3] — 2026-10-22 · 캐릭터 동작 정돈과 랜덤 선택
+
+- 캐릭터 선택에 ‘랜덤 · 1분마다’ 추가. 전체 캐릭터를 섞어서 한 번씩 보여주며 연속 중복을 피하고 선택을 저장
+- 고정 캐릭터를 선택하면 랜덤 해제. 숫자만 표시하거나 동작 줄이기를 사용할 때 자동 교체 정지
+- 네 발 동물·로봇·새·오리·양·초밥·소시지·파티댄서의 관절 길이와 접지 동작 정돈
+- 달리는 사람을 전용 실루엣으로 다시 그리고 푸시업 몸통, 고스트 옷자락, 새 날개, 행성 가림과 도시 바퀴 동작 개선
+- 공룡의 프레임 사이 강제 위치 이동을 줄여 튀는 움직임 완화
+
 ## [1.32.2] — 2026-10-22 · 러너 동작과 반응성 개선
 
 - 새·오리·양·물고기·슬라임·궤도·초밥·도시·소시지·파티를 오리지널 8프레임으로 새로 제작하고 선택 가능한 러너를 20종으로 확대

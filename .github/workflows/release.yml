@@ -18,57 +18,86 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  source-preflight:
+    name: Validate reviewed release source
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      # Resolve tags with the validator from reviewed main, never from the input tag.
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve immutable release commit
+        id: source
+        env:
+          RELEASE_EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_WORKFLOW_REF: ${{ github.ref }}
+          RELEASE_REQUIRED: 'true'
+        run: node scripts/check-release-source.mjs
+
   # ── 1. CHANGELOG에서 이번 버전의 릴리즈 노트를 추출 ────────────────────────
   release-notes:
     name: Extract release notes
+    needs: source-preflight
     runs-on: ubuntu-latest
     outputs:
       notes: ${{ steps.extract.outputs.notes }}
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ needs.source-preflight.outputs.tag }}
+      sha: ${{ needs.source-preflight.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.tag }}
-
-      - name: Resolve version
-        id: version
-        run: |
-          echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          ref: ${{ needs.source-preflight.outputs.sha }}
+          persist-credentials: false
 
       - name: Extract from CHANGELOG.md
         id: extract
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.source-preflight.outputs.tag }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="$RELEASE_TAG"
           # Strip leading 'v' for CHANGELOG heading match
           VER="${VERSION#v}"
           # Extract the section between ## [VER] and the next ## [
-          NOTES=$(awk "/^## \[$VER\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+          NOTES=$(awk -v version="$VER" '$1 == "##" && $2 == "[" version "]" {found=1; next} found && /^## \[/{exit} found{print}' CHANGELOG.md)
           if [ -z "$NOTES" ]; then
             NOTES="See CHANGELOG.md for details."
           fi
-          # Store multiline output
+          # Store multiline output using a delimiter absent from the changelog.
+          DELIMITER="NOTES_$(openssl rand -hex 16)"
+          while [[ "$NOTES" == *"$DELIMITER"* ]]; do
+            DELIMITER="NOTES_$(openssl rand -hex 16)"
+          done
           {
-            echo "notes<<EOF_NOTES"
+            echo "notes<<$DELIMITER"
             echo "$NOTES"
-            echo "EOF_NOTES"
+            echo "$DELIMITER"
           } >> "$GITHUB_OUTPUT"
 
   # ── 2. Windows x64: test, install, launch, package ─────────────────────────
   build-windows:
     name: Build and verify Windows x64
-    needs: release-notes
+    needs: [source-preflight, release-notes]
     runs-on: windows-2022
+    env:
+      RELEASE_TAG: ${{ needs.source-preflight.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.tag }}
+          ref: ${{ needs.source-preflight.outputs.sha }}
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -84,19 +113,19 @@ jobs:
           restore-keys: release-windows-x64-v5-
 
       - name: Test workspace
-        run: cargo test --workspace --all-features --target x86_64-pc-windows-msvc
+        run: cargo test --locked --workspace --all-features --target x86_64-pc-windows-msvc
 
       - name: Build release binaries
-        run: cargo build --workspace --release --target x86_64-pc-windows-msvc
+        run: cargo build --locked --workspace --release --target x86_64-pc-windows-msvc
 
       - name: Resolve package version
         id: version
         shell: pwsh
         run: |
-          $Metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $Metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
           $Version = ($Metadata.packages | Where-Object name -eq "peterfan-menubar").version
-          if ("v$Version" -ne "${{ needs.release-notes.outputs.version }}") {
-            throw "Cargo version v$Version does not match release tag ${{ needs.release-notes.outputs.version }}."
+          if ("v$Version" -ne $env:RELEASE_TAG) {
+            throw "Cargo version v$Version does not match release tag $env:RELEASE_TAG."
           }
           "version=$Version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
@@ -123,11 +152,13 @@ jobs:
   # ── 3. macOS Apple Silicon ─────────────────────────────────────────────────
   build-macos-arm:
     name: Build macOS arm64
+    needs: source-preflight
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.tag }}
+          ref: ${{ needs.source-preflight.outputs.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
@@ -140,7 +171,7 @@ jobs:
           key: macos-arm-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: macos-arm-
       - name: Build
-        run: cargo build --release --target aarch64-apple-darwin --bins
+        run: cargo build --locked --release --target aarch64-apple-darwin --bins
       - name: Upload arm64 artifacts
         uses: actions/upload-artifact@v6
         with:
@@ -160,11 +191,13 @@ jobs:
   # actual Intel host.
   build-macos-x86:
     name: Build macOS x86_64
+    needs: source-preflight
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.tag }}
+          ref: ${{ needs.source-preflight.outputs.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin
@@ -177,7 +210,7 @@ jobs:
           key: macos-x86-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: macos-x86-
       - name: Build
-        run: cargo build --release --target x86_64-apple-darwin --bins
+        run: cargo build --locked --release --target x86_64-apple-darwin --bins
       - name: Upload x86_64 artifacts
         uses: actions/upload-artifact@v6
         with:
@@ -191,12 +224,16 @@ jobs:
   # ── 5. Universal macOS 바이너리 + .app 번들 ───────────────────────────────
   package-macos:
     name: Package macOS Universal
-    needs: [release-notes, build-macos-arm, build-macos-x86]
+    needs: [source-preflight, release-notes, build-macos-arm, build-macos-x86]
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-14
+    env:
+      RELEASE_TAG: ${{ needs.source-preflight.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.tag }}
+          ref: ${{ needs.source-preflight.outputs.sha }}
+          persist-credentials: false
 
       - name: Download arm64
         uses: actions/download-artifact@v8
@@ -259,12 +296,12 @@ jobs:
       - name: Assemble archive
         shell: bash
         run: |
-          VERSION="${{ needs.release-notes.outputs.version }}"
+          VERSION="$RELEASE_TAG"
           VER="${VERSION#v}"
           NAME="peterfan-${VERSION}-universal-apple-darwin"
           mkdir -p "dist/$NAME"
           cp bins/universal/* "dist/$NAME/"
-          cp README.md LICENSE CHANGELOG.md "dist/$NAME/"
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md CHANGELOG.md "dist/$NAME/"
           # Sign loose CLI binaries too. In official releases this uses
           # Developer ID; in forks/local release builds it falls back to ad-hoc.
           for bin in peterfan peterfan-tui peterfan-menubar peterfand; do
@@ -280,7 +317,7 @@ jobs:
       - name: Build .dmg (drag-to-Applications installer, no Terminal needed)
         shell: bash
         run: |
-          VERSION="${{ needs.release-notes.outputs.version }}"
+          VERSION="$RELEASE_TAG"
           NAME="peterfan-${VERSION}-universal-apple-darwin"
           bash scripts/make-dmg.sh "dist/$NAME/PeterFan.app" "dist/PeterFan-${VERSION}.dmg"
 
@@ -291,7 +328,7 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY_B64 }}
         run: |
-          VERSION="${{ needs.release-notes.outputs.version }}"
+          VERSION="$RELEASE_TAG"
           DMG="dist/PeterFan-${VERSION}.dmg"
 
           if [[ -z "${PETERFAN_SIGN_IDENTITY:-}" ]]; then
@@ -338,11 +375,28 @@ jobs:
   publish:
     name: Publish GitHub Release
     needs: [release-notes, package-macos, build-windows]
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-assets-${{ needs.release-notes.outputs.version }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.release-notes.outputs.version }}
+      RELEASE_SHA: ${{ needs.release-notes.outputs.sha }}
     steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.inputs.tag }}
+      # No selected-source checkout or repository scripts run with the write token.
+      - name: Confirm release tag still points to the verified commit
+        shell: bash
+        run: |
+          ACTUAL_SHA="$(gh api "repos/$GH_REPO/commits/tags/$RELEASE_TAG" --jq .sha)"
+          if [[ "$ACTUAL_SHA" != "$RELEASE_SHA" ]]; then
+            echo "error: release tag moved after preflight; refusing publication." >&2
+            exit 1
+          fi
 
       - name: Download all release assets
         uses: actions/download-artifact@v8

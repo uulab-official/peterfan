@@ -344,7 +344,7 @@ enum RuleAction {
     List,
     /// Append a new rule: `peterfan rule add on_battery silent`.
     Add {
-        /// Condition: on_battery | on_ac | cpu_above:<°C> | time:<start>-<end>
+        /// Condition: `on_battery`, `on_ac`, `cpu_above:<°C>` or `time:<start>-<end>`.
         condition: String,
         /// Profile: silent | balanced | gaming | performance | maximum
         profile: String,
@@ -2991,7 +2991,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     let cpu_temperature_probe = peterfan_platform::cpu_temperature_probe();
 
     if json {
-        let mut fan_control = serde_json::json!({
+        let fan_control = serde_json::json!({
             "elevated": elevated,
             "daemon_reachable": daemon_reachable,
             "control_fans": caps.control_fans,
@@ -3002,12 +3002,16 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
             "readiness": fan_control_readiness_name(fan_readiness),
         });
         #[cfg(target_os = "macos")]
-        if let Some(p) = peterfan_platform::fan_control_probe() {
-            fan_control["smc_opened"] = serde_json::json!(p.opened);
-            fan_control["fan_mode_key"] = serde_json::json!(p.mode_key);
-            fan_control["ftst_key"] = serde_json::json!(p.ftst);
-            fan_control["fs_key"] = serde_json::json!(p.fs);
-        }
+        let fan_control = {
+            let mut fan_control = fan_control;
+            if let Some(p) = peterfan_platform::fan_control_probe() {
+                fan_control["smc_opened"] = serde_json::json!(p.opened);
+                fan_control["fan_mode_key"] = serde_json::json!(p.mode_key);
+                fan_control["ftst_key"] = serde_json::json!(p.ftst);
+                fan_control["fs_key"] = serde_json::json!(p.fs);
+            }
+            fan_control
+        };
         #[cfg(target_os = "macos")]
         let cpu_temperature = cpu_temperature_probe
             .as_ref()
@@ -3572,6 +3576,7 @@ fn print_kv(key: &str, value: &str) {
     println!("  {:<16} {}", format!("{key}:").dimmed(), value);
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn format_temp_opt(value: Option<f32>, empty: &str) -> String {
     value
         .map(|temp| format!("{temp:.1}°C"))
@@ -4392,8 +4397,8 @@ fn print_check_detail(label: &str, ok: bool, detail: &str) {
 // `peterfan alert` — 임계값 초과 시 데스크탑 알림
 // ---------------------------------------------------------------------------
 
-/// Send a desktop notification. Tries osascript on macOS, notify-send on Linux,
-/// and falls back to stderr on Windows or if both tools are absent.
+/// Send a desktop notification using the platform's notification command.
+/// Other platforms write the alert to stderr.
 fn send_notification(title: &str, body: &str) {
     #[cfg(target_os = "macos")]
     {
@@ -4411,7 +4416,6 @@ fn send_notification(title: &str, body: &str) {
         let _ = std::process::Command::new("notify-send")
             .args(["-u", "critical", title, body])
             .status();
-        return;
     }
     #[cfg(target_os = "windows")]
     {
@@ -4425,7 +4429,6 @@ fn send_notification(title: &str, body: &str) {
         let _ = std::process::Command::new("powershell")
             .args(["-NoProfile", "-Command", &script])
             .status();
-        return;
     }
     // Fallback for other Unix platforms (FreeBSD, etc.) — write to stderr.
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

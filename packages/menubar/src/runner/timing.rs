@@ -5,6 +5,7 @@ use peterfan_core::config::{MenubarDisplay, RunnerCharacter};
 pub(crate) const FRAME_COUNT: u8 = 8;
 pub(crate) const MIN_INTERVAL: Duration = Duration::from_millis(20);
 pub(crate) const MAX_INTERVAL: Duration = Duration::from_millis(180);
+#[cfg(target_os = "macos")]
 pub(crate) const NATIVE_TICK: Duration = MIN_INTERVAL;
 #[cfg(target_os = "macos")]
 pub(crate) const NATIVE_TOLERANCE: Duration = Duration::from_millis(3);
@@ -109,6 +110,7 @@ pub(crate) fn phase_step(phase_us: u64, tick_us: u64, cpu_pct: f32, frame: u8) -
 
 /// Consume real elapsed time, including late callbacks, in chronological pose order.
 /// A suspended app resumes its current pose instead of replaying stale animation.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn advance_phase(
     character: RunnerCharacter,
     phase_us: u64,
@@ -146,6 +148,7 @@ pub(crate) fn native_next_delay(
     Duration::from_micros(remaining_us.max(1_000))
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn ease_motion_cpu(current: f32, target: f32, tick: Duration) -> f32 {
     let current = finite_cpu(current);
     let target = finite_cpu(target);

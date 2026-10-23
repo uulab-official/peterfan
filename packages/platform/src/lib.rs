@@ -2,13 +2,13 @@
 //!
 //! Hardware backends that implement [`peterfan_core::HardwareProvider`].
 //!
-//! - [`mock`] — a fully simulated machine. Always available, used for the demo
+//! - [`mod@mock`] — a fully simulated machine. Always available, used for the demo
 //!   experience, for `--mock`, and as the substrate for tests.
 //! - `macos` — real SMC/IOHID temperatures, fan RPM, and guarded fan control.
 //! - `windows` — real system information and ACPI/WMI thermal zones where the
 //!   firmware exposes them; fan RPM and fan control remain hardware-dependent.
 //!
-//! Use [`detect`] to get the best backend for the current OS, or [`mock`] to
+//! Use [`detect`] to get the best backend for the current OS, or [`mock()`] to
 //! force the simulated one.
 
 pub mod config;
@@ -110,6 +110,17 @@ pub fn daemon_reachable() -> bool {
     false
 }
 
+/// Version reported by the process answering daemon IPC, rather than the
+/// binary on disk. Legacy daemons without this read-only command return None.
+#[cfg(unix)]
+pub fn running_daemon_version() -> Option<String> {
+    ipc::daemon_version()
+}
+#[cfg(not(unix))]
+pub fn running_daemon_version() -> Option<String> {
+    None
+}
+
 pub fn parse_daemon_version_output(output: &str) -> Option<String> {
     output
         .split_whitespace()
@@ -119,11 +130,13 @@ pub fn parse_daemon_version_output(output: &str) -> Option<String> {
 }
 
 pub fn daemon_update_required(installed_version: &str) -> bool {
-    updater::is_newer(installed_version, MIN_REQUIRED_DAEMON_VERSION)
+    semver::Version::parse(installed_version).is_err()
+        || updater::is_newer(installed_version, MIN_REQUIRED_DAEMON_VERSION)
 }
 
 pub fn daemon_self_reinstall_supported(installed_version: &str) -> bool {
-    !updater::is_newer(installed_version, MIN_SELF_REINSTALL_DAEMON_VERSION)
+    semver::Version::parse(installed_version).is_ok()
+        && !updater::is_newer(installed_version, MIN_SELF_REINSTALL_DAEMON_VERSION)
 }
 
 #[cfg(target_os = "macos")]
@@ -216,6 +229,19 @@ mod tests {
         assert!(super::daemon_update_required("1.27.15"));
         assert!(super::daemon_update_required("1.27.21"));
         assert!(super::daemon_update_required("1.27.22"));
+    }
+
+    #[test]
+    fn daemon_compatibility_rejects_malformed_versions() {
+        for invalid in ["", "unknown", "99.invalid.0", "1.32.3-", "1.32.3 extra"] {
+            assert!(super::daemon_update_required(invalid), "{invalid:?}");
+            assert!(
+                !super::daemon_self_reinstall_supported(invalid),
+                "{invalid:?}"
+            );
+        }
+        assert!(super::daemon_update_required("1.27.29-beta.1"));
+        assert!(!super::daemon_update_required("1.27.29+build.7"));
     }
 
     #[test]

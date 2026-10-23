@@ -125,21 +125,50 @@ pub enum InstallOutcome {
     /// `dry_run` was set — nothing was actually run; this is the script that
     /// *would* run, plus the `osascript` invocation, for inspection.
     DryRun(String),
-    /// Installed and the daemon answered over IPC.
+    /// Installed and the resident daemon confirmed a compatible version over IPC.
     Installed,
-    /// The privileged script completed, but the daemon isn't reachable yet.
+    /// The privileged script completed, but the required daemon version has
+    /// not been confirmed over IPC yet.
     InstalledButUnreachable,
 }
 
-fn required_daemon_is_healthy(installed_version: Option<&str>, reachable: bool) -> bool {
-    reachable && installed_version.is_some_and(|version| !crate::daemon_update_required(version))
+fn required_daemon_is_healthy(
+    installed_version: Option<&str>,
+    runtime_version: Option<&str>,
+    required_version: &str,
+) -> bool {
+    match (installed_version, runtime_version) {
+        (Some(installed), Some(runtime)) => {
+            !crate::daemon_update_required(installed)
+                && !crate::daemon_update_required(runtime)
+                && !crate::updater::is_newer(installed, required_version)
+                && !crate::updater::is_newer(runtime, installed)
+        }
+        _ => false,
+    }
 }
 
 fn wait_for_required_daemon(timeout: std::time::Duration) -> bool {
+    wait_for_required_daemon_with_probe(timeout, || {
+        (
+            crate::installed_daemon_version(),
+            crate::running_daemon_version(),
+        )
+    })
+}
+
+fn wait_for_required_daemon_with_probe(
+    timeout: std::time::Duration,
+    mut probe: impl FnMut() -> (Option<String>, Option<String>),
+) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
-        let version = crate::installed_daemon_version();
-        if required_daemon_is_healthy(version.as_deref(), crate::daemon_reachable()) {
+        let (installed, runtime) = probe();
+        if required_daemon_is_healthy(
+            installed.as_deref(),
+            runtime.as_deref(),
+            env!("CARGO_PKG_VERSION"),
+        ) {
             return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
@@ -155,7 +184,11 @@ fn wait_for_required_daemon(timeout: std::time::Duration) -> bool {
 pub fn install(dry_run: bool) -> Result<InstallOutcome, String> {
     if !dry_run {
         let installed_version = crate::installed_daemon_version();
-        if required_daemon_is_healthy(installed_version.as_deref(), crate::daemon_reachable()) {
+        if required_daemon_is_healthy(
+            installed_version.as_deref(),
+            crate::running_daemon_version().as_deref(),
+            crate::MIN_REQUIRED_DAEMON_VERSION,
+        ) {
             return Ok(InstallOutcome::Installed);
         }
     }
@@ -260,8 +293,10 @@ pub fn reinstall_via_running_daemon(dry_run: bool) -> Result<InstallOutcome, Str
 
     // The daemon verifies the bundled Developer ID signature before replying,
     // then deliberately replaces and restarts itself. Either step can close
-    // IPC before the client receives the acknowledgement, so the installed
-    // binary version plus a fresh socket is the authoritative success signal.
+    // IPC before the client receives the acknowledgement. Require the resident
+    // process and on-disk binary to reach the bundled app's version. Before
+    // the detached copy runs, both can still report the old version; after the
+    // copy, a fresh connection can still reach the old process during shutdown.
     if wait_for_required_daemon(std::time::Duration::from_secs(10)) {
         Ok(InstallOutcome::Installed)
     } else if reply.is_some() {
@@ -341,22 +376,82 @@ mod tests {
     }
 
     #[test]
-    fn required_daemon_health_needs_both_version_and_reachability() {
+    fn required_daemon_health_needs_both_installed_and_runtime_versions() {
         assert!(required_daemon_is_healthy(
             Some(crate::MIN_REQUIRED_DAEMON_VERSION),
-            true
+            Some(crate::MIN_REQUIRED_DAEMON_VERSION),
+            crate::MIN_REQUIRED_DAEMON_VERSION,
         ));
-        assert!(!required_daemon_is_healthy(Some("1.27.22"), true));
+        assert!(!required_daemon_is_healthy(
+            Some("1.27.22"),
+            Some("1.27.22"),
+            crate::MIN_REQUIRED_DAEMON_VERSION,
+        ));
         assert!(!required_daemon_is_healthy(
             Some(crate::MIN_REQUIRED_DAEMON_VERSION),
-            false
+            None,
+            crate::MIN_REQUIRED_DAEMON_VERSION,
         ));
-        assert!(!required_daemon_is_healthy(None, true));
+        assert!(!required_daemon_is_healthy(None, Some("1.32.3"), "1.32.3"));
+    }
+
+    #[test]
+    fn required_daemon_health_rejects_a_stale_or_invalid_resident_after_disk_replacement() {
+        assert!(!required_daemon_is_healthy(
+            Some("1.32.3"),
+            Some("1.32.2"),
+            "1.32.3"
+        ));
+        assert!(!required_daemon_is_healthy(
+            Some("1.32.3"),
+            Some("1.32.3-beta.1"),
+            "1.32.3",
+        ));
+        assert!(!required_daemon_is_healthy(
+            Some("1.32.3"),
+            Some("unknown"),
+            "1.32.3"
+        ));
+        assert!(!required_daemon_is_healthy(
+            Some("unknown"),
+            Some("1.32.3"),
+            "1.32.3"
+        ));
+        assert!(required_daemon_is_healthy(
+            Some("1.32.3"),
+            Some("1.32.3+build.7"),
+            "1.32.3",
+        ));
+        assert!(required_daemon_is_healthy(
+            Some("1.32.3"),
+            Some("1.32.4"),
+            "1.32.3"
+        ));
     }
 
     #[test]
     fn install_waits_for_a_healthy_daemon_instead_of_using_a_fixed_delay() {
-        let source = include_str!("daemon_install.rs");
-        assert!(source.contains("wait_for_required_daemon(std::time::Duration::from_secs(10))"));
+        let current = env!("CARGO_PKG_VERSION").to_string();
+        let mut samples = [
+            (Some("1.27.29".to_string()), Some("1.27.29".to_string())),
+            (Some(current.clone()), Some("1.27.29".to_string())),
+            (Some(current.clone()), Some(current)),
+        ]
+        .into_iter();
+        assert!(wait_for_required_daemon_with_probe(
+            std::time::Duration::from_secs(2),
+            || samples
+                .next()
+                .expect("must finish after the new resident responds"),
+        ));
+        assert!(samples.next().is_none());
+    }
+
+    #[test]
+    fn install_never_succeeds_when_only_the_old_resident_answers() {
+        assert!(!wait_for_required_daemon_with_probe(
+            std::time::Duration::from_millis(20),
+            || (Some("1.27.29".into()), Some("1.27.29".into())),
+        ));
     }
 }

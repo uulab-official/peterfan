@@ -54,6 +54,7 @@ const FAN_READBACK_PROGRESS_GRACE_MS: u64 = 6_000;
 const FAN_READBACK_MIN_PROGRESS_RPM: u32 = 50;
 const FAN_READBACK_STALE_CONFIRMATIONS: u32 = 3;
 const FAN_READBACK_RETRY_SECS: u64 = 15;
+#[cfg(any(unix, test))]
 const SENSOR_STALE_MIN_MS: u64 = 6_000;
 
 /// Move a requested fan duty toward its target at a bounded rate. The control
@@ -130,6 +131,7 @@ fn state_file_path() -> PathBuf {
     }
 }
 
+#[cfg(unix)]
 fn save_state(state: &State) {
     let saved = SavedState {
         mode: if state.auto {
@@ -192,6 +194,7 @@ fn logged_in_user_config_path() -> Option<PathBuf> {
     home.is_absolute().then(|| macos_user_config_path(&home))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn load_valid_config_file(path: &std::path::Path) -> Result<Config, String> {
     const MAX_CONFIG_BYTES: u64 = 256 * 1024;
     let metadata = std::fs::symlink_metadata(path)
@@ -256,6 +259,7 @@ struct State {
     manual: bool,
     /// Backend name (e.g. "macos", "mock") — surfaced in IPC replies so the UI
     /// can tell real control from a simulated daemon.
+    #[cfg(unix)]
     backend: String,
     /// Live copy of the config, refreshed by `reload`. The base profile and
     /// automation rules are read from here each control-loop tick.
@@ -437,6 +441,7 @@ fn run(cli: Cli) -> Result<()> {
             // choice below opts into PeterFan's control loop.
             auto: fresh_daemon_starts_in_auto(cli.profile.is_some()),
             manual: false,
+            #[cfg(unix)]
             backend: provider.name().to_string(),
             config: resolved_cfg,
             last_temps: Vec::new(),
@@ -596,6 +601,7 @@ fn unix_now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+#[cfg(any(unix, test))]
 fn sensor_stale_after_ms(interval_secs: u64) -> u64 {
     interval_secs
         .max(1)
@@ -603,6 +609,7 @@ fn sensor_stale_after_ms(interval_secs: u64) -> u64 {
         .max(SENSOR_STALE_MIN_MS)
 }
 
+#[cfg(any(unix, test))]
 fn sensor_sample_freshness(
     sampled_at_unix_ms: Option<u64>,
     now_unix_ms: u64,
@@ -805,6 +812,7 @@ fn sleep_control_interval(interval: u64) {
     }
 }
 
+#[cfg(unix)]
 fn request_apply_now() {
     APPLY_NOW.store(true, Ordering::Release);
     if let Some(control_thread) = CONTROL_THREAD
@@ -816,6 +824,7 @@ fn request_apply_now() {
     }
 }
 
+#[cfg(unix)]
 fn mark_control_requested(state: &mut State) {
     state.control_revision = state.control_revision.wrapping_add(1).max(1);
     request_apply_now();
@@ -850,13 +859,26 @@ fn control_loop(
     once: bool,
     shared: &Arc<Mutex<State>>,
 ) -> Result<()> {
+    control_loop_while(provider, monitor, fan_ids, once, shared, || {
+        !STOP.load(Ordering::Relaxed)
+    })
+}
+
+fn control_loop_while(
+    provider: &dyn HardwareProvider,
+    monitor: &mut dyn SystemMonitor,
+    fan_ids: &[String],
+    once: bool,
+    shared: &Arc<Mutex<State>>,
+    mut keep_running: impl FnMut() -> bool,
+) -> Result<()> {
     *CONTROL_THREAD.lock().expect("control thread poisoned") = Some(thread::current());
     let mut auto_applied = false;
     let mut was_critical = false;
     // Track last-logged duty/mode so we only log on changes (keeps the log lean).
     let mut last_duty: Option<u8> = None;
     let mut last_src = String::new();
-    while !STOP.load(Ordering::Relaxed) {
+    while keep_running() {
         monitor.refresh_quick();
         let state = shared.lock().expect("state poisoned").clone();
         // Read interval/critical from live config so `reload` takes effect immediately.
@@ -869,7 +891,10 @@ fn control_loop(
             Ok(temps) => (temps, None),
             Err(error) => (Vec::new(), Some(error.to_string())),
         };
-        let fans_now = provider.fans().unwrap_or_default();
+        let (fans_now, fan_read_error) = match provider.fans() {
+            Ok(fans) => (fans, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
         let power_now = provider.power_watts();
         {
             let mut s = shared.lock().expect("state poisoned");
@@ -926,28 +951,55 @@ fn control_loop(
             }
         };
 
-        let readback_failsafe = {
-            let mut current = shared.lock().expect("state poisoned");
-            refresh_fan_readbacks(&mut current, &fans_now, unix_now_ms())
-        };
-        if readback_failsafe {
-            let stale_ids = shared
-                .lock()
-                .expect("state poisoned")
-                .control_health
-                .stale_fan_ids
-                .clone();
-            let restore_errors = restore_fans_to_auto(provider, fan_ids);
-            let mut detail = format!(
-                "fan RPM readback stalled for {}; fans returned to OS auto",
-                stale_ids.join(", ")
-            );
-            if !restore_errors.is_empty() {
-                detail.push_str(&format!(
-                    "; auto restore errors: {}",
-                    restore_errors.join(", ")
-                ));
+        // Keep sampling sensors during cooldown, but do not repeat the prior
+        // fail-safe's restore, diagnostics, counters, or retry deadline.
+        if state
+            .control_health
+            .retry_after_unix
+            .is_some_and(|retry_after| unix_now() < retry_after)
+        {
+            if once {
+                break;
             }
+            sleep_control_interval(interval);
+            continue;
+        }
+
+        let readback_failure = {
+            let mut current = shared.lock().expect("state poisoned");
+            if let Some(error) = fan_read_error.filter(|_| !current.fan_targets.is_empty()) {
+                // Missing RPM samples cannot establish a mechanically stalled
+                // fan. Stop manual control safely and report the read failure.
+                current.control_health.fan_readback_failure_count = current
+                    .control_health
+                    .fan_readback_failure_count
+                    .saturating_add(1);
+                current.control_health.consecutive_fan_readback_failures = current
+                    .control_health
+                    .consecutive_fan_readback_failures
+                    .saturating_add(1);
+                current.control_health.stale_fan_ids.clear();
+                current.fan_readbacks.clear();
+                Some(format!("fan RPM readback failed: {error}"))
+            } else if refresh_fan_readbacks(&mut current, &fans_now, unix_now_ms()) {
+                Some(format!(
+                    "fan RPM readback stalled for {}",
+                    current.control_health.stale_fan_ids.join(", ")
+                ))
+            } else {
+                None
+            }
+        };
+        if let Some(reason) = readback_failure {
+            let restore_errors = restore_fans_to_auto(provider, fan_ids);
+            let detail = if restore_errors.is_empty() {
+                format!("{reason}; fans returned to OS auto")
+            } else {
+                format!(
+                    "{reason}; auto restore errors: {}",
+                    restore_errors.join(", ")
+                )
+            };
             {
                 let mut current = shared.lock().expect("state poisoned");
                 current.control_health.failsafe_active = true;
@@ -958,18 +1010,6 @@ fn control_loop(
                 current.fan_readback_trackers.clear();
             }
             eprintln!("peterfand: {detail}");
-            if once {
-                break;
-            }
-            sleep_control_interval(interval);
-            continue;
-        }
-
-        if state
-            .control_health
-            .retry_after_unix
-            .is_some_and(|retry_after| unix_now() < retry_after)
-        {
             if once {
                 break;
             }
@@ -1153,6 +1193,7 @@ fn control_loop(
     Ok(())
 }
 
+#[cfg(unix)]
 fn apply_cached_control_request(
     provider: &dyn HardwareProvider,
     fan_ids: &[String],
@@ -1352,7 +1393,7 @@ fn start_self_reinstall(path: &str) -> Result<String, String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn start_self_reinstall(_path: &str) -> Result<String, String> {
     Err("error: fan-control reinstall is only available on macOS".to_string())
 }
@@ -1363,6 +1404,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
     let mut parts = line.split_whitespace();
     match parts.next() {
         Some("ping") => format!("ok peterfand ({backend})"),
+        Some("version") => format!("ok peterfand {}", env!("CARGO_PKG_VERSION")),
         Some("auto") => {
             let mut s = shared.lock().expect("state poisoned");
             s.auto = true;
@@ -1735,6 +1777,7 @@ mod tests {
             fan_overrides: std::collections::HashMap::new(),
             auto: false,
             manual: false,
+            #[cfg(unix)]
             backend: "mock".to_string(),
             config: peterfan_core::config::Config::default(),
             last_temps: Vec::new(),
@@ -1776,10 +1819,27 @@ mod tests {
         assert_eq!(reply, "ok logged-in-user (mock)");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn daemon_reports_its_resident_version_without_changing_legacy_health_replies() {
+        let shared = test_state();
+        assert_eq!(
+            handle_command("version", &shared),
+            format!("ok peterfand {}", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(handle_command("ping", &shared), "ok peterfand (mock)");
+        assert_eq!(
+            handle_command("status", &shared),
+            "ok rules:balanced (mock)"
+        );
+    }
+
     struct FaultProvider {
         fail_temperatures: bool,
+        fail_fan_reads: AtomicBool,
         fail_writes: bool,
         fail_auto: bool,
+        fan_read_calls: std::sync::atomic::AtomicUsize,
         duty_calls: std::sync::atomic::AtomicUsize,
         auto_calls: std::sync::atomic::AtomicUsize,
     }
@@ -1788,8 +1848,10 @@ mod tests {
         fn new(fail_temperatures: bool, fail_writes: bool) -> Self {
             Self {
                 fail_temperatures,
+                fail_fan_reads: AtomicBool::new(false),
                 fail_writes,
                 fail_auto: false,
+                fan_read_calls: std::sync::atomic::AtomicUsize::new(0),
                 duty_calls: std::sync::atomic::AtomicUsize::new(0),
                 auto_calls: std::sync::atomic::AtomicUsize::new(0),
             }
@@ -1797,6 +1859,11 @@ mod tests {
 
         fn with_auto_failure(mut self) -> Self {
             self.fail_auto = true;
+            self
+        }
+
+        fn with_fan_read_failure(self) -> Self {
+            self.fail_fan_reads.store(true, Ordering::Relaxed);
             self
         }
     }
@@ -1846,6 +1913,12 @@ mod tests {
         }
 
         fn fans(&self) -> peterfan_core::error::Result<Vec<peterfan_core::types::Fan>> {
+            self.fan_read_calls.fetch_add(1, Ordering::Relaxed);
+            if self.fail_fan_reads.load(Ordering::Relaxed) {
+                return Err(peterfan_core::error::CoreError::Hardware(
+                    "injected fan read failure".into(),
+                ));
+            }
             Ok(vec![peterfan_core::types::Fan {
                 id: "fan.test".into(),
                 label: "Test Fan".into(),
@@ -1980,6 +2053,228 @@ mod tests {
             .last_error
             .as_deref()
             .is_some_and(|error| error.contains("fan write fail-safe")));
+    }
+
+    #[test]
+    fn fan_read_failure_restores_auto_and_recovers_after_the_existing_cooldown() {
+        STOP.store(false, Ordering::Relaxed);
+        let provider = FaultProvider::new(false, false).with_fan_read_failure();
+        let mut monitor = peterfan_platform::mock_monitor();
+        let shared = test_state();
+        shared
+            .lock()
+            .unwrap()
+            .fan_targets
+            .insert("fan.test".into(), 50);
+
+        control_loop(
+            &provider,
+            monitor.as_mut(),
+            &["fan.test".into()],
+            true,
+            &shared,
+        )
+        .unwrap();
+
+        assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(provider.auto_calls.load(Ordering::Relaxed), 1);
+        {
+            let state = shared.lock().unwrap();
+            assert!(state.control_health.failsafe_active);
+            assert_eq!(state.control_health.fan_readback_failure_count, 1);
+            assert_eq!(state.control_health.consecutive_fan_readback_failures, 1);
+            assert!(state.control_health.stale_fan_ids.is_empty());
+            assert!(state.fan_targets.is_empty());
+            assert!(state.fan_readbacks.is_empty());
+            assert!(
+                state.control_health.retry_after_unix.is_some_and(
+                    |retry_after| retry_after >= unix_now() + FAN_READBACK_RETRY_SECS - 1
+                )
+            );
+            let detail = state.control_health.last_error.as_deref().unwrap();
+            assert!(detail.contains("fan RPM readback failed"), "{detail}");
+            assert!(detail.contains("injected fan read failure"), "{detail}");
+            assert!(detail.contains("fans returned to OS auto"), "{detail}");
+            assert!(!detail.contains("stalled"), "{detail}");
+        }
+
+        provider.fail_fan_reads.store(false, Ordering::Relaxed);
+        control_loop(
+            &provider,
+            monitor.as_mut(),
+            &["fan.test".into()],
+            true,
+            &shared,
+        )
+        .unwrap();
+        assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 0);
+        assert!(shared.lock().unwrap().control_health.failsafe_active);
+
+        shared.lock().unwrap().control_health.retry_after_unix = Some(unix_now().saturating_sub(1));
+        control_loop(
+            &provider,
+            monitor.as_mut(),
+            &["fan.test".into()],
+            true,
+            &shared,
+        )
+        .unwrap();
+        assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 1);
+        let state = shared.lock().unwrap();
+        assert!(!state.control_health.failsafe_active);
+        assert!(state.control_health.last_error.is_none());
+        assert!(state.control_health.retry_after_unix.is_none());
+        assert_eq!(state.control_health.fan_readback_failure_count, 1);
+        assert_eq!(state.control_health.consecutive_fan_readback_failures, 0);
+    }
+
+    #[test]
+    fn fan_read_error_cannot_be_reported_as_a_preexisting_rpm_stall() {
+        STOP.store(false, Ordering::Relaxed);
+        let provider = FaultProvider::new(false, false).with_fan_read_failure();
+        let mut monitor = peterfan_platform::mock_monitor();
+        let shared = test_state();
+        {
+            let mut state = shared.lock().unwrap();
+            state.fan_targets.insert("fan.test".into(), 100);
+            state.fan_readback_trackers.insert(
+                "fan.test".into(),
+                FanReadbackTracker {
+                    target_rpm: 2_000,
+                    tolerance_rpm: 150,
+                    started_ms: 0,
+                    last_progress_ms: 0,
+                    last_distance_rpm: 1_000,
+                    stale: true,
+                },
+            );
+            state.control_health.consecutive_fan_readback_failures = 2;
+            state.control_health.stale_fan_ids.push("fan.test".into());
+        }
+
+        control_loop(
+            &provider,
+            monitor.as_mut(),
+            &["fan.test".into()],
+            true,
+            &shared,
+        )
+        .unwrap();
+
+        assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(provider.auto_calls.load(Ordering::Relaxed), 1);
+        let state = shared.lock().unwrap();
+        let detail = state.control_health.last_error.as_deref().unwrap();
+        assert!(detail.contains("injected fan read failure"), "{detail}");
+        assert!(!detail.contains("stalled"), "{detail}");
+        assert!(state.control_health.stale_fan_ids.is_empty());
+        assert!(state.fan_readback_trackers.is_empty());
+        assert!(state.fan_targets.is_empty());
+    }
+
+    fn run_control_samples(
+        provider: &dyn HardwareProvider,
+        shared: &Arc<Mutex<State>>,
+        samples: u8,
+    ) {
+        let mut monitor = peterfan_platform::mock_monitor();
+        let mut remaining = samples;
+        control_loop_while(
+            provider,
+            monitor.as_mut(),
+            &["fan.test".into()],
+            false,
+            shared,
+            || {
+                if remaining == 0 {
+                    return false;
+                }
+                remaining -= 1;
+                true
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn persistent_fan_read_errors_do_not_repeat_the_fail_safe_during_cooldown() {
+        STOP.store(false, Ordering::Relaxed);
+        let provider = FaultProvider::new(false, false).with_fan_read_failure();
+        let shared = test_state();
+        shared
+            .lock()
+            .unwrap()
+            .fan_targets
+            .insert("fan.test".into(), 50);
+
+        run_control_samples(&provider, &shared, 3);
+
+        assert_eq!(provider.fan_read_calls.load(Ordering::Relaxed), 3);
+        assert_eq!(provider.auto_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 0);
+        let state = shared.lock().unwrap();
+        assert_eq!(state.control_health.fan_readback_failure_count, 1);
+        assert_eq!(state.control_health.consecutive_fan_readback_failures, 1);
+        assert!(state.control_health.failsafe_active);
+        assert!(state.fan_targets.is_empty());
+        assert!(state.control_health.retry_after_unix.is_some());
+    }
+
+    #[test]
+    fn an_existing_cooldown_survives_repeated_fan_read_errors_without_writes() {
+        STOP.store(false, Ordering::Relaxed);
+        let provider = FaultProvider::new(false, false).with_fan_read_failure();
+        let shared = test_state();
+        let retry_after = unix_now() + 30;
+        {
+            let mut state = shared.lock().unwrap();
+            state.fan_targets.insert("fan.test".into(), 50);
+            state.control_health.failsafe_active = true;
+            state.control_health.retry_after_unix = Some(retry_after);
+            state.control_health.last_error = Some("existing failure".into());
+            state.control_health.fan_readback_failure_count = 7;
+            state.control_health.consecutive_fan_readback_failures = 2;
+        }
+
+        run_control_samples(&provider, &shared, 3);
+
+        assert_eq!(provider.fan_read_calls.load(Ordering::Relaxed), 3);
+        assert_eq!(provider.auto_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 0);
+        let state = shared.lock().unwrap();
+        assert_eq!(state.control_health.retry_after_unix, Some(retry_after));
+        assert_eq!(
+            state.control_health.last_error.as_deref(),
+            Some("existing failure")
+        );
+        assert_eq!(state.control_health.fan_readback_failure_count, 7);
+        assert_eq!(state.control_health.consecutive_fan_readback_failures, 2);
+    }
+
+    #[test]
+    fn fan_read_errors_without_manual_targets_do_not_add_global_auto_writes_or_failures() {
+        STOP.store(false, Ordering::Relaxed);
+        let healthy_provider = FaultProvider::new(false, false);
+        let failing_provider = FaultProvider::new(false, false).with_fan_read_failure();
+        let healthy = test_state();
+        let failing = test_state();
+        healthy.lock().unwrap().auto = true;
+        failing.lock().unwrap().auto = true;
+
+        run_control_samples(&healthy_provider, &healthy, 2);
+        run_control_samples(&failing_provider, &failing, 2);
+
+        assert_eq!(healthy_provider.auto_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(failing_provider.fan_read_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(failing_provider.auto_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(failing_provider.duty_calls.load(Ordering::Relaxed), 0);
+        let state = failing.lock().unwrap();
+        assert!(!state.control_health.failsafe_active);
+        assert_eq!(state.control_health.fan_readback_failure_count, 0);
+        assert_eq!(state.control_health.consecutive_fan_readback_failures, 0);
+        assert!(state.control_health.retry_after_unix.is_none());
+        assert!(state.control_health.last_error.is_none());
+        assert!(state.fan_targets.is_empty());
     }
 
     #[test]

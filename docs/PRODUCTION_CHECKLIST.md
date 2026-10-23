@@ -3,6 +3,144 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
+## Measurable runner quality — 2026-10-23
+
+- [x] Define explicit CPU, tiny-artwork, anatomy, cadence and delivery targets;
+      retain missed targets and evidence boundaries in the quality report.
+- [x] Matched single-screen image/layer ABBA: median app CPU 6.7815% to 0.7995%
+      of one core (88.21% reduction). Bitmap-only experiment gave 0.29% and is
+      not accepted as a performance improvement. Global compositor samples do
+      not establish renderer energy cost or RunCat parity.
+- [x] Native offscreen compositing proves visible upright frame changes,
+      transparency and appearance tint. A blank-mask mutation fails. Layer
+      detach/drop, multi-screen/static fallback and bitmap bounds are tested.
+- [x] Rework push-up anatomy, ghost cloth/eyes/load expression and dancer weight
+      transfer. Review all twenty at actual 27×18 points in light/dark canonical
+      previews and all eight poses of the revised three. Shared quality gates
+      and the 20–180 ms CPU frame curve pass.
+- [x] Full contributor gate: 463 Rust tests passed, 7 ignored; 59 Node tests
+      passed. Native Rust 1.99 Clippy and Rust 1.88 all-target/all-feature check
+      passed. Native desktop capture was unavailable; preview screenshots and
+      offscreen framework tests are distinct evidence.
+- [ ] Live low-load target (<=3% app CPU, host mean <=20%) remains unverified:
+      three installed 30-second samples averaged 1.4993% app CPU, but host CPU
+      averaged 29.3754%, so these qualify as ordinary-workload evidence only.
+- [x] Product source `1f97687` is Developer ID signed, notarized, stapled and
+      Gatekeeper accepted. Installed app/helper hashes match; one native process,
+      unchanged settings, backup, layer geometry and Random rotation are observed.
+      Automatic discovery succeeded 20.157 seconds after startup and scheduled
+      another check exactly 21,600 seconds after success.
+- [ ] Same-machine RunCat comparison, multi-monitor hardware/energy measurement,
+      extended soak and public release/newer-version OTA.
+
+See [targets, measurements and verification boundaries](RUNNER_QUALITY_TARGETS.md).
+
+## Automatic update reliability — 2026-10-23
+
+- [x] Replace launch-only discovery with a 20-second startup check, six-hour
+      successful interval and bounded 5/15/60-minute retries. Incomplete verified
+      assets retry without claiming a failed metadata request.
+- [x] Serialize background/manual checks, installation, channel changes and
+      config imports. Clear stale channel metadata and detect external channel
+      edits within the scheduler's 30-second poll.
+- [x] Show last attempt, last success and next check; reject stale/mismatched
+      installation receipts and keep failed check details visible.
+- [x] Preserve Windows custom install paths and PowerShell literal/Unicode
+      encoding; script preparation failure cannot leave a new pending receipt.
+- [x] Full contributor gate: 450 Rust tests passed, 7 ignored; 56 Node tests
+      passed. Native/Windows Clippy and Rust 1.88 check passed. Browser fixtures
+      confirmed visible failures, manual recovery and disabled incomplete assets.
+- [x] Local arm64 candidate from `6c3f279` is Developer ID signed, notarized,
+      stapled and Gatekeeper accepted. Installed app/helper hashes match the
+      candidate, one native process runs and configuration bytes are preserved.
+      Its real automatic check completed 20 seconds after startup and scheduled
+      the next check exactly 21,600 seconds after success.
+- [ ] Public release and OTA to a newer published version.
+
+See [check policy and verification boundaries](AUTOMATIC_UPDATES.md). Notification
+history and check timestamps currently reset when the app restarts. Windows
+transactional rollback and post-launch health verification remain separate work.
+
+## Settings interaction polish — 2026-10-23
+
+- [x] Match save/import results to window-specific requests; retain newer drafts,
+      failed drafts and unconfirmed drafts without automatic resubmission.
+- [x] Distinguish saved configuration from confirmed, deferred or failed daemon
+      reload; a nonempty error reply cannot report successful reload.
+- [x] Preserve focused temperature input across live snapshots and align random
+      runner frame scheduling with fixed character selection on Windows.
+- [x] Full contributor checks: 437 Rust tests passed, 7 ignored; 42 Node tests
+      passed. Rust 1.99 native/Windows-target Clippy and Rust 1.88 check passed.
+- [x] Regenerated real dashboard HTML and verified draft/input preservation in
+      dark/light 440×520 browser fixtures, without writing real settings.
+
+See [reproductions and evidence limits](INTERACTION_POLISH_2026-10-23.md).
+Source and browser checks do not imply a public release or physical fan test.
+
+## Local v1.32.4 production polish — 2026-10-22
+
+- [x] Settings/system process rendering no longer throws an out-of-scope
+      JavaScript helper error. Empty, populated and repeated snapshots execute
+      successfully; browser reproduction changed from `show is not defined`
+      to zero recorded script errors across those views.
+- [x] Fan detection has one pending state; compact RPM values fit; Korean
+      startup/channel/navigation and fan target accessible names are complete.
+      Dark/light 440×520 browser QA uses the actual renderer with fixture data.
+- [x] Native and dashboard SemVer ordering agree for prerelease/stable upgrades
+      and malformed versions cannot offer installation.
+- [x] Daemon installation completion requires the resident IPC version, not
+      socket reachability alone. RPM read failures are distinct from stalls,
+      restore active targets once and retain cooldown while sampling continues.
+      The three repeated-loop regression tests failed before the correction.
+- [x] All-feature workspace tests: 430 passed, 0 failed, 7 ignored; clippy with
+      warnings denied, formatting, release build, docs and 43 smoke checks pass.
+      Six JavaScript behavior checks run within the smoke suite.
+- [x] Final local arm64 app is Developer ID signed, notarized, stapled and
+      accepted by Gatekeeper, installed with byte-for-byte settings preservation
+      and backups. Installed app/helper hashes match the signed candidate.
+- [x] Real native startup, one menu-bar process, tray creation, WebView readiness
+      and live CPU/thermal metric readiness were observed. Native accessibility
+      capture timed out; browser screenshots are not native hardware evidence.
+- [x] Repeated native runner drawing uses an explicit raster cache while keeping
+      the shared CPU cadence. A short A/B measurement and native call-stack
+      sample are recorded in the audit; no efficiency parity is claimed.
+- [ ] Longer controlled rendering/energy measurements and a stable CPU budget.
+      The observed AppKit status-item snapshot cost remains a watchpoint.
+- [ ] Privileged system daemon replacement, physical fan fail-safe checks and
+      extended hardware soak. The existing daemon remains unreachable and fan
+      control still reports `needs_setup`; metrics and thermal reads are ready.
+- [ ] Public v1.32.4 release/OTA. GitHub latest was freshly read back as v1.32.2;
+      Homebrew remains pinned to that verified public release.
+
+See [audit, fixes and evidence limits](PRODUCTION_POLISH_2026-10-22.md).
+Local receipts/logs are `target/production-polish-*.json` and
+`target/production-*.log`; backups are in `dist/production-polish-backups/`.
+
+## Local v1.32.3 runner polish — 2026-10-22
+
+- [x] All 20 characters retain the shared CPU clock; authored anatomy,
+      planted/recovering feet, connected wings and dancer joints were revised.
+      Human is now an original athletic silhouette, and Dinosaur's artificial
+      whole-sprite jumps were reduced. Geometry/perceptual quality gates pass.
+- [x] Settings and native character menus offer Random (every minute). A shuffled
+      bag visits all characters before reuse and avoids consecutive repeats.
+      Fixed selection disables random mode; number-only and Reduce Motion pause
+      timed replacement. The preference survives configuration round trips.
+- [x] Workspace all-feature tests: 414 passed, 0 failed, 7 ignored.
+      Clippy, formatting, docs, native Homebrew audits, all 42 smoke checks and
+      whitespace checks pass.
+- [x] Browser verification of the real settings code at the native 440×520 size: random selection and return to a fixed character
+      send the expected IPC commands and keep the active character preview.
+- [x] The local arm64 app is Developer ID signed, notarized, stapled and accepted
+      by Gatekeeper. Installed in `/Applications/PeterFan.app` after backing up
+      the existing v1.32.2 bundle and preserving the user's exact config bytes.
+- [x] Real native random-mode run observed City → Rabbit → Robot at approximately
+      60-second intervals, with one running app, tray creation, WebView readiness
+      and no artwork fallbacks. Restarted with the user's saved fixed choice
+      after verification. Local evidence is in `target/random-polish-*.json`.
+- [ ] Public v1.32.3 release and OTA publication. Public downloads and Homebrew
+      remain on the verified v1.32.2 release below.
+
 ## v1.32.2 public release — 2026-10-22
 
 - [x] Public latest release identified as `v1.32.2`:

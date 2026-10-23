@@ -64,6 +64,19 @@ fn write_update_install_result_to(
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn prepare_update_helper(
+    script_path: &std::path::Path,
+    script: &[u8],
+    result_path: &std::path::Path,
+    pending: &UpdateInstallResult,
+) -> Result<(), String> {
+    // A script preparation failure must not leave a receipt claiming that a
+    // detached installer is running. The caller records spawn failures below.
+    std::fs::write(script_path, script).map_err(|e| e.to_string())?;
+    write_update_install_result_to(result_path, pending)
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct IntegrityCheck {
     pub name: String,
@@ -384,7 +397,10 @@ fn parse_release_value(val: &serde_json::Value) -> Result<ReleaseInfo, String> {
         .as_str()
         .ok_or("response has no tag_name")?
         .to_string();
-    let version = tag.trim_start_matches('v').to_string();
+    let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
+    if parse_update_version(&tag).is_none() {
+        return Err("release tag has an invalid version".into());
+    }
     let html_url = val["html_url"].as_str().unwrap_or_default().to_string();
     let notes = val["body"].as_str().unwrap_or_default().to_string();
     let empty_assets = Vec::new();
@@ -474,18 +490,29 @@ fn is_checksum_asset(name: &str) -> bool {
     name == "checksums.txt"
 }
 
-/// Numeric semver-ish comparison (`"1.13.0"` vs `"1.9.6"` — a naive string
-/// compare would get this backwards). Missing/non-numeric components count
-/// as 0, so `"1.13"` and `"1.13.0"` compare equal.
+/// Compare SemVer precedence, ignoring build metadata. A single lowercase `v`
+/// prefix is accepted and missing minor/patch components are padded with zero.
+/// Invalid versions on either side fail closed (no update is offered).
 pub fn is_newer(current: &str, latest: &str) -> bool {
-    fn parts(s: &str) -> [u64; 3] {
-        let mut out = [0u64; 3];
-        for (i, p) in s.split('.').take(3).enumerate() {
-            out[i] = p.parse().unwrap_or(0);
-        }
-        out
+    match (parse_update_version(current), parse_update_version(latest)) {
+        (Some(current), Some(latest)) => latest.cmp_precedence(&current).is_gt(),
+        _ => false,
     }
-    parts(latest) > parts(current)
+}
+
+fn parse_update_version(version: &str) -> Option<semver::Version> {
+    let version = version.strip_prefix('v').unwrap_or(version);
+    let core_end = version.find(['-', '+']).unwrap_or(version.len());
+    let (core, suffix) = version.split_at(core_end);
+    let mut normalized = core.to_string();
+    match core.split('.').count() {
+        1 => normalized.push_str(".0.0"),
+        2 => normalized.push_str(".0"),
+        3 => {}
+        _ => return None,
+    }
+    normalized.push_str(suffix);
+    semver::Version::parse(&normalized).ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -1064,6 +1091,7 @@ pub fn verify_release_directory_integrity(
     report.finish()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn is_release_artifact_name(name: &str) -> bool {
     (name.starts_with("PeterFan-") && name.ends_with(".dmg"))
         || (name.starts_with("peterfan-")
@@ -1071,6 +1099,7 @@ fn is_release_artifact_name(name: &str) -> bool {
             && name.ends_with(".tar.gz"))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn infer_release_directory_version(
     dir: &std::path::Path,
     artifact_names: &[String],
@@ -1094,6 +1123,7 @@ fn infer_release_directory_version(
     (versions.len() == 1).then(|| versions.remove(0))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn release_artifact_version(name: &str) -> Option<String> {
     if let Some(rest) = name
         .strip_prefix("PeterFan-v")
@@ -1106,6 +1136,7 @@ fn release_artifact_version(name: &str) -> Option<String> {
     is_semverish(version).then(|| version.to_string())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn checksum_release_artifact_names(checksums: &str) -> Vec<String> {
     checksums
         .lines()
@@ -1125,6 +1156,7 @@ fn checksum_release_artifact_names(checksums: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn is_semverish(version: &str) -> bool {
     let parts = version.split('.').collect::<Vec<_>>();
     parts.len() == 3
@@ -1251,6 +1283,12 @@ pub fn download_and_install_release(release: &ReleaseInfo) -> Result<(), String>
         .as_deref()
         .ok_or("checksums.txt has no GitHub SHA-256 digest")?;
 
+    // Resolve the running app before downloading or recording a pending update.
+    // A custom/portable installation must never fall back to LOCALAPPDATA.
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("could not locate the running Windows app: {error}"))?;
+    let install_dir = windows_install_directory(&executable)?;
+
     let tmp_dir = std::env::temp_dir().join(format!(
         "peterfan-update-{}-{}",
         std::process::id(),
@@ -1328,12 +1366,20 @@ pub fn download_and_install_release(release: &ReleaseInfo) -> Result<(), String>
         &release.version,
         format!("PeterFan v{} is verified and queued.", release.version),
     );
-    write_update_install_result_to(&result_path, &pending)?;
-
     let script_path = tmp_dir.join("apply-update.ps1");
-    let script =
-        build_windows_apply_update_script(&installer, &tmp_dir, &result_path, &release.version);
-    std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
+    let script = build_windows_apply_update_script(
+        &installer,
+        &install_dir,
+        &tmp_dir,
+        &result_path,
+        &release.version,
+    );
+    prepare_update_helper(
+        &script_path,
+        format!("\u{feff}{script}").as_bytes(),
+        &result_path,
+        &pending,
+    )?;
     if let Err(error) = std::process::Command::new("powershell.exe")
         .args([
             "-NoProfile",
@@ -1358,9 +1404,35 @@ pub fn download_and_install_release(release: &ReleaseInfo) -> Result<(), String>
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+fn windows_install_directory(executable: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if !executable.is_absolute()
+        || executable.to_str().is_none()
+        || !executable
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.eq_ignore_ascii_case("PeterFan.exe")
+                    || name.eq_ignore_ascii_case("peterfan-cli.exe")
+            })
+        || !executable.is_file()
+    {
+        return Err("could not determine a safe existing Windows app location".into());
+    }
+    let directory = executable
+        .parent()
+        .filter(|directory| directory.parent().is_some() && directory.is_dir())
+        .ok_or("Windows app has no safe installation directory")?;
+    if !directory.join("PeterFan.exe").is_file() {
+        return Err("Windows installation is missing PeterFan.exe".into());
+    }
+    Ok(directory.to_path_buf())
+}
+
+#[cfg(any(target_os = "windows", test))]
 fn build_windows_apply_update_script(
     installer: &std::path::Path,
+    install_dir: &std::path::Path,
     tmp_dir: &std::path::Path,
     result_path: &std::path::Path,
     target_version: &str,
@@ -1375,25 +1447,26 @@ fn build_windows_apply_update_script(
     let failed = serde_json::to_string(&UpdateInstallResult::new(
         "failed",
         target_version,
-        "The Windows update failed. The existing installation was left in place.",
+        "The Windows update failed. The installation may be incomplete; reinstall PeterFan if it does not start.",
     ))
     .expect("update result serializes");
     format!(
         "$ErrorActionPreference = 'Stop'\n\
          $result = {result}\n\
          $resultTmp = {result_tmp}\n\
+         $installDir = {install_dir}\n\
+         $existing = Join-Path $installDir 'PeterFan.exe'\n\
          function Write-Result([string]$json) {{\n\
          \tNew-Item -ItemType Directory -Force -Path (Split-Path -Parent $result) | Out-Null\n\
          \t[System.IO.File]::WriteAllText($resultTmp, $json, [System.Text.UTF8Encoding]::new($false))\n\
          \tMove-Item -LiteralPath $resultTmp -Destination $result -Force\n\
          }}\n\
          try {{\n\
-         \t& {installer}\n\
+         \t& {installer} -InstallDir $installDir\n\
          \tWrite-Result {installed}\n\
          }} catch {{\n\
          \tWrite-Result {failed}\n\
-         \t$existing = Join-Path $env:LOCALAPPDATA 'Programs\\PeterFan\\PeterFan.exe'\n\
-         \tif (Test-Path $existing -PathType Leaf) {{ Start-Process $existing }}\n\
+         \tif (Test-Path -LiteralPath $existing -PathType Leaf) {{ Start-Process -FilePath $existing }}\n\
          \texit 1\n\
          }}\n\
          Start-Sleep -Seconds 2\n\
@@ -1401,6 +1474,7 @@ fn build_windows_apply_update_script(
         result = powershell_quote(result_path),
         result_tmp = powershell_quote(&result_tmp),
         installer = powershell_quote(installer),
+        install_dir = powershell_quote(install_dir),
         installed = powershell_quote_str(&installed),
         failed = powershell_quote_str(&failed),
         tmp = powershell_quote(tmp_dir),
@@ -1423,12 +1497,12 @@ fn find_file_named(root: &std::path::Path, name: &str) -> Option<std::path::Path
     None
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn powershell_quote(path: &std::path::Path) -> String {
     powershell_quote_str(&path.display().to_string())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn powershell_quote_str(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
@@ -1546,7 +1620,6 @@ fn install_downloaded_update(
         target_version,
         format!("Installing PeterFan v{target_version}."),
     );
-    write_update_install_result_to(&result_path, &pending)?;
     let updater_label = macos_updater_label(std::process::id(), target_version);
     let script = build_apply_update_script(
         app_path,
@@ -1558,7 +1631,7 @@ fn install_downloaded_update(
         target_version,
         &updater_label,
     );
-    std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
+    prepare_update_helper(&script_path, script.as_bytes(), &result_path, &pending)?;
     let _ = std::process::Command::new("chmod")
         .args(["+x"])
         .arg(&script_path)
@@ -2007,6 +2080,7 @@ fn codesign_details(app: &std::path::Path) -> Result<String, String> {
     ))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn codesign_field(text: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}=");
     text.lines()
@@ -2014,6 +2088,7 @@ fn codesign_field(text: &str, key: &str) -> Option<String> {
         .find_map(|line| line.strip_prefix(&prefix).map(ToString::to_string))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn has_developer_id_authority(text: &str) -> bool {
     text.lines().any(|line| {
         line.contains("Authority=Developer ID Application:") && line.contains(EXPECTED_TEAM_ID)
@@ -2144,6 +2219,74 @@ mod tests {
     fn is_newer_treats_missing_components_as_zero() {
         assert!(!is_newer("1.13", "1.13.0"));
         assert!(is_newer("1.13", "1.13.1"));
+        assert!(!is_newer("1", "1.0"));
+        assert!(is_newer("1.13-beta.1", "1.13"));
+    }
+
+    #[test]
+    fn is_newer_handles_prerelease_upgrade_paths() {
+        assert!(is_newer("1.32.2", "1.32.3-beta.1"));
+        assert!(is_newer("1.32.3-beta.1", "1.32.3"));
+        assert!(!is_newer("1.32.3", "1.32.3-beta.1"));
+        assert!(!is_newer("1.32.3-beta.1", "1.32.2"));
+    }
+
+    #[test]
+    fn is_newer_obeys_semver_prerelease_identifier_precedence() {
+        let ordered = [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.10",
+            "1.0.0-rc.1",
+            "1.0.0",
+        ];
+        for pair in ordered.windows(2) {
+            assert!(is_newer(pair[0], pair[1]), "{} -> {}", pair[0], pair[1]);
+            assert!(!is_newer(pair[1], pair[0]));
+        }
+        assert!(is_newer(
+            "1.0.0-999999999999999999999999999999",
+            "1.0.0-alpha"
+        ));
+    }
+
+    #[test]
+    fn is_newer_accepts_v_prefix_and_ignores_build_metadata() {
+        assert!(is_newer("v1.32.2", "v1.32.3-beta.1+build.7"));
+        assert!(!is_newer("1.32.3+build.1", "1.32.3+build.2"));
+        assert!(!is_newer("1.32.3-beta.1+build.2", "1.32.3-beta.1+build.1"));
+    }
+
+    #[test]
+    fn is_newer_fails_closed_for_invalid_versions() {
+        for invalid in [
+            "",
+            "v",
+            "V1.2.3",
+            "vv1.2.3",
+            " 1.2.3",
+            "1.2.3\n",
+            "1..2",
+            ".1",
+            "1.2.",
+            "1.2.3.4",
+            "01.2.3",
+            "1.02.3",
+            "1.2.03",
+            "1.2.3-01",
+            "1.2.3-beta..1",
+            "1.2.3-",
+            "1.2.3+",
+            "1.2.3+bad_metadata",
+            "18446744073709551616.0.0",
+            "garbage",
+        ] {
+            assert!(!is_newer(invalid, "2.0.0"), "invalid current: {invalid:?}");
+            assert!(!is_newer("0.0.0", invalid), "invalid latest: {invalid:?}");
+        }
     }
 
     #[test]
@@ -2288,6 +2431,18 @@ mod tests {
     #[test]
     fn missing_tag_name_is_an_error() {
         assert!(parse_release_response(b"{}").is_err());
+    }
+
+    #[test]
+    fn malformed_release_versions_are_failed_checks_not_current_versions() {
+        for tag in ["", "invalid", "vv1.2.3", "1.02.3", "1.2.3-beta.01"] {
+            let body = serde_json::to_vec(&serde_json::json!({"tag_name":tag})).unwrap();
+            assert!(parse_release_response(&body).is_err(), "{tag}");
+        }
+        for tag in ["v1.2.3", "1.2", "v1.2.3-beta.1+build.5"] {
+            let body = serde_json::to_vec(&serde_json::json!({"tag_name":tag})).unwrap();
+            assert!(parse_release_response(&body).is_ok(), "{tag}");
+        }
     }
 
     #[test]
@@ -2466,11 +2621,59 @@ TeamIdentifier=N99FMBQ662
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn windows_apply_script_records_outcome_and_preserves_existing_install_on_failure() {
+    fn helper_preparation_failure_does_not_claim_pending_installation() {
+        let root = std::env::temp_dir().join(format!(
+            "peterfan-update-helper-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let result_path = root.join("result.json");
+        let previous = UpdateInstallResult::new("installed", "1.2.3", "previous install");
+        write_update_install_result_to(&result_path, &previous).unwrap();
+        let pending = UpdateInstallResult::new("pending", "1.2.4", "queued");
+        assert!(prepare_update_helper(&root, b"script", &result_path, &pending).is_err());
+        assert_eq!(
+            read_update_install_result_from(&result_path),
+            Some(previous)
+        );
+        let script_path = root.join("apply-update");
+        prepare_update_helper(&script_path, b"script", &result_path, &pending).unwrap();
+        assert_eq!(std::fs::read(script_path).unwrap(), b"script");
+        assert_eq!(read_update_install_result_from(&result_path), Some(pending));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_install_directory_requires_an_existing_absolute_app() {
+        let root = std::env::temp_dir().join(format!(
+            "peterfan-windows-install-location-test-{}",
+            std::process::id()
+        ));
+        let custom = root.join("My Apps").join("O'Brien").join("PeterFan");
+        std::fs::create_dir_all(&custom).unwrap();
+        let executable = custom.join("PeterFan.exe");
+        assert!(windows_install_directory(&executable).is_err());
+        std::fs::write(&executable, b"fixture").unwrap();
+        assert_eq!(windows_install_directory(&executable).unwrap(), custom);
+        let cli = custom.join("peterfan-cli.exe");
+        std::fs::write(&cli, b"fixture").unwrap();
+        assert_eq!(windows_install_directory(&cli).unwrap(), custom);
+        std::fs::remove_file(&executable).unwrap();
+        assert!(windows_install_directory(&cli).is_err());
+        assert!(windows_install_directory(std::path::Path::new("PeterFan.exe")).is_err());
+        let other = root.join("other.exe");
+        std::fs::write(&other, b"fixture").unwrap();
+        assert!(windows_install_directory(&other).is_err());
+        assert!(windows_install_directory(&root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_apply_script_uses_custom_install_for_apply_and_failure_relaunch() {
         let script = build_windows_apply_update_script(
             std::path::Path::new(r"C:\Temp\PeterFan update\install.ps1"),
+            std::path::Path::new(r"D:\My Apps\O'Brien\PeterFan"),
             std::path::Path::new(r"C:\Temp\PeterFan update"),
             std::path::Path::new(r"C:\Users\Test\AppData\Local\PeterFan\update-result.json"),
             "1.2.3",
@@ -2480,8 +2683,13 @@ TeamIdentifier=N99FMBQ662
         assert!(script.contains("Write-Result"));
         assert!(script.contains(r#""status":"installed""#));
         assert!(script.contains(r#""status":"failed""#));
-        assert!(script.contains("Join-Path $env:LOCALAPPDATA 'Programs\\PeterFan\\PeterFan.exe'"));
-        assert!(script.contains("Start-Process $existing"));
+        assert!(script.contains("$installDir = 'D:\\My Apps\\O''Brien\\PeterFan'"));
+        assert!(script.contains("-InstallDir $installDir"));
+        assert!(script.contains("$existing = Join-Path $installDir 'PeterFan.exe'"));
+        assert!(script.contains("Start-Process -FilePath $existing"));
+        assert!(!script.contains("LOCALAPPDATA"));
+        assert!(script.contains("installation may be incomplete"));
+        assert!(!script.contains("existing installation was left in place"));
         assert!(script.contains("Remove-Item -LiteralPath 'C:\\Temp\\PeterFan update'"));
     }
 

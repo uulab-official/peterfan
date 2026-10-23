@@ -40,6 +40,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/PeterFan"
 chmod +x "$APP/Contents/MacOS/PeterFan"
 
+# Keep redistribution terms and artwork provenance with the standalone app.
+cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"
+
 # Bundle peterfand alongside the menu-bar binary so the in-app "Enable Fan
 # Control" menu item can find and install it without a terminal — it looks
 # next to its own executable (see peterfan_platform::daemon_install).

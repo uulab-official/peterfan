@@ -109,7 +109,7 @@ pub(crate) fn measure_frame(frame: &RgbaFrame) -> Result<FrameMetrics, RunnerBui
     let mut opaque_pixels = 0usize;
     let mut centroid_sum_x = 0.0_f32;
 
-    for (index, pixel) in frame.chunks_exact(CHANNELS_PER_PIXEL).enumerate() {
+    for (index, pixel) in frame.as_chunks::<CHANNELS_PER_PIXEL>().0.iter().enumerate() {
         if pixel[3] <= VISIBLE_ALPHA_THRESHOLD {
             continue;
         }
@@ -353,8 +353,10 @@ fn invalid_frame_error(detail: impl Into<String>) -> RunnerBuildError {
 }
 
 fn frame_delta(left: &[u8], right: &[u8]) -> usize {
-    left.chunks_exact(CHANNELS_PER_PIXEL)
-        .zip(right.chunks_exact(CHANNELS_PER_PIXEL))
+    left.as_chunks::<CHANNELS_PER_PIXEL>()
+        .0
+        .iter()
+        .zip(right.as_chunks::<CHANNELS_PER_PIXEL>().0.iter())
         .filter(|(left, right)| left[3].abs_diff(right[3]) > DELTA_ALPHA_THRESHOLD)
         .count()
 }
@@ -379,8 +381,10 @@ fn frame_region_delta(
 
 #[cfg(test)]
 fn visible_alpha_frame_delta(left: &[u8], right: &[u8]) -> usize {
-    left.chunks_exact(CHANNELS_PER_PIXEL)
-        .zip(right.chunks_exact(CHANNELS_PER_PIXEL))
+    left.as_chunks::<CHANNELS_PER_PIXEL>()
+        .0
+        .iter()
+        .zip(right.as_chunks::<CHANNELS_PER_PIXEL>().0.iter())
         .filter(|(left, right)| {
             left[3].abs_diff(right[3]) > DELTA_ALPHA_THRESHOLD
                 && left[3].max(right[3]) > VISIBLE_ALPHA_THRESHOLD

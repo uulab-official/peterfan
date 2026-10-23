@@ -16,22 +16,26 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 #[cfg(target_os = "macos")]
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicU32, AtomicUsize};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(any(target_os = "macos", test))]
+use tao::dpi::LogicalPosition;
+use tao::dpi::LogicalSize;
 #[cfg(any(not(target_os = "macos"), test))]
 use tao::dpi::PhysicalPosition;
 #[cfg(not(target_os = "macos"))]
 use tao::dpi::PhysicalSize;
-use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 #[cfg(not(target_os = "macos"))]
@@ -41,7 +45,13 @@ use tao::window::{Window, WindowBuilder};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
+#[cfg(target_os = "macos")]
+mod native_runner;
+mod random_runner;
 mod runner;
+mod update_schedule;
+use random_runner::RandomRunner;
+use update_schedule::{UpdateLease, UpdateSchedule};
 
 #[cfg(target_os = "macos")]
 use block2::RcBlock;
@@ -50,11 +60,14 @@ use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
 use objc2::AllocAnyThread;
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSCellImagePosition, NSEvent, NSImage, NSScreen, NSWindow, NSWorkspace};
+use objc2_app_kit::{
+    NSBitmapFormat, NSBitmapImageRep, NSCellImagePosition, NSDeviceRGBColorSpace, NSEvent, NSImage,
+    NSImageCacheMode, NSScreen, NSWindow, NSWorkspace,
+};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{
-    MainThreadMarker, NSData, NSDate, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize,
-    NSString, NSTimer,
+    MainThreadMarker, NSDate, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
+    NSTimer,
 };
 
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
@@ -76,15 +89,18 @@ use peterfan_core::types::SensorSource;
 use peterfan_core::types::{Celsius, Fan, TempSensor};
 use peterfan_core::types::{SensorGroup, SensorKind};
 use peterfan_core::{HardwareProvider, SystemMonitor};
+#[cfg(any(target_os = "macos", test))]
+use runner::ease_motion_cpu as ease_runner_motion_cpu;
+#[cfg(target_os = "macos")]
+use runner::{advance_phase as advance_runner_phase, NATIVE_TICK as RUNNER_NATIVE_TICK};
 use runner::{
-    advance_phase as advance_runner_phase, ease_motion_cpu as ease_runner_motion_cpu,
     enabled as runner_enabled, frame_interval_for_character as runner_character_interval,
     frame_interval_for_pose as runner_frame_interval_for_pose, load_band as runner_load_band,
     load_band_with_hysteresis as runner_load_band_with_hysteresis,
     should_animate as runner_should_animate, smooth_cpu as smooth_runner_cpu,
     uses_event_loop_timer as runner_uses_event_loop_timer, RunnerBuildError, RunnerPack,
-    FRAME_COUNT as RUNNER_FRAME_COUNT, NATIVE_TICK as RUNNER_NATIVE_TICK,
-    PIXEL_HEIGHT as RUNNER_PIXEL_HEIGHT, PIXEL_WIDTH as RUNNER_PIXEL_WIDTH,
+    FRAME_COUNT as RUNNER_FRAME_COUNT, PIXEL_HEIGHT as RUNNER_PIXEL_HEIGHT,
+    PIXEL_WIDTH as RUNNER_PIXEL_WIDTH,
 };
 #[cfg(test)]
 use runner::{
@@ -392,10 +408,17 @@ static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static FAN_COMMAND_LOCK: Mutex<()> = Mutex::new(());
 /// Last control result, shown in the popover.
 static STATUS: Mutex<String> = Mutex::new(String::new());
+/// Keep recent settings acknowledgements per request so one window cannot
+/// mistake another window's save (or an older status message) for its own.
+static SETTINGS_RESULTS: Mutex<VecDeque<serde_json::Value>> = Mutex::new(VecDeque::new());
+const SETTINGS_RESULTS_MAX: usize = 32;
 /// One native update pipeline shared by the popover, detail window, and
 /// right-click menu. GitHub checks from inside the WebView were unreliable on
 /// some Macs and could race the native installer dialog.
 static APP_UPDATE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+// Mock sessions must never contact release services, even from manual actions.
+static APP_UPDATE_NETWORK_ENABLED: AtomicBool = AtomicBool::new(false);
+static APP_UPDATE_NOTIFIED: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static APP_UPDATE_STATE: Mutex<AppUpdateState> = Mutex::new(AppUpdateState {
     phase: "idle",
     latest: None,
@@ -403,6 +426,9 @@ static APP_UPDATE_STATE: Mutex<AppUpdateState> = Mutex::new(AppUpdateState {
     notes: None,
     message: None,
     install_ready: false,
+    channel: UpdateChannel::Stable,
+    schedule: UpdateSchedule::new(),
+    check_error: None,
 });
 /// A completed fan command invalidates the cached daemon snapshot. The event
 /// loop consumes this on its next wake so confirmed UI state does not wait for
@@ -552,6 +578,9 @@ struct AppUpdateState {
     notes: Option<String>,
     message: Option<String>,
     install_ready: bool,
+    channel: UpdateChannel,
+    schedule: UpdateSchedule,
+    check_error: Option<String>,
 }
 
 fn set_app_update_state(
@@ -582,6 +611,12 @@ fn app_update_state_snapshot() -> serde_json::Value {
         "notes": state.notes,
         "message": state.message,
         "install_ready": state.install_ready,
+        "channel": state.channel.as_str(),
+        "last_attempt_unix": state.schedule.last_attempt_unix,
+        "last_success_unix": state.schedule.last_success_unix,
+        "next_check_unix": state.schedule.next_check_unix,
+        "check_error": state.check_error,
+        "auto_check_enabled": APP_UPDATE_NETWORK_ENABLED.load(Ordering::Acquire),
     })
 }
 
@@ -649,11 +684,12 @@ struct TrayMenu {
     display_items: Vec<(MenubarDisplay, tray_icon::menu::CheckMenuItem)>,
     /// CPU runner character, independent of number/runner display mode.
     character_items: Vec<(RunnerCharacter, tray_icon::menu::CheckMenuItem)>,
+    random_character_item: tray_icon::menu::CheckMenuItem,
     /// "CPU Temperature Source" submenu — which sensor family feeds the
     /// headline/menu-bar temperature.
     temperature_source_items: Vec<(TemperatureSource, tray_icon::menu::CheckMenuItem)>,
     /// "Fan Speed" submenu — direct RPM presets, mapped to the same command
-    /// strings `execute_control` already understands ("auto", "hold:<pct>").
+    /// strings `execute_control` already understands (`auto`, `hold:<pct>`).
     fan_speed_items: Vec<(String, tray_icon::menu::MenuId)>,
     /// One-time privileged daemon install — lets fan control work without a
     /// terminal (macOS only; `None` elsewhere).
@@ -673,6 +709,7 @@ struct TrayMenu {
 /// popover reads it fresh so a language change takes effect on the very next
 /// popover/detail-window open, without needing a full app relaunch).
 struct L10n {
+    #[cfg(target_os = "macos")]
     enable_fan_control: &'static str,
     auto: &'static str,
     rules: &'static str,
@@ -698,6 +735,7 @@ struct L10n {
 fn strings(lang: ResolvedLanguage) -> L10n {
     match lang {
         ResolvedLanguage::En => L10n {
+            #[cfg(target_os = "macos")]
             enable_fan_control: "Enable Fan Control (One-Time Setup)…",
             auto: "Auto (OS-managed)",
             rules: "Rules",
@@ -720,6 +758,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             style_both: "Number + Runner",
         },
         ResolvedLanguage::Ko => L10n {
+            #[cfg(target_os = "macos")]
             enable_fan_control: "팬 제어 활성화 (최초 1회 설정)…",
             auto: "자동 (OS 관리)",
             rules: "규칙",
@@ -748,6 +787,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
 struct RunnerAssets {
     pack: RunnerPack,
     icons: Vec<Icon>,
+    #[cfg(any(target_os = "macos", test))]
     native_images: Vec<NativeRunnerImage>,
 }
 
@@ -799,6 +839,7 @@ struct App {
     provider: std::sync::Arc<dyn HardwareProvider>,
     display: MenubarDisplay,
     runner_character: RunnerCharacter,
+    random_runner: RandomRunner,
     temperature_source: TemperatureSource,
     update_channel: UpdateChannel,
     critical_temp_c: f32,
@@ -853,6 +894,8 @@ struct App {
     runner_band: usize,
     #[cfg(target_os = "macos")]
     runner_native_timer: Option<Retained<NSTimer>>,
+    #[cfg(target_os = "macos")]
+    runner_native_painter: Rc<RefCell<native_runner::NativeRunnerPainter>>,
     #[cfg(target_os = "macos")]
     runner_native_cpu_bits: Arc<AtomicU32>,
     #[cfg(target_os = "macos")]
@@ -1053,9 +1096,10 @@ fn save_cpu_core_graph(show: bool) {
     let _ = peterfan_platform::config::save(&cfg);
 }
 
-fn save_runner_character(character: RunnerCharacter) {
+fn save_runner_character(character: RunnerCharacter, random: bool) {
     let mut cfg = peterfan_platform::config::load();
     cfg.menubar.character = character;
+    cfg.menubar.random_character = random;
     let _ = peterfan_platform::config::save(&cfg);
 }
 
@@ -1166,18 +1210,14 @@ fn save_temperature_source(source: TemperatureSource) {
     let _ = peterfan_platform::config::save(&cfg);
 }
 
-fn save_update_channel(channel: UpdateChannel) {
+fn save_update_channel(channel: UpdateChannel) -> std::io::Result<PathBuf> {
     let mut cfg = peterfan_platform::config::load();
     cfg.menubar.update_channel = channel;
-    let _ = peterfan_platform::config::save(&cfg);
+    peterfan_platform::config::save(&cfg)
 }
 
 fn configured_update_channel() -> UpdateChannel {
     peterfan_platform::config::load().menubar.update_channel
-}
-
-fn fetch_configured_release() -> Result<peterfan_platform::updater::ReleaseInfo, String> {
-    peterfan_platform::updater::fetch_release_for_channel(configured_update_channel())
 }
 
 /// Persist the UI language choice so it survives a relaunch.
@@ -1246,22 +1286,91 @@ fn parse_automation_rules(rules_json: &str) -> Result<Vec<Rule>, String> {
     Ok(rules)
 }
 
-fn save_automation_rules(rules_json: &str) -> String {
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SettingsOperation {
+    Rules,
+    ImportConfig,
+}
+
+#[derive(serde::Deserialize)]
+struct SettingsRequest {
+    id: String,
+    operation: SettingsOperation,
+    payload: String,
+}
+
+fn parse_settings_request(request_json: &str) -> Option<SettingsRequest> {
+    let request: SettingsRequest = serde_json::from_str(request_json).ok()?;
+    if request.id.is_empty()
+        || request.id.len() > 128
+        || !request
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return None;
+    }
+    Some(request)
+}
+
+struct SettingsSaveResult {
+    ok: bool,
+    daemon_reload: &'static str,
+    message: String,
+}
+
+impl SettingsSaveResult {
+    fn failed(message: String) -> Self {
+        Self {
+            ok: false,
+            daemon_reload: "not_attempted",
+            message,
+        }
+    }
+}
+
+fn settings_saved_result(
+    message: String,
+    reply: Option<&str>,
+    daemon_supported: bool,
+) -> SettingsSaveResult {
+    let (daemon_reload, suffix) = if !daemon_supported {
+        ("not_applicable", String::new())
+    } else {
+        match reply {
+            Some(reply) if reply.starts_with("ok reloaded (") => ("reloaded", String::new()),
+            Some(reply) => ("failed", format!("; daemon reload failed: {reply}")),
+            None => ("deferred", "; daemon reload pending".to_string()),
+        }
+    };
+    SettingsSaveResult {
+        ok: true,
+        daemon_reload,
+        message: format!("{message}{suffix}"),
+    }
+}
+
+fn reload_after_settings_save(message: String) -> SettingsSaveResult {
+    #[cfg(unix)]
+    let reply = peterfan_platform::ipc::send_command("reload");
+    #[cfg(not(unix))]
+    let reply: Option<String> = None;
+    settings_saved_result(message, reply.as_deref(), cfg!(unix))
+}
+
+fn save_automation_rules(rules_json: &str) -> SettingsSaveResult {
     let rules = match parse_automation_rules(rules_json) {
         Ok(rules) => rules,
-        Err(error) => return format!("rules save failed: {error}"),
+        Err(error) => return SettingsSaveResult::failed(format!("rules save failed: {error}")),
     };
     let mut cfg = peterfan_platform::config::load();
     cfg.rules = rules;
     let count = cfg.rules.len();
     if let Err(error) = peterfan_platform::config::save(&cfg) {
-        return format!("rules save failed: {error}");
+        return SettingsSaveResult::failed(format!("rules save failed: {error}"));
     }
-    #[cfg(unix)]
-    if peterfan_platform::ipc::send_command("reload").is_none() {
-        return format!("rules saved ({count}); daemon reload pending");
-    }
-    format!("rules saved ({count})")
+    reload_after_settings_save(format!("rules saved ({count})"))
 }
 
 fn parse_imported_config(config_text: &str) -> Result<Config, String> {
@@ -1273,20 +1382,49 @@ fn parse_imported_config(config_text: &str) -> Result<Config, String> {
     Ok(config)
 }
 
-fn import_config(config_text: &str) -> String {
+fn import_config(config_text: &str) -> SettingsSaveResult {
     let config = match parse_imported_config(config_text) {
         Ok(config) => config,
-        Err(error) => return format!("config import failed: {error}"),
+        Err(error) => return SettingsSaveResult::failed(format!("config import failed: {error}")),
+    };
+    // Import can change the update channel. Hold the same lease through save
+    // and reconciliation so it cannot race a check or an installer.
+    let Some(_lease) = UpdateLease::acquire(&APP_UPDATE_IN_FLIGHT) else {
+        return SettingsSaveResult::failed(
+            "config import failed: an update is in progress; retry after it finishes".into(),
+        );
     };
     let rules = config.rules.len();
     if let Err(error) = peterfan_platform::config::save(&config) {
-        return format!("config import failed: {error}");
+        return SettingsSaveResult::failed(format!("config import failed: {error}"));
     }
-    #[cfg(unix)]
-    if peterfan_platform::ipc::send_command("reload").is_none() {
-        return format!("config imported ({rules} rules); daemon reload pending");
+    reconcile_update_channel(
+        &mut APP_UPDATE_STATE.lock().expect("app update state poisoned"),
+        config.menubar.update_channel,
+        now_unix(),
+        APP_UPDATE_NETWORK_ENABLED.load(Ordering::Acquire),
+    );
+    reload_after_settings_save(format!("config imported ({rules} rules)"))
+}
+
+fn run_settings_request(request_json: &str) -> Option<String> {
+    let request = parse_settings_request(request_json)?;
+    let result = match request.operation {
+        SettingsOperation::Rules => save_automation_rules(&request.payload),
+        SettingsOperation::ImportConfig => import_config(&request.payload),
+    };
+    let mut results = SETTINGS_RESULTS.lock().expect("settings results poisoned");
+    results.push_back(serde_json::json!({
+        "id": request.id,
+        "operation": request.operation,
+        "ok": result.ok,
+        "daemon_reload": result.daemon_reload,
+        "message": result.message,
+    }));
+    while results.len() > SETTINGS_RESULTS_MAX {
+        results.pop_front();
     }
-    format!("config imported ({rules} rules)")
+    Some(result.message)
 }
 
 fn copy_config_export() {
@@ -1309,6 +1447,7 @@ fn copy_config_export() {
     });
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn daemon_supports_user_config(reply: Option<&str>) -> bool {
     reply.is_some_and(|reply| reply.starts_with("ok logged-in-user"))
 }
@@ -1780,6 +1919,7 @@ fn cached_installed_daemon_version() -> Option<String> {
     version
 }
 
+#[cfg(target_os = "macos")]
 fn clear_daemon_version_cache() {
     *DAEMON_VERSION_CACHE
         .lock()
@@ -1790,11 +1930,13 @@ fn daemon_control_usable(daemon_version: Option<&str>) -> bool {
     daemon_version.is_some_and(|version| !peterfan_platform::daemon_update_required(version))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn clear_daemon_update_prompt_state(cfg: &mut peterfan_core::config::Config) {
     cfg.menubar.daemon_update_prompt_dismissed_for = None;
     cfg.menubar.daemon_update_prompt_snoozed_until_unix = None;
 }
 
+#[cfg(target_os = "macos")]
 fn persist_clear_daemon_update_prompt_state() {
     let mut cfg = peterfan_platform::config::load();
     clear_daemon_update_prompt_state(&mut cfg);
@@ -2365,6 +2507,14 @@ fn main() {
             return;
         }
     };
+    APP_UPDATE_NETWORK_ENABLED.store(!use_mock, Ordering::Release);
+    {
+        let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+        state.channel = configured_update_channel();
+        if !use_mock {
+            state.schedule.start(now_unix());
+        }
+    }
     log_menubar_event(&format!("startup mock={use_mock}"));
     load_fan_action_log();
 
@@ -2398,6 +2548,12 @@ fn main() {
             return;
         }
     };
+    let random_character = args
+        .iter()
+        .position(|a| a == "--character")
+        .and_then(|i| args.get(i + 1))
+        .map(|value| value == "random")
+        .unwrap_or(saved.random_character);
     let runner_character = runner_startup.character;
     let temperature_source = saved.temperature_source;
     let update_channel = saved.update_channel;
@@ -2427,6 +2583,7 @@ fn main() {
         provider,
         display,
         runner_character,
+        random_runner: RandomRunner::new(random_character, Instant::now()),
         temperature_source,
         update_channel,
         critical_temp_c,
@@ -2465,6 +2622,8 @@ fn main() {
         runner_band: 0,
         #[cfg(target_os = "macos")]
         runner_native_timer: None,
+        #[cfg(target_os = "macos")]
+        runner_native_painter: Rc::new(RefCell::new(native_runner::NativeRunnerPainter::default())),
         #[cfg(target_os = "macos")]
         runner_native_cpu_bits: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
         #[cfg(target_os = "macos")]
@@ -2650,6 +2809,15 @@ fn main() {
             if app.reduce_motion != reduce_motion {
                 app.reduce_motion = reduce_motion;
                 app.runner_frame = 0;
+                #[cfg(target_os = "macos")]
+                {
+                    // A static accessibility presentation uses the neutral
+                    // pose rather than freezing halfway through an exercise.
+                    stop_native_runner_timer(&mut app);
+                    app.runner_native_frame.store(0, Ordering::Relaxed);
+                    app.runner_native_applied_icon
+                        .store(usize::MAX, Ordering::Relaxed);
+                }
                 app.last_runner_icon = None;
                 apply_runner_icon(&mut app);
             }
@@ -2670,6 +2838,13 @@ fn main() {
                     now + runner_frame_interval_for_pose(app.runner_character, app.runner_cpu_pct, app.runner_frame),
                 );
             }
+        }
+        if let Some(character) = app.random_runner.next_due(
+            now, app.runner_character, runner_should_animate(app.display, app.reduce_motion),
+        ) {
+            switch_runner_character(&mut app, character);
+            next_runner_at = now;
+            next_metric_at = now;
         }
         if runner_should_animate(app.display, app.reduce_motion) && now >= next_runner_cpu_at {
             let cpu = app.monitor.sample_cpu_usage();
@@ -2692,6 +2867,7 @@ fn main() {
         }
         let next_tick = [
             Some(next_metric_at),
+            app.random_runner.deadline(runner_should_animate(app.display, app.reduce_motion)),
             runner_should_animate(app.display, app.reduce_motion).then_some(next_runner_cpu_at),
             runner_uses_event_loop_timer(app.display, app.reduce_motion).then_some(next_runner_at),
             prewarm_popover_at,
@@ -2769,10 +2945,30 @@ fn main() {
                     refresh_after_pending = true;
                 } else if let Some(value) = c.strip_prefix("updatechannel:") {
                     if let Some(channel) = UpdateChannel::parse(value) {
-                        app.update_channel = channel;
-                        save_update_channel(channel);
-                        *STATUS.lock().expect("status poisoned") =
-                            format!("update channel set to {}", channel.as_str());
+                        if let Some(_lease) = UpdateLease::acquire(&APP_UPDATE_IN_FLIGHT) {
+                            match save_update_channel(channel) {
+                                Ok(_) => {
+                                    app.update_channel = channel;
+                                    let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+                                    reconcile_update_channel(
+                                        &mut state, channel, now_unix(),
+                                        APP_UPDATE_NETWORK_ENABLED.load(Ordering::Acquire),
+                                    );
+                                    *STATUS.lock().expect("status poisoned") =
+                                        format!("update channel set to {}", channel.as_str());
+                                }
+                                Err(error) => {
+                                    let message = format!("Couldn't save update channel: {error}");
+                                    let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+                                    state.phase = "channel_failed";
+                                    state.message = Some(message.clone());
+                                    *STATUS.lock().expect("status poisoned") = message;
+                                }
+                            }
+                        } else {
+                            *STATUS.lock().expect("status poisoned") =
+                                "Update in progress; change the channel after it finishes.".into();
+                        }
                     }
                     refresh_after_pending = true;
                 } else if c == "toggle-login-item" || c == "togglelogin" {
@@ -2807,17 +3003,26 @@ fn main() {
                     save_cpu_core_graph(show);
                     refresh_after_pending = true;
                 } else if let Some(value) = c.strip_prefix("character:") {
-                    if let Some(character) = RunnerCharacter::parse(value) {
+                    if value == "random" {
+                        set_runner_random(&mut app);
+                        next_runner_at = now;
+                        refresh_after_pending = true;
+                    } else if let Some(character) = RunnerCharacter::parse(value) {
                         set_runner_character(&mut app, character);
                         next_runner_at = now;
                         refresh_after_pending = true;
                     }
+                } else if let Some(request) = c.strip_prefix("settingsrequest:") {
+                    if let Some(status) = run_settings_request(request) {
+                        *STATUS.lock().expect("status poisoned") = status;
+                    }
+                    refresh_after_pending = true;
                 } else if let Some(json) = c.strip_prefix("rules:") {
-                    let status = save_automation_rules(json);
+                    let status = save_automation_rules(json).message;
                     *STATUS.lock().expect("status poisoned") = status;
                     refresh_after_pending = true;
                 } else if let Some(config_text) = c.strip_prefix("importconfig:") {
-                    let status = import_config(config_text);
+                    let status = import_config(config_text).message;
                     *STATUS.lock().expect("status poisoned") = status;
                     refresh_after_pending = true;
                 } else if c.starts_with("notifications:") {
@@ -2897,6 +3102,7 @@ fn main() {
             let id = &ev.id;
             let mut matched_display: Option<MenubarDisplay> = None;
             let mut matched_character: Option<RunnerCharacter> = None;
+            let mut matched_random = false;
             let mut matched_temperature_source: Option<TemperatureSource> = None;
             let mut matched_language: Option<Language> = None;
             let mut open_detail_requested = false;
@@ -2913,6 +3119,9 @@ fn main() {
                     tm.display_items.iter().find(|(_, item)| item.id() == id)
                 {
                     matched_display = Some(*d);
+                    None
+                } else if id == tm.random_character_item.id() {
+                    matched_random = true;
                     None
                 } else if let Some((character, _)) =
                     tm.character_items.iter().find(|(_, item)| item.id() == id)
@@ -2984,6 +3193,11 @@ fn main() {
                     }
                 }
                 save_menubar_display(app.display);
+                update(&mut app);
+            }
+            if matched_random {
+                set_runner_random(&mut app);
+                next_runner_at = Instant::now();
                 update(&mut app);
             }
             if let Some(character) = matched_character {
@@ -3211,13 +3425,25 @@ fn build_tray(app: &mut App) {
     .collect();
 
     let character_submenu = Submenu::new(s.runner_character, true);
+    let random_character_item = CheckMenuItem::new(
+        if app.language.resolve() == ResolvedLanguage::Ko {
+            "랜덤 · 1분마다"
+        } else {
+            "Random · every minute"
+        },
+        true,
+        app.random_runner.enabled(),
+        None,
+    );
+    let _ = character_submenu.append(&random_character_item);
+    let _ = character_submenu.append(&PredefinedMenuItem::separator());
     let character_items = RunnerCharacter::FEATURED
         .into_iter()
         .map(|character| {
             let item = CheckMenuItem::new(
                 runner_character_label(app.language.resolve(), character),
                 true,
-                app.runner_character == character,
+                !app.random_runner.enabled() && app.runner_character == character,
                 None,
             );
             let _ = character_submenu.append(&item);
@@ -3328,6 +3554,7 @@ fn build_tray(app: &mut App) {
         quit: quit_item.id().clone(),
         display_items,
         character_items,
+        random_character_item,
         temperature_source_items,
         fan_speed_items,
         #[cfg(target_os = "macos")]
@@ -3457,6 +3684,7 @@ fn build_popover(
                 || body.starts_with("updatechannel:")
                 || body.starts_with("display:")
                 || body.starts_with("character:")
+                || body.starts_with("settingsrequest:")
                 || body.starts_with("rules:")
                 || body.starts_with("importconfig:")
                 || body.starts_with("notifications:")
@@ -3644,6 +3872,7 @@ fn open_detail_window(
                 || body.starts_with("updatechannel:")
                 || body.starts_with("display:")
                 || body.starts_with("character:")
+                || body.starts_with("settingsrequest:")
                 || body.starts_with("rules:")
                 || body.starts_with("importconfig:")
                 || body.starts_with("notifications:")
@@ -3759,6 +3988,7 @@ fn monitor_bounds(monitor: &MonitorHandle) -> DisplayBounds {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LogicalPopoverAnchor {
     x: f64,
@@ -3767,6 +3997,7 @@ struct LogicalPopoverAnchor {
     scale: f64,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn popover_position_for_anchor(
     anchor: LogicalPopoverAnchor,
     popover_width: f64,
@@ -3781,6 +4012,7 @@ fn popover_position_for_anchor(
     LogicalPosition::new(x, anchor.y)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn popover_height_for_anchor(anchor: LogicalPopoverAnchor) -> f64 {
     let available = (anchor.display.bottom() - anchor.y - 12.0).max(200.0);
     POPOVER_H.min(available)
@@ -3889,6 +4121,7 @@ fn configure_native_popover_window(
     Some(native_window.frame())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn appkit_window_top_left(position: LogicalPosition<f64>, primary_top: f64) -> (f64, f64) {
     (position.x, primary_top - position.y)
 }
@@ -3996,9 +4229,9 @@ fn toggle_popover(
         w.set_outer_position(position);
         app.popover_show_at = Some(Instant::now() + POPOVER_SHOW_DELAY);
         log_menubar_event(&format!(
-        "popover scheduled position=({:.0},{:.0}) size=({POPOVER_W:.0},{height:.0}) scale={scale:.2}",
-        position.x, position.y
-    ));
+            "popover scheduled position=({:.0},{:.0}) size=({POPOVER_W:.0},{height:.0}) scale={scale:.2}",
+            position.x, position.y
+        ));
     }
 }
 
@@ -4343,6 +4576,7 @@ fn update(app: &mut App) {
     // editor converge without an app restart. The privileged daemon still
     // validates the same file before applying rules.
     let config = peterfan_platform::config::load();
+    app.update_channel = config.menubar.update_channel;
     app.monitor.refresh_quick();
     let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
     let popover_scheduled = app.popover_show_at.is_some();
@@ -4895,10 +5129,12 @@ fn update(app: &mut App) {
         "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, daemon_version.as_deref()),
         "curve_points": &app.dashboard_slow_cache.curve_points,
         "last_cmd_status": STATUS.lock().expect("status poisoned").clone(),
+        "settings_results": SETTINGS_RESULTS.lock().expect("settings results poisoned").clone(),
     });
     payload["config_toml"] = serde_json::json!(config.to_toml());
     payload["menubar_display"] = serde_json::json!(app.display.as_str());
     payload["runner_character"] = serde_json::json!(app.runner_character.as_str());
+    payload["runner_random"] = serde_json::json!(app.random_runner.enabled());
     payload["runner_selected_preview"] =
         serde_json::json!(serde_json::from_str::<serde_json::Value>(
             &app.runner_assets.selected_preview_frames_json()
@@ -4908,8 +5144,9 @@ fn update(app: &mut App) {
         serde_json::json!(app.runner_assets.pack.character().as_str());
     payload["runner_cpu_pct"] = serde_json::json!(app.runner_cpu_pct);
     payload["runner_reduce_motion"] = serde_json::json!(app.reduce_motion);
-    payload["runner_interval_ms"] = serde_json::json!((!app.reduce_motion)
-        .then(|| runner_character_interval(app.runner_character, app.runner_cpu_pct).as_millis()));
+    payload["runner_interval_ms"] = serde_json::json!((!app.reduce_motion).then(|| {
+        runner_character_interval(app.runner_character, app.runner_cpu_pct).as_millis()
+    }));
     payload["network_rate_text"] = serde_json::json!(format!("{}/s", bytes((rx + tx) as u64)));
     payload["load_avg_text"] = serde_json::json!(load_avg_text);
     payload["power_text"] = serde_json::json!(power_text);
@@ -5451,6 +5688,7 @@ fn is_enable_fan_control_id(_tm: &TrayMenu, _id: &tray_icon::menu::MenuId) -> bo
 /// Run the one-time privileged daemon install (macOS admin-password dialog)
 /// from the menu bar directly — a GUI-only user never has to open a
 /// terminal. Blocks on the dialog, so it must run off the event-loop thread.
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FanControlInstallPlan {
     AlreadyReady,
@@ -5459,6 +5697,7 @@ enum FanControlInstallPlan {
     InstalledButUnavailable,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn fan_control_install_plan(
     installed_version: Option<&str>,
     daemon_reachable: bool,
@@ -5670,11 +5909,8 @@ fn stale_daemon_version() -> Option<String> {
         None
     }
 }
-#[cfg(not(target_os = "macos"))]
-fn stale_daemon_version() -> Option<String> {
-    None
-}
 
+#[cfg(any(target_os = "macos", test))]
 fn daemon_can_self_update_silently(installed_version: &str) -> bool {
     peterfan_platform::daemon_update_required(installed_version)
         && peterfan_platform::daemon_self_reinstall_supported(installed_version)
@@ -5726,6 +5962,7 @@ fn maybe_silently_update_stale_daemon() {
 #[cfg(not(target_os = "macos"))]
 fn maybe_silently_update_stale_daemon() {}
 
+#[cfg(any(target_os = "macos", test))]
 fn should_prompt_stale_daemon_update(
     _cfg: &peterfan_core::config::Config,
     _current_version: &str,
@@ -5813,46 +6050,122 @@ fn maybe_prompt_stale_daemon_update() {
 #[cfg(not(target_os = "macos"))]
 fn maybe_prompt_stale_daemon_update() {}
 
-/// Silent background check, run once after launch. It deliberately does not
-/// open a dialog; menu-bar apps launched at login should not steal focus.
-/// Manual update actions use the native check and install flows.
+/// Quiet recurring discovery. Wall-clock deadlines plus a bounded poll notice
+/// overdue work on wake without issuing a burst of missed checks.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn check_for_updates_on_launch() {
-    std::thread::sleep(Duration::from_secs(20));
-    if APP_UPDATE_IN_FLIGHT.load(Ordering::Acquire) {
-        return;
+    {
+        let state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+        log_menubar_event(&format!(
+            "app update scheduler started channel={} next_check={:?}",
+            state.channel.as_str(),
+            state.schedule.next_check_unix
+        ));
     }
-    if let Ok(release) = fetch_configured_release() {
-        if APP_UPDATE_IN_FLIGHT.load(Ordering::Acquire) {
+    loop {
+        if QUIT.load(Ordering::Acquire) || !APP_UPDATE_NETWORK_ENABLED.load(Ordering::Acquire) {
             return;
         }
-        if peterfan_platform::updater::is_newer(env!("CARGO_PKG_VERSION"), &release.version) {
-            set_app_update_state(
-                "available",
-                Some(&release),
-                Some(format!("PeterFan v{} is available.", release.version)),
+        if let Some(_lease) = UpdateLease::acquire(&APP_UPDATE_IN_FLIGHT) {
+            reconcile_update_channel(
+                &mut APP_UPDATE_STATE.lock().expect("app update state poisoned"),
+                configured_update_channel(),
+                now_unix(),
+                true,
             );
-            *STATUS.lock().expect("status poisoned") = format!(
-                "update available: {} (use Updates to install)",
-                release.version
-            );
-            if peterfan_platform::config::load().notifications.updates {
-                post_native_notification(
-                    "PeterFan — update available",
-                    format!(
-                        "PeterFan v{} is ready. Open Settings to install it.",
-                        release.version
-                    ),
-                );
-            }
-        } else {
-            set_app_update_state("current", Some(&release), None);
         }
+        let due = APP_UPDATE_STATE
+            .lock()
+            .expect("app update state poisoned")
+            .schedule
+            .due(now_unix());
+        if due {
+            run_app_update(false, true);
+        }
+        let delay = APP_UPDATE_STATE
+            .lock()
+            .expect("app update state poisoned")
+            .schedule
+            .poll_delay(now_unix());
+        std::thread::sleep(delay);
     }
-    // Network hiccup or GitHub rate limit: fail silently, try again next launch.
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn check_for_updates_on_launch() {}
+
+fn finish_update_discovery(success: bool, pending_assets: bool, error: Option<String>) {
+    let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+    if pending_assets {
+        state.schedule.finish_pending_assets(now_unix());
+    } else {
+        state.schedule.finish(now_unix(), success);
+    }
+    state.check_error = error;
+}
+
+/// External editors do not take the update lease; reject their stale response.
+fn discard_stale_update_channel(
+    state: &mut AppUpdateState,
+    requested: UpdateChannel,
+    configured: UpdateChannel,
+    now: u64,
+) -> bool {
+    if requested == configured {
+        return false;
+    }
+    reset_update_channel(state, configured, now, true);
+    true
+}
+
+fn reconcile_update_channel(
+    state: &mut AppUpdateState,
+    configured: UpdateChannel,
+    now: u64,
+    checks_enabled: bool,
+) -> bool {
+    if state.channel == configured {
+        return false;
+    }
+    reset_update_channel(state, configured, now, checks_enabled);
+    true
+}
+
+fn reset_update_channel(
+    state: &mut AppUpdateState,
+    configured: UpdateChannel,
+    now: u64,
+    checks_enabled: bool,
+) {
+    state.phase = "idle";
+    state.latest = None;
+    state.release_url = None;
+    state.notes = None;
+    state.install_ready = false;
+    state.channel = configured;
+    state.schedule = UpdateSchedule::new();
+    if checks_enabled {
+        state.schedule.next_check_unix = Some(now);
+    }
+    state.message = Some("Update channel changed; checking the selected channel next.".into());
+    state.check_error = None;
+}
+
+/// Keep notification deduplication separate from discovery so repeated checks
+/// still refresh metadata. Bounded per-process history also covers channel flips.
+fn claim_update_notification(channel: UpdateChannel, version: &str) -> bool {
+    let key = format!("{}:{version}", channel.as_str());
+    let mut notified = APP_UPDATE_NOTIFIED
+        .lock()
+        .expect("update notifications poisoned");
+    if notified.contains(&key) {
+        return false;
+    }
+    notified.push_back(key);
+    while notified.len() > 32 {
+        notified.pop_front();
+    }
+    true
+}
 
 /// Keep discovery and installation as explicit actions in the dashboard.
 /// Both use the native updater so WebView networking never sits in the trust
@@ -5860,20 +6173,63 @@ fn check_for_updates_on_launch() {}
 /// genuine one-click update; Settings exposes both buttons.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run_update_interactive(install: bool) {
-    if APP_UPDATE_IN_FLIGHT
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    run_app_update(install, false);
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn run_app_update(install: bool, automatic: bool) {
+    if !APP_UPDATE_NETWORK_ENABLED.load(Ordering::Acquire) {
+        set_app_update_state(
+            "disabled",
+            None,
+            Some("Update checks are disabled in mock mode.".into()),
+        );
         return;
     }
-
+    let Some(_lease) = UpdateLease::acquire(&APP_UPDATE_IN_FLIGHT) else {
+        return;
+    };
+    let channel = configured_update_channel();
+    {
+        let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+        if automatic && !state.schedule.due(now_unix()) {
+            return;
+        }
+        if state.channel != channel {
+            state.schedule = UpdateSchedule::new();
+        }
+        state.channel = channel;
+        state.schedule.begin(now_unix());
+        state.check_error = None;
+    }
     set_app_update_state("checking", None, None);
     log_menubar_event(if install {
         "app update install requested"
     } else {
         "app update check started"
     });
-    match fetch_configured_release() {
+    let fetched = peterfan_platform::updater::fetch_release_for_channel(channel);
+    // Config imports or external edits can change channel without this lease.
+    // Such a response must never be offered or installed for the new channel.
+    if discard_stale_update_channel(
+        &mut APP_UPDATE_STATE.lock().expect("app update state poisoned"),
+        channel,
+        configured_update_channel(),
+        now_unix(),
+    ) {
+        log_menubar_event("app update result discarded: update channel changed");
+        return;
+    }
+    let pending_assets = fetched.as_ref().is_ok_and(|release| {
+        peterfan_platform::updater::is_newer(env!("CARGO_PKG_VERSION"), &release.version)
+            && !peterfan_platform::updater::is_installable_release(release)
+    });
+    finish_update_discovery(
+        fetched.is_ok(),
+        pending_assets,
+        fetched.as_ref().err().cloned(),
+    );
+    match fetched {
         Ok(release)
             if !peterfan_platform::updater::is_newer(
                 env!("CARGO_PKG_VERSION"),
@@ -5902,6 +6258,18 @@ fn run_update_interactive(install: bool) {
             set_app_update_state("available", Some(&release), Some(message.clone()));
             *STATUS.lock().expect("status poisoned") = message.clone();
             log_menubar_event(&message);
+            if automatic
+                && peterfan_platform::config::load().notifications.updates
+                && claim_update_notification(channel, &release.version)
+            {
+                post_native_notification(
+                    "PeterFan — update available",
+                    format!(
+                        "PeterFan v{} is ready. Open Settings to install it.",
+                        release.version
+                    ),
+                );
+            }
         }
         Ok(release) => {
             set_app_update_state(
@@ -5943,7 +6311,15 @@ fn run_update_interactive(install: bool) {
             log_menubar_event(&message);
         }
     }
-    APP_UPDATE_IN_FLIGHT.store(false, Ordering::Release);
+    let state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+    log_menubar_event(&format!(
+        "app update completed automatic={automatic} phase={} channel={} last_attempt={:?} last_success={:?} next_check={:?}",
+        state.phase,
+        state.channel.as_str(),
+        state.schedule.last_attempt_unix,
+        state.schedule.last_success_unix,
+        state.schedule.next_check_unix
+    ));
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -6070,7 +6446,7 @@ impl RunnerAssets {
     fn from_pack_with<FI, FN>(
         pack: RunnerPack,
         mut icon_builder: FI,
-        mut native_builder: FN,
+        _native_builder: FN,
     ) -> Result<Self, RunnerBuildError>
     where
         FI: FnMut(RunnerCharacter, usize, &[u8]) -> Result<Icon, RunnerBuildError>,
@@ -6083,6 +6459,9 @@ impl RunnerAssets {
             .enumerate()
             .map(|(index, rgba)| icon_builder(character, index, rgba))
             .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(any(target_os = "macos", test))]
+        let mut native_builder = _native_builder;
+        #[cfg(any(target_os = "macos", test))]
         let native_images = pack
             .frames()
             .iter()
@@ -6092,6 +6471,7 @@ impl RunnerAssets {
         Ok(Self {
             pack,
             icons,
+            #[cfg(any(target_os = "macos", test))]
             native_images,
         })
     }
@@ -6221,31 +6601,55 @@ fn make_runner_native_image_from_rgba(
         &format!("native cache frame {frame_index}"),
         rgba,
     )?;
-    let mut encoded = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut encoded, RUNNER_PIXEL_WIDTH, RUNNER_PIXEL_HEIGHT);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder
-            .write_header()
-            .and_then(|mut writer| writer.write_image_data(rgba))
-            .map_err(|error| {
-                RunnerBuildError::cache(
-                    character,
-                    format!("native cache frame {frame_index}"),
-                    format!("png encode: {error}"),
-                )
-            })?;
+    // Allocate the final raster eagerly. NSImage(data:) retains an encoded
+    // ImageIO representation: AppKit status-item snapshot draws can revisit
+    // its PNG decode and purgeable pixel cache on every animation cycle.
+    // A null planes pointer asks the bitmap representation to own its storage.
+    let bitmap = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            RUNNER_PIXEL_WIDTH as isize,
+            RUNNER_PIXEL_HEIGHT as isize,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            NSBitmapFormat::AlphaNonpremultiplied,
+            (RUNNER_PIXEL_WIDTH * 4) as isize,
+            32,
+        )
     }
-    let data = NSData::from_vec(encoded);
-    let image = NSImage::initWithData(NSImage::alloc(), &data).ok_or_else(|| {
+    .ok_or_else(|| {
         RunnerBuildError::cache(
             character,
             format!("native cache frame {frame_index}"),
-            "nsimage decode returned nil",
+            "bitmap allocation returned nil",
         )
     })?;
-    image.setSize(NSSize::new(27.0, 18.0));
+    let pixels = bitmap.bitmapData();
+    if pixels.is_null()
+        || bitmap.bytesPerRow() != (RUNNER_PIXEL_WIDTH * 4) as isize
+        || bitmap.pixelsHigh() != RUNNER_PIXEL_HEIGHT as isize
+    {
+        return Err(RunnerBuildError::cache(
+            character,
+            format!("native cache frame {frame_index}"),
+            "bitmap allocation returned invalid storage",
+        ));
+    }
+    // SAFETY: AppKit owns this non-planar RGBA8 allocation, its requested
+    // stride/height were checked above, and validate_runner_rgba_frame checked
+    // the source length. No references to the bitmap pixels escape this copy.
+    unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), pixels, rgba.len()) };
+    let logical_size = NSSize::new(27.0, 18.0);
+    bitmap.setSize(logical_size);
+    let image = NSImage::initWithSize(NSImage::alloc(), logical_size);
+    image.addRepresentation(&bitmap);
+    // Keep a raster cache for repeated status-item snapshot draws. The native
+    // timer reuses these tiny images without changing the shared CPU cadence.
+    image.setCacheMode(NSImageCacheMode::Always);
     // Template mode keeps every runner as the same white status-item glyph on
     // both light and dark menu bars.
     image.setTemplate(true);
@@ -6390,9 +6794,9 @@ fn sync_native_runner_timer(app: &mut App) {
         return;
     };
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    let Some(button) = status_item.button(mtm) else {
+    if status_item.button(mtm).is_none() {
         return;
-    };
+    }
 
     let character = app.runner_character;
     let images = app.runner_assets.native_images.clone();
@@ -6403,6 +6807,7 @@ fn sync_native_runner_timer(app: &mut App) {
     let scheduled_tick_us = Arc::clone(&app.runner_native_tick_us);
     let band = Arc::clone(&app.runner_native_band);
     let applied_icon = Arc::clone(&app.runner_native_applied_icon);
+    let painter = Rc::clone(&app.runner_native_painter);
     phase_us.store(0, Ordering::Relaxed);
     band.store(runner_load_band(app.runner_cpu_pct), Ordering::Relaxed);
     scheduled_tick_us.store(RUNNER_NATIVE_TICK.as_micros() as u64, Ordering::Relaxed);
@@ -6431,7 +6836,7 @@ fn sync_native_runner_timer(app: &mut App) {
             frame.store(u64::from(next_frame), Ordering::Relaxed);
             let index = next_band * usize::from(RUNNER_FRAME_COUNT) + usize::from(next_frame);
             if let Some(image) = images.get(index) {
-                button.setImage(Some(&**image));
+                painter.borrow().paint(image);
                 applied_icon.store(index, Ordering::Relaxed);
             }
         }
@@ -6452,9 +6857,46 @@ fn sync_native_runner_timer(app: &mut App) {
     app.runner_native_timer = Some(timer);
 }
 
+fn sync_runner_selection(app: &App) {
+    if let Some(ref tm) = app.tray_menu {
+        tm.random_character_item
+            .set_checked(app.random_runner.enabled());
+        for (candidate, item) in &tm.character_items {
+            item.set_checked(!app.random_runner.enabled() && *candidate == app.runner_character);
+        }
+    }
+}
+
+fn set_runner_random(app: &mut App) {
+    app.random_runner.set_enabled(true, Instant::now());
+    if let Some(next) = app.random_runner.next_due(
+        Instant::now(),
+        app.runner_character,
+        runner_should_animate(app.display, app.reduce_motion),
+    ) {
+        switch_runner_character(app, next);
+    }
+    sync_runner_selection(app);
+    // Save once when the user selects a mode, never on timed rotations.
+    save_runner_character(app.runner_character, true);
+    log_menubar_event("runner selection=random interval=60s");
+}
+
 fn set_runner_character(app: &mut App, character: RunnerCharacter) {
+    if switch_runner_character(app, character) {
+        app.random_runner.set_enabled(false, Instant::now());
+        sync_runner_selection(app);
+        save_runner_character(app.runner_character, false);
+        log_menubar_event(&format!(
+            "runner selection=fixed character={}",
+            character.as_str()
+        ));
+    }
+}
+
+fn switch_runner_character(app: &mut App, character: RunnerCharacter) -> bool {
     if app.runner_character == character {
-        return;
+        return true;
     }
 
     if let Err(error) = replace_runner_assets_with(
@@ -6464,7 +6906,7 @@ fn set_runner_character(app: &mut App, character: RunnerCharacter) {
         build_runner_assets,
     ) {
         note_runner_build_failure(runner_switch_failure_message(character, &error));
-        return;
+        return false;
     }
 
     #[cfg(target_os = "macos")]
@@ -6473,18 +6915,20 @@ fn set_runner_character(app: &mut App, character: RunnerCharacter) {
     app.runner_native_applied_icon
         .store(usize::MAX, Ordering::Relaxed);
     app.last_runner_icon = None;
-    if let Some(ref tm) = app.tray_menu {
-        for (candidate, item) in &tm.character_items {
-            item.set_checked(*candidate == app.runner_character);
-        }
-    }
-    save_runner_character(app.runner_character);
+    app.runner_frame = 0;
+    #[cfg(target_os = "macos")]
+    app.runner_native_frame.store(0, Ordering::Relaxed);
+    sync_runner_selection(app);
+    log_menubar_event(&format!("runner active={}", app.runner_character.as_str()));
     apply_runner_icon(app);
     #[cfg(target_os = "macos")]
     sync_native_runner_timer(app);
+    true
 }
 
 fn apply_runner_icon(app: &mut App) {
+    #[cfg(target_os = "macos")]
+    sync_native_runner_painter(app);
     #[cfg(target_os = "macos")]
     let desired = runner_enabled(app.display).then(|| {
         app.runner_native_band.load(Ordering::Relaxed) * usize::from(RUNNER_FRAME_COUNT)
@@ -6522,7 +6966,11 @@ fn apply_runner_icon(app: &mut App) {
             let image = desired
                 .and_then(|index| app.runner_assets.native_images.get(index))
                 .map(|image| &**image);
-            button.setImage(image);
+            if let Some(image) = image {
+                app.runner_native_painter.borrow().paint(image);
+            } else {
+                button.setImage(None);
+            }
             app.last_runner_icon = desired;
             app.runner_native_applied_icon
                 .store(desired.unwrap_or(usize::MAX), Ordering::Relaxed);
@@ -6534,6 +6982,47 @@ fn apply_runner_icon(app: &mut App) {
         if tray.set_icon_with_as_template(icon, false).is_ok() {
             app.last_runner_icon = desired;
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn sync_native_runner_painter(app: &mut App) {
+    let Some(status_item) = app.tray.as_ref().and_then(TrayIcon::ns_status_item) else {
+        return;
+    };
+    // This function is reached only by the main event loop's tray updates.
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let Some(button) = status_item.button(mtm) else {
+        return;
+    };
+    let screens = NSScreen::screens(mtm).len();
+    let eligible = native_runner::eligible(app.display, app.reduce_motion, screens);
+    let mut painter = app.runner_native_painter.borrow_mut();
+    let was_active = painter.active();
+    let button_changed = painter.bind(&button);
+    if eligible && !painter.active() {
+        let transparent = vec![0; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize];
+        if let Ok(placeholder) =
+            make_runner_native_image_from_rgba(app.runner_character, 0, &transparent)
+        {
+            painter.attach(&placeholder);
+        }
+    } else if !eligible && was_active {
+        painter.detach();
+    }
+    painter.sync();
+    if button_changed || was_active != painter.active() {
+        // The timer observes this shared painter on its next tick, so monitor
+        // attachment does not restart the current pose, phase or CPU easing.
+        app.runner_native_applied_icon
+            .store(usize::MAX, Ordering::Relaxed);
+        let renderer = if painter.active() { "layer" } else { "image" };
+        log_menubar_event(&format!(
+            "runner renderer={renderer} screens={screens} geometry={:?} phase_us={} frame={}",
+            painter.attachment_geometry(),
+            app.runner_native_phase_us.load(Ordering::Relaxed),
+            app.runner_native_frame.load(Ordering::Relaxed),
+        ));
     }
 }
 
@@ -6631,7 +7120,7 @@ fn write_runner_quality_artifacts() -> Result<RunnerQaArtifacts, RunnerBuildErro
 
     let (width, height) = runner_qa_sheet_dimensions();
     let mut sheet = vec![0u8; (width * height * 4) as usize];
-    for pixel in sheet.chunks_exact_mut(4) {
+    for pixel in sheet.as_chunks_mut::<4>().0.iter_mut() {
         pixel.copy_from_slice(&[28, 28, 30, 255]);
     }
 
@@ -6791,7 +7280,7 @@ where
 
 #[cfg(test)]
 fn apply_test_runner_style(mut rgba: Vec<u8>) -> Vec<u8> {
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0.iter_mut() {
         if pixel[3] != 0 {
             pixel[0] = 255;
             pixel[1] = 255;
@@ -6865,7 +7354,15 @@ fn runner_selected_preview_frames_json(pack: &RunnerPack) -> String {
 }
 
 fn runner_picker_options(lang: ResolvedLanguage) -> String {
-    RunnerCharacter::FEATURED
+    let label = if lang == ResolvedLanguage::Ko {
+        "랜덤 · 1분마다"
+    } else {
+        "Random · every minute"
+    };
+    let random = format!(
+        r#"<button type="button" class="character-option" role="option" aria-selected="false" data-character="random" onclick="chooseRunnerCharacter('random')" onkeydown="handleRunnerOptionKey(event)"><span class="runner-preview random-runner-icon" aria-hidden="true">⇄</span><span class="character-option-label">{label}</span><span class="character-option-check" aria-hidden="true"></span></button>"#
+    );
+    random + &RunnerCharacter::FEATURED
         .map(|character| {
             let value = character.as_str();
             let label = runner_character_label(lang, character);
@@ -6926,6 +7423,9 @@ fn dashboard_html_with_runner_pack(
             .replace(">App Preferences<", ">앱 설정<")
             .replace(">Menu bar<", ">메뉴 막대<")
             .replace(">Character<", ">캐릭터<")
+            .replace(">Update channel<", ">업데이트 채널<")
+            .replace(">Fan RPM<", ">팬 RPM<")
+            .replace("Choose a character, or shuffle every minute.", "캐릭터를 고르거나 1분마다 랜덤으로 바꾸세요.")
             .replace(">CPU core graph<", ">코어별 CPU 그래프<")
             .replace(
                 "Show live per-core CPU activity in the overview.",
@@ -6985,8 +7485,8 @@ fn dashboard_html_with_runner_pack(
             )
             .replace(">App updates<", ">앱 업데이트<")
             .replace(
-                "Notify after the silent launch check finds a release",
-                "백그라운드 확인에서 새 버전 발견 시 알림",
+                "Notify once per version when a verified update is ready",
+                "검증된 새 버전이 준비되면 버전당 한 번 알림",
             )
             .replace(">Load average<", ">로드 평균<")
             .replace(">Power<", ">소비 전력<")
@@ -7013,13 +7513,16 @@ fn dashboard_html_with_runner_pack(
             .replace(">Latest<", ">최신<")
             .replace(">Installed app<", ">설치된 앱<")
             .replace(">Latest signed<", ">최신 서명 릴리스<")
+            .replace(">Last attempt<", ">마지막 확인 시도<")
+            .replace(">Last successful check<", ">마지막 확인 성공<")
+            .replace(">Next automatic check<", ">다음 자동 확인<")
             .replace(">Core details<", ">코어 상세<")
             .replace(">Check for Updates<", ">업데이트 확인<")
             .replace(">Install Update<", ">지금 업데이트<")
             .replace(">View Release<", ">릴리즈 보기<")
             .replace(
-                "Check for a signed release, then install it when ready.",
-                "서명된 새 버전을 확인한 뒤 준비되면 바로 설치합니다.",
+                "Automatically checks every 6 hours. Failed checks retry; installation is your choice.",
+                "6시간마다 자동 확인하며, 실패하면 재시도합니다. 설치는 직접 선택합니다.",
             )
             .replace("Checking your Mac…", "Mac 상태 확인 중…")
             .replace(
@@ -7094,7 +7597,7 @@ fn dashboard_html_with_runner_pack(
                 "한 번에 최신 버전을 확인하고 검증·설치한 뒤 PeterFan을 다시 실행합니다.",
             )
             .replace(">Startup<", ">시작 설정<")
-            .replace("Start on login", "Run on startup")
+            .replace("Start on login", "부팅 시 자동 실행")
             .replace("Run PeterFan automatically on startup.", "부팅 시 PeterFan을 자동으로 실행합니다.")
             .replace(">Selected point<", ">선택한 점<")
             .replace(">Reset<", ">초기화<")
@@ -7109,6 +7612,31 @@ fn dashboard_html_with_runner_pack(
                 "팁: peterfan install-daemon을 한 번 실행하면 부팅 시에도 설정이 유지됩니다.",
             ),
     };
+    let mut html = html;
+    if lang == ResolvedLanguage::Ko {
+        for (english, korean) in [
+            ("Status", "상태"),
+            ("Fans", "팬 제어"),
+            ("Settings", "설정"),
+            ("System", "시스템"),
+            ("Live summary", "실시간 요약"),
+            ("Per-core CPU usage", "코어별 CPU 사용률"),
+            ("Menu bar style", "메뉴 막대 표시"),
+            ("Quick actions", "빠른 작업"),
+            ("Runner character", "러너 캐릭터"),
+            ("Update channel", "업데이트 채널"),
+            ("CPU temperature warning", "CPU 온도 경고"),
+            ("Fan control failures", "팬 제어 오류 알림"),
+            ("App updates", "앱 업데이트 알림"),
+            ("PeterFan configuration", "PeterFan 설정"),
+            ("System quick facts", "시스템 요약"),
+        ] {
+            html = html.replace(
+                &format!("aria-label=\"{english}\""),
+                &format!("aria-label=\"{korean}\""),
+            );
+        }
+    }
     html.replace("__RUNNER_OPTIONS__", &runner_picker_options(lang))
         .replace("__RUNNER_CHARACTERS__", &runner_character_values_json())
         .replace("__RUNNER_PREVIEWS__", runner_preview_alpha_json())
@@ -7316,6 +7844,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .panel-pill.warn{background:var(--warn-soft);color:var(--y);}
 .panel-pill.info{background:var(--accent-soft);color:var(--accent);}
 .rail-panel .panel-copy{display:none;}
+#rail-update-panel .panel-copy{display:block;color:var(--dim);font-size:10.5px;line-height:1.5;margin-bottom:10px;overflow-wrap:anywhere;}
 .view-loading{position:absolute;z-index:8;top:48px;left:var(--content-x);right:var(--content-x);display:flex;align-items:center;gap:7px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;color:var(--dim);font-size:10px;line-height:1.35;background:var(--surface-raised);box-shadow:0 5px 16px rgba(0,0,0,.14);}
 .view-loading .data-loading-dot{width:6px;height:6px;}
 #rail-settings-pill,#rail-more-pill{display:none;}
@@ -7346,6 +7875,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .character-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .character-chevron{width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);color:var(--dim);transition:transform .12s ease;}
 .character-select[aria-expanded="true"] .character-chevron{transform:translateY(2px) rotate(225deg);}
+.random-runner-icon{font-size:21px;text-align:center;line-height:18px;color:var(--dim)}
 .character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:260px;overflow-y:auto;padding:5px;border:1px solid var(--panel-border);border-radius:8px;background:var(--surface-raised);box-shadow:var(--shadow);scrollbar-width:thin;overscroll-behavior:contain;}
 .character-menu.show{display:block;}
 .character-option{display:grid;grid-template-columns:38px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:34px;padding:1px 7px 1px 4px;border:0;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-size:10.5px;font-weight:650;text-align:left;cursor:pointer;}
@@ -7570,7 +8100,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="summary-cell cpu"><span class="summary-label" id="summary-cpu-label">CPU</span><span class="summary-value" id="summary-cpu">—</span><span class="summary-meter"><span class="bar-fill" id="summary-cpu-bar"></span></span><canvas class="summary-core-chart" id="summary-cpu-core-chart" aria-label="Per-core CPU usage" role="img"></canvas></div>
 <div class="summary-cell memory"><span class="summary-label" id="summary-mem-label">Memory</span><span class="summary-value" id="summary-mem">—</span><span class="summary-meter"><span class="bar-fill" id="summary-mem-bar"></span></span></div>
 <div class="summary-cell temperature"><span class="summary-label" id="summary-temp-label">CPU temp</span><span class="summary-value" id="summary-temp">—</span><span class="summary-meter"><span class="bar-fill" id="summary-temp-bar"></span></span></div>
-<div class="summary-cell fan"><span class="summary-label" id="summary-fan-label">Fans</span><span class="summary-value" id="summary-fan">—</span><span class="summary-meter"><span class="bar-fill info" id="summary-fan-bar"></span></span></div>
+<div class="summary-cell fan"><span class="summary-label" id="summary-fan-label">Fan RPM</span><span class="summary-value" id="summary-fan">—</span><span class="summary-meter"><span class="bar-fill info" id="summary-fan-bar"></span></span></div>
 </div>
 
 <div class="data-loading" id="data-loading" role="status" aria-live="polite"><span class="data-loading-dot"></span><span id="data-loading-text">Reading system sensors…</span><button class="loading-retry" id="data-loading-retry" style="display:none" onclick="retryDashboard()">Retry</button></div>
@@ -7613,7 +8143,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <button id="cpu-core-graph-toggle" class="panel-action secondary" aria-pressed="true" onclick="toggleCpuCoreGraph(this)">On</button>
 </div>
 <div class="settings-item" id="runner-character-setting">
-<div><div class="settings-item-title">Character</div><div class="settings-item-copy">Choose your CPU-responsive runner.</div></div>
+<div><div class="settings-item-title">Character</div><div class="settings-item-copy">Choose a character, or shuffle every minute.</div></div>
 <div class="character-picker">
 <button type="button" id="runner-character-select" class="character-select" aria-label="Runner character" aria-haspopup="listbox" aria-controls="runner-character-menu" aria-expanded="false" onclick="toggleRunnerCharacterMenu(event)" onkeydown="handleRunnerTriggerKey(event)"><canvas id="runner-character-preview" class="runner-preview" width="48" height="32" data-runner-preview="cat" aria-hidden="true"></canvas><span id="runner-character-label" class="character-label">Cat</span><span class="character-chevron" aria-hidden="true"></span></button>
 </div>
@@ -7630,7 +8160,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <input class="notification-toggle" id="notification-fan-toggle" type="checkbox" aria-label="Fan control failures" checked onchange="setNotificationBoolean('fan-failures',this.checked)">
 </div>
 <div class="notification-row">
-<div><div class="notification-title">App updates</div><div class="notification-copy">Notify after the silent launch check finds a release</div></div>
+<div><div class="notification-title">App updates</div><div class="notification-copy">Notify once per version when a verified update is ready</div></div>
 <input class="notification-toggle" id="notification-update-toggle" type="checkbox" aria-label="App updates" checked onchange="setNotificationBoolean('updates',this.checked)">
 </div>
 </div>
@@ -7684,11 +8214,14 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 
 <div class="rail-panel" id="rail-update-panel">
 <div class="panel-title-row"><div class="panel-title">Updates</div><span class="panel-pill info" id="rail-update-pill">Ready</span></div>
-<div class="panel-copy" id="rail-update-copy">Check for a signed release, then install it when ready.</div>
+<div class="panel-copy" id="rail-update-copy">Automatically checks every 6 hours. Failed checks retry; installation is your choice.</div>
 <div class="health-grid" id="update-version-grid">
 <div class="health-row"><span class="health-label">Installed app</span><span class="health-value" id="update-current-version">—</span></div>
 <div class="health-row"><span class="health-label">Latest signed</span><span class="health-value" id="update-latest-version">—</span></div>
-<div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result">—</span></div>
+<div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result" role="status" aria-live="polite" aria-atomic="true">—</span></div>
+<div class="health-row"><span class="health-label">Last attempt</span><span class="health-value" id="update-last-attempt">—</span></div>
+<div class="health-row"><span class="health-label">Last successful check</span><span class="health-value" id="update-last-success">—</span></div>
+<div class="health-row"><span class="health-label">Next automatic check</span><span class="health-value" id="update-next-check">—</span></div>
 <div class="health-row"><span class="health-label">Update channel</span><select class="update-channel-select" id="update-channel" aria-label="Update channel" onchange="changeUpdateChannel(this.value)"><option value="stable">Stable releases</option><option value="pre-release">Pre-release builds</option></select></div>
 </div>
 <div class="release-notes-card" id="update-release-notes-card" style="display:none"><div class="release-notes-title">Release Notes</div><div class="release-notes-body" id="update-release-notes">—</div></div>
@@ -7864,6 +8397,7 @@ function loadUpdateStatusSnapshot(){
     var saved=JSON.parse(raw),savedAt=Number(saved&&saved.saved_at||0);
     if(!savedAt||Date.now()-savedAt>15*60*1000)return null;
     delete saved.saved_at;
+    saved.cached=true;
     return saved;
   }catch(e){return null;}
 }
@@ -7973,20 +8507,29 @@ function retryDashboard(){
 }
 function setText(id,text){
   var el=document.getElementById(id);
-  if(el)el.textContent=text||'—';
+  var value=String(text||'—');
+  if(el&&el.textContent!==value)el.textContent=value;
 }
 function compareVersions(a,b){
-  function parts(v){
-    return String(v||'').replace(/^v/,'').split('.').slice(0,3).map(function(p){
-      var n=parseInt(p,10);
-      return isNaN(n)?0:n;
-    });
+  function numeric(a,b){return a.length===b.length?(a===b?0:(a<b?-1:1)):(a.length<b.length?-1:1);}
+  function parse(value){
+    var match=String(value||'').match(/^v?(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?(?:\.(0|[1-9][0-9]*))?(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/);
+    if(!match)return null;
+    var core=[match[1],match[2]||'0',match[3]||'0'];
+    if(core.some(function(part){return numeric(part,'18446744073709551615')>0;}))return null;
+    var pre=match[4]?match[4].split('.'):[];
+    if(pre.some(function(part){return /^[0-9]+$/.test(part)&&part.length>1&&part[0]==='0';}))return null;
+    return {core:core,pre:pre};
   }
-  var aa=parts(a),bb=parts(b);
-  for(var i=0;i<3;i++){
-    var av=aa[i]||0,bv=bb[i]||0;
-    if(av<bv)return -1;
-    if(av>bv)return 1;
+  var aa=parse(a),bb=parse(b);
+  if(!aa||!bb)return null;
+  for(var i=0;i<3;i++){var order=numeric(aa.core[i],bb.core[i]);if(order)return order;}
+  if(!aa.pre.length||!bb.pre.length)return aa.pre.length===bb.pre.length?0:(aa.pre.length?-1:1);
+  for(var j=0;j<Math.max(aa.pre.length,bb.pre.length);j++){
+    if(j>=aa.pre.length)return -1;if(j>=bb.pre.length)return 1;
+    var x=aa.pre[j],y=bb.pre[j];if(x===y)continue;
+    var xn=/^[0-9]+$/.test(x),yn=/^[0-9]+$/.test(y);
+    return xn&&yn?numeric(x,y):(xn!==yn?(xn?-1:1):(x<y?-1:1));
   }
   return 0;
 }
@@ -8011,13 +8554,44 @@ function formatReleaseNotes(body){
   if(text.length>700)text=text.slice(0,697)+'...';
   return text;
 }
+function updateCheckTime(value,empty){
+  var unix=Number(value);
+  if(!Number.isFinite(unix)||unix<=0)return empty;
+  return new Date(unix*1000).toLocaleString(LANG==='ko'?'ko-KR':'en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+}
+function updateCheckMetadata(status,native){
+  ['channel','last_attempt_unix','last_success_unix','next_check_unix','check_error','auto_check_enabled'].forEach(function(key){status[key]=native[key];});
+  return status;
+}
+function reconcileUpdateReceipt(receipt,current,now){
+  if(!receipt)return null;
+  var timestamp=Number(receipt.updated_at_unix),age=now-timestamp;
+  if(!Number.isFinite(timestamp)||timestamp<=0||age<0||age>24*60*60)return null;
+  var comparison=compareVersions(current,receipt.version);
+  if(comparison===null)return null;
+  if(receipt.status==='installed')return comparison===0?receipt:null;
+  // A detached installer can still be working, but a stale receipt must not
+  // imply permanent progress after a crash or an interrupted installation.
+  if(receipt.status==='pending'){
+    if(comparison===0)return null;
+    return age<=5*60&&comparison<0?receipt:null;
+  }
+  return (receipt.status==='failed'||receipt.status==='rolled_back')&&comparison<0?receipt:null;
+}
 function renderUpdateStatus(status){
   if(status)APP_UPDATE_STATUS=status;
   var s=APP_UPDATE_STATUS||{};
   var phase=s.phase||'';
+  var never=LANG==='ko'?'아직 없음':'Not yet';
+  setText('update-last-attempt',updateCheckTime(s.last_attempt_unix,never));
+  setText('update-last-success',updateCheckTime(s.last_success_unix,never));
+  setText('update-next-check',s.auto_check_enabled===false
+    ?(LANG==='ko'?'모의 실행에서 꺼짐':'Disabled in mock mode')
+    :updateCheckTime(s.next_check_unix,phase==='checking'?(LANG==='ko'?'확인 중':'Checking'):'—'));
   var current=s.current||(window.__pf_pending&&window.__pf_pending.app_version)||'';
   setText('update-current-version',current?('v'+String(current).replace(/^v/,'')):'—');
-  setText('update-latest-version',s.latest?('v'+String(s.latest).replace(/^v/,'')):'—');
+  var validLatest=s.latest&&compareVersions(s.latest,s.latest)!==null;
+  setText('update-latest-version',validLatest?('v'+String(s.latest).replace(/^v/,'')):(s.latest?(LANG==='ko'?'확인 불가':'Unverified'):'—'));
   var result=document.getElementById('update-check-result');
   var link=document.getElementById('update-release-link');
   var install=document.getElementById('rail-update-install');
@@ -8046,8 +8620,22 @@ function renderUpdateStatus(status){
     pillText=LANG==='ko'?'재실행 중':'Relaunching';
     pillTone='ok';
     setText('update-check-result',LANG==='ko'?'업데이트 준비 완료':'update ready');
+  } else if(phase==='disabled'||s.auto_check_enabled===false){
+    msg=LANG==='ko'?'모의 실행에서는 업데이트 서버에 연결하지 않습니다.':'Update services are disabled in mock mode.';
+    pillText=LANG==='ko'?'꺼짐':'Disabled';
+    setText('update-check-result',LANG==='ko'?'모의 실행':'mock mode');
+  } else if(phase==='channel_failed'){
+    msg=s.message||(LANG==='ko'?'업데이트 채널을 저장하지 못했습니다.':'The update channel could not be saved.');
+    pillText=LANG==='ko'?'저장 실패':'Save failed';
+    pillTone='warn';
+    setText('update-check-result',LANG==='ko'?'채널 저장 실패':'channel save failed');
+  } else if(s.check_error){
+    msg=(LANG==='ko'?'업데이트 확인 실패. 자동으로 다시 시도합니다. ':'Update check failed. Another check is scheduled. ')+s.check_error;
+    pillText=LANG==='ko'?'재시도 예정':'Retry scheduled';
+    pillTone='warn';
+    setText('update-check-result',LANG==='ko'?'확인 실패 · 재시도 예정':'check failed · retry scheduled');
   } else if(phase==='failed'){
-    msg=s.message||(LANG==='ko'?'업데이트를 완료하지 못했습니다. 기존 앱은 변경하지 않았습니다.':'The update could not be completed. The existing app was not changed.');
+    msg=s.message||(LANG==='ko'?'업데이트를 완료하지 못했습니다. 설치 상태를 확인하고 다시 시도해 주세요.':'The update could not be completed. Check the installation and try again.');
     pillText=LANG==='ko'?'실패':'Failed';
     pillTone='warn';
     setText('update-check-result',LANG==='ko'?'업데이트 실패':'update failed');
@@ -8072,30 +8660,36 @@ function renderUpdateStatus(status){
     pillTone='warn';
     setText('update-check-result',LANG==='ko'?'이전 버전 복원':'previous version restored');
   } else if(s.install_status==='failed'){
-    msg=(LANG==='ko'?'업데이트를 완료하지 못했습니다. 기존 앱은 변경하지 않았습니다.':(s.install_message||'The update could not be completed.'));
+    msg=(LANG==='ko'?'업데이트를 완료하지 못했습니다. 설치 상태를 확인하고 다시 시도해 주세요.':(s.install_message||'The update could not be completed.'));
     pillText=LANG==='ko'?'실패':'Failed';
     pillTone='warn';
     setText('update-check-result',LANG==='ko'?'설치 실패':'installation failed');
   } else if(s.latest){
     var comparison=compareVersions(current,s.latest);
     var newer=comparison<0,ahead=comparison>0;
-    msg=ahead
+    msg=comparison===null
+      ?(LANG==='ko'?'릴리스 버전을 확인할 수 없습니다. 다시 확인해 주세요.':'Release version could not be verified. Please check again.')
+      :ahead
       ?(LANG==='ko'
         ?'현재 버전이 공개 서명 릴리스보다 최신입니다. 공식 릴리스가 공개되면 업데이트할 수 있습니다.'
         :'The current version is newer than the public signed release. An update will appear when the official release is published.')
-      :(s.message||(newer
+      :newer&&!s.install_ready
+        ?(LANG==='ko'?'새 버전을 확인했습니다. 검증된 설치 파일이 준비될 때까지 자동으로 다시 확인합니다.':(s.message||'The new release is still preparing verified files. Another check is scheduled.'))
+      :((LANG==='ko'?'':s.message)||(newer
         ?(LANG==='ko'?'새 서명 릴리스를 사용할 수 있습니다.':'A newer signed PeterFan release is available.')
         :(LANG==='ko'?'최신 서명 릴리스를 사용 중입니다.':'You are running the latest signed release.')));
-    pillText=newer
+    pillText=comparison===null?(LANG==='ko'?'확인 필요':'Needs verification'):newer
       ?(LANG==='ko'?'업데이트 있음':'Update')
       :(ahead?(LANG==='ko'?'공식 릴리스 대기':'Awaiting Signed Release'):(LANG==='ko'?'최신':'Current'));
-    pillTone=newer?'warn':(ahead?'info':'ok');
-    setText('update-check-result',newer
+    pillTone=comparison===null?'warn':(newer?'warn':(ahead?'info':'ok'));
+    setText('update-check-result',comparison===null?(LANG==='ko'?'버전 정보 확인 필요':'invalid version metadata'):newer
       ?(LANG==='ko'?'업데이트 가능':'update available')
       :(ahead?(LANG==='ko'?'서명 릴리스보다 앞섬':'ahead of signed release'):(LANG==='ko'?'최신 상태':'up to date')));
   } else {
-    setText('update-check-result',LANG==='ko'?'대기 중':'ready');
+    msg=s.message||(LANG==='ko'?'6시간마다 자동으로 확인합니다. 실패하면 자동으로 재시도합니다.':'Updates are checked every 6 hours, with automatic retries after failures.');
+    setText('update-check-result',LANG==='ko'?'자동 확인 대기 중':'automatic check scheduled');
   }
+  if(s.cached)msg=(LANG==='ko'?'이전 세션의 확인 결과입니다. ':'Result from a previous session. ')+msg;
   if(copy)copy.textContent=msg;
   setPanelPill('rail-update-pill',pillText,pillTone);
   if(link){
@@ -8108,14 +8702,16 @@ function renderUpdateStatus(status){
     var updateKnown=!!s.latest&&comparison<0;
     var checking=!!s.checking||phase==='checking';
     var installing=phase==='downloading'||phase==='queued';
-    var canInstall=updateKnown&&s.install_ready===true&&!s.checking&&phase!=='checking'&&!installing;
+    var canInstall=s.auto_check_enabled!==false&&updateKnown&&s.install_ready===true&&!s.checking&&phase!=='checking'&&!installing;
     install.style.display='';
     install.disabled=!canInstall;
     install.textContent=installing
       ?(LANG==='ko'?'설치 중…':'Installing…')
       :(checking
         ?(LANG==='ko'?'확인 중…':'Checking…')
-        :(updateKnown
+        :(s.latest&&comparison===null
+          ?(LANG==='ko'?'확인 필요':'Needs verification')
+          :(updateKnown
           ?(s.install_ready===true
             ?(LANG==='ko'?'지금 업데이트':'Install Update')
             :(LANG==='ko'?'설치 준비 중':'Preparing Update'))
@@ -8123,7 +8719,7 @@ function renderUpdateStatus(status){
             ?(LANG==='ko'?'최신 버전':'Up to Date')
             :(s.latest&&comparison>0
               ?(LANG==='ko'?'공식 릴리스 대기':'Awaiting Signed Release')
-              :(LANG==='ko'?'확인 전':'Not checked')))));
+              :(LANG==='ko'?'확인 전':'Not checked'))))));
   }
   rememberUpdateStatus(APP_UPDATE_STATUS);
 }
@@ -8256,6 +8852,10 @@ function updateHealthVerdict(d){
   title.textContent=heading;
   detail.textContent=parts.join(' · ');
 }
+function summaryFanRpm(d){
+  var value=Number(d.fan_avg_rpm);
+  return (d.fans||[]).length&&Number.isFinite(value)&&value>=0?Math.round(value).toLocaleString('en-US'):'—';
+}
 function cssColor(token,fallback){
   var value=getComputedStyle(document.documentElement).getPropertyValue(token);
   return String(value||'').trim()||fallback;
@@ -8291,7 +8891,9 @@ window.__pf={
    set('summary-cpu',d.cpu_text||'—');
    set('summary-mem',d.mem_text||'—');
    set('summary-temp',d.temp_present?(d.temp_stale?'--°C':(d.temp_text||'—')):'—');
-   set('summary-fan',d.fan_avg_rpm_text||'—');
+   set('summary-fan',summaryFanRpm(d));
+   var fanSummary=document.getElementById('summary-fan');
+   if(fanSummary){fanSummary.title=d.fan_avg_rpm_text||'—';fanSummary.setAttribute('aria-label',(LANG==='ko'?'팬 평균 속도 ':'Average fan speed ')+(d.fan_avg_rpm_text||'—'));}
    bar('summary-cpu-bar',d.cpu_pct||0);
    bar('summary-mem-bar',d.mem_pct||0,'info');
    bar('summary-temp-bar',d.temp_stale?0:(d.temp_pct||0),d.temp_stale?'info':(d.temp_cls||''));
@@ -8348,7 +8950,15 @@ window.__pf={
  } else if(view==='fan'){
    updateSetup(d);
    var note=document.getElementById('ctl-note');
-   if(d.fan_control_supported){
+   var fanStateReady=d.fan_control_state_ready!==false;
+   var guide=document.getElementById('profile-guide');if(guide)guide.style.display=fanStateReady?'':'none';
+   if(!fanStateReady){
+     set('ctl-status',LANG==='ko'?'상태 확인 중…':'Checking fan state…');
+     updateProfileStrip(Object.assign({},d,{can_control:false}));
+     if(note)note.style.display='none';
+     var pendingCards=document.getElementById('fan-cards');if(pendingCards)pendingCards.innerHTML='';
+     updateFanEmptyState(d);
+   } else if(d.fan_control_supported){
      var fanCount=Number(d.fan_count||0),controllableCount=Number(d.controllable_fan_count||0);
      set('ctl-status',controllableCount>0
        ?(d.ctl_status||'')
@@ -8524,7 +9134,11 @@ function renderFanCards(fans,enabled){
     var useRpm=f.max_rpm>0;
     var targetPct=f.override_pct!=null?f.override_pct:f.pct;
     card.dataset.curPct=targetPct;
-    card.querySelector('.fn').textContent=f.l;
+    var fanName=f.l||(LANG==='ko'?'팬 '+f.id:'Fan '+f.id);
+    card.querySelector('.fn').textContent=fanName;
+    var unit=useRpm?'RPM':'%';
+    card.querySelector('input[type=range]').setAttribute('aria-label',fanName+' '+(LANG==='ko'?'목표 속도 조절':'target speed slider')+' ('+unit+')');
+    card.querySelector('.fa-num').setAttribute('aria-label',fanName+' '+(LANG==='ko'?'목표 속도 입력':'target speed input')+' ('+unit+')');
     card.querySelector('.fan-bar i').style.width=Math.max(0,Math.min(100,f.pct))+'%';
     var appliedTarget=f.target_pct==null?null:Number(f.target_pct);
     var targetRpm=f.target_rpm==null?null:Number(f.target_rpm);
@@ -8744,13 +9358,15 @@ function startAppUpdate(mode,btn){
       ?(LANG==='ko'?'설치 준비 중…':'Preparing…')
       :(LANG==='ko'?'확인 중…':'Checking…'));
   }
-  renderUpdateStatus({
+  var previous=APP_UPDATE_STATUS||{};
+  renderUpdateStatus(updateCheckMetadata({
     current:(window.__pf_pending&&window.__pf_pending.app_version)||'',
     phase:'checking',
     message:mode==='install'
       ?(LANG==='ko'?'설치할 서명 릴리스를 확인 중입니다.':'Checking the signed release before installation.')
       :''
-  });
+  },previous));
+  updateUpdateChannel(window.__pf_pending||{});
   window.ipc.postMessage(mode==='install'?'installupdate':'checkupdates');
   setTimeout(function(){
     if(APP_UPDATE_CHECK_PENDING){
@@ -8775,7 +9391,8 @@ function changeUpdateChannel(value){
 function updateUpdateChannel(d){
   var select=document.getElementById('update-channel');
   if(!select)return;
-  select.value=d.update_channel==='pre-release'?'pre-release':'stable';
+  var channel=(d.app_update_status&&d.app_update_status.channel)||d.update_channel;
+  select.value=channel==='pre-release'?'pre-release':'stable';
   select.disabled=APP_UPDATE_CHECK_PENDING;
   var options=select.options;
   if(options.length>=2){
@@ -8833,7 +9450,7 @@ function updateNotificationSettings(d){
   if(temperatureToggle)temperatureToggle.checked=temperatureEnabled;
   if(temperatureInput){
     temperatureInput.disabled=!temperatureEnabled;
-    if(temperatureEnabled)temperatureInput.value=String(Math.round(threshold));
+    if(temperatureEnabled&&document.activeElement!==temperatureInput)temperatureInput.value=String(Math.round(threshold));
   }
   var fanToggle=document.getElementById('notification-fan-toggle');
   var updateToggle=document.getElementById('notification-update-toggle');
@@ -8845,7 +9462,31 @@ function updateNotificationSettings(d){
 var AUTOMATION_RULES=null;
 var AUTOMATION_RULES_RENDERED='';
 var AUTOMATION_RULES_DIRTY=false;
-var AUTOMATION_RULES_SAVE_PENDING=false;
+var AUTOMATION_RULES_SAVE_PENDING=null;
+var AUTOMATION_RULES_EDIT_REVISION=0;
+var SETTINGS_REQUEST_SESSION='';
+var SETTINGS_REQUEST_COUNTER=0;
+function settingsRequest(operation,payload,revision){
+  if(!SETTINGS_REQUEST_SESSION){
+    SETTINGS_REQUEST_SESSION=window.crypto&&typeof window.crypto.randomUUID==='function'?window.crypto.randomUUID():Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+  }
+  return {id:SETTINGS_REQUEST_SESSION+'-'+(++SETTINGS_REQUEST_COUNTER),operation:operation,payload:payload,revision:revision};
+}
+function settingsResult(d,request){
+  if(!request||!Array.isArray(d.settings_results))return null;
+  return d.settings_results.find(function(result){return result.id===request.id&&result.operation===request.operation;})||null;
+}
+function settingsSavedText(result,imported,newerEdits){
+  var text=LANG==='ko'?(imported?'설정을 가져왔습니다':'규칙을 저장했습니다'):(imported?'Config imported':'Rules saved');
+  if(result.daemon_reload==='reloaded')text+=LANG==='ko'?'. 데몬에 다시 적용했습니다':'. Daemon reloaded';
+  else if(result.daemon_reload==='deferred')text+=LANG==='ko'?'. 데몬 다시 적용 대기 중':'. Daemon reload pending';
+  else if(result.daemon_reload==='failed')text+=LANG==='ko'?'. 데몬 다시 적용 실패':'. Daemon reload failed';
+  if(newerEdits)text+=LANG==='ko'?'. 이후 변경사항은 저장되지 않았습니다':'. Newer changes are unsaved';
+  return text;
+}
+function settingsSavedTone(result,newerEdits){
+  return newerEdits||result.daemon_reload==='deferred'||result.daemon_reload==='failed'?'warn':'ok';
+}
 function automationRuleFromData(rule){
   var when=String((rule&&rule.when)||'on_battery').toLowerCase();
   var profile=String((rule&&rule.profile)||'balanced').toLowerCase();
@@ -8885,20 +9526,18 @@ function automationSetStatus(text,tone){
 }
 function automationMarkDirty(){
   AUTOMATION_RULES_DIRTY=true;
-  AUTOMATION_RULES_SAVE_PENDING=false;
-  automationSetStatus(LANG==='ko'?'변경사항이 저장되지 않았습니다':'Unsaved changes','warn');
+  AUTOMATION_RULES_EDIT_REVISION++;
+  automationSetStatus(AUTOMATION_RULES_SAVE_PENDING?(LANG==='ko'?'저장 중입니다. 이후 변경사항은 아직 저장되지 않았습니다':'Saving earlier changes. Newer changes are unsaved'):(LANG==='ko'?'변경사항이 저장되지 않았습니다':'Unsaved changes'),'warn');
 }
 function renderAutomationRules(d){
   var incoming=(d.rules||[]).map(automationRuleFromData);
   var incomingSignature=automationRulesSignature(incoming);
-  var lastStatus=String(d.last_cmd_status||'');
-  if(AUTOMATION_RULES_SAVE_PENDING&&lastStatus.indexOf('rules saved')===0){
-    AUTOMATION_RULES_SAVE_PENDING=false;
-    AUTOMATION_RULES_DIRTY=false;
-    automationSetStatus(LANG==='ko'?'규칙을 저장하고 데몬에 다시 적용했습니다':'Rules saved and daemon reloaded','ok');
-  } else if(AUTOMATION_RULES_SAVE_PENDING&&lastStatus.indexOf('rules save failed:')===0){
-    AUTOMATION_RULES_SAVE_PENDING=false;
-    automationSetStatus(lastStatus.slice('rules save failed:'.length), 'warn');
+  var result=settingsResult(d,AUTOMATION_RULES_SAVE_PENDING);
+  if(result){
+    var newerEdits=AUTOMATION_RULES_EDIT_REVISION!==AUTOMATION_RULES_SAVE_PENDING.revision;
+    AUTOMATION_RULES_SAVE_PENDING=null;
+    AUTOMATION_RULES_DIRTY=!result.ok||newerEdits;
+    automationSetStatus(result.ok?settingsSavedText(result,false,newerEdits):String(result.message||'Rules save failed'),result.ok?settingsSavedTone(result,newerEdits):'warn');
   }
   if(AUTOMATION_RULES===null||(!AUTOMATION_RULES_DIRTY&&!AUTOMATION_RULES_SAVE_PENDING)){
     if(AUTOMATION_RULES===null||(!AUTOMATION_RULES_DIRTY&&incomingSignature!==automationRulesSignature(AUTOMATION_RULES))){
@@ -8912,7 +9551,7 @@ function renderAutomationRules(d){
   setPanelPill('automation-pill',LANG==='ko'?((AUTOMATION_RULES||[]).length+'개 규칙'):((AUTOMATION_RULES||[]).length+' rules'),(AUTOMATION_RULES||[]).length?'info':'');
   var add=document.getElementById('automation-add'),save=document.getElementById('automation-save');
   if(add)add.disabled=AUTOMATION_RULES_SAVE_PENDING||(AUTOMATION_RULES||[]).length>=32;
-  if(save)save.disabled=AUTOMATION_RULES_SAVE_PENDING;
+  if(save)save.disabled=!!AUTOMATION_RULES_SAVE_PENDING;
   if(signature===AUTOMATION_RULES_RENDERED)return;
   AUTOMATION_RULES_RENDERED=signature;
   list.innerHTML='';
@@ -8963,13 +9602,22 @@ function applyQuietAcPreset(){
 }
 function saveAutomationRules(){
   if(AUTOMATION_RULES_SAVE_PENDING)return;
-  AUTOMATION_RULES_SAVE_PENDING=true;
-  automationSetStatus(LANG==='ko'?'규칙을 저장하고 데몬에 다시 적용하는 중…':'Saving rules and reloading the daemon…','');
+  var request=settingsRequest('rules',JSON.stringify(automationRulesPayload()),AUTOMATION_RULES_EDIT_REVISION);
+  AUTOMATION_RULES_SAVE_PENDING=request;
+  AUTOMATION_RULES_DIRTY=true;
+  automationSetStatus(LANG==='ko'?'규칙 저장을 확인하는 중…':'Confirming rules save…','');
   var save=document.getElementById('automation-save');if(save)save.disabled=true;
-  window.ipc.postMessage('rules:'+JSON.stringify(automationRulesPayload()));
+  window.ipc.postMessage('settingsrequest:'+JSON.stringify(request));
+  setTimeout(function(){
+    if(AUTOMATION_RULES_SAVE_PENDING!==request)return;
+    AUTOMATION_RULES_SAVE_PENDING=null;AUTOMATION_RULES_DIRTY=true;
+    automationSetStatus(LANG==='ko'?'저장 확인 응답이 없습니다. 변경사항은 유지했습니다. 저장된 설정을 확인한 뒤 다시 시도하세요':'Save confirmation not received. Your edits are kept. Check the saved settings before retrying','warn');
+    renderAutomationRules({rules:[]});
+  },15000);
 }
 var CONFIG_IMPORT_DIRTY=false;
-var CONFIG_IMPORT_PENDING=false;
+var CONFIG_IMPORT_PENDING=null;
+var CONFIG_IMPORT_EDIT_REVISION=0;
 var CONFIG_COPY_REVISION_SEEN=0;
 function configTransferSetStatus(text,tone){
   var status=document.getElementById('config-transfer-status');
@@ -8977,29 +9625,29 @@ function configTransferSetStatus(text,tone){
 }
 function markConfigImportDirty(){
   CONFIG_IMPORT_DIRTY=true;
-  configTransferSetStatus(LANG==='ko'?'가져올 설정이 변경되었습니다':'Config text changed','warn');
+  CONFIG_IMPORT_EDIT_REVISION++;
+  configTransferSetStatus(CONFIG_IMPORT_PENDING?(LANG==='ko'?'가져오는 중입니다. 이후 변경사항은 아직 저장되지 않았습니다':'Importing earlier text. Newer changes are unsaved'):(LANG==='ko'?'가져올 설정이 변경되었습니다':'Config text changed'),'warn');
 }
 function updateConfigTransfer(d){
   var textarea=document.getElementById('config-transfer-text');
   var copy=document.getElementById('config-copy');
   var importer=document.getElementById('config-import');
-  var lastStatus=String(d.last_cmd_status||'');
-  if(textarea&&!CONFIG_IMPORT_DIRTY&&!CONFIG_IMPORT_PENDING&&typeof d.config_toml==='string'&&document.activeElement!==textarea&&textarea.value!==d.config_toml)textarea.value=d.config_toml;
-  if(CONFIG_IMPORT_PENDING&&lastStatus.indexOf('config imported')===0){
-    CONFIG_IMPORT_PENDING=false;CONFIG_IMPORT_DIRTY=false;
-    configTransferSetStatus(LANG==='ko'?'설정을 가져오고 데몬에 다시 적용했습니다':'Config imported and daemon reloaded','ok');
-  } else if(CONFIG_IMPORT_PENDING&&lastStatus.indexOf('config import failed:')===0){
-    CONFIG_IMPORT_PENDING=false;
-    configTransferSetStatus(lastStatus.slice('config import failed:'.length),'warn');
+  var result=settingsResult(d,CONFIG_IMPORT_PENDING);
+  if(result){
+    var newerEdits=CONFIG_IMPORT_EDIT_REVISION!==CONFIG_IMPORT_PENDING.revision;
+    CONFIG_IMPORT_PENDING=null;
+    CONFIG_IMPORT_DIRTY=!result.ok||newerEdits;
+    configTransferSetStatus(result.ok?settingsSavedText(result,true,newerEdits):String(result.message||'Config import failed'),result.ok?settingsSavedTone(result,newerEdits):'warn');
   }
+  if(textarea&&!CONFIG_IMPORT_DIRTY&&!CONFIG_IMPORT_PENDING&&typeof d.config_toml==='string'&&document.activeElement!==textarea&&textarea.value!==d.config_toml)textarea.value=d.config_toml;
   var revision=Number(d.config_copy_revision||0);
   if(revision>CONFIG_COPY_REVISION_SEEN){
     CONFIG_COPY_REVISION_SEEN=revision;
-    configTransferSetStatus(d.config_copy_ok?(LANG==='ko'?'현재 설정을 클립보드에 복사했습니다':'Current config copied to clipboard'):(LANG==='ko'?'설정 복사 실패':'Config copy failed'),d.config_copy_ok?'ok':'warn');
+    if(!CONFIG_IMPORT_PENDING&&!result)configTransferSetStatus(d.config_copy_ok?(LANG==='ko'?'현재 설정을 클립보드에 복사했습니다':'Current config copied to clipboard'):(LANG==='ko'?'설정 복사 실패':'Config copy failed'),d.config_copy_ok?'ok':'warn');
   }
   setPanelPill('config-transfer-pill',CONFIG_IMPORT_PENDING?(LANG==='ko'?'적용 중':'Applying'):(CONFIG_IMPORT_DIRTY?(LANG==='ko'?'변경됨':'Edited'):(LANG==='ko'?'준비됨':'Ready')),CONFIG_IMPORT_PENDING?'warn':(CONFIG_IMPORT_DIRTY?'info':''));
-  if(copy)copy.disabled=CONFIG_IMPORT_PENDING;
-  if(importer)importer.disabled=CONFIG_IMPORT_PENDING;
+  if(copy)copy.disabled=!!CONFIG_IMPORT_PENDING;
+  if(importer)importer.disabled=!!CONFIG_IMPORT_PENDING;
 }
 function copyConfigExport(){
   if(CONFIG_IMPORT_PENDING)return;
@@ -9011,9 +9659,17 @@ function importConfig(){
   var textarea=document.getElementById('config-transfer-text');
   var value=textarea?textarea.value.trim():'';
   if(!value){configTransferSetStatus(LANG==='ko'?'가져올 TOML을 붙여넣으세요':'Paste a TOML config first','warn');return;}
-  CONFIG_IMPORT_PENDING=true;
-  configTransferSetStatus(LANG==='ko'?'설정을 검증하고 데몬에 다시 적용하는 중…':'Validating config and reloading the daemon…','');
-  window.ipc.postMessage('importconfig:'+value);
+  var request=settingsRequest('import_config',value,CONFIG_IMPORT_EDIT_REVISION);
+  CONFIG_IMPORT_PENDING=request;CONFIG_IMPORT_DIRTY=true;
+  configTransferSetStatus(LANG==='ko'?'설정 가져오기를 확인하는 중…':'Confirming config import…','');
+  var importer=document.getElementById('config-import');if(importer)importer.disabled=true;
+  window.ipc.postMessage('settingsrequest:'+JSON.stringify(request));
+  setTimeout(function(){
+    if(CONFIG_IMPORT_PENDING!==request)return;
+    CONFIG_IMPORT_PENDING=null;CONFIG_IMPORT_DIRTY=true;
+    configTransferSetStatus(LANG==='ko'?'가져오기 확인 응답이 없습니다. 입력은 유지했습니다. 저장된 설정을 확인한 뒤 다시 시도하세요':'Import confirmation not received. Your text is kept. Check the saved settings before retrying','warn');
+    updateConfigTransfer({});
+  },15000);
 }
 function setSetupMenuOpen(open){
   var menu=document.getElementById('setup-menu');
@@ -9375,7 +10031,7 @@ function renderProcesses(d){
     status.className='proc-status '+(confirmationActive||action.phase==='pending'?'pending':(action.code==='requested'?'ok':(action.phase==='complete'?'error':'')));
   }
   var rows=d.procs||[],pl=document.getElementById('procs-list');
-  show('procs-empty',rows.length===0&&d.slow_data_ready);
+  setVisible('procs-empty',rows.length===0&&d.slow_data_ready);
   if(!pl)return;
   pl.innerHTML='';
   rows.forEach(function(p){
@@ -9676,9 +10332,10 @@ function chooseRunnerCharacter(character){
   closeRunnerCharacterMenu(true);
 }
 function setRunnerCharacter(character){
-  if(RUNNER_CHARACTERS.indexOf(character)<0)return;
+  if(character!=='random'&&RUNNER_CHARACTERS.indexOf(character)<0)return;
   var data=window.__pf_pending||{};
-  data.runner_character=character;
+  data.runner_random=character==='random';
+  if(character!=='random')data.runner_character=character;
   updateMenubarDisplay(data);
   if(window.ipc)window.ipc.postMessage('character:'+character);
 }
@@ -9698,11 +10355,12 @@ function updateMenubarDisplay(d){
     RUNNER_SELECTED_PREVIEW_CHARACTER=character;
   }
   var characterSelect=document.getElementById('runner-character-select');
-  var selectedOption=document.querySelector('.character-option[data-character="'+character+'"]');
+  var selection=d.runner_random?'random':character;
+  var selectedOption=document.querySelector('.character-option[data-character="'+selection+'"]');
   document.querySelectorAll('.character-option').forEach(function(option){
-    option.setAttribute('aria-selected',option.dataset.character===character?'true':'false');
+    option.setAttribute('aria-selected',option.dataset.character===selection?'true':'false');
   });
-  if(characterSelect)characterSelect.dataset.character=character;
+  if(characterSelect)characterSelect.dataset.character=selection;
   var characterLabel=document.getElementById('runner-character-label');
   if(characterLabel&&selectedOption)characterLabel.textContent=selectedOption.querySelector('.character-option-label').textContent;
   var characterPreview=document.getElementById('runner-character-preview');
@@ -9799,7 +10457,7 @@ function updateSetup(d){
       :(LANG==='ko'?'팬 제어 설정':'Set up fan control');
     fan.textContent=FAN_CONTROL_FIX_PENDING
       ?(LANG==='ko'?'설치 중…':'Installing…')
-      :(d.daemon_update_needed?(LANG==='ko'?'재설치':'Reinstall'):(LANG==='ko'?'팬':'Fan'));
+      :(d.daemon_update_needed?(LANG==='ko'?'재설치':'Reinstall'):(LANG==='ko'?'설정하기':'Set Up'));
   }
   var more=document.getElementById('setup-more');
   if(more){
@@ -9856,7 +10514,7 @@ function updateRail(d){
   APP_UPDATE_CHECK_PENDING=nativePending;
   updateUpdateChannel(d);
   if(view==='settings'){
-    var persisted=d.update_install_result;
+    var persisted=reconcileUpdateReceipt(d.update_install_result,d.app_version||'',Date.now()/1000);
     if(nativePhase!=='idle'){
       APP_UPDATE_STATUS={
         current:d.app_version||'',
@@ -9868,9 +10526,9 @@ function updateRail(d){
         phase:nativePhase,
         persisted:false
       };
-    } else if(persisted&&(!APP_UPDATE_STATUS||APP_UPDATE_STATUS.persisted)){
+    } else if(persisted){
       var persistedKey=[persisted.status||'',persisted.version||'',persisted.updated_at_unix||''].join(':');
-      if(persistedKey!==APP_PERSISTED_UPDATE_KEY){
+      if(persistedKey!==APP_PERSISTED_UPDATE_KEY||!APP_UPDATE_STATUS||!APP_UPDATE_STATUS.persisted){
         APP_PERSISTED_UPDATE_KEY=persistedKey;
         APP_UPDATE_STATUS={
           current:d.app_version||'',
@@ -9881,11 +10539,15 @@ function updateRail(d){
         };
       }
     }
+    if(nativePhase==='idle'&&(!persisted||!APP_UPDATE_STATUS||!APP_UPDATE_STATUS.persisted)){
+      APP_UPDATE_STATUS={current:d.app_version||'',phase:'idle',message:nativeUpdate.message||''};
+    }
+    if(APP_UPDATE_STATUS)updateCheckMetadata(APP_UPDATE_STATUS,nativeUpdate);
     if(APP_UPDATE_STATUS){APP_UPDATE_STATUS.current=d.app_version||APP_UPDATE_STATUS.current;renderUpdateStatus();}
     else renderUpdateStatus({current:d.app_version||''});
     var updCheck=document.getElementById('rail-update-check');
     if(updCheck){
-      updCheck.disabled=nativePending;
+      updCheck.disabled=nativePending||nativeUpdate.auto_check_enabled===false;
       updCheck.textContent=nativePending
         ?(LANG==='ko'?'확인 중…':'Checking…')
         :(LANG==='ko'?'업데이트 확인':'Check for Updates');
@@ -9983,6 +10645,16 @@ function updateHardwareAvailability(d){
 function updateFanEmptyState(d){
   var empty=document.getElementById('fan-empty-state');
   if(!empty)return;
+  if(d.fan_control_state_ready===false){
+    empty.style.display='';
+    var loadingTitle=empty.querySelector('.empty-state-title');
+    var loadingCopy=empty.querySelector('.empty-state-copy');
+    if(loadingTitle)loadingTitle.textContent=LANG==='ko'?'팬 상태 확인 중…':'Checking fan state…';
+    if(loadingCopy)loadingCopy.textContent=LANG==='ko'?'팬 센서와 제어 가능 여부를 확인하고 있습니다.':'Reading fan sensors and checking available controls.';
+    empty.setAttribute('aria-busy','true');
+    return;
+  }
+  empty.setAttribute('aria-busy','false');
   var fans=d.fans||[];
   var controllable=fans.filter(function(f){return !!f.controllable;}).length;
   var show=controllable===0;
@@ -11076,8 +11748,8 @@ mod tests {
         let idle = make_runner_rgba(RunnerCharacter::Cat, 12.0, 0);
         let active = make_runner_rgba(RunnerCharacter::Cat, 72.0, 1);
 
-        assert!(idle.chunks_exact(4).any(|px| px[3] > 0));
-        assert!(active.chunks_exact(4).any(|px| px[3] > 0));
+        assert!(idle.as_chunks::<4>().0.iter().any(|px| px[3] > 0));
+        assert!(active.as_chunks::<4>().0.iter().any(|px| px[3] > 0));
         assert_ne!(idle, active);
     }
 
@@ -11088,7 +11760,7 @@ mod tests {
         assert_eq!(unique.len(), RunnerCharacter::ALL.len());
         assert!(frames
             .iter()
-            .all(|rgba| rgba.chunks_exact(4).any(|pixel| pixel[3] > 0)));
+            .all(|rgba| rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0)));
     }
 
     #[test]
@@ -11111,7 +11783,9 @@ mod tests {
         let ground_pixels = frames
             .iter()
             .map(|rgba| {
-                rgba.chunks_exact(4)
+                rgba.as_chunks::<4>()
+                    .0
+                    .iter()
                     .enumerate()
                     .filter(|(index, pixel)| {
                         index / RUNNER_PIXEL_WIDTH as usize >= (RUNNER_PIXEL_HEIGHT - 7) as usize
@@ -11146,7 +11820,7 @@ mod tests {
 
         let (width, height, pixels) = decode_png_rgba(&artifacts.sheet_path);
         assert_eq!((width, height), expected_runner_qa_sheet_dimensions());
-        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 0));
+        assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
 
         let report: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&artifacts.report_path).expect("read quality report"),
@@ -11167,6 +11841,55 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn native_runner_image_rejects_malformed_buffers_before_allocating_pixels() {
+        let expected = (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize;
+        for len in [0, expected - 1, expected + 1] {
+            let result =
+                make_runner_native_image_from_rgba(RunnerCharacter::Ghost, 7, &vec![255; len]);
+            let message = result
+                .expect_err("invalid RGBA length must fail")
+                .to_string();
+            assert!(message.contains("native cache frame 7"));
+            assert!(message.contains(&format!("expected {expected} rgba bytes, got {len}")));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_runner_image_preserves_eager_rgba_backing_and_template_geometry() {
+        use objc2_app_kit::{NSBitmapFormat, NSBitmapImageRep};
+
+        let mut rgba = vec![0; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize];
+        rgba[..12].copy_from_slice(&[241, 37, 19, 127, 17, 229, 61, 255, 53, 73, 233, 0]);
+        let image = make_runner_native_image_from_rgba(RunnerCharacter::Cat, 0, &rgba)
+            .expect("native RGBA image");
+        assert_eq!(image.size(), NSSize::new(27.0, 18.0));
+        assert!(image.isTemplate());
+        let representations = image.representations();
+        assert_eq!(representations.len(), 1);
+        let bitmap = representations
+            .objectAtIndex(0)
+            .downcast::<NSBitmapImageRep>()
+            .expect("eager bitmap representation");
+        assert_eq!(bitmap.pixelsWide(), RUNNER_PIXEL_WIDTH as isize);
+        assert_eq!(bitmap.pixelsHigh(), RUNNER_PIXEL_HEIGHT as isize);
+        assert_eq!(bitmap.size(), image.size());
+        assert_eq!(bitmap.bitsPerSample(), 8);
+        assert_eq!(bitmap.samplesPerPixel(), 4);
+        assert_eq!(bitmap.bitsPerPixel(), 32);
+        assert!(!bitmap.isPlanar());
+        assert_eq!(bitmap.bitmapFormat(), NSBitmapFormat::AlphaNonpremultiplied);
+        assert_eq!(bitmap.bytesPerRow(), (RUNNER_PIXEL_WIDTH * 4) as isize);
+        let data = bitmap.bitmapData();
+        assert!(!data.is_null());
+        // The representation owns this contiguous RGBA allocation for its
+        // lifetime, and the validated dimensions above bound the read.
+        let actual = unsafe { std::slice::from_raw_parts(data, rgba.len()) };
+        assert_eq!(actual, rgba);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn native_runner_timer_closure_only_indexes_prebuilt_native_images() {
         let body = extract_block_body(
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")),
@@ -11179,7 +11902,7 @@ mod tests {
             "runner_load_band_with_hysteresis(",
             "let index =",
             "images.get(index)",
-            "button.setImage(Some(&**image));",
+            "painter.borrow().paint(image);",
             "runner_native_next_delay(",
         ] {
             assert!(
@@ -11239,6 +11962,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn extract_block_body(source: &str, marker: &str) -> String {
         let start = source.find(marker).expect("marker must exist");
         let body_start = start + marker.len();
@@ -11469,7 +12193,7 @@ mod tests {
             let mut min_y = RUNNER_PIXEL_HEIGHT;
             let mut max_y = 0;
 
-            for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+            for (index, pixel) in rgba.as_chunks::<4>().0.iter().enumerate() {
                 if pixel[3] <= 96 {
                     continue;
                 }
@@ -11489,9 +12213,14 @@ mod tests {
                 assert!(width >= 12, "{character:?} is too narrow: {width}px");
                 assert!(height >= 24, "{character:?} is too short: {height}px");
             } else if character == RunnerCharacter::Pushup {
-                // An elevated plank needs vertical room as well as a long body.
+                // The top pose is a shallow plank, not a steep incline. Its
+                // contacts, rigid spine, fixed arm lengths and chest stroke
+                // are independently checked by the procedural pose tests.
                 assert!(width >= 30, "push-up is too narrow: {width}px");
-                assert!(height >= 20, "push-up plank is flattened: {height}px");
+                assert!(
+                    (16..=20).contains(&height),
+                    "push-up top pose lost its shallow proportions: {height}px"
+                );
             } else if matches!(character, RunnerCharacter::Penguin | RunnerCharacter::Robot) {
                 // Upright anatomy stays legible without decorative horizontal
                 // speed lines that previously inflated this width check.
@@ -11556,7 +12285,7 @@ mod tests {
         for character in RunnerCharacter::ALL {
             for frame in [0, 3, 7] {
                 let rgba = make_runner_rgba(character, 55.0, frame);
-                for pixel in rgba.chunks_exact(4).filter(|pixel| pixel[3] != 0) {
+                for pixel in rgba.as_chunks::<4>().0.iter().filter(|pixel| pixel[3] != 0) {
                     assert_eq!(&pixel[..3], &[255, 255, 255], "{character:?} is not white");
                 }
             }
@@ -11581,7 +12310,7 @@ mod tests {
             let centers: Vec<f32> = (0..RUNNER_FRAME_COUNT)
                 .map(|frame| {
                     let rgba = make_runner_rgba(character, 55.0, frame);
-                    let (weighted_x, alpha_sum) = rgba.chunks_exact(4).enumerate().fold(
+                    let (weighted_x, alpha_sum) = rgba.as_chunks::<4>().0.iter().enumerate().fold(
                         (0.0_f32, 0.0_f32),
                         |(weighted_x, alpha_sum), (index, pixel)| {
                             let alpha = f32::from(pixel[3]);
@@ -11610,8 +12339,10 @@ mod tests {
             let extended = make_runner_rgba(RunnerCharacter::Fox, cpu_pct, 0);
             let airborne = make_runner_rgba(RunnerCharacter::Fox, cpu_pct, 3);
             extended
-                .chunks_exact(4)
-                .zip(airborne.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(airborne.as_chunks::<4>().0.iter())
                 .filter(|(a, b)| a[3].abs_diff(b[3]) > 48)
                 .count()
         };
@@ -11688,6 +12419,25 @@ mod tests {
             );
             assert!(ko.contains(runner_character_label(ResolvedLanguage::Ko, character)));
         }
+    }
+
+    #[test]
+    #[ignore = "writes the real settings picker for local browser verification"]
+    fn render_random_runner_settings_for_visual_qa() {
+        let html = dashboard_html(ResolvedLanguage::Ko, false);
+        let bootstrap = r#"<script>
+window.ipc={postMessage:function(message){document.body.dataset.lastCommand=message;}};
+window.__pf_pending={menubar_display:'both',runner_character:'pushup',runner_random:false,runner_cpu_pct:45,runner_interval_ms:81};
+setRailView('settings');updateMenubarDisplay(window.__pf_pending);
+</script>"#;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target");
+        std::fs::write(
+            root.join("random-runner-settings-qa.html"),
+            html.replace("</body>", &format!("{bootstrap}</body>")),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -12190,7 +12940,7 @@ mod tests {
             assert!(en.contains(&format!(r##"id="{id}""##)));
         }
         assert!(en.contains(r#"id="summary-temp-label">CPU temp<"#));
-        assert!(en.contains(r#"id="summary-fan-label">Fans<"#));
+        assert!(en.contains(r#"id="summary-fan-label">Fan RPM<"#));
         assert!(en.contains(r#"id="summary-cpu-core-chart"#));
         assert!(en.contains(r#"id="show-core-graph-setting"#));
         assert!(en.contains(r#"id="cpu-core-graph-toggle"#));
@@ -12343,10 +13093,13 @@ mod tests {
             assert!(html.contains("function applyQuietAcPreset()"));
             assert!(html.contains("function updateConfigTransfer(d)"));
             assert!(html.contains("window.ipc.postMessage('copyconfig')"));
-            assert!(html.contains("window.ipc.postMessage('importconfig:'+value)"));
-            assert!(html.contains(
-                "window.ipc.postMessage('rules:'+JSON.stringify(automationRulesPayload()))"
-            ));
+            assert!(html.contains("settingsRequest('import_config',value"));
+            assert!(
+                html.contains("settingsRequest('rules',JSON.stringify(automationRulesPayload())")
+            );
+            assert!(
+                html.contains("window.ipc.postMessage('settingsrequest:'+JSON.stringify(request))")
+            );
             assert!(html.contains("d.rules"));
             assert!(html.contains("d.config_toml"));
         }
@@ -12562,6 +13315,90 @@ mod tests {
             assert!(html.contains(r#"id="startup-toggle" class="panel-action secondary" disabled"#));
             assert!(html.contains("toggleStartupItem(this)"));
         }
+    }
+
+    #[test]
+    fn automatic_update_notification_is_deduplicated_per_channel_and_version() {
+        let version = "notification-regression-test";
+        assert!(claim_update_notification(UpdateChannel::Stable, version));
+        assert!(!claim_update_notification(UpdateChannel::Stable, version));
+        assert!(claim_update_notification(
+            UpdateChannel::PreRelease,
+            version
+        ));
+        assert!(!claim_update_notification(
+            UpdateChannel::PreRelease,
+            version
+        ));
+        assert!(claim_update_notification(
+            UpdateChannel::Stable,
+            "notification-regression-test-next"
+        ));
+    }
+
+    #[test]
+    fn stale_release_response_clears_old_channel_metadata_and_schedules_new_channel() {
+        let mut state = AppUpdateState {
+            phase: "available",
+            latest: Some("9.0.0".into()),
+            release_url: Some("https://example.invalid/release".into()),
+            notes: Some("Old channel".into()),
+            message: None,
+            install_ready: true,
+            channel: UpdateChannel::Stable,
+            schedule: UpdateSchedule::new(),
+            check_error: Some("old error".into()),
+        };
+        assert!(!discard_stale_update_channel(
+            &mut state,
+            UpdateChannel::Stable,
+            UpdateChannel::Stable,
+            10
+        ));
+        assert!(state.install_ready);
+        assert!(discard_stale_update_channel(
+            &mut state,
+            UpdateChannel::Stable,
+            UpdateChannel::PreRelease,
+            20
+        ));
+        assert_eq!(state.channel, UpdateChannel::PreRelease);
+        assert_eq!(state.phase, "idle");
+        assert!(state.latest.is_none() && state.release_url.is_none() && state.notes.is_none());
+        assert!(!state.install_ready);
+        assert!(state.check_error.is_none());
+        assert!(state.schedule.due(20));
+        assert!(state.schedule.last_success_unix.is_none());
+        state.schedule.begin(20);
+        state.schedule.finish(21, true);
+        assert!(!reconcile_update_channel(
+            &mut state,
+            UpdateChannel::PreRelease,
+            22,
+            true
+        ));
+        assert_eq!(
+            state.schedule.next_check_unix,
+            Some(21 + update_schedule::CHECK_INTERVAL)
+        );
+        assert!(reconcile_update_channel(
+            &mut state,
+            UpdateChannel::Stable,
+            23,
+            true
+        ));
+        assert!(state.schedule.due(23));
+        assert!(state.schedule.last_success_unix.is_none());
+        assert!(reconcile_update_channel(
+            &mut state,
+            UpdateChannel::PreRelease,
+            24,
+            false
+        ));
+        assert!(
+            !state.schedule.due(24),
+            "mock imports must not schedule network work"
+        );
     }
 
     #[test]
@@ -12782,7 +13619,15 @@ mod tests {
         assert!(en.contains("var FAN_CONTROL_FIX_REVISION=0;"));
         assert!(en.contains("Number(d.fan_control_install_revision||0)>FAN_CONTROL_FIX_REVISION"));
         assert!(en.contains("if(!current.fan_control_installing)FAN_CONTROL_FIX_PENDING=false;"));
-        assert!(!en.contains("},15000);"));
+        let setup = en
+            .split("function startFanControlSetup(btn){")
+            .nth(1)
+            .unwrap()
+            .split("function runFanDiagnostics(btn){")
+            .next()
+            .unwrap();
+        assert!(!setup.contains("},15000);"));
+        assert!(setup.contains("},60000);"));
     }
 
     #[test]
@@ -13922,6 +14767,80 @@ rules = [{ when = "on_ac", profile = "maximum" }]
             "rules = [{ when = \"cpu_above:NaN\", profile = \"silent\" }]"
         )
         .is_err());
+    }
+
+    #[test]
+    fn settings_requests_keep_the_window_request_id_and_operation() {
+        let request = parse_settings_request(
+            r#"{"id":"window-1_request-2","operation":"rules","payload":"[]"}"#,
+        )
+        .unwrap();
+        assert_eq!(request.id, "window-1_request-2");
+        assert_eq!(request.operation, SettingsOperation::Rules);
+        assert_eq!(request.payload, "[]");
+        let imported = parse_settings_request(
+            r#"{"id":"window-2_request-1","operation":"import_config","payload":"profile = 'silent'"}"#,
+        )
+        .unwrap();
+        assert_eq!(imported.operation, SettingsOperation::ImportConfig);
+    }
+
+    #[test]
+    fn settings_requests_reject_invalid_ids_and_unknown_operations() {
+        for id in ["".to_string(), "wrong id".to_string(), "x".repeat(129)] {
+            assert!(parse_settings_request(
+                &serde_json::json!({"id": id, "operation": "rules", "payload": "[]"}).to_string()
+            )
+            .is_none());
+        }
+        assert!(parse_settings_request(
+            r#"{"id":"window-1","operation":"run_shell","payload":"anything"}"#
+        )
+        .is_none());
+        assert!(parse_settings_request("not JSON").is_none());
+    }
+
+    #[test]
+    fn settings_reload_results_require_explicit_daemon_confirmation() {
+        let confirmed = settings_saved_result(
+            "rules saved (1)".into(),
+            Some("ok reloaded (1 rules) (smc)"),
+            true,
+        );
+        assert!(confirmed.ok);
+        assert_eq!(confirmed.daemon_reload, "reloaded");
+        for reply in ["error: permission denied", "ok legacy daemon", ""] {
+            let failed = settings_saved_result("rules saved (1)".into(), Some(reply), true);
+            assert!(
+                failed.ok,
+                "The disk save succeeded even when daemon reload failed"
+            );
+            assert_eq!(failed.daemon_reload, "failed");
+            assert!(failed.message.contains("daemon reload failed"));
+        }
+        let deferred = settings_saved_result("rules saved (1)".into(), None, true);
+        assert!(deferred.ok);
+        assert_eq!(deferred.daemon_reload, "deferred");
+        assert!(deferred.message.contains("daemon reload pending"));
+        let windows = settings_saved_result("rules saved (1)".into(), None, false);
+        assert_eq!(windows.daemon_reload, "not_applicable");
+        assert_eq!(windows.message, "rules saved (1)");
+    }
+
+    #[test]
+    fn invalid_settings_payload_returns_a_correlated_failure_without_saving() {
+        let id = "unit-test-invalid-rules";
+        let status = run_settings_request(
+            &serde_json::json!({"id": id, "operation": "rules", "payload": "not JSON"}).to_string(),
+        )
+        .unwrap();
+        assert!(status.starts_with("rules save failed:"));
+        let results = SETTINGS_RESULTS.lock().unwrap();
+        let result = results.iter().find(|result| result["id"] == id).unwrap();
+        assert_eq!(result["operation"], "rules");
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["daemon_reload"], "not_attempted");
+        assert!(result.get("payload").is_none());
     }
 
     #[test]

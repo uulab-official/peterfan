@@ -8,14 +8,6 @@ use super::{
     FRAME_COUNT, LOAD_BANDS, PIXEL_HEIGHT, PIXEL_WIDTH,
 };
 
-const HUMAN_RUN_FRAME_WIDTH: u32 = 32;
-const HUMAN_RUN_FRAME_HEIGHT: u32 = 32;
-const HUMAN_RUN_DRAW_WIDTH: u32 = 32;
-const HUMAN_RUN_DRAW_HEIGHT: u32 = 32;
-const HUMAN_RUN_SHEET: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/runner/runner-sheet.png"
-));
 const DINO_RUN_FRAME_WIDTH: u32 = 680;
 const DINO_RUN_FRAME_HEIGHT: u32 = 472;
 const DINO_RUN_FRAMES: &[&[u8]] = &[
@@ -243,6 +235,7 @@ fn finalize_cycle(
         | RunnerCharacter::Rabbit
         | RunnerCharacter::Fox => super::procedural::animal_source_cycle(character, cpu_pct),
         RunnerCharacter::Ghost => super::procedural::ghost_source_cycle(cpu_pct),
+        RunnerCharacter::Human => super::procedural::human_source_cycle(cpu_pct),
         _ => apply_motion_cycle(&source_cycle(character)?, cpu_pct),
     };
     let normalized = normalize_cycle(manifest(character), motion_input)?;
@@ -302,37 +295,7 @@ fn decode_dinosaur_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
 }
 
 fn decode_human_source_cycle() -> Result<[RgbaFrame; 8], RunnerBuildError> {
-    let decoded = decode_png(
-        RunnerCharacter::Human,
-        HUMAN_RUN_SHEET,
-        "decode_human_source_cycle",
-    )?;
-    if decoded.width != 256 {
-        return Err(decode_error(
-            RunnerCharacter::Human,
-            format!(
-                "decode_human_source_cycle[width]: expected 256px sheet width, got {}",
-                decoded.width
-            ),
-        ));
-    }
-    if decoded.height != 96 {
-        return Err(decode_error(
-            RunnerCharacter::Human,
-            format!(
-                "decode_human_source_cycle[height]: expected 96px sheet height, got {}",
-                decoded.height
-            ),
-        ));
-    }
-
-    Ok(std::array::from_fn(|pose| {
-        let frame_x = u32::try_from(pose).unwrap_or(0) * HUMAN_RUN_FRAME_WIDTH;
-        // The middle row is the authored eight-frame run cycle; the upper
-        // and lower rows are idle/jump references from the same CC0 sheet.
-        let frame_y = HUMAN_RUN_FRAME_HEIGHT;
-        extract_human_frame(&decoded, RunnerCharacter::Human, frame_x, frame_y)
-    }))
+    Ok(super::procedural::human_source_cycle(0.0))
 }
 
 fn decode_sequence_cycle(
@@ -449,11 +412,13 @@ fn apply_motion_cycle(base: &[RgbaFrame; 8], cpu_pct: f32) -> [RgbaFrame; 8] {
 }
 
 fn motion_shift(cpu_pct: f32, frame: u8) -> i32 {
+    // Preserve the authored footwork. Large arbitrary whole-sprite shifts
+    // used to teleport the runner by eight pixels at the stance transition.
     const BAND_SHIFTS: [[i32; 8]; LOAD_BANDS] = [
-        [1, 0, -1, -2, 1, 0, -1, 0],
-        [2, 0, -1, -2, 2, 0, -1, 0],
-        [3, 0, -2, -3, 3, 0, -2, 0],
-        [4, 0, -2, -4, 4, 0, -2, 0],
+        [1, 0, -1, -1, 1, 0, -1, -1],
+        [1, 0, -1, -2, 1, 0, -1, -1],
+        [1, 0, -2, -2, 1, 0, -2, -1],
+        [1, -1, -2, -2, 1, -1, -2, -1],
     ];
 
     BAND_SHIFTS[load_band(cpu_pct)][usize::from(frame % FRAME_COUNT)]
@@ -609,41 +574,6 @@ fn extract_cropped_frame(
     Ok(frame)
 }
 
-fn extract_human_frame(
-    decoded: &DecodedPng,
-    character: RunnerCharacter,
-    frame_x: u32,
-    frame_y: u32,
-) -> RgbaFrame {
-    let mut frame = vec![0u8; (PIXEL_WIDTH * PIXEL_HEIGHT * CHANNELS_PER_PIXEL as u32) as usize];
-    let draw_left = (PIXEL_WIDTH - HUMAN_RUN_DRAW_WIDTH) / 2;
-    let draw_top = (PIXEL_HEIGHT - HUMAN_RUN_DRAW_HEIGHT) / 2;
-
-    for draw_y in 0..HUMAN_RUN_DRAW_HEIGHT {
-        let source_y = draw_y * HUMAN_RUN_FRAME_HEIGHT / HUMAN_RUN_DRAW_HEIGHT;
-        for draw_x in 0..HUMAN_RUN_DRAW_WIDTH {
-            let source_x = draw_x * HUMAN_RUN_FRAME_WIDTH / HUMAN_RUN_DRAW_WIDTH;
-            let pixel = read_pixel(decoded, frame_x + source_x, frame_y + source_y);
-            let alpha = if pixel.alpha == 0 {
-                0
-            } else if pixel.red < 48 && pixel.green < 48 && pixel.blue < 48 {
-                pixel.alpha / 3
-            } else {
-                pixel.alpha
-            };
-            if alpha == 0 {
-                continue;
-            }
-            let target_index = (((draw_top + draw_y) * PIXEL_WIDTH + draw_left + draw_x) as usize)
-                * CHANNELS_PER_PIXEL;
-            frame[target_index + 3] = alpha;
-        }
-    }
-
-    let _ = character;
-    frame
-}
-
 fn sample_alpha(
     decoded: &DecodedPng,
     character: RunnerCharacter,
@@ -660,46 +590,13 @@ fn sample_alpha(
         });
     }
 
-    Ok(read_pixel(decoded, x, y).alpha)
-}
-
-#[derive(Clone, Copy)]
-struct PixelSample {
-    red: u8,
-    green: u8,
-    blue: u8,
-    alpha: u8,
-}
-
-fn read_pixel(decoded: &DecodedPng, x: u32, y: u32) -> PixelSample {
     let index = ((y * decoded.width + x) as usize) * decoded.channels;
-    match decoded.color_type {
-        png::ColorType::Rgb => PixelSample {
-            red: decoded.pixels[index],
-            green: decoded.pixels[index + 1],
-            blue: decoded.pixels[index + 2],
-            alpha: 255,
-        },
-        png::ColorType::Rgba => PixelSample {
-            red: decoded.pixels[index],
-            green: decoded.pixels[index + 1],
-            blue: decoded.pixels[index + 2],
-            alpha: decoded.pixels[index + 3],
-        },
-        png::ColorType::Grayscale => PixelSample {
-            red: decoded.pixels[index],
-            green: decoded.pixels[index],
-            blue: decoded.pixels[index],
-            alpha: 255,
-        },
-        png::ColorType::GrayscaleAlpha => PixelSample {
-            red: decoded.pixels[index],
-            green: decoded.pixels[index],
-            blue: decoded.pixels[index],
-            alpha: decoded.pixels[index + 1],
-        },
+    Ok(match decoded.color_type {
+        png::ColorType::Rgb | png::ColorType::Grayscale => 255,
+        png::ColorType::Rgba => decoded.pixels[index + 3],
+        png::ColorType::GrayscaleAlpha => decoded.pixels[index + 1],
         _ => unreachable!("unsupported color type already rejected"),
-    }
+    })
 }
 
 fn sample_axis(draw_index: u32, draw_span: u32, source_span: u32) -> u32 {
@@ -754,7 +651,7 @@ mod tests {
     fn constant_alpha_frame(alpha: u8) -> Vec<u8> {
         let mut frame =
             vec![0; (crate::runner::PIXEL_WIDTH * crate::runner::PIXEL_HEIGHT * 4) as usize];
-        for pixel in frame.chunks_exact_mut(4) {
+        for pixel in frame.as_chunks_mut::<4>().0.iter_mut() {
             pixel[3] = alpha;
         }
         frame
@@ -879,7 +776,7 @@ mod tests {
 
         assert!(resampled
             .iter()
-            .flat_map(|frame| frame.chunks_exact(4))
+            .flat_map(|frame| frame.as_chunks::<4>().0.iter())
             .all(|pixel| { pixel[3] == 0 || pixel[3] == 255 }));
     }
 

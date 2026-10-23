@@ -6,21 +6,34 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   check:
-    name: fmt · clippy · test
+    name: macOS contributor and integration checks
     runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
 
       - name: Install Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup component add rustfmt clippy
-          rustup default stable
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
 
       - name: Cache cargo
         uses: actions/cache@v5
@@ -30,32 +43,72 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin/cargo-audit
             target
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-v2-
+          key: ${{ runner.os }}-stable-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-stable-cargo-v3-
 
-      - name: Formatting
-        run: cargo fmt --all -- --check
-
-      - name: Documentation readiness
-        run: scripts/check-docs.sh
+      - name: Contributor checks (same command as local development)
+        run: scripts/check-contributor.sh
 
       - name: Homebrew packaging readiness
         run: scripts/check-homebrew.sh
-
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Tests
-        run: cargo test --all --all-features
 
       - name: Install RustSec audit
         run: command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
 
       - name: RustSec dependency policy
-        run: cargo audit
+        run: cargo audit --deny warnings
 
       - name: Build release binaries
-        run: cargo build --release
+        run: cargo build --locked --release --workspace
 
-      - name: Smoke test (process lifecycle, --mock commands, JSON validity)
+      - name: Smoke test (mock lifecycle and packaging)
         run: scripts/smoke-test.sh
+
+  msrv:
+    name: Rust 1.88 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-2022]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install minimum supported Rust
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-msrv-1.88-v1-${{ hashFiles('**/Cargo.lock') }}
+      - name: Check the locked workspace at MSRV
+        run: cargo +1.88.0 check --locked --workspace --all-targets --all-features
+
+  portable-core:
+    name: Linux portable core
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-core-stable-v1-${{ hashFiles('**/Cargo.lock') }}
+      - name: Check portable core and repository policy
+        run: scripts/check-contributor.sh --core-only

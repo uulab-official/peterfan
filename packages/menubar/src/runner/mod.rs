@@ -176,7 +176,7 @@ where
 pub(crate) fn alpha_hex(rgba: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut alpha = String::with_capacity((PIXEL_WIDTH * PIXEL_HEIGHT * 2) as usize);
-    for pixel in rgba.chunks_exact(4) {
+    for pixel in rgba.as_chunks::<4>().0.iter() {
         let value = pixel[3];
         alpha.push(HEX[usize::from(value >> 4)] as char);
         alpha.push(HEX[usize::from(value & 0x0f)] as char);
@@ -185,7 +185,7 @@ pub(crate) fn alpha_hex(rgba: &[u8]) -> String {
 }
 
 fn style_template_frame(mut rgba: RgbaFrame) -> RgbaFrame {
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0.iter_mut() {
         if pixel[3] != 0 {
             pixel[0] = 255;
             pixel[1] = 255;
@@ -335,26 +335,26 @@ mod tests {
     #[test]
     fn rendered_direction_has_hand_approved_signatures_for_every_character() {
         let expected = [
-            (RunnerCharacter::Cat, 9453413548924385313_u64),
-            (RunnerCharacter::Dog, 10296048561691772368),
-            (RunnerCharacter::Rabbit, 3631146020509054727),
-            (RunnerCharacter::Fox, 11929435085102497449),
-            (RunnerCharacter::Penguin, 3145105424534364039),
-            (RunnerCharacter::Dinosaur, 3683395265801644717),
-            (RunnerCharacter::Robot, 2033540284082552199),
-            (RunnerCharacter::Ghost, 5609072901848664016),
-            (RunnerCharacter::Bird, 12157300076353730953),
-            (RunnerCharacter::Duck, 16510218921723599678),
-            (RunnerCharacter::Sheep, 777736534157912451),
-            (RunnerCharacter::Fish, 2480771458963854715),
-            (RunnerCharacter::Slime, 16809246103360517528),
-            (RunnerCharacter::Human, 15564924611738626466),
-            (RunnerCharacter::Pushup, 3451587977518029261),
-            (RunnerCharacter::Orbit, 4553854499446331724),
-            (RunnerCharacter::Sushi, 3038523819319935784),
-            (RunnerCharacter::City, 1960348027929245961),
-            (RunnerCharacter::Sausage, 18200290292772796011),
-            (RunnerCharacter::Party, 15520422695539434978),
+            (RunnerCharacter::Cat, 3894482886008670384_u64),
+            (RunnerCharacter::Dog, 6891600725874795260),
+            (RunnerCharacter::Rabbit, 392034713276480261),
+            (RunnerCharacter::Fox, 4984619501441631633),
+            (RunnerCharacter::Penguin, 17842549327519254898),
+            (RunnerCharacter::Dinosaur, 15058960733293060519),
+            (RunnerCharacter::Robot, 1051873174812331672),
+            (RunnerCharacter::Ghost, 6736284455208130496),
+            (RunnerCharacter::Bird, 13421969405852252869),
+            (RunnerCharacter::Duck, 1592897135956606108),
+            (RunnerCharacter::Sheep, 15666925849922417778),
+            (RunnerCharacter::Fish, 2170793970494020032),
+            (RunnerCharacter::Slime, 11022887547196944267),
+            (RunnerCharacter::Human, 10818114304678795052),
+            (RunnerCharacter::Pushup, 10388017236602389515),
+            (RunnerCharacter::Orbit, 4004691478766109493),
+            (RunnerCharacter::Sushi, 3930794999910381531),
+            (RunnerCharacter::City, 10273532310764104654),
+            (RunnerCharacter::Sausage, 9376091003029328735),
+            (RunnerCharacter::Party, 16461965804262683436),
         ];
 
         let actual = expected.map(|(character, _)| {
@@ -370,7 +370,7 @@ mod tests {
             for frame in 0..FRAME_COUNT {
                 let rgba = render_raw_frame(character, 55.0, frame).expect("raw runner frame");
                 assert_eq!(rgba.len(), (PIXEL_WIDTH * PIXEL_HEIGHT * 4) as usize);
-                assert!(rgba.chunks_exact(4).any(|pixel| pixel[3] > 0));
+                assert!(rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
             }
         }
     }

@@ -1,0 +1,23 @@
+name: Feature request
+description: Explain a user problem and a proposed improvement.
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem should PeterFan solve?
+      description: "Describe who encounters this and what they are trying to do."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: "Include the interface, platform and a concrete example."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and context
+      description: "Optional. Mention existing workarounds, tradeoffs or related issues."

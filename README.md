@@ -13,8 +13,9 @@ It combines:
 - a small privileged daemon for persistent fan curves
 - a local HTTP API for integrations
 
+[![CI](https://github.com/uulab-official/peterfan/actions/workflows/ci.yml/badge.svg)](https://github.com/uulab-official/peterfan/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 ![Status: beta](https://img.shields.io/badge/status-beta-yellow.svg)
 [![Open Source](https://img.shields.io/badge/open-source-MIT-blue.svg)](./LICENSE)
 
@@ -28,7 +29,7 @@ It combines:
 
 | Area | Status |
 | --- | --- |
-| macOS menu-bar app | Twenty selectable CPU-responsive runners with distinct eight-frame cycles, including a transparent pixel-art human run cycle; temperature/runner/both styles, popover dashboard, detail window, light/dark mode |
+| macOS menu-bar app | Twenty selectable CPU-responsive runners with distinct eight-frame cycles, including an original human run cycle and a shuffled character option; temperature/runner/both styles, popover dashboard, detail window, light/dark mode |
 | CLI | `status`, `cpu`, `memory`, `disk`, `network`, `top`, `battery`, `temps`, `temps --all`, `fans`, `fan`, `doctor`, `integrity`, `serve`, `update`, and more |
 | TUI | Terminal dashboard built with ratatui |
 | System metrics | CPU and per-core load with Apple Silicon performance/efficiency grouping, memory, disks, network, processes, battery, load average, power, and uptime |
@@ -37,9 +38,14 @@ It combines:
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
 | Notifications | Optional CPU Core Average threshold, fan write/readback failure alerts, and signed update availability; the daemon's 90°C safety alert remains independent |
 | Automation | JSON output, local HTTP API, shell completions |
-| Updates | Explicit update check and install actions in the menu-bar app, plus CLI updates; signed release assets are verified before replacement and relaunch |
+| Updates | Background release checks with scheduled retries, check history in Settings and explicit installation; signed release assets are verified before replacement and relaunch |
 | Integrity | Installed-app, GitHub release, offline local DMG, and complete release-directory verification for SHA-256, bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |
 | Windows | Native tray app plus real CPU, memory, disk, network, process, and battery metrics; firmware ACPI thermal zones are shown as system temperatures when available, while CPU-core temperature and fan access remain explicitly unsupported |
+
+Runner refinement is tracked against [measurable quality targets](docs/RUNNER_QUALITY_TARGETS.md),
+including tiny-scale legibility, shared CPU cadence and a reproducible native
+rendering benchmark. Synthetic measurements and local signing are reported
+separately from live performance, public release and OTA delivery.
 
 ## Repository Map
 
@@ -85,6 +91,12 @@ source live in this repository, and the app runs without account creation,
 login, or a license key.
 
 ## Install
+
+Published downloads and the current source branch may differ. The latest
+published release verified on 2026-10-22 is **v1.32.2**; the development workspace
+is **v1.32.4**. Check [Releases](https://github.com/uulab-official/peterfan/releases/latest)
+for published assets and [the production checklist](docs/PRODUCTION_CHECKLIST.md)
+for the evidence behind each version.
 
 Prebuilt release artifacts live on
 [GitHub Releases](https://github.com/uulab-official/peterfan/releases).
@@ -133,7 +145,23 @@ single-instance and restart checks, and a complete install/startup/uninstall
 lifecycle. The unified release workflow publishes only after both macOS and
 Windows artifacts pass.
 
-### One-line install (from source)
+### Try the source safely
+
+Install Rust 1.88+ and Node.js 22+; native prerequisites are listed in the
+[development guide](docs/DEVELOPMENT.md). Start with the simulated CLI:
+
+```bash
+git clone https://github.com/uulab-official/peterfan.git
+cd peterfan
+cargo run --locked -p peterfan-cli -- --mock status
+scripts/check-contributor.sh
+```
+
+These checks do not launch an app, request administrator access or write to fans.
+No Apple signing credentials or npm installation is required. Linux/headless
+contributors can use `scripts/check-contributor.sh --core-only`.
+
+### Build and launch the macOS app from source
 
 ```bash
 ./script/build_and_run.sh --verify
@@ -141,13 +169,15 @@ Windows artifacts pass.
 
 That command builds `peterfan-menubar` and `peterfand`, assembles
 `dist/PeterFan.app`, launches it without taking keyboard focus, and verifies
-that exactly one app process is running. To install the result, move
+that exactly one process from this checkout is running. It builds before stopping
+its own previous instance and refuses to stop an installed app or another
+checkout; quit that instance yourself first. To install the result, move
 `dist/PeterFan.app` to `/Applications`.
 
 If you just want CLI tools:
 
 ```bash
-cargo build --release -p peterfan-cli -p peterfan-tui
+cargo build --locked --release -p peterfan-cli -p peterfan-tui
 ```
 
 ## Quick Start
@@ -155,7 +185,7 @@ cargo build --release -p peterfan-cli -p peterfan-tui
 Build from source:
 
 ```bash
-cargo build --release --workspace
+cargo build --locked --release --workspace
 ```
 
 Run the CLI:
@@ -261,9 +291,9 @@ Stream Deck, dashboards, or scripts.
 
 ## Build Requirements
 
-- Rust 1.80 or newer
+- Rust 1.88 or newer (minimum checked in CI), Node.js 22+ for repository/UI checks
 - macOS 11+ for the app bundle and SMC backend
-- Xcode Command Line Tools for signing, notarization, and DMG validation
+- Xcode Command Line Tools for native macOS builds and packaging
 - `jq`, `gh`, and Apple Developer credentials only for official release builds
 
 ### Verify locally before publish
@@ -271,7 +301,7 @@ Stream Deck, dashboards, or scripts.
 Run the workspace smoke test in CI-equivalent mode:
 
 ```bash
-cargo build --workspace
+cargo build --locked --workspace
 ./scripts/smoke-test.sh target/debug
 ```
 
@@ -285,8 +315,8 @@ This validates:
 Useful development commands:
 
 ```bash
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
 scripts/smoke-test.sh target/release
 ```
 
@@ -298,7 +328,16 @@ Run the local menu-bar app from this checkout:
 ./script/build_and_run.sh --logs   # launch, then stream PeterFan logs
 ```
 
-Check for updates:
+The menu-bar app checks for releases 20 seconds after launch and every six hours
+after a successful check. Failed checks retry after 5 minutes, then 15 minutes,
+then hourly. An overdue check runs within 30 seconds of waking from sleep.
+Settings shows the latest check, last successful check and next scheduled check;
+manual checks are available at any time when another update action is not running.
+Background checks never install updates or open a dialog. Optional notifications
+announce an installable newer release once per version/channel during that app run.
+See [automatic update behavior and verification limits](docs/AUTOMATIC_UPDATES.md).
+
+Check for updates from the CLI:
 
 ```bash
 peterfan update
@@ -351,8 +390,8 @@ Maintainer reminder before every version bump:
 - run `scripts/render-readme-overview.swift`
 - run `scripts/render-popover-qa.swift`
 - run `scripts/check-docs.sh`
-- run `cargo fmt --check`, `cargo test --workspace`, and
-  `cargo clippy --workspace --all-targets -- -D warnings`
+- run `cargo fmt --check`, `cargo test --locked --workspace`, and
+  `cargo clippy --locked --workspace --all-targets -- -D warnings`
 - run `scripts/release-local-macos.sh vX.Y.Z`; it install-tests the DMG,
   waits for the Windows workflow, verifies the Windows ZIP attachment, and
   then publishes the complete release
@@ -394,14 +433,21 @@ cases PeterFan reports the failed verification instead of claiming success.
 
 ## Licensing
 
-The entire repository, including the menu-bar app, CLI, TUI, core crates, and
-daemon, is free to use, fork, modify, and redistribute under MIT.
+PeterFan source code and original artwork are free to use, fork, modify and
+redistribute under MIT. External runner PNGs retain CC0; see
+[third-party notices](THIRD_PARTY_NOTICES.md) and the
+[per-file source inventory](assets/runner/sources.json). Dependencies retain
+their respective licenses.
 
 No PeterFan feature requires an account, login, trial, or license key.
 Fan-control installation still requires local macOS privileges and is handled
 by the one-time setup flow shown inside the app.
 
 ## Contributing
+
+Use [SUPPORT](SUPPORT.md) for ordinary reports, [SECURITY](SECURITY.md) for
+private vulnerability reports and the [code of conduct](CODE_OF_CONDUCT.md) for
+project participation.
 
 Contributions are welcome. Good first areas:
 
@@ -414,8 +460,8 @@ Contributions are welcome. Good first areas:
 Start with [CONTRIBUTING.md](./CONTRIBUTING.md), then run:
 
 ```bash
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
 ## License

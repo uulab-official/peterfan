@@ -6,7 +6,7 @@
 > 갖춘 크로스플랫폼 팬 컨트롤러이자 하드웨어 모니터 — Rust로 만들었습니다.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 ![Status: beta](https://img.shields.io/badge/status-beta-yellow.svg)
 
 ![PeterFan 메뉴바 대시보드와 CLI 진단 화면](./docs/images/peterfan-readme-overview.png)
@@ -52,7 +52,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — v1.32.2.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
+**베타 — v1.32.4.** 활발히 개발 중이며, 아래 표는 실제로 출시된 기능을 그대로 반영합니다:
 
 | 영역 | 상태 |
 | --- | --- |
@@ -72,7 +72,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 | **메뉴바 앱** — RunCat처럼 CPU 사용량에 따라 동작 폭과 속도가 변하는 20종 러너(사람은 투명 픽셀아트 8프레임 주행 시트, 나머지도 각각 8프레임 동작), 동물/공룡/로봇/유령/슬라임/운동/궤도/초밥/도시/파티 등 및 온도/러너/둘 다 선택 가능, 상단 온도는 CPU 평균 기준, 로그인/라이선스 없이 바로 쓰는 간결한 팝오버, Apple Silicon P/E 코어 그룹 평균·피크와 코어별 사용률 상세, Settings의 **시작 시 자동 실행 토글**, 호버 시 간단 요약 툴팁, 2분/1시간/1일 히스토리 차트(호버로 정확한 값 + 평균/피크 확인), **각 팬의 실제 범위에 맞춰진 RPM 슬라이더로 팬별 Auto/Manual 제어**, 프로파일/Auto/Rules 제어, 상세 창의 **배터리·AC·시간·CPU 온도 자동화 규칙 편집기**, **배터리 저소음 / AC 고성능 프리셋**, **TOML 설정 가져오기·내보내기**, 개인정보 없이 센서·팬·데몬 상태를 JSON으로 복사하는 진단 리포트, Top Processes에서 프로세스 종료, 영어/한국어 지원, 별도의 크기 조절 가능한 상세 창, 라이트/다크 모드 | ✅ 실행 가능 |
 | **네이티브 알림** — 선택형 CPU 코어 평균 온도 경고(3°C 히스테리시스), 팬 쓰기·RPM 검증 실패, 새 서명 업데이트 발견 알림. 데몬의 90°C 임계 안전 알림은 사용자 설정과 별도로 항상 유지 | ✅ macOS + Windows |
 | **데몬**(`peterfand`) — 지속적인 커브 적용 + 종료 시 복원 + 임계 온도 오버라이드 + IPC 서버, LaunchDaemon 설치 지원 | ✅ 실행 가능 |
-| **자동 업데이트 & 무결성** — 설정에서 `업데이트 확인`으로 새 서명 릴리스를 찾으면 `지금 업데이트`가 나타나고, 간단 메뉴의 `지금 업데이트`는 확인부터 설치·재실행까지 한 번에 진행. GitHub asset digest + `checksums.txt` SHA-256 대조 + UULab Developer ID/Bundle ID + code signature + 공증 ticket 검증 후에만 제자리에서 교체합니다. CLI에서는 `peterfan update --install`을 사용합니다. `peterfan integrity`로 현재 설치된 앱을, `peterfan integrity --latest`/`--tag`로 GitHub 릴리즈 산출물을, `peterfan integrity --dmg ~/Downloads/PeterFan-vX.Y.Z.dmg --checksums ~/Downloads/checksums.txt`로 내려받은 DMG를, `peterfan integrity --release-dir dist/local-release/vX.Y.Z`로 배포 폴더 전체를 같은 기준으로 검증 가능. 릴리즈 폴더 검증은 DMG/tar.gz/checksums/내부 앱 버전이 서로 어긋나면 실패 | ✅ 실행 가능 |
+| **자동 업데이트 & 무결성** — 실행 20초 뒤와 정상 확인 후 6시간마다 자동 확인하며, 실패하면 5분·15분·1시간 간격으로 재시도합니다. 절전 복귀 후 밀린 확인을 수행하고 설정에서 최근 확인·성공·다음 확인 시간을 보여줍니다. 자동 확인은 설치하지 않으며 새 버전 설치는 직접 선택합니다. 설정에서 `업데이트 확인`으로 새 서명 릴리스를 찾으면 `지금 업데이트`가 나타나고, 간단 메뉴의 `지금 업데이트`는 확인부터 설치·재실행까지 한 번에 진행. GitHub asset digest + `checksums.txt` SHA-256 대조 + UULab Developer ID/Bundle ID + code signature + 공증 ticket 검증 후에만 제자리에서 교체합니다. CLI에서는 `peterfan update --install`을 사용합니다. `peterfan integrity`로 현재 설치된 앱을, `peterfan integrity --latest`/`--tag`로 GitHub 릴리즈 산출물을, `peterfan integrity --dmg ~/Downloads/PeterFan-vX.Y.Z.dmg --checksums ~/Downloads/checksums.txt`로 내려받은 DMG를, `peterfan integrity --release-dir dist/local-release/vX.Y.Z`로 배포 폴더 전체를 같은 기준으로 검증 가능. 릴리즈 폴더 검증은 DMG/tar.gz/checksums/내부 앱 버전이 서로 어긋나면 실패 | ✅ 실행 가능 |
 | **로컬 HTTP API**(`peterfan serve`) — 연동을 위한 JSON 지표 제공 및 제어 | ✅ 실행 가능 |
 | 데스크톱 GUI(Tauri), 플러그인 | 🗺️ 로드맵 |
 
@@ -182,7 +182,21 @@ TG Pro와 정확히 같은 방식입니다. 매번 `sudo`를 입력하는 대신
 
 ## 소스에서 빌드하기
 
-[Rust 툴체인](https://rustup.rs)(1.80+)이 필요합니다.
+처음 참여한다면 [개발 환경과 검사 명령](docs/DEVELOPMENT.md),
+[기여 가이드](CONTRIBUTING.md)를 먼저 확인하세요. Node.js 22+가 필요하며,
+일반 기여자 검사는 앱 실행·관리자 승인·팬 쓰기 없이 동작합니다.
+
+```bash
+scripts/check-contributor.sh
+# Linux / 헤드리스 환경에서 코어만 검사:
+scripts/check-contributor.sh --core-only
+```
+
+보안 제보는 [SECURITY.md](SECURITY.md), 일반 문의는 [SUPPORT.md](SUPPORT.md),
+참여 규칙은 [행동 규정](CODE_OF_CONDUCT.md)을 참고하세요.
+외부 그림의 개별 라이선스·출처는 [저작권 안내](THIRD_PARTY_NOTICES.md)에 있습니다.
+
+[Rust 툴체인](https://rustup.rs)(1.88+)이 필요합니다.
 
 ```bash
 # 전체 빌드
@@ -217,7 +231,7 @@ cargo run -p peterfan-menubar
 ### 예시: `peterfan status`
 
 ```text
-PeterFan v1.32.2
+PeterFan v1.32.4
 backend: sysinfo + macos  ·  Darwin 26.1  ·  up 5d 7h 8m
 
 CPU · Apple M3 Max
