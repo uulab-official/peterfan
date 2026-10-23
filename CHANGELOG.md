@@ -70,6 +70,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.32.5] — 2026-10-23 · Fan control activation and update recovery
 
+- Generate, validate and atomically replace the LaunchDaemon configuration so
+  old download-quarantine attributes cannot block macOS service registration.
+  Invalid generated content preserves the previous file.
+
 Changes since public v1.32.2 / 공개 v1.32.2 이후 변경 사항.
 
 ### English
