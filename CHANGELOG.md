@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — Open-source contributor experience
 
+- Make partial configuration edits atomic and serialize app/CLI writers. Refuse
+  malformed or unreadable files instead of replacing them with defaults, preserve
+  existing bytes on write failure, and retain active preferences when saving fails.
+- Reject a 33rd CLI automation rule, non-finite/out-of-range alert thresholds
+  and zero alert intervals before saving or monitoring.
+- Detect macOS suspend gaps with a suspend-inclusive monotonic clock so cached
+  readings, runner cadence and update scheduling recover after sleep.
 - Preserve the selected channel's update-check timestamps and last error across
   restarts without restoring release/install authority or delaying the fresh
   startup check. Ignore invalid history and isolate mock mode from its storage.

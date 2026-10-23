@@ -1329,6 +1329,64 @@ fn api_apply_fan(
     }
 }
 
+fn validate_alert_setting(alert: &peterfan_core::config::AlertConfig, key: &str) -> Result<()> {
+    let (value, max) = match key {
+        "alert.cpu" | "alert.cpu_pct" => (alert.cpu_pct, 100.0),
+        "alert.memory" | "alert.memory_pct" => (alert.memory_pct, 100.0),
+        "alert.temp" | "alert.temp_c" => (alert.temp_c, 150.0),
+        "alert.interval" | "alert.interval_secs" => {
+            return if alert.interval_secs > 0 {
+                Ok(())
+            } else {
+                anyhow::bail!("alert.interval must be greater than zero")
+            };
+        }
+        _ => return Ok(()),
+    };
+    if let Some(value) = value {
+        if !value.is_finite() || !(0.0..=max).contains(&value) {
+            anyhow::bail!("{key} must be a finite number between 0 and {max}");
+        }
+    }
+    Ok(())
+}
+
+fn validate_alert_config(alert: &peterfan_core::config::AlertConfig) -> Result<()> {
+    for key in ["alert.cpu", "alert.memory", "alert.temp", "alert.interval"] {
+        validate_alert_setting(alert, key)?;
+    }
+    Ok(())
+}
+
+fn append_rule(
+    cfg: &mut peterfan_core::config::Config,
+    rule: peterfan_core::config::Rule,
+) -> Result<()> {
+    if cfg.rules.len() >= 32 {
+        anyhow::bail!("automation rules cannot contain more than 32 entries");
+    }
+    cfg.rules.push(rule);
+    Ok(())
+}
+
+// Preserve command validation errors while adding context to storage failures.
+fn update_config(
+    edit: impl FnOnce(&mut peterfan_core::config::Config) -> Result<()>,
+) -> Result<std::path::PathBuf> {
+    let mut edit_error = None;
+    let result = peterfan_platform::config::update(|cfg| {
+        edit(cfg).map_err(|error| {
+            let message = error.to_string();
+            edit_error = Some(error);
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, message)
+        })
+    });
+    match (result, edit_error) {
+        (_, Some(error)) => Err(error),
+        (result, None) => result.map_err(|e| anyhow::anyhow!("could not write config: {e}")),
+    }
+}
+
 fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<String>) -> Result<()> {
     if init {
         let p = peterfan_platform::config::init_default()
@@ -1383,78 +1441,78 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
     if let Some(kv) = set {
         let key = kv[0].as_str();
         let val = kv[1].as_str();
-        let mut cfg = peterfan_platform::config::load();
-        match key {
-            "profile" => {
-                cfg.profile = peterfan_core::profile::Profile::parse(val)
-                    .ok_or_else(|| anyhow::anyhow!("unknown profile '{val}'"))?;
-            }
-            "interval" | "interval_secs" => {
-                cfg.interval_secs = val
-                    .parse::<u64>()
-                    .map_err(|_| anyhow::anyhow!("interval must be a number"))?
-                    .max(1);
-            }
-            "critical" | "critical_temp_c" => {
-                cfg.critical_temp_c = val
-                    .parse::<f32>()
-                    .map_err(|_| anyhow::anyhow!("critical must be a number"))?;
-            }
-            "menubar.display" | "display" => {
-                cfg.menubar.display = peterfan_core::config::MenubarDisplay::parse(val)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "unknown menu-bar display '{val}' (valid: number, cat, both)"
-                        )
-                    })?;
-            }
-            "menubar.temperature_source" | "temperature_source" | "temp_source" => {
-                cfg.menubar.temperature_source =
+        let p = update_config(|cfg| {
+            match key {
+                "profile" => {
+                    cfg.profile = peterfan_core::profile::Profile::parse(val)
+                        .ok_or_else(|| anyhow::anyhow!("unknown profile '{val}'"))?;
+                }
+                "interval" | "interval_secs" => {
+                    cfg.interval_secs = val
+                        .parse::<u64>()
+                        .map_err(|_| anyhow::anyhow!("interval must be a number"))?
+                        .max(1);
+                }
+                "critical" | "critical_temp_c" => {
+                    cfg.critical_temp_c = val
+                        .parse::<f32>()
+                        .map_err(|_| anyhow::anyhow!("critical must be a number"))?;
+                }
+                "menubar.display" | "display" => {
+                    cfg.menubar.display = peterfan_core::config::MenubarDisplay::parse(val)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "unknown menu-bar display '{val}' (valid: number, cat, both)"
+                            )
+                        })?;
+                }
+                "menubar.temperature_source" | "temperature_source" | "temp_source" => {
+                    cfg.menubar.temperature_source =
                     peterfan_core::config::TemperatureSource::parse(val).ok_or_else(|| {
                         anyhow::anyhow!(
                             "unknown temperature source '{val}' (valid: core-average, iohid-tdie, smc-summary, smc-aggregate, hottest)"
                         )
                     })?;
-            }
-            "alert.cpu" | "alert.cpu_pct" => {
-                cfg.alert.cpu_pct = Some(
-                    val.parse::<f32>()
-                        .map_err(|_| anyhow::anyhow!("alert.cpu must be a number"))?,
-                );
-            }
-            "alert.memory" | "alert.memory_pct" => {
-                cfg.alert.memory_pct = Some(
-                    val.parse::<f32>()
-                        .map_err(|_| anyhow::anyhow!("alert.memory must be a number"))?,
-                );
-            }
-            "alert.temp" | "alert.temp_c" => {
-                cfg.alert.temp_c = Some(
-                    val.parse::<f32>()
-                        .map_err(|_| anyhow::anyhow!("alert.temp must be a number"))?,
-                );
-            }
-            "alert.cooldown" | "alert.cooldown_secs" => {
-                cfg.alert.cooldown_secs = val
-                    .parse::<u64>()
-                    .map_err(|_| anyhow::anyhow!("alert.cooldown must be a number"))?;
-            }
-            "alert.interval" | "alert.interval_secs" => {
-                cfg.alert.interval_secs = val
-                    .parse::<u64>()
-                    .map_err(|_| anyhow::anyhow!("alert.interval must be a number"))?
-                    .max(1);
-            }
-            _ => anyhow::bail!(
-                "unknown key '{key}'; valid keys: profile, interval, critical, \
+                }
+                "alert.cpu" | "alert.cpu_pct" => {
+                    cfg.alert.cpu_pct = Some(
+                        val.parse::<f32>()
+                            .map_err(|_| anyhow::anyhow!("alert.cpu must be a number"))?,
+                    );
+                }
+                "alert.memory" | "alert.memory_pct" => {
+                    cfg.alert.memory_pct = Some(
+                        val.parse::<f32>()
+                            .map_err(|_| anyhow::anyhow!("alert.memory must be a number"))?,
+                    );
+                }
+                "alert.temp" | "alert.temp_c" => {
+                    cfg.alert.temp_c = Some(
+                        val.parse::<f32>()
+                            .map_err(|_| anyhow::anyhow!("alert.temp must be a number"))?,
+                    );
+                }
+                "alert.cooldown" | "alert.cooldown_secs" => {
+                    cfg.alert.cooldown_secs = val
+                        .parse::<u64>()
+                        .map_err(|_| anyhow::anyhow!("alert.cooldown must be a number"))?;
+                }
+                "alert.interval" | "alert.interval_secs" => {
+                    cfg.alert.interval_secs = val
+                        .parse::<u64>()
+                        .map_err(|_| anyhow::anyhow!("alert.interval must be a number"))?;
+                }
+                _ => anyhow::bail!(
+                    "unknown key '{key}'; valid keys: profile, interval, critical, \
                  menubar.display, menubar.temperature_source, alert.cpu, alert.memory, alert.temp, \
                  alert.cooldown, alert.interval"
-            ),
-        }
-        cfg.validate_for_control()
-            .map_err(|error| anyhow::anyhow!("invalid fan-control config: {error}"))?;
-        let p = peterfan_platform::config::save(&cfg)
-            .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+                ),
+            }
+            validate_alert_setting(&cfg.alert, key)?;
+            cfg.validate_for_control()
+                .map_err(|error| anyhow::anyhow!("invalid fan-control config: {error}"))?;
+            Ok(())
+        })?;
         if !json {
             println!(
                 "  {} {} = {}  ({})",
@@ -1527,10 +1585,9 @@ fn cmd_config(json: bool, init: bool, set: Option<Vec<String>>, get: Option<Stri
 fn cmd_rule(json: bool, action: RuleAction) -> Result<()> {
     use peterfan_core::config::Rule;
 
-    let mut cfg = peterfan_platform::config::load();
-
     match action {
         RuleAction::List => {
+            let cfg = peterfan_platform::config::load();
             if json {
                 let rules: Vec<_> = cfg
                     .rules
@@ -1577,9 +1634,7 @@ fn cmd_rule(json: bool, action: RuleAction) -> Result<()> {
                      Example: cpu_above:85 | time:22-7"
                 );
             }
-            cfg.rules.push(rule);
-            let path = peterfan_platform::config::save(&cfg)
-                .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+            let path = update_config(|cfg| append_rule(cfg, rule))?;
             if !json {
                 println!(
                     "  {} added rule: {} → {}  ({})",
@@ -1592,15 +1647,18 @@ fn cmd_rule(json: bool, action: RuleAction) -> Result<()> {
             notify_daemon_reload(json);
         }
         RuleAction::Remove { index } => {
-            if index >= cfg.rules.len() {
-                anyhow::bail!(
-                    "index {index} out of range (have {} rule(s))",
-                    cfg.rules.len()
-                );
-            }
-            let removed = cfg.rules.remove(index);
-            let path = peterfan_platform::config::save(&cfg)
-                .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+            let mut removed = None;
+            let path = update_config(|cfg| {
+                if index >= cfg.rules.len() {
+                    anyhow::bail!(
+                        "index {index} out of range (have {} rule(s))",
+                        cfg.rules.len()
+                    );
+                }
+                removed = Some(cfg.rules.remove(index));
+                Ok(())
+            })?;
+            let removed = removed.expect("successful rule removal records the removed rule");
             if !json {
                 println!(
                     "  {} removed [{}]: {} → {}  ({})",
@@ -1614,10 +1672,12 @@ fn cmd_rule(json: bool, action: RuleAction) -> Result<()> {
             notify_daemon_reload(json);
         }
         RuleAction::Clear => {
-            let count = cfg.rules.len();
-            cfg.rules.clear();
-            let path = peterfan_platform::config::save(&cfg)
-                .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+            let mut count = 0;
+            let path = update_config(|cfg| {
+                count = cfg.rules.len();
+                cfg.rules.clear();
+                Ok(())
+            })?;
             if !json {
                 println!(
                     "  {} cleared {count} rule(s)  ({})",
@@ -3724,15 +3784,14 @@ fn cmd_profile_action(json: bool, action: ProfileAction) -> Result<()> {
             let curve = CustomCurveConfig {
                 points: raw.clone(),
             };
-            let mut cfg = peterfan_platform::config::load();
-
-            if name == "custom" {
-                cfg.custom_curve = Some(curve);
-            } else {
-                cfg.named_curves.insert(name.clone(), curve);
-            }
-            let path = peterfan_platform::config::save(&cfg)
-                .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+            let path = update_config(|cfg| {
+                if name == "custom" {
+                    cfg.custom_curve = Some(curve);
+                } else {
+                    cfg.named_curves.insert(name.clone(), curve);
+                }
+                Ok(())
+            })?;
 
             if !json {
                 println!(
@@ -3758,17 +3817,17 @@ fn cmd_profile_action(json: bool, action: ProfileAction) -> Result<()> {
         }
 
         ProfileAction::Delete { name } => {
-            let mut cfg = peterfan_platform::config::load();
-            if name == "custom" {
-                if cfg.custom_curve.is_none() {
-                    anyhow::bail!("no custom curve defined");
+            update_config(|cfg| {
+                if name == "custom" {
+                    if cfg.custom_curve.is_none() {
+                        anyhow::bail!("no custom curve defined");
+                    }
+                    cfg.custom_curve = None;
+                } else if cfg.named_curves.remove(&name).is_none() {
+                    anyhow::bail!("no named curve '{}' found", name);
                 }
-                cfg.custom_curve = None;
-            } else if cfg.named_curves.remove(&name).is_none() {
-                anyhow::bail!("no named curve '{}' found", name);
-            }
-            peterfan_platform::config::save(&cfg)
-                .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
+                Ok(())
+            })?;
             if !json {
                 println!("  {} curve '{}' removed", "✓".green(), name.bold());
             }
@@ -4454,14 +4513,74 @@ fn cmd_alert(
         return cmd_alert_agent(action);
     }
 
-    // Merge CLI flags with config defaults.
+    // --save: write thresholds back to config, then exit.
+    if save {
+        let mut saved_alert = None;
+        let path = update_config(|cfg| {
+            let cpu_thresh = cpu_flag.or(cfg.alert.cpu_pct);
+            let mem_thresh = mem_flag.or(cfg.alert.memory_pct);
+            let temp_thresh = temp_flag.or(cfg.alert.temp_c);
+            if cpu_thresh.is_none() && mem_thresh.is_none() && temp_thresh.is_none() {
+                anyhow::bail!(
+                    "no thresholds set — specify at least one of --cpu, --memory, --temp\n\
+             or save defaults:  peterfan alert --cpu 85 --temp 90 --save\n\
+             Example:           peterfan alert --cpu 85 --temp 90"
+                );
+            }
+
+            if let Some(v) = cpu_flag {
+                cfg.alert.cpu_pct = Some(v);
+            }
+            if let Some(v) = mem_flag {
+                cfg.alert.memory_pct = Some(v);
+            }
+            if let Some(v) = temp_flag {
+                cfg.alert.temp_c = Some(v);
+            }
+            if let Some(v) = interval_flag {
+                cfg.alert.interval_secs = v;
+            }
+            if let Some(v) = cooldown_flag {
+                cfg.alert.cooldown_secs = v;
+            }
+            validate_alert_config(&cfg.alert)?;
+            saved_alert = Some(cfg.alert.clone());
+            Ok(())
+        })?;
+        let alert = saved_alert.expect("successful alert update records the saved thresholds");
+        println!(
+            "  {} alert thresholds saved  ({})",
+            "✓".green(),
+            path.display()
+        );
+        if let Some(c) = alert.cpu_pct {
+            println!("  cpu  > {c}%");
+        }
+        if let Some(m) = alert.memory_pct {
+            println!("  mem  > {m}%");
+        }
+        if let Some(t) = alert.temp_c {
+            println!("  temp > {t}°C");
+        }
+        println!("  Run `peterfan alert` to start monitoring with these thresholds.");
+        return Ok(());
+    }
+
+    // Merge CLI flags with config defaults, then validate the resolved thresholds.
     let cfg = peterfan_platform::config::load();
-    let alert_cfg = &cfg.alert;
-    let cpu_thresh = cpu_flag.or(alert_cfg.cpu_pct);
-    let mem_thresh = mem_flag.or(alert_cfg.memory_pct);
-    let temp_thresh = temp_flag.or(alert_cfg.temp_c);
-    let interval = interval_flag.unwrap_or(alert_cfg.interval_secs).max(1);
-    let cooldown = cooldown_flag.unwrap_or(alert_cfg.cooldown_secs);
+    let alert = peterfan_core::config::AlertConfig {
+        cpu_pct: cpu_flag.or(cfg.alert.cpu_pct),
+        memory_pct: mem_flag.or(cfg.alert.memory_pct),
+        temp_c: temp_flag.or(cfg.alert.temp_c),
+        interval_secs: interval_flag.unwrap_or(cfg.alert.interval_secs),
+        cooldown_secs: cooldown_flag.unwrap_or(cfg.alert.cooldown_secs),
+    };
+    validate_alert_config(&alert)?;
+    let cpu_thresh = alert.cpu_pct;
+    let mem_thresh = alert.memory_pct;
+    let temp_thresh = alert.temp_c;
+    let interval = alert.interval_secs;
+    let cooldown = alert.cooldown_secs;
 
     if cpu_thresh.is_none() && mem_thresh.is_none() && temp_thresh.is_none() {
         anyhow::bail!(
@@ -4469,44 +4588,6 @@ fn cmd_alert(
              or save defaults:  peterfan alert --cpu 85 --temp 90 --save\n\
              Example:           peterfan alert --cpu 85 --temp 90"
         );
-    }
-
-    // --save: write thresholds back to config, then exit.
-    if save {
-        let mut cfg_mut = cfg.clone();
-        if let Some(v) = cpu_flag {
-            cfg_mut.alert.cpu_pct = Some(v);
-        }
-        if let Some(v) = mem_flag {
-            cfg_mut.alert.memory_pct = Some(v);
-        }
-        if let Some(v) = temp_flag {
-            cfg_mut.alert.temp_c = Some(v);
-        }
-        if let Some(v) = interval_flag {
-            cfg_mut.alert.interval_secs = v;
-        }
-        if let Some(v) = cooldown_flag {
-            cfg_mut.alert.cooldown_secs = v;
-        }
-        let path = peterfan_platform::config::save(&cfg_mut)
-            .map_err(|e| anyhow::anyhow!("could not write config: {e}"))?;
-        println!(
-            "  {} alert thresholds saved  ({})",
-            "✓".green(),
-            path.display()
-        );
-        if let Some(c) = cfg_mut.alert.cpu_pct {
-            println!("  cpu  > {c}%");
-        }
-        if let Some(m) = cfg_mut.alert.memory_pct {
-            println!("  mem  > {m}%");
-        }
-        if let Some(t) = cfg_mut.alert.temp_c {
-            println!("  temp > {t}°C");
-        }
-        println!("  Run `peterfan alert` to start monitoring with these thresholds.");
-        return Ok(());
     }
 
     run_alert_loop(
@@ -4830,6 +4911,71 @@ mod tests {
     use clap::{CommandFactory, Parser};
     use peterfan_core::provider::{Capabilities, HardwareProvider};
     use peterfan_core::types::{Celsius, Fan, HardwareInfo, SensorKind, SensorSource, TempSensor};
+
+    #[test]
+    fn alert_thresholds_reject_nonfinite_and_out_of_range_values() {
+        use peterfan_core::config::AlertConfig;
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.1, 100.1] {
+            for key in ["alert.cpu", "alert.memory"] {
+                let alert = AlertConfig {
+                    cpu_pct: Some(value),
+                    memory_pct: Some(value),
+                    ..Default::default()
+                };
+                assert!(
+                    super::validate_alert_setting(&alert, key).is_err(),
+                    "{key}: {value}"
+                );
+            }
+        }
+        for value in [f32::NAN, f32::INFINITY, -0.1, 150.1] {
+            let alert = AlertConfig {
+                temp_c: Some(value),
+                ..Default::default()
+            };
+            assert!(super::validate_alert_config(&alert).is_err());
+        }
+        for value in [0.0, 100.0] {
+            let alert = AlertConfig {
+                cpu_pct: Some(value),
+                memory_pct: Some(value),
+                ..Default::default()
+            };
+            super::validate_alert_config(&alert).unwrap();
+        }
+        let alert = AlertConfig {
+            temp_c: Some(150.0),
+            ..Default::default()
+        };
+        super::validate_alert_config(&alert).unwrap();
+    }
+
+    #[test]
+    fn alert_interval_is_nonzero_and_single_field_repairs_remain_possible() {
+        let alert = peterfan_core::config::AlertConfig {
+            cpu_pct: Some(50.0),
+            memory_pct: Some(f32::NAN),
+            interval_secs: 0,
+            ..Default::default()
+        };
+        assert!(super::validate_alert_config(&alert).is_err());
+        assert!(super::validate_alert_setting(&alert, "alert.interval").is_err());
+        super::validate_alert_setting(&alert, "alert.cpu").unwrap();
+    }
+
+    #[test]
+    fn rule_limit_rejects_append_without_changing_existing_rules() {
+        let mut cfg = peterfan_core::config::Config::default();
+        let rule = peterfan_core::config::Rule {
+            when: "on_ac".into(),
+            profile: peterfan_core::profile::Profile::Balanced,
+        };
+        for _ in 0..32 {
+            super::append_rule(&mut cfg, rule.clone()).unwrap();
+        }
+        assert!(super::append_rule(&mut cfg, rule).is_err());
+        assert_eq!(cfg.rules.len(), 32);
+    }
 
     struct PartialThermalProvider;
 

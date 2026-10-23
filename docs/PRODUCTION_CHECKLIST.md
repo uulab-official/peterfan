@@ -3,6 +3,25 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
+## Configuration and resume bug hardening — 2026-10-23
+
+- [x] Strict locked partial edits preserve malformed files and concurrent disjoint
+      app/CLI changes. Atomic replacement preserves bytes on pre-commit failure;
+      initialization and explicit replacement share the same stable lock.
+- [x] Failed preference saves retain active runner, notification and menu state.
+      CLI rejects a 33rd rule and invalid alert thresholds/intervals.
+- [x] macOS recovery uses a suspend-inclusive monotonic clock in addition to the
+      ordinary pause detector. Injected-suspend and actual-clock tests pass.
+- [x] Final contributor gate: 498 Rust tests passed, 7 ignored; 61 Node tests
+      passed. Native/Windows Clippy, Rust 1.88, release build and 43 smoke checks
+      passed. Only private temporary paths are used by mutation regressions.
+- [x] Signed/notarized/stapled local app installed with backup and unchanged
+      settings. Fresh automatic checks and history restoration verified on two
+      starts, with a six-hour next-check interval after each success.
+- [ ] Physical sleep/wake acceptance and newer-version public OTA adoption.
+
+See [reproductions, delivery evidence and limits](BUG_HARDENING_2026-10-23.md).
+
 ## Update history recovery — 2026-10-23
 
 - [x] Restore only the selected channel's last attempt, success and bounded error

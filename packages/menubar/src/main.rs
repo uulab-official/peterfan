@@ -47,6 +47,7 @@ use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
 #[cfg(target_os = "macos")]
 mod native_runner;
+mod pause_clock;
 mod random_runner;
 mod runner;
 mod update_history;
@@ -1085,23 +1086,26 @@ impl Default for DashboardSlowCache {
 
 /// Persist the menu-bar appearance. The metric itself is intentionally fixed
 /// to CPU Core Average so every surface reports the same number.
-fn save_menubar_display(display: MenubarDisplay) {
-    let mut cfg = peterfan_platform::config::load();
-    cfg.menubar.display = display;
-    let _ = peterfan_platform::config::save(&cfg);
+fn save_menubar_display(display: MenubarDisplay) -> std::io::Result<PathBuf> {
+    peterfan_platform::config::update(|cfg| {
+        cfg.menubar.display = display;
+        Ok(())
+    })
 }
 
-fn save_cpu_core_graph(show: bool) {
-    let mut cfg = peterfan_platform::config::load();
-    cfg.menubar.show_cpu_core_graph = show;
-    let _ = peterfan_platform::config::save(&cfg);
+fn save_cpu_core_graph(show: bool) -> std::io::Result<PathBuf> {
+    peterfan_platform::config::update(|cfg| {
+        cfg.menubar.show_cpu_core_graph = show;
+        Ok(())
+    })
 }
 
-fn save_runner_character(character: RunnerCharacter, random: bool) {
-    let mut cfg = peterfan_platform::config::load();
-    cfg.menubar.character = character;
-    cfg.menubar.random_character = random;
-    let _ = peterfan_platform::config::save(&cfg);
+fn save_runner_character(character: RunnerCharacter, random: bool) -> std::io::Result<PathBuf> {
+    peterfan_platform::config::update(|cfg| {
+        cfg.menubar.character = character;
+        cfg.menubar.random_character = random;
+        Ok(())
+    })
 }
 
 fn note_runner_build_failure(message: String) {
@@ -1205,16 +1209,18 @@ fn runner_character_label(lang: ResolvedLanguage, character: RunnerCharacter) ->
     }
 }
 
-fn save_temperature_source(source: TemperatureSource) {
-    let mut cfg = peterfan_platform::config::load();
-    cfg.menubar.temperature_source = source;
-    let _ = peterfan_platform::config::save(&cfg);
+fn save_temperature_source(source: TemperatureSource) -> std::io::Result<PathBuf> {
+    peterfan_platform::config::update(|cfg| {
+        cfg.menubar.temperature_source = source;
+        Ok(())
+    })
 }
 
 fn save_update_channel(channel: UpdateChannel) -> std::io::Result<PathBuf> {
-    let mut cfg = peterfan_platform::config::load();
-    cfg.menubar.update_channel = channel;
-    peterfan_platform::config::save(&cfg)
+    peterfan_platform::config::update(|cfg| {
+        cfg.menubar.update_channel = channel;
+        Ok(())
+    })
 }
 
 fn configured_update_channel() -> UpdateChannel {
@@ -1222,10 +1228,11 @@ fn configured_update_channel() -> UpdateChannel {
 }
 
 /// Persist the UI language choice so it survives a relaunch.
-fn save_language(language: Language) {
-    let mut cfg = peterfan_platform::config::load();
-    cfg.menubar.language = language;
-    let _ = peterfan_platform::config::save(&cfg);
+fn save_language(language: Language) -> std::io::Result<PathBuf> {
+    peterfan_platform::config::update(|cfg| {
+        cfg.menubar.language = language;
+        Ok(())
+    })
 }
 
 fn apply_notification_command(
@@ -1262,12 +1269,40 @@ fn apply_notification_command(
     Ok(())
 }
 
-fn save_notification_settings(settings: &NotificationConfig) -> Result<(), String> {
-    let mut cfg = peterfan_platform::config::load();
-    cfg.notifications = settings.clone();
-    peterfan_platform::config::save(&cfg)
-        .map(|_| ())
-        .map_err(|error| format!("could not save notifications: {error}"))
+/// Stage settings locally; a failed write must leave the active selection intact.
+fn persist_preference<T, E>(
+    current: &mut T,
+    candidate: T,
+    persist: impl FnOnce(&T) -> Result<(), E>,
+) -> Result<(), E> {
+    persist(&candidate)?;
+    *current = candidate;
+    Ok(())
+}
+
+fn save_notification_command(command: &str) -> Result<(), String> {
+    peterfan_platform::config::update(|cfg| {
+        apply_notification_command(&mut cfg.notifications, command)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
+    })
+    .map(|_| ())
+    .map_err(|error| format!("could not save notifications: {error}"))
+}
+
+fn report_preference_failure(setting: &str, error: impl std::fmt::Display) {
+    let message = format!("Couldn't save {setting}: {error}");
+    *STATUS.lock().expect("status poisoned") = message.clone();
+    log_menubar_event(&message);
+}
+
+fn preference_saved(setting: &str, result: std::io::Result<PathBuf>) -> bool {
+    match result {
+        Ok(_) => true,
+        Err(error) => {
+            report_preference_failure(setting, error);
+            false
+        }
+    }
 }
 
 /// Parse, validate, persist, and reload the automation rules edited in the
@@ -1365,10 +1400,11 @@ fn save_automation_rules(rules_json: &str) -> SettingsSaveResult {
         Ok(rules) => rules,
         Err(error) => return SettingsSaveResult::failed(format!("rules save failed: {error}")),
     };
-    let mut cfg = peterfan_platform::config::load();
-    cfg.rules = rules;
-    let count = cfg.rules.len();
-    if let Err(error) = peterfan_platform::config::save(&cfg) {
+    let count = rules.len();
+    if let Err(error) = peterfan_platform::config::update(|cfg| {
+        cfg.rules = rules;
+        Ok(())
+    }) {
         return SettingsSaveResult::failed(format!("rules save failed: {error}"));
     }
     reload_after_settings_save(format!("rules saved ({count})"))
@@ -1939,9 +1975,13 @@ fn clear_daemon_update_prompt_state(cfg: &mut peterfan_core::config::Config) {
 
 #[cfg(target_os = "macos")]
 fn persist_clear_daemon_update_prompt_state() {
-    let mut cfg = peterfan_platform::config::load();
-    clear_daemon_update_prompt_state(&mut cfg);
-    let _ = peterfan_platform::config::save(&cfg);
+    preference_saved(
+        "daemon update prompt",
+        peterfan_platform::config::update(|cfg| {
+            clear_daemon_update_prompt_state(cfg);
+            Ok(())
+        }),
+    );
 }
 
 fn active_profile_from_mode(mode: &str) -> Option<&str> {
@@ -2007,10 +2047,11 @@ fn save_custom_curve(provider: &dyn HardwareProvider, points_json: &str) -> Stri
     let fan_curve = curve
         .to_fan_curve()
         .expect("validated by parse_curve_points");
-    let mut cfg = peterfan_platform::config::load();
-    cfg.custom_curve = Some(curve);
-    if peterfan_platform::config::save(&cfg).is_err() {
-        return "failed to save curve".into();
+    if let Err(error) = peterfan_platform::config::update(|cfg| {
+        cfg.custom_curve = Some(curve);
+        Ok(())
+    }) {
+        return format!("failed to save curve: {error}");
     }
     // Prefer the daemon (it re-applies continuously as temps change); fall
     // back to one direct write so the change is felt immediately even
@@ -2241,10 +2282,28 @@ fn sample_is_stale(sampled_at: Option<Instant>, now: Instant, limit: Duration) -
         .unwrap_or(true)
 }
 
-fn should_recover_after_pause(last_event_at: Option<Instant>, now: Instant) -> bool {
-    last_event_at
-        .map(|last| now.saturating_duration_since(last) >= RESUME_RECOVERY_GAP)
-        .unwrap_or(false)
+#[cfg(target_os = "macos")]
+fn suspend_inclusive_time() -> Option<Duration> {
+    // Darwin Instant uses uptime, which pauses during suspend. This public
+    // clock includes sleep and is unaffected by wall-clock/NTP adjustments.
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the fixed supported clock ID writes into one valid timespec.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, &mut time) } != 0 {
+        return None;
+    }
+    let seconds = u64::try_from(time.tv_sec).ok()?;
+    let nanos = u32::try_from(time.tv_nsec)
+        .ok()
+        .filter(|nanos| *nanos < 1_000_000_000)?;
+    Some(Duration::new(seconds, nanos))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn suspend_inclusive_time() -> Option<Duration> {
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2687,7 +2746,7 @@ fn main() {
     let mut next_runner_at = Instant::now();
     let mut next_runner_cpu_at = Instant::now() + RUNNER_CPU_REFRESH;
     let mut prewarm_popover_at = Some(Instant::now() + POPOVER_PREWARM_DELAY);
-    let mut last_event_at: Option<Instant> = None;
+    let mut pause_clock = pause_clock::PauseClock::new(RESUME_RECOVERY_GAP);
     event_loop.run(move |event, target, control_flow| {
         if QUIT.load(Ordering::Relaxed) {
             *control_flow = ControlFlow::Exit;
@@ -2695,14 +2754,13 @@ fn main() {
         }
 
         let now = Instant::now();
-        if should_recover_after_pause(last_event_at, now) {
+        if pause_clock.observe(now, suspend_inclusive_time()) {
             recover_after_pause(&mut app, now);
             next_metric_at = now;
             next_runner_at = now;
             next_runner_cpu_at = now + RUNNER_CPU_REFRESH;
             prewarm_popover_at = None;
         }
-        last_event_at = Some(now);
 
         if OPEN_DETAIL.swap(false, Ordering::Relaxed) {
             hide_popover(&mut app);
@@ -2989,6 +3047,7 @@ fn main() {
                     refresh_after_pending = true;
                 } else if let Some(value) = c.strip_prefix("display:") {
                     if let Some(display) = MenubarDisplay::parse(value) {
+                      if preference_saved("menu bar display", save_menubar_display(display)) {
                         app.display = display;
                         invalidate_runner_icon(&mut app.last_runner_icon);
                         next_runner_at = now;
@@ -3004,22 +3063,25 @@ fn main() {
                                 item.set_checked(*candidate == display);
                             }
                         }
-                        save_menubar_display(display);
+                      }
                         refresh_after_pending = true;
                     }
                 } else if let Some(value) = c.strip_prefix("cpu-core-graph:") {
                     let show = value == "1";
-                    app.show_cpu_core_graph = show;
-                    save_cpu_core_graph(show);
+                    if preference_saved("CPU core graph", save_cpu_core_graph(show)) {
+                        app.show_cpu_core_graph = show;
+                    }
                     refresh_after_pending = true;
                 } else if let Some(value) = c.strip_prefix("character:") {
                     if value == "random" {
-                        set_runner_random(&mut app);
-                        next_runner_at = now;
+                        if set_runner_random(&mut app) {
+                            next_runner_at = now;
+                        }
                         refresh_after_pending = true;
                     } else if let Some(character) = RunnerCharacter::parse(value) {
-                        set_runner_character(&mut app, character);
-                        next_runner_at = now;
+                        if set_runner_character(&mut app, character) {
+                            next_runner_at = now;
+                        }
                         refresh_after_pending = true;
                     }
                 } else if let Some(request) = c.strip_prefix("settingsrequest:") {
@@ -3036,15 +3098,12 @@ fn main() {
                     *STATUS.lock().expect("status poisoned") = status;
                     refresh_after_pending = true;
                 } else if c.starts_with("notifications:") {
-                    match apply_notification_command(&mut app.notifications, c) {
-                        Ok(()) => {
-                            if let Err(error) = save_notification_settings(&app.notifications) {
-                                *STATUS.lock().expect("status poisoned") = error;
-                            }
-                        }
-                        Err(error) => {
-                            *STATUS.lock().expect("status poisoned") = error;
-                        }
+                    let mut candidate = app.notifications.clone();
+                    let result = apply_notification_command(&mut candidate, c).and_then(|()| {
+                        persist_preference(&mut app.notifications, candidate, |_| save_notification_command(c))
+                    });
+                    if let Err(error) = result {
+                        report_preference_failure("notifications", error);
                     }
                     refresh_after_pending = true;
                 } else if c == "diagnosefan" {
@@ -3187,6 +3246,7 @@ fn main() {
                 open_menubar_log();
             }
             if let Some(d) = matched_display {
+              if preference_saved("menu bar display", save_menubar_display(d)) {
                 app.display = d;
                 invalidate_runner_icon(&mut app.last_runner_icon);
                 next_runner_at = Instant::now();
@@ -3197,37 +3257,40 @@ fn main() {
                 app.last_menubar_text = None;
                 #[cfg(target_os = "macos")]
                 sync_native_runner_timer(&mut app);
+              }
                 if let Some(ref tm) = app.tray_menu {
-                    for (dd, item) in &tm.display_items {
-                        item.set_checked(*dd == d);
+                    for (candidate, item) in &tm.display_items {
+                        item.set_checked(*candidate == app.display);
                     }
                 }
-                save_menubar_display(app.display);
                 update(&mut app);
             }
             if matched_random {
-                set_runner_random(&mut app);
-                next_runner_at = Instant::now();
+                if set_runner_random(&mut app) {
+                    next_runner_at = Instant::now();
+                }
                 update(&mut app);
             }
             if let Some(character) = matched_character {
-                set_runner_character(&mut app, character);
-                next_runner_at = Instant::now();
+                if set_runner_character(&mut app, character) {
+                    next_runner_at = Instant::now();
+                }
                 update(&mut app);
             }
             if let Some(source) = matched_temperature_source {
+              if preference_saved("temperature source", save_temperature_source(source)) {
                 app.temperature_source = source;
+              }
                 if let Some(ref tm) = app.tray_menu {
                     for (candidate, item) in &tm.temperature_source_items {
-                        item.set_checked(*candidate == source);
+                        item.set_checked(*candidate == app.temperature_source);
                     }
                 }
-                save_temperature_source(source);
                 update(&mut app);
             }
             if let Some(l) = matched_language {
+              if preference_saved("language", save_language(l)) {
                 app.language = l;
-                save_language(l);
                 // Rebuild everything that bakes labels in at construction
                 // time — the native menu (labels are set once, at build
                 // time) and both webviews (the dashboard HTML is generated
@@ -3278,6 +3341,12 @@ fn main() {
                         {
                             restore_window_geometry(window, geometry);
                         }
+                    }
+                }
+              }
+                if let Some(ref tm) = app.tray_menu {
+                    for (candidate, item) in &tm.language_items {
+                        item.set_checked(*candidate == app.language);
                     }
                 }
                 update(&mut app);
@@ -5893,9 +5962,13 @@ fn maybe_prompt_first_run_setup() {
     if stdout.contains("Set Up Now") {
         install_fan_control();
     } else if stdout.contains("Don't Ask Again") {
-        let mut cfg = peterfan_platform::config::load();
-        cfg.menubar.setup_prompt_dismissed = true;
-        let _ = peterfan_platform::config::save(&cfg);
+        preference_saved(
+            "setup prompt",
+            peterfan_platform::config::update(|cfg| {
+                cfg.menubar.setup_prompt_dismissed = true;
+                Ok(())
+            }),
+        );
     }
     // "Not Now" (or Escape, which maps to the cancel button) — ask again
     // next launch, nothing to persist.
@@ -6047,14 +6120,23 @@ fn maybe_prompt_stale_daemon_update() {
     if stdout.contains(update) {
         install_fan_control();
     } else if stdout.contains(dont_ask) {
-        let mut cfg = peterfan_platform::config::load();
-        cfg.menubar.daemon_update_prompt_dismissed_for =
-            Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION.to_string());
-        let _ = peterfan_platform::config::save(&cfg);
+        preference_saved(
+            "daemon update prompt",
+            peterfan_platform::config::update(|cfg| {
+                cfg.menubar.daemon_update_prompt_dismissed_for =
+                    Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION.to_string());
+                Ok(())
+            }),
+        );
     } else if stdout.contains(not_now) {
-        let mut cfg = peterfan_platform::config::load();
-        cfg.menubar.daemon_update_prompt_snoozed_until_unix = Some(now_unix() + 24 * 60 * 60);
-        let _ = peterfan_platform::config::save(&cfg);
+        preference_saved(
+            "daemon update prompt",
+            peterfan_platform::config::update(|cfg| {
+                cfg.menubar.daemon_update_prompt_snoozed_until_unix =
+                    Some(now_unix() + 24 * 60 * 60);
+                Ok(())
+            }),
+        );
     }
 }
 #[cfg(not(target_os = "macos"))]
@@ -6954,30 +7036,91 @@ fn sync_runner_selection(app: &App) {
     }
 }
 
-fn set_runner_random(app: &mut App) {
-    app.random_runner.set_enabled(true, Instant::now());
-    if let Some(next) = app.random_runner.next_due(
-        Instant::now(),
-        app.runner_character,
-        runner_should_animate(app.display, app.reduce_motion),
-    ) {
-        switch_runner_character(app, next);
-    }
-    sync_runner_selection(app);
-    // Save once when the user selects a mode, never on timed rotations.
-    save_runner_character(app.runner_character, true);
-    log_menubar_event("runner selection=random interval=60s");
+/// Build first, persist second, and return prepared assets without changing live
+/// animation state. Both error paths leave the current runner and timer intact.
+fn prepare_runner_preference<A>(
+    current: RunnerCharacter,
+    requested: RunnerCharacter,
+    build: impl FnOnce(RunnerCharacter) -> Result<A, String>,
+    persist: impl FnOnce(RunnerCharacter) -> Result<(), String>,
+) -> Result<Option<A>, String> {
+    let assets = if current == requested {
+        None
+    } else {
+        Some(build(requested)?)
+    };
+    persist(requested)?;
+    Ok(assets)
 }
 
-fn set_runner_character(app: &mut App, character: RunnerCharacter) {
-    if switch_runner_character(app, character) {
+fn set_runner_random(app: &mut App) -> bool {
+    if app.random_runner.enabled() {
+        let saved = preference_saved(
+            "random runner",
+            save_runner_character(app.runner_character, true),
+        );
+        sync_runner_selection(app);
+        return saved;
+    }
+    let now = Instant::now();
+    let mut candidate = RandomRunner::new(true, now);
+    let character = candidate
+        .next_due(
+            now,
+            app.runner_character,
+            runner_should_animate(app.display, app.reduce_motion),
+        )
+        .unwrap_or(app.runner_character);
+    if select_runner_preference(app, character, true) {
+        app.random_runner = candidate;
+        sync_runner_selection(app);
+        log_menubar_event("runner selection=random interval=60s");
+        true
+    } else {
+        false
+    }
+}
+
+fn set_runner_character(app: &mut App, character: RunnerCharacter) -> bool {
+    if select_runner_preference(app, character, false) {
         app.random_runner.set_enabled(false, Instant::now());
         sync_runner_selection(app);
-        save_runner_character(app.runner_character, false);
         log_menubar_event(&format!(
             "runner selection=fixed character={}",
             character.as_str()
         ));
+        true
+    } else {
+        false
+    }
+}
+
+fn select_runner_preference(app: &mut App, character: RunnerCharacter, random: bool) -> bool {
+    match prepare_runner_preference(
+        app.runner_character,
+        character,
+        |requested| {
+            build_runner_assets(requested)
+                .map_err(|error| runner_switch_failure_message(requested, &error))
+        },
+        |requested| {
+            save_runner_character(requested, random)
+                .map(|_| ())
+                .map_err(|error| format!("Couldn't save runner selection: {error}"))
+        },
+    ) {
+        Ok(Some(assets)) => {
+            app.runner_assets = assets;
+            app.runner_character = character;
+            finish_runner_switch(app);
+            true
+        }
+        Ok(None) => true,
+        Err(error) => {
+            note_runner_build_failure(error);
+            sync_runner_selection(app);
+            false
+        }
     }
 }
 
@@ -6996,6 +7139,11 @@ fn switch_runner_character(app: &mut App, character: RunnerCharacter) -> bool {
         return false;
     }
 
+    finish_runner_switch(app);
+    true
+}
+
+fn finish_runner_switch(app: &mut App) {
     #[cfg(target_os = "macos")]
     stop_native_runner_timer(app);
     #[cfg(target_os = "macos")]
@@ -7010,7 +7158,6 @@ fn switch_runner_character(app: &mut App, character: RunnerCharacter) -> bool {
     apply_runner_icon(app);
     #[cfg(target_os = "macos")]
     sync_native_runner_timer(app);
-    true
 }
 
 fn apply_runner_icon(app: &mut App) {
@@ -11244,6 +11391,78 @@ mod tests {
     }
 
     #[test]
+    fn preference_failed_write_keeps_live_notification_settings_and_allows_retry() {
+        let mut live = NotificationConfig::default();
+        let original = live.clone();
+        let mut candidate = live.clone();
+        apply_notification_command(&mut candidate, "notifications:updates:0").unwrap();
+        let result = persist_preference(&mut live, candidate.clone(), |_| Err("disk full"));
+        assert_eq!(result, Err("disk full"));
+        assert_eq!(live.updates, original.updates);
+        assert_eq!(live.temperature_c, original.temperature_c);
+        persist_preference(&mut live, candidate, |_| Ok::<_, &str>(())).unwrap();
+        assert!(!live.updates);
+    }
+
+    #[test]
+    fn runner_preference_build_failure_never_persists_selection() {
+        let persisted = std::cell::Cell::new(false);
+        let result = prepare_runner_preference::<()>(
+            RunnerCharacter::Cat,
+            RunnerCharacter::Fox,
+            |_| Err("invalid artwork".into()),
+            |_| {
+                persisted.set(true);
+                Ok(())
+            },
+        );
+        assert_eq!(result, Err("invalid artwork".to_string()));
+        assert!(!persisted.get());
+    }
+
+    #[test]
+    fn runner_preference_write_failure_returns_no_assets_to_commit() {
+        let built = std::cell::Cell::new(false);
+        let result = prepare_runner_preference(
+            RunnerCharacter::Cat,
+            RunnerCharacter::Fox,
+            |_| {
+                built.set(true);
+                Ok("prepared fox")
+            },
+            |_| Err("read-only filesystem".into()),
+        );
+        assert_eq!(result, Err("read-only filesystem".to_string()));
+        assert!(built.get());
+        let saved = prepare_runner_preference(
+            RunnerCharacter::Cat,
+            RunnerCharacter::Fox,
+            |_| Ok("prepared fox"),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(saved, Some("prepared fox"));
+    }
+
+    #[test]
+    fn runner_mode_change_persists_without_rebuilding_current_motion() {
+        let persisted = std::cell::Cell::new(false);
+        let result = prepare_runner_preference::<()>(
+            RunnerCharacter::Cat,
+            RunnerCharacter::Cat,
+            |_| panic!("same-character mode changes must preserve assets"),
+            |character| {
+                assert_eq!(character, RunnerCharacter::Cat);
+                persisted.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(result, None);
+        assert!(persisted.get());
+    }
+
+    #[test]
     fn notification_fan_rule_reports_once_per_failure_incident() {
         let settings = NotificationConfig::default();
         let mut runtime = NotificationRuntime::default();
@@ -15116,15 +15335,26 @@ rules = [{ when = "on_ac", profile = "maximum" }]
     #[test]
     fn pause_recovery_requires_a_real_event_loop_gap() {
         let now = Instant::now();
-        assert!(!should_recover_after_pause(None, now));
-        assert!(!should_recover_after_pause(
-            Some(now - RESUME_RECOVERY_GAP + Duration::from_millis(1)),
-            now
+        let mut clock = pause_clock::PauseClock::new(RESUME_RECOVERY_GAP);
+        assert!(!clock.observe(now, None));
+        assert!(!clock.observe(now + RESUME_RECOVERY_GAP - Duration::from_millis(1), None));
+        assert!(clock.observe(
+            now + RESUME_RECOVERY_GAP * 2 - Duration::from_millis(1),
+            None
         ));
-        assert!(should_recover_after_pause(
-            Some(now - RESUME_RECOVERY_GAP),
-            now
-        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_suspend_clock_returns_monotonic_nanosecond_readings() {
+        let before = suspend_inclusive_time().expect("supported Darwin continuous clock");
+        std::thread::sleep(Duration::from_millis(2));
+        let after = suspend_inclusive_time().expect("second continuous reading");
+        let elapsed = after
+            .checked_sub(before)
+            .expect("clock must not go backwards");
+        assert!(elapsed >= Duration::from_millis(1));
+        assert!(elapsed < Duration::from_secs(30));
     }
 
     #[test]

@@ -196,3 +196,23 @@ test('temperature snapshots preserve focused typing and refresh after blur', () 
   assert.equal(input.disabled, true);
   assert.equal(ui.nodes['notification-temp-toggle'].checked, false);
 });
+
+
+test('rejected notification saves restore persisted toggle selections on the next snapshot', () => {
+  const ui = dashboard();
+  const persisted = { temperature_c: 85, fan_failures: true, updates: true };
+  ui.context.updateNotificationSettings({ notifications: persisted });
+  ui.nodes['notification-update-toggle'].checked = false;
+  ui.context.setNotificationBoolean('updates', false);
+  assert.equal(ui.messages.at(-1), 'notifications:updates:0');
+  ui.context.updateNotificationSettings({
+    notifications: persisted, last_cmd_status: "Couldn't save notifications: disk full",
+  });
+  assert.equal(ui.nodes['notification-update-toggle'].checked, true);
+  ui.nodes['notification-temp-toggle'].checked = false;
+  ui.context.toggleTemperatureNotification(false);
+  assert.equal(ui.nodes['notification-temp-threshold'].disabled, true);
+  ui.context.updateNotificationSettings({ notifications: persisted });
+  assert.equal(ui.nodes['notification-temp-toggle'].checked, true);
+  assert.equal(ui.nodes['notification-temp-threshold'].disabled, false);
+});

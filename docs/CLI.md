@@ -384,6 +384,8 @@ peterfan --json benchmark --secs 10
 
 ### `alert` — 임계값 초과 시 데스크탑 알림
 
+CPU·메모리 임계값은 0–100%, 온도는 0–150°C의 유한한 숫자이며, 검사 간격은 1초 이상이어야 합니다. 잘못된 값은 저장하거나 모니터링하기 전에 거부합니다.
+
 CPU/메모리/온도가 지정한 임계값을 넘으면 알림(macOS `osascript`, Linux `notify-send`)을 보냄.
 
 ```bash
