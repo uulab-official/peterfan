@@ -42,6 +42,30 @@ fn daemon_plist() -> String {
     )
 }
 
+// A fresh adjacent inode avoids retaining a quarantined predecessor's xattrs.
+// Keep preparation inside a subshell so cleanup traps do not affect the installer.
+fn daemon_plist_replacement_script(destination: &str, body: &str, owner: &str) -> String {
+    let quote = |value: &str| format!("'{}'", value.replace('\'', "'\"'\"'"));
+    format!(
+        r#"(
+set -e
+plist_tmp=$(/usr/bin/mktemp {template})
+trap '/bin/rm -f "$plist_tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+/bin/cat > "$plist_tmp" <<'PETERFAN_DAEMON_PLIST'
+{body}PETERFAN_DAEMON_PLIST
+/usr/bin/plutil -lint "$plist_tmp" >/dev/null
+/usr/sbin/chown {owner} "$plist_tmp"
+/bin/chmod 644 "$plist_tmp"
+/bin/mv -f "$plist_tmp" {destination}
+)
+"#,
+        template = quote(&format!("{destination}.XXXXXX")),
+        destination = quote(destination),
+        owner = quote(owner),
+    )
+}
+
 /// Find the `peterfand` binary shipped next to the current executable —
 /// works both for the CLI's flat archive layout and for `PeterFan.app/
 /// Contents/MacOS/` (see `scripts/bundle-macos.sh`, which copies `peterfand`
@@ -257,23 +281,37 @@ pub fn install(dry_run: bool) -> Result<InstallOutcome, String> {
 
 pub fn install_with_progress(
     dry_run: bool,
+    report: impl FnMut(InstallStage),
+) -> Result<InstallOutcome, String> {
+    install_with_mode(dry_run, false, report)
+}
+
+/// Explicitly replace even a healthy daemon, after a fresh administrator approval.
+pub fn repair(dry_run: bool) -> Result<InstallOutcome, String> {
+    install_with_mode(dry_run, true, |_| {})
+}
+
+fn install_with_mode(
+    dry_run: bool,
+    force: bool,
     mut report: impl FnMut(InstallStage),
 ) -> Result<InstallOutcome, String> {
     report(InstallStage::Preflight);
-    let result = install_reported(dry_run, &mut report);
+    let result = install_reported(dry_run, force, &mut report);
     finish_reported_install(result, &mut report)
 }
 
 fn install_reported(
     dry_run: bool,
+    force: bool,
     report: &mut impl FnMut(InstallStage),
 ) -> Result<InstallOutcome, String> {
     if !dry_run {
         let installed_version = crate::installed_daemon_version();
-        if required_daemon_is_healthy(
+        if reuse_existing_daemon(
+            force,
             installed_version.as_deref(),
             crate::running_daemon_version().as_deref(),
-            crate::MIN_REQUIRED_DAEMON_VERSION,
         ) {
             return Ok(InstallOutcome::Installed);
         }
@@ -293,6 +331,8 @@ fn install_reported(
         }
     }
     let plist_dst = DAEMON_PLIST.to_string();
+    let plist_replacement =
+        daemon_plist_replacement_script(&plist_dst, &daemon_plist(), "root:wheel");
     let legacy_plist_dst = format!("/Library/LaunchDaemons/{LEGACY_DAEMON_LABEL}.plist");
     let script = format!(
         "set -e\n\
@@ -302,16 +342,13 @@ fn install_reported(
          /bin/mkdir -p /usr/local/bin\n\
          /usr/bin/install -m 755 '{staged_bin}' {DAEMON_BIN}\n\
          /bin/rm -f '{staged_bin}'\n\
-         cat > '{plist_dst}' <<'PLIST'\n{plist}PLIST\n\
-         /usr/sbin/chown root:wheel '{plist_dst}'\n\
-         /bin/chmod 644 '{plist_dst}'\n\
-         /usr/bin/plutil -lint '{plist_dst}' >/dev/null\n\
+         {plist_replacement}\
          /bin/launchctl bootstrap system '{plist_dst}'\n\
          /bin/mkdir -p /etc/newsyslog.d\n\
          /usr/bin/printf '%s' '{newsyslog}' > {newsyslog_conf}\n\
          /bin/chmod 644 {newsyslog_conf}\n",
         staged_bin = staged_bin.display(),
-        plist = daemon_plist(),
+        plist_replacement = plist_replacement,
         legacy_plist_dst = legacy_plist_dst,
         legacy_label = LEGACY_DAEMON_LABEL,
         daemon_label = DAEMON_LABEL,
@@ -332,6 +369,10 @@ fn install_reported(
         || wait_for_required_daemon(std::time::Duration::from_secs(10)),
         report,
     )
+}
+
+fn reuse_existing_daemon(force: bool, installed: Option<&str>, resident: Option<&str>) -> bool {
+    !force && required_daemon_is_healthy(installed, resident, crate::MIN_REQUIRED_DAEMON_VERSION)
 }
 
 /// Remove the daemon (LaunchDaemon, binary, log-rotation config). One admin
@@ -419,6 +460,123 @@ pub fn reinstall_via_running_daemon(_dry_run: bool) -> Result<InstallOutcome, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_force_repairs_healthy_helpers_and_default_install_reuses_them() {
+        let version = crate::MIN_REQUIRED_DAEMON_VERSION;
+        assert!(reuse_existing_daemon(false, Some(version), Some(version)));
+        assert!(!reuse_existing_daemon(true, Some(version), Some(version)));
+        assert!(!reuse_existing_daemon(false, Some(version), None));
+    }
+
+    struct PlistFixture(PathBuf);
+
+    impl PlistFixture {
+        fn new() -> Self {
+            let output = std::process::Command::new("/usr/bin/mktemp")
+                .args(["-d", "-t", "peterfan-plist-replacement"])
+                .output()
+                .expect("create private test directory");
+            assert!(output.status.success());
+            Self(PathBuf::from(
+                String::from_utf8(output.stdout).unwrap().trim(),
+            ))
+        }
+        fn owner(&self) -> String {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = std::fs::metadata(&self.0).unwrap();
+            format!("{}:{}", metadata.uid(), metadata.gid())
+        }
+    }
+
+    impl Drop for PlistFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn quarantine_plist(path: &std::path::Path) {
+        let output = std::process::Command::new("/usr/bin/xattr")
+            .args(["-w", "com.apple.quarantine", "0081;00000000;PeterFanTest;"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn plist_has_quarantine(path: &std::path::Path) -> bool {
+        let output = std::process::Command::new("/usr/bin/xattr")
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line == "com.apple.quarantine")
+    }
+
+    #[test]
+    fn generated_plist_replaces_quarantined_inode_with_a_fresh_valid_file() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let fixture = PlistFixture::new();
+        let path = fixture.0.join("owner's daemon.plist");
+        std::fs::write(&path, "old content").unwrap();
+        quarantine_plist(&path);
+        let inode = std::fs::metadata(&path).unwrap().ino();
+        let body = daemon_plist();
+        // Reproduce the old redirect: replacing bytes leaves the inode's quarantine.
+        std::fs::write(&path, &body).unwrap();
+        assert!(plist_has_quarantine(&path));
+        assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+        let script =
+            daemon_plist_replacement_script(path.to_str().unwrap(), &body, &fixture.owner());
+        let output = std::process::Command::new("/bin/bash")
+            .args(["-ec", &script])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !plist_has_quarantine(&path),
+            "generated plist must not inherit old inode quarantine"
+        );
+        assert_ne!(std::fs::metadata(&path).unwrap().ino(), inode);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(std::fs::read_dir(&fixture.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn invalid_staged_plist_preserves_existing_bytes_and_cleans_temporary_file() {
+        let fixture = PlistFixture::new();
+        let path = fixture.0.join("daemon.plist");
+        let old = daemon_plist();
+        std::fs::write(&path, &old).unwrap();
+        quarantine_plist(&path);
+        let script = daemon_plist_replacement_script(
+            path.to_str().unwrap(),
+            "invalid plist\n",
+            &fixture.owner(),
+        );
+        let output = std::process::Command::new("/bin/bash")
+            .args(["-ec", &script])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        assert!(plist_has_quarantine(&path));
+        assert_eq!(std::fs::read_dir(&fixture.0).unwrap().count(), 1);
+    }
 
     #[test]
     fn existing_daemon_verification_requires_the_resident_version_before_completion() {
@@ -577,34 +735,34 @@ mod tests {
     #[test]
     fn required_daemon_health_rejects_a_stale_or_invalid_resident_after_disk_replacement() {
         assert!(!required_daemon_is_healthy(
-            Some("1.32.3"),
-            Some("1.32.2"),
-            "1.32.3"
-        ));
-        assert!(!required_daemon_is_healthy(
-            Some("1.32.3"),
-            Some("1.32.3-beta.1"),
-            "1.32.3",
-        ));
-        assert!(!required_daemon_is_healthy(
-            Some("1.32.3"),
-            Some("unknown"),
-            "1.32.3"
-        ));
-        assert!(!required_daemon_is_healthy(
-            Some("unknown"),
-            Some("1.32.3"),
-            "1.32.3"
-        ));
-        assert!(required_daemon_is_healthy(
-            Some("1.32.3"),
-            Some("1.32.3+build.7"),
-            "1.32.3",
-        ));
-        assert!(required_daemon_is_healthy(
-            Some("1.32.3"),
+            Some("1.32.5"),
             Some("1.32.4"),
-            "1.32.3"
+            "1.32.5"
+        ));
+        assert!(!required_daemon_is_healthy(
+            Some("1.32.5"),
+            Some("1.32.5-beta.1"),
+            "1.32.5",
+        ));
+        assert!(!required_daemon_is_healthy(
+            Some("1.32.5"),
+            Some("unknown"),
+            "1.32.5"
+        ));
+        assert!(!required_daemon_is_healthy(
+            Some("unknown"),
+            Some("1.32.5"),
+            "1.32.5"
+        ));
+        assert!(required_daemon_is_healthy(
+            Some("1.32.5"),
+            Some("1.32.5+build.7"),
+            "1.32.5",
+        ));
+        assert!(required_daemon_is_healthy(
+            Some("1.32.5"),
+            Some("1.32.6"),
+            "1.32.5"
         ));
     }
 

@@ -93,8 +93,8 @@ login, or a license key.
 ## Install
 
 Published downloads and the current source branch may differ. The latest
-published release verified on 2026-10-22 is **v1.32.2**; the development workspace
-is **v1.32.4**. Check [Releases](https://github.com/uulab-official/peterfan/releases/latest)
+published release verified on 2026-10-22 is **v1.32.2**; the source release candidate
+is **v1.32.5**. Check [Releases](https://github.com/uulab-official/peterfan/releases/latest)
 for published assets and [the production checklist](docs/PRODUCTION_CHECKLIST.md)
 for the evidence behind each version.
 

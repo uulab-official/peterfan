@@ -177,6 +177,9 @@ enum Command {
         /// Print what would run instead of asking for the admin password.
         #[arg(long)]
         dry_run: bool,
+        /// Replace even a healthy helper after administrator approval.
+        #[arg(long)]
+        force: bool,
     },
     /// Remove the root fan-control daemon.
     UninstallDaemon {
@@ -477,7 +480,7 @@ fn dispatch(command: Command, mock: bool, json: bool) -> Result<()> {
         }
         Command::Log { interval, format } => cmd_log(mock, interval, format),
         Command::LoginItem { action } => cmd_login_item(action),
-        Command::InstallDaemon { dry_run } => cmd_install_daemon(dry_run),
+        Command::InstallDaemon { dry_run, force } => cmd_install_daemon(dry_run, force),
         Command::UninstallDaemon { dry_run } => cmd_uninstall_daemon(dry_run),
         Command::Watch { interval } => cmd_watch(mock, interval),
         Command::Update {
@@ -615,11 +618,12 @@ fn cmd_login_item(action: LoginItemAction) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn cmd_install_daemon(dry_run: bool) -> Result<()> {
-    use peterfan_platform::daemon_install::InstallOutcome;
+fn cmd_install_daemon(dry_run: bool, force: bool) -> Result<()> {
     let installed_version = peterfan_platform::installed_daemon_version();
     let already_ready = !dry_run
+        && !force
         && peterfan_platform::daemon_reachable()
+        && peterfan_platform::running_daemon_version().as_deref() == installed_version.as_deref()
         && installed_version
             .as_deref()
             .is_some_and(|version| !peterfan_platform::daemon_update_required(version));
@@ -634,7 +638,22 @@ fn cmd_install_daemon(dry_run: bool) -> Result<()> {
              `peterfan fan …` work without sudo (just like Macs Fan Control)."
         );
     }
-    match peterfan_platform::daemon_install::install(dry_run) {
+    let result = if force {
+        peterfan_platform::daemon_install::repair(dry_run)
+    } else {
+        peterfan_platform::daemon_install::install(dry_run)
+    };
+    report_daemon_install_result(result, already_ready, installed_version.as_deref())
+}
+
+#[cfg(target_os = "macos")]
+fn report_daemon_install_result(
+    result: Result<peterfan_platform::daemon_install::InstallOutcome, String>,
+    already_ready: bool,
+    installed_version: Option<&str>,
+) -> Result<()> {
+    use peterfan_platform::daemon_install::InstallOutcome;
+    match result {
         Ok(InstallOutcome::DryRun(script)) => {
             println!("{script}");
             Ok(())
@@ -644,7 +663,7 @@ fn cmd_install_daemon(dry_run: bool) -> Result<()> {
                 "{}",
                 format!(
                     "✓ fan control is already ready (daemon v{})",
-                    installed_version.as_deref().unwrap_or("unknown")
+                    installed_version.unwrap_or("unknown")
                 )
                 .green()
             );
@@ -656,12 +675,9 @@ fn cmd_install_daemon(dry_run: bool) -> Result<()> {
             Ok(())
         }
         Ok(InstallOutcome::InstalledButUnreachable) => {
-            println!(
-                "{}",
-                "installed, but the daemon isn't answering yet — check /var/log/peterfand.err"
-                    .yellow()
-            );
-            Ok(())
+            anyhow::bail!(
+                "Installed files, but the running daemon could not be verified — check /var/log/peterfand.err"
+            )
         }
         Err(e) => anyhow::bail!(e),
     }
@@ -685,7 +701,7 @@ fn cmd_uninstall_daemon(dry_run: bool) -> Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn cmd_install_daemon(_dry_run: bool) -> Result<()> {
+fn cmd_install_daemon(_dry_run: bool, _force: bool) -> Result<()> {
     anyhow::bail!("the daemon installer is macOS-only for now")
 }
 #[cfg(not(target_os = "macos"))]
@@ -4908,6 +4924,41 @@ fn cmd_alert_agent(action: AlertAction) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unverified_daemon_installation_is_a_cli_failure() {
+        use peterfan_platform::daemon_install::InstallOutcome;
+        assert!(super::report_daemon_install_result(
+            Ok(InstallOutcome::InstalledButUnreachable),
+            false,
+            None
+        )
+        .is_err());
+        assert!(super::report_daemon_install_result(
+            Err("Administrator approval was cancelled".into()),
+            false,
+            None
+        )
+        .is_err());
+        assert!(
+            super::report_daemon_install_result(Ok(InstallOutcome::Installed), false, None).is_ok()
+        );
+    }
+
+    #[test]
+    fn explicit_daemon_repair_flag_is_parsed_without_running_installer() {
+        use clap::Parser;
+        let cli =
+            super::Cli::try_parse_from(["peterfan", "install-daemon", "--force", "--dry-run"])
+                .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(super::Command::InstallDaemon {
+                force: true,
+                dry_run: true
+            })
+        ));
+    }
     use clap::{CommandFactory, Parser};
     use peterfan_core::provider::{Capabilities, HardwareProvider};
     use peterfan_core::types::{Celsius, Fan, HardwareInfo, SensorKind, SensorSource, TempSensor};
