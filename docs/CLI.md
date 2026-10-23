@@ -316,8 +316,13 @@ fans through it.
 ```bash
 peterfan install-daemon            # one GUI admin prompt
 peterfan install-daemon --dry-run  # print the exact privileged script first
+peterfan install-daemon --force    # approved replacement, even if already healthy
 peterfan uninstall-daemon          # remove it
 ```
+
+Daemon installation returns failure if the resident daemon cannot be verified;
+copied files alone are not a successful installation. `--force` always requests
+administrator-approved replacement and is intended for explicit repair.
 
 ### `login-item` — start the menu-bar app at login (macOS)
 

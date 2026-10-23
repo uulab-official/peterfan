@@ -1517,18 +1517,26 @@ fn daemon_supports_user_config(reply: Option<&str>) -> bool {
     reply.is_some_and(|reply| reply.starts_with("ok logged-in-user"))
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn daemon_self_reinstall_is_secure(installed: Option<&str>, resident: Option<&str>) -> bool {
+    installed.is_some_and(peterfan_platform::daemon_self_reinstall_supported)
+        && resident.is_some_and(peterfan_platform::daemon_self_reinstall_supported)
+}
+
 #[cfg(target_os = "macos")]
 fn ensure_daemon_user_config_sync() {
     let probe = peterfan_platform::ipc::send_command("config-source");
     if !daemon_supports_user_config(probe.as_deref()) {
         let installed = peterfan_platform::installed_daemon_version();
+        let resident = peterfan_platform::running_daemon_version();
         // A helper that is already too old for general control is handled by
         // the regular stale-daemon updater running alongside this task. Only
         // self-reinstall here when the sole missing capability is config sync.
-        if installed.as_deref().is_some_and(|version| {
-            !peterfan_platform::daemon_update_required(version)
-                && peterfan_platform::daemon_self_reinstall_supported(version)
-        }) {
+        if installed
+            .as_deref()
+            .is_some_and(|version| !peterfan_platform::daemon_update_required(version))
+            && daemon_self_reinstall_is_secure(installed.as_deref(), resident.as_deref())
+        {
             match peterfan_platform::daemon_install::reinstall_via_running_daemon(false) {
                 Ok(_) => log_menubar_event("daemon updated for user config sync"),
                 Err(error) => {
@@ -1546,8 +1554,13 @@ fn ensure_daemon_user_config_sync() {
             std::thread::sleep(Duration::from_millis(250));
         }
     }
-    if let Some(reply) = peterfan_platform::ipc::send_command("reload") {
-        log_menubar_event(&format!("daemon config sync: {reply}"));
+    if daemon_control_usable(
+        peterfan_platform::installed_daemon_version().as_deref(),
+        peterfan_platform::running_daemon_version().as_deref(),
+    ) {
+        if let Some(reply) = peterfan_platform::ipc::send_command("reload") {
+            log_menubar_event(&format!("daemon config sync: {reply}"));
+        }
     }
 }
 
@@ -1991,8 +2004,9 @@ fn clear_daemon_version_cache() {
         .expect("daemon version cache poisoned") = None;
 }
 
-fn daemon_control_usable(daemon_version: Option<&str>) -> bool {
-    daemon_version.is_some_and(|version| !peterfan_platform::daemon_update_required(version))
+fn daemon_control_usable(installed: Option<&str>, resident: Option<&str>) -> bool {
+    installed.is_some_and(|version| !peterfan_platform::daemon_update_required(version))
+        && resident.is_some_and(|version| !peterfan_platform::daemon_update_required(version))
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -2086,8 +2100,10 @@ fn save_custom_curve(provider: &dyn HardwareProvider, points_json: &str) -> Stri
     // without a daemon, same "best effort, no persistent loop" contract as
     // every other local-fallback path in this file.
     #[cfg(unix)]
-    if daemon_control_usable(cached_installed_daemon_version().as_deref())
-        && peterfan_platform::ipc::send_command("reload").is_some()
+    if daemon_control_usable(
+        cached_installed_daemon_version().as_deref(),
+        peterfan_platform::running_daemon_version().as_deref(),
+    ) && peterfan_platform::ipc::send_command("reload").is_some()
     {
         let _ = peterfan_platform::ipc::send_command("profile custom");
         return "custom curve saved".into();
@@ -5040,11 +5056,13 @@ fn update(app: &mut App) {
         .unwrap_or_default();
     let daemon_running = !daemon_st.is_empty();
     let daemon_version = cached_installed_daemon_version();
-    let daemon_update_needed = daemon_running
-        && daemon_version
-            .as_deref()
-            .is_some_and(peterfan_platform::daemon_update_required);
-    let daemon_usable = daemon_running && daemon_control_usable(daemon_version.as_deref());
+    let resident_version = daemon_json
+        .as_ref()
+        .and_then(|value| value.get("daemon_version"))
+        .and_then(serde_json::Value::as_str);
+    let daemon_usable =
+        daemon_running && daemon_control_usable(daemon_version.as_deref(), resident_version);
+    let daemon_update_needed = app.provider.name() != "mock" && daemon_running && !daemon_usable;
     // Without a daemon to ask, fall back to the local shadow state that
     // `apply_local` maintains for its one-shot direct writes.
     let fan_overrides = if daemon_usable {
@@ -5278,6 +5296,7 @@ fn update(app: &mut App) {
         "ctl_status": ctl_status,
         "daemon_running": !daemon_st.is_empty(),
         "daemon_version": daemon_version.clone(),
+        "daemon_runtime_version": resident_version,
         "daemon_required_version": peterfan_platform::MIN_REQUIRED_DAEMON_VERSION,
         "daemon_update_needed": daemon_update_needed,
         "daemon_binary_installed": daemon_binary_installed,
@@ -5415,6 +5434,20 @@ fn daemon_temps_json() -> Option<serde_json::Value> {
 /// back to controlling fans directly if this process happens to have access.
 /// Returns a short human-readable status for the popover.
 fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
+    if provider.name() == "mock" {
+        return apply_local(provider, cmd);
+    }
+    #[cfg(unix)]
+    if !daemon_control_usable(
+        cached_installed_daemon_version().as_deref(),
+        peterfan_platform::running_daemon_version().as_deref(),
+    ) {
+        if direct_fan_control_allowed() {
+            return apply_local(provider, cmd);
+        }
+        return "error: fan control requires a verified current daemon; reinstall fan control"
+            .into();
+    }
     #[cfg(unix)]
     let line = if let Some(name) = cmd.strip_prefix("profile:") {
         format!("profile {name}\n")
@@ -5441,7 +5474,14 @@ fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
             let mut buf = [0u8; 96];
             let n = stream.read(&mut buf).unwrap_or(0);
             let reply = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-            return format!("daemon: {}", if reply.is_empty() { "ok" } else { &reply });
+            return format!(
+                "daemon: {}",
+                if reply.is_empty() {
+                    "error: no acknowledgement"
+                } else {
+                    &reply
+                }
+            );
         }
     }
 
@@ -5899,7 +5939,9 @@ fn fan_control_install_plan(
         {
             FanControlInstallPlan::AlreadyReady
         }
-        (Some(version), true) if peterfan_platform::daemon_self_reinstall_supported(version) => {
+        (Some(version), true)
+            if daemon_self_reinstall_is_secure(Some(version), running_version) =>
+        {
             FanControlInstallPlan::SelfReinstall
         }
         _ => FanControlInstallPlan::PrivilegedInstall,
@@ -6128,9 +6170,12 @@ fn stale_daemon_version() -> Option<String> {
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn daemon_can_self_update_silently(installed_version: &str) -> bool {
+fn daemon_can_self_update_silently(
+    installed_version: &str,
+    resident_version: Option<&str>,
+) -> bool {
     peterfan_platform::daemon_update_required(installed_version)
-        && peterfan_platform::daemon_self_reinstall_supported(installed_version)
+        && daemon_self_reinstall_is_secure(Some(installed_version), resident_version)
 }
 
 #[cfg(target_os = "macos")]
@@ -6140,10 +6185,12 @@ fn maybe_silently_update_stale_daemon() {
     let Some(old_version) = stale_daemon_version() else {
         return;
     };
-    if !daemon_can_self_update_silently(&old_version)
-        || INSTALL_FAN_CONTROL_IN_FLIGHT
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
+    if !daemon_can_self_update_silently(
+        &old_version,
+        peterfan_platform::running_daemon_version().as_deref(),
+    ) || INSTALL_FAN_CONTROL_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
     {
         return;
     }
@@ -15081,41 +15128,61 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
             "one approval this time"
         );
         assert_eq!(
-            daemon_reinstall_hint(ResolvedLanguage::Ko, Some("1.26.37")),
+            daemon_reinstall_hint(ResolvedLanguage::Ko, Some("1.32.5")),
             "조용히 가능"
         );
         assert_eq!(
-            daemon_reinstall_hint(ResolvedLanguage::En, Some("1.26.37")),
+            daemon_reinstall_hint(ResolvedLanguage::En, Some("1.32.5")),
             "no prompt"
         );
     }
 
     #[test]
     fn stale_daemon_is_not_usable_for_cached_state() {
-        assert!(!daemon_control_usable(Some("1.26.24")));
-        assert!(daemon_control_usable(Some(
-            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
-        )));
-        assert!(!daemon_control_usable(None));
+        assert!(!daemon_control_usable(Some("1.26.24"), Some("1.26.24")));
+        assert!(daemon_control_usable(
+            Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION),
+            Some(peterfan_platform::MIN_REQUIRED_DAEMON_VERSION)
+        ));
+        for resident in [None, Some("1.32.4"), Some("unknown")] {
+            assert!(!daemon_control_usable(Some("1.32.5"), resident));
+        }
+        assert!(!daemon_control_usable(None, Some("1.32.5")));
     }
 
     #[test]
-    fn compatible_stale_daemon_self_updates_without_another_approval() {
-        assert!(daemon_can_self_update_silently("1.27.22"));
-        assert!(!daemon_can_self_update_silently("1.26.24"));
-        assert!(!daemon_can_self_update_silently(
-            peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
+    fn insecure_or_unknown_daemon_never_self_updates_silently() {
+        for disk in ["1.26.24", "1.27.22", "1.32.4", "1.32.5"] {
+            for resident in [None, Some("1.32.4"), Some("1.32.5")] {
+                assert!(!daemon_can_self_update_silently(disk, resident));
+            }
+        }
+    }
+
+    #[test]
+    fn secure_self_reinstall_requires_both_disk_and_resident_capability() {
+        for (disk, resident) in [
+            (None, Some("1.32.5")),
+            (Some("1.32.5"), None),
+            (Some("1.32.4"), Some("1.32.5")),
+            (Some("1.32.5"), Some("1.32.4")),
+        ] {
+            assert!(!daemon_self_reinstall_is_secure(disk, resident));
+        }
+        assert!(daemon_self_reinstall_is_secure(
+            Some("1.32.5"),
+            Some("1.32.5")
         ));
     }
 
     #[test]
     fn setup_detail_shows_daemon_version_when_ready() {
-        let en = setup_detail(ResolvedLanguage::En, true, false, Some("1.26.18"));
-        assert_eq!(en, "daemon v1.26.18 · no additional approval");
+        let en = setup_detail(ResolvedLanguage::En, true, false, Some("1.32.5"));
+        assert_eq!(en, "daemon v1.32.5 · no additional approval");
         assert!(!en.contains("login"));
 
-        let ko = setup_detail(ResolvedLanguage::Ko, true, false, Some("1.26.18"));
-        assert_eq!(ko, "데몬 v1.26.18 · 추가 승인 없음");
+        let ko = setup_detail(ResolvedLanguage::Ko, true, false, Some("1.32.5"));
+        assert_eq!(ko, "데몬 v1.32.5 · 추가 승인 없음");
         assert!(!ko.contains("자동 실행"));
     }
 
@@ -15185,11 +15252,7 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
             FanControlInstallPlan::AlreadyReady
         );
         assert_eq!(
-            fan_control_install_plan(
-                Some(peterfan_platform::MIN_SELF_REINSTALL_DAEMON_VERSION),
-                Some(peterfan_platform::MIN_SELF_REINSTALL_DAEMON_VERSION),
-                true
-            ),
+            fan_control_install_plan(Some("1.32.5"), Some("1.32.6"), true),
             FanControlInstallPlan::SelfReinstall
         );
         assert_eq!(
@@ -15211,11 +15274,16 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
 
     #[test]
     fn explicit_activation_repairs_unknown_or_mismatched_resident_versions() {
-        for (disk, resident) in [("1.32.2", None), ("1.32.4", Some("1.31.30"))] {
+        for (disk, resident) in [
+            ("1.32.2", None),
+            ("1.32.4", Some("1.31.30")),
+            ("1.32.5", None),
+            ("1.32.5", Some("1.32.4")),
+        ] {
             assert_eq!(
                 fan_control_install_plan(Some(disk), resident, true),
-                FanControlInstallPlan::SelfReinstall,
-                "a reachable legacy or stale resident must be repaired before completion"
+                FanControlInstallPlan::PrivilegedInstall,
+                "a reachable insecure or unknown resident requires fresh approved repair"
             );
         }
     }

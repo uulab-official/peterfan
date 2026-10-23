@@ -32,11 +32,11 @@ pub mod windows_login_item;
 /// App-only UI releases should bump the app version without forcing users to
 /// re-enter their macOS password. Raise this only when the daemon IPC contract
 /// or fan-control behavior genuinely requires a newer `/usr/local/bin/peterfand`.
-pub const MIN_REQUIRED_DAEMON_VERSION: &str = "1.27.29";
+pub const MIN_REQUIRED_DAEMON_VERSION: &str = "1.32.5";
 
 /// Oldest installed root daemon that can reinstall fan control from the
 /// signed app bundle without another administrator-password prompt.
-pub const MIN_SELF_REINSTALL_DAEMON_VERSION: &str = "1.26.37";
+pub const MIN_SELF_REINSTALL_DAEMON_VERSION: &str = "1.32.5";
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -241,8 +241,8 @@ mod tests {
                 "{invalid:?}"
             );
         }
-        assert!(super::daemon_update_required("1.27.29-beta.1"));
-        assert!(!super::daemon_update_required("1.27.29+build.7"));
+        assert!(super::daemon_update_required("1.32.5-beta.1"));
+        assert!(!super::daemon_update_required("1.32.5+build.7"));
     }
 
     #[test]
@@ -251,6 +251,20 @@ mod tests {
         assert!(super::daemon_self_reinstall_supported(
             super::MIN_SELF_REINSTALL_DAEMON_VERSION
         ));
-        assert!(super::daemon_self_reinstall_supported("1.26.38"));
+        assert!(!super::daemon_self_reinstall_supported("1.32.4"));
+        assert!(super::daemon_self_reinstall_supported("1.32.5+build.7"));
+    }
+
+    #[test]
+    fn insecure_public_helpers_require_fresh_approved_installation() {
+        for version in ["1.27.29", "1.31.30", "1.32.3", "1.32.4", "1.32.5-beta.1"] {
+            assert!(super::daemon_update_required(version), "{version}");
+            assert!(
+                !super::daemon_self_reinstall_supported(version),
+                "{version}"
+            );
+        }
+        assert!(!super::daemon_update_required("1.32.5"));
+        assert!(super::daemon_self_reinstall_supported("1.32.5"));
     }
 }

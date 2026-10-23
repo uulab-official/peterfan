@@ -252,6 +252,8 @@ struct State {
     /// following the curve. Cleared per-fan by `fanauto <id>`, or all at once
     /// by any of the global `auto`/`rules`/`profile` commands.
     fan_overrides: std::collections::HashMap<String, u8>,
+    /// Stable allowlist discovered from the hardware at startup.
+    known_fan_ids: Vec<String>,
     /// When true, fans are handed back to the OS (no curve applied).
     auto: bool,
     /// When true, the profile was set manually (IPC) and overrides automation
@@ -349,10 +351,27 @@ struct Cli {
     /// Disable IPC for isolated process-lifecycle tests.
     #[arg(long, hide = true)]
     no_ipc: bool,
+    /// Internal staged-update check. Never starts the daemon or loads settings.
+    #[cfg(target_os = "macos")]
+    #[arg(long, hide = true, requires = "reinstall_from_version")]
+    validate_self_reinstall_version: Option<PathBuf>,
+    #[cfg(target_os = "macos")]
+    #[arg(long, hide = true, requires = "validate_self_reinstall_version")]
+    reinstall_from_version: Option<String>,
 }
 
 fn main() {
     let cli = Cli::parse();
+    #[cfg(target_os = "macos")]
+    if let Some(candidate) = cli.validate_self_reinstall_version.as_deref() {
+        if let Err(error) =
+            verify_self_reinstall_version(candidate, cli.reinstall_from_version.as_deref().unwrap())
+        {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(e) = run(cli) {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -436,6 +455,7 @@ fn run(cli: Cli) -> Result<()> {
             profile,
             held_duty: None,
             fan_overrides: std::collections::HashMap::new(),
+            known_fan_ids: fan_ids.clone(),
             // A fresh daemon starts in the safest, least surprising mode:
             // macOS owns the fans. An explicit --profile or a persisted user
             // choice below opts into PeterFan's control loop.
@@ -483,7 +503,9 @@ fn run(cli: Cli) -> Result<()> {
                 }
                 _ => {} // Unknown state keeps the safe OS-auto default.
             }
-            s.fan_overrides = saved.fan_overrides;
+            for (id, duty) in saved.fan_overrides {
+                let _ = set_fan_override(&mut s, &id, duty);
+            }
         }
         s
     };
@@ -505,7 +527,12 @@ fn run(cli: Cli) -> Result<()> {
     // curve, it just isn't remotely controllable yet.
     #[cfg(unix)]
     if !cli.once && !cli.no_ipc {
-        spawn_ipc_server(Arc::clone(&shared), Arc::clone(&provider), fan_ids.clone());
+        spawn_ipc_server(
+            Arc::clone(&shared),
+            Arc::clone(&provider),
+            fan_ids.clone(),
+            cli.mock,
+        );
     }
 
     println!(
@@ -1299,14 +1326,165 @@ fn apply_cached_control_request(
     }
 }
 
+const MAX_FAN_ID_BYTES: usize = 128;
+const MAX_FAN_OVERRIDES: usize = 32;
+
+fn set_fan_override(state: &mut State, id: &str, percent: u8) -> Result<(), &'static str> {
+    if id.is_empty()
+        || id.len() > MAX_FAN_ID_BYTES
+        || !state.known_fan_ids.iter().any(|known| known == id)
+    {
+        return Err("error: unknown or invalid fan id");
+    }
+    if !state.fan_overrides.contains_key(id) && state.fan_overrides.len() >= MAX_FAN_OVERRIDES {
+        return Err("error: too many fan overrides");
+    }
+    state.fan_overrides.insert(id.to_string(), percent.min(100));
+    Ok(())
+}
+
+#[cfg(any(unix, test))]
+fn ipc_peer_allowed(peer: u32, daemon: u32, console: Option<u32>, mock: bool) -> bool {
+    peer == 0
+        || console.is_some_and(|uid| uid != 0 && uid == peer)
+        || (mock && daemon != 0 && peer == daemon)
+}
+
+#[cfg(target_os = "macos")]
+fn ipc_peer_uid(stream: &std::os::unix::net::UnixStream) -> std::io::Result<u32> {
+    use std::os::fd::AsRawFd;
+    let mut uid = 0;
+    let mut gid = 0;
+    // SAFETY: a live UnixStream supplies the descriptor; both output pointers are valid.
+    if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } == 0 {
+        Ok(uid)
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn ipc_peer_uid(stream: &std::os::unix::net::UnixStream) -> std::io::Result<u32> {
+    use std::os::fd::AsRawFd;
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: credentials and length point to correctly sized writable storage.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut credentials as *mut _ as *mut libc::c_void,
+            &mut length,
+        )
+    };
+    if result == 0 && length as usize == std::mem::size_of::<libc::ucred>() {
+        Ok(credentials.uid)
+    } else {
+        Err(std::io::Error::other("could not authenticate IPC peer"))
+    }
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "linux", target_os = "android"))
+))]
+fn ipc_peer_uid(_stream: &std::os::unix::net::UnixStream) -> std::io::Result<u32> {
+    Err(std::io::Error::other(
+        "IPC peer authentication is unsupported",
+    ))
+}
+
+#[cfg(unix)]
+fn ipc_console_uid() -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata("/dev/console")
+            .ok()
+            .map(|metadata| metadata.uid())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+#[cfg(unix)]
+const MAX_IPC_REQUEST_BYTES: usize = 4096;
+#[cfg(unix)]
+const IPC_IO_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[cfg(unix)]
+fn valid_ipc_request_arity(line: &str) -> bool {
+    let mut words = line.split_whitespace();
+    let expected = match words.next() {
+        Some(
+            "ping" | "version" | "auto" | "rules" | "status" | "temps" | "config-source" | "reload"
+            | "stop",
+        ) => 0,
+        Some("profile" | "hold" | "fanauto" | "reinstall-fan-control") => 1,
+        Some("fanhold") => 2,
+        _ => return false,
+    };
+    words.count() == expected
+}
+
+#[cfg(unix)]
+fn read_ipc_request(
+    stream: &mut std::os::unix::net::UnixStream,
+    timeout: Duration,
+) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind, Read};
+    let deadline = std::time::Instant::now() + timeout;
+    let mut bytes = Vec::new();
+    loop {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or_else(|| Error::new(ErrorKind::TimedOut, "IPC request timed out"))?;
+        stream.set_read_timeout(Some(remaining))?;
+        let mut chunk = [0; 256];
+        let capacity = chunk.len().min(MAX_IPC_REQUEST_BYTES - bytes.len());
+        let count = stream.read(&mut chunk[..capacity])?;
+        if count == 0 {
+            return Err(Error::new(
+                ErrorKind::UnexpectedEof,
+                "incomplete IPC request",
+            ));
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+        if let Some(end) = bytes.iter().position(|byte| *byte == b'\n') {
+            if end + 1 != bytes.len() {
+                return Err(Error::new(ErrorKind::InvalidData, "multiple IPC requests"));
+            }
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            break;
+        }
+        if bytes.len() == MAX_IPC_REQUEST_BYTES {
+            return Err(Error::new(ErrorKind::InvalidData, "IPC request too long"));
+        }
+    }
+    let line = String::from_utf8(bytes)
+        .map_err(|_| Error::new(ErrorKind::InvalidData, "IPC request is not UTF-8"))?;
+    if line.chars().any(char::is_control) || !valid_ipc_request_arity(&line) {
+        return Err(Error::new(ErrorKind::InvalidData, "invalid IPC request"));
+    }
+    Ok(line)
+}
+
 /// Accept IPC connections and apply commands to the shared state.
 #[cfg(unix)]
 fn spawn_ipc_server(
     shared: Arc<Mutex<State>>,
     provider: Arc<dyn HardwareProvider>,
     fan_ids: Vec<String>,
+    mock: bool,
 ) {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::Write;
 
     let (listener, path) = match peterfan_platform::ipc::bind_listener() {
         Ok(x) => x,
@@ -1320,13 +1498,24 @@ fn spawn_ipc_server(
     std::thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(mut stream) = conn else { continue };
-            let Ok(clone) = stream.try_clone() else {
+            let Ok(peer_uid) = ipc_peer_uid(&stream) else {
                 continue;
             };
-            let mut line = String::new();
-            if BufReader::new(clone).read_line(&mut line).is_err() {
+            // Authenticate before reading even one byte from an untrusted client.
+            if !ipc_peer_allowed(
+                peer_uid,
+                unsafe { libc::geteuid() },
+                ipc_console_uid(),
+                mock,
+            ) {
                 continue;
             }
+            if stream.set_write_timeout(Some(IPC_IO_TIMEOUT)).is_err() {
+                continue;
+            }
+            let Ok(line) = read_ipc_request(&mut stream, IPC_IO_TIMEOUT) else {
+                continue;
+            };
             let revision_before = shared.lock().expect("state poisoned").control_revision;
             let reply = handle_command(line.trim(), &shared);
             let changed =
@@ -1370,16 +1559,155 @@ fn validate_self_reinstall_source(path: &str) -> Result<PathBuf, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn start_self_reinstall(path: &str) -> Result<String, String> {
-    let source = validate_self_reinstall_source(path)?;
+const DAEMON_CODE_REQUIREMENT: &str = "identifier peterfand and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"N99FMBQ662\"";
+
+#[cfg(any(target_os = "macos", test))]
+fn self_reinstall_version_allowed(candidate: &str, running: &str) -> bool {
+    !peterfan_platform::daemon_update_required(candidate)
+        && !peterfan_platform::daemon_update_required(running)
+        && !peterfan_platform::updater::is_newer(candidate, running)
+}
+
+#[cfg(target_os = "macos")]
+fn bounded_command_output(
+    command: &mut std::process::Command,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::process::Stdio;
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let mut output = child.stdout.take().unwrap();
+    let result = (|| {
+        // A nonblocking pipe keeps both output growth and the entire probe bounded,
+        // even if a signed candidate hangs or keeps its output pipe open.
+        let descriptor = output.as_raw_fd();
+        let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+        if flags < 0
+            || unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+        {
+            return Err("could not bound helper verification output".into());
+        }
+        let deadline = std::time::Instant::now() + timeout;
+        let mut bytes = Vec::new();
+        loop {
+            let status = child.try_wait().map_err(|error| error.to_string())?;
+            let mut chunk = [0; 512];
+            loop {
+                match output.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        if bytes.len() + count > 4096 {
+                            return Err("helper verification output exceeded limit".into());
+                        }
+                        bytes.extend_from_slice(&chunk[..count]);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            if let Some(status) = status {
+                if status.success() {
+                    return Ok(bytes);
+                }
+                return Err("helper verification command failed".into());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("helper verification timed out".into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    if result.is_err() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn verify_self_reinstall_version(candidate: &std::path::Path, running: &str) -> Result<(), String> {
+    // This internal command also verifies trust itself before executing a candidate.
+    // Its normal caller supplies an already-verified file in a root-only stage.
+    bounded_command_output(
+        std::process::Command::new("/usr/bin/codesign")
+            .args(["--verify", "--strict", "-R", DAEMON_CODE_REQUIREMENT])
+            .arg(candidate),
+        Duration::from_secs(5),
+    )?;
+    let output = bounded_command_output(
+        std::process::Command::new(candidate).arg("--version"),
+        Duration::from_secs(2),
+    )?;
+    let output = std::str::from_utf8(&output).map_err(|_| "invalid helper version output")?;
+    let candidate_version = output
+        .trim()
+        .strip_prefix("peterfand ")
+        .ok_or("invalid helper version output")?;
+    if self_reinstall_version_allowed(candidate_version, running) {
+        Ok(())
+    } else {
+        Err("helper replacement would downgrade security or the running version".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn self_reinstall_script(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+    stage_template: &std::path::Path,
+    version_verifier: &std::path::Path,
+    running: &str,
+) -> String {
     let source = shell_quote(&source.to_string_lossy());
-    let daemon_bin = peterfan_platform::daemon_install::DAEMON_BIN;
+    let destination = shell_quote(&destination.to_string_lossy());
+    let stage_template = shell_quote(&stage_template.to_string_lossy());
+    let requirement = shell_quote(DAEMON_CODE_REQUIREMENT);
+    let version_verifier = shell_quote(&version_verifier.to_string_lossy());
+    let running = shell_quote(running);
     let label = peterfan_platform::daemon_install::DAEMON_LABEL;
-    let script = format!(
-        "set -e\n\
-         /usr/bin/codesign --verify --strict --verbose=2 {source}\n\
-         /usr/bin/codesign -dv --verbose=4 {source} 2>&1 | /usr/bin/grep -q 'TeamIdentifier=N99FMBQ662'\n\
-         (sleep 0.3; /usr/bin/install -m 755 {source} {daemon_bin}; /bin/launchctl kickstart -k system/{label}) >/tmp/peterfan-self-reinstall.log 2>&1 &\n"
+    format!(
+        r#"set -e
+stage=$(/usr/bin/mktemp -d {stage_template})
+trap '/bin/rm -rf "$stage"' EXIT
+trap 'exit 1' HUP INT TERM
+/bin/chmod 700 "$stage"
+/usr/bin/install -m 500 {source} "$stage/peterfand"
+/usr/bin/codesign --verify --strict --verbose=2 -R {requirement} "$stage/peterfand"
+{version_verifier} --validate-self-reinstall-version "$stage/peterfand" --reinstall-from-version {running}
+(
+    trap '/bin/rm -rf "$stage"' EXIT
+    trap 'exit 1' HUP INT TERM
+    /bin/sleep 0.3
+    /usr/bin/install -m 755 "$stage/peterfand" {destination}
+    /bin/rm -rf "$stage"
+    trap - EXIT HUP INT TERM
+    /bin/launchctl kickstart -k system/{label}
+) </dev/null >/dev/null 2>&1 &
+trap - EXIT HUP INT TERM
+"#
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn start_self_reinstall(path: &str) -> Result<String, String> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Err("error: daemon self-reinstall requires a root daemon".into());
+    }
+    let source = validate_self_reinstall_source(path)?;
+    // Neither the directory nor its staged bytes are writable by IPC callers.
+    // Copy first, then verify and install those exact bytes rather than reopening
+    // the user-writable app bundle after its signature has been checked.
+    let script = self_reinstall_script(
+        &source,
+        std::path::Path::new(peterfan_platform::daemon_install::DAEMON_BIN),
+        std::path::Path::new("/private/var/root/peterfan-self-reinstall.XXXXXXXX"),
+        std::path::Path::new(peterfan_platform::daemon_install::DAEMON_BIN),
+        env!("CARGO_PKG_VERSION"),
     );
     let status = std::process::Command::new("/bin/sh")
         .arg("-c")
@@ -1400,6 +1728,9 @@ fn start_self_reinstall(_path: &str) -> Result<String, String> {
 
 #[cfg(unix)]
 fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
+    if !valid_ipc_request_arity(line) {
+        return "error: invalid command or arguments".into();
+    }
     let backend = shared.lock().expect("state poisoned").backend.clone();
     let mut parts = line.split_whitespace();
     match parts.next() {
@@ -1463,7 +1794,9 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 (Some(id), Some(pct)) => {
                     let mut s = shared.lock().expect("state poisoned");
                     let d = pct.min(100);
-                    s.fan_overrides.insert(id.clone(), d);
+                    if let Err(error) = set_fan_override(&mut s, &id, d) {
+                        return error.into();
+                    }
                     save_state(&s);
                     mark_control_requested(&mut s);
                     format!("ok fanhold:{id}:{d}% ({backend})")
@@ -1515,6 +1848,7 @@ fn handle_command(line: &str, shared: &Arc<Mutex<State>>) -> String {
                 format!("rules:{}", s.profile.as_str())
             };
             match serde_json::to_string(&serde_json::json!({
+                "daemon_version": env!("CARGO_PKG_VERSION"),
                 "temps": s.last_temps,
                 "temps_sampled_at_unix_ms": s.last_temps_sampled_at_unix_ms,
                 "temps_age_ms": temps_age_ms,
@@ -1669,6 +2003,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ipc_peer_policy_rejects_other_users_and_unknown_console_sessions() {
+        assert!(ipc_peer_allowed(0, 0, None, false));
+        assert!(ipc_peer_allowed(501, 0, Some(501), false));
+        assert!(!ipc_peer_allowed(502, 0, Some(501), false));
+        assert!(!ipc_peer_allowed(501, 0, None, false));
+        assert!(!ipc_peer_allowed(501, 0, Some(0), false));
+        assert!(ipc_peer_allowed(502, 502, None, true));
+        assert!(!ipc_peer_allowed(501, 502, None, true));
+        assert!(!ipc_peer_allowed(502, 502, None, false));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ipc_request_rejects_partial_overlong_and_invalid_messages() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        for bytes in [
+            b"ping".to_vec(),
+            b"\n".to_vec(),
+            b"ping\0\n".to_vec(),
+            b"ping extra\n".to_vec(),
+            b"ping\nstop\n".to_vec(),
+            vec![0xff, b'\n'],
+            vec![b'x'; 4097],
+            format!("fanhold {} 30\n", "x".repeat(4096)).into_bytes(),
+        ] {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            client.write_all(&bytes).unwrap();
+            client.shutdown(std::net::Shutdown::Write).unwrap();
+            assert!(
+                read_ipc_request(&mut server, Duration::from_millis(100)).is_err(),
+                "{bytes:?}"
+            );
+        }
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        client.write_all(b"version\n").unwrap();
+        assert_eq!(
+            read_ipc_request(&mut server, Duration::from_millis(100)).unwrap(),
+            "version"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ipc_request_has_an_overall_deadline_even_for_a_slow_sender() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        let sender = std::thread::spawn(move || {
+            for byte in b"version\n" {
+                if client.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let started = std::time::Instant::now();
+        assert!(read_ipc_request(&mut server, Duration::from_millis(60)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        drop(server);
+        sender.join().unwrap();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
+    #[test]
+    fn ipc_peer_uid_comes_from_the_kernel() {
+        let (client, _server) = std::os::unix::net::UnixStream::pair().unwrap();
+        assert_eq!(ipc_peer_uid(&client).unwrap(), unsafe { libc::geteuid() });
+    }
+
+    #[test]
+    fn fan_override_rejects_unknown_ids_and_bounds_persisted_entries() {
+        let shared = test_state();
+        let mut state = shared.lock().unwrap();
+        assert!(set_fan_override(&mut state, "not-a-real-fan", 30).is_err());
+        assert!(set_fan_override(&mut state, &"x".repeat(129), 30).is_err());
+        for n in 0..33 {
+            state.known_fan_ids.push(format!("fan.{n}"));
+        }
+        for n in 0..32 {
+            set_fan_override(&mut state, &format!("fan.{n}"), 30).unwrap();
+        }
+        assert!(set_fan_override(&mut state, "fan.32", 30).is_err());
+        set_fan_override(&mut state, "fan.0", 255).unwrap();
+        assert_eq!(state.fan_overrides.len(), 32);
+        assert_eq!(state.fan_overrides.get("fan.0"), Some(&100));
+    }
+
+    #[test]
     fn effective_duty_prefers_override_when_not_critical() {
         let mut overrides = std::collections::HashMap::new();
         overrides.insert("fan.left".to_string(), 30u8);
@@ -1775,6 +2198,7 @@ mod tests {
             profile: Profile::Balanced,
             held_duty: None,
             fan_overrides: std::collections::HashMap::new(),
+            known_fan_ids: vec!["fan.left".into(), "fan.test".into()],
             auto: false,
             manual: false,
             #[cfg(unix)]
@@ -2384,6 +2808,7 @@ mod tests {
                 .expect("temps command should return JSON"),
         )
         .unwrap();
+        assert_eq!(json["daemon_version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(json["control_health"]["failsafe_active"], true);
         assert_eq!(json["control_health"]["sensor_failure_count"], 2);
         assert_eq!(json["control_health"]["last_error"], "sensor unavailable");
@@ -2619,6 +3044,205 @@ mod tests {
     #[test]
     fn self_reinstall_rejects_non_app_bundle_sources() {
         let reply = handle_command("reinstall-fan-control /tmp/peterfand", &test_state());
-        assert!(reply.starts_with("No such file") || reply.starts_with("reinstall source"));
+        assert!(
+            reply.starts_with("No such file")
+                || reply.starts_with("reinstall source")
+                || reply.contains("requires a root daemon")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    struct ReinstallFixture(PathBuf);
+
+    #[cfg(target_os = "macos")]
+    impl ReinstallFixture {
+        fn new() -> Self {
+            let output = std::process::Command::new("/usr/bin/mktemp")
+                .args(["-d", "-t", "peterfan-secure-reinstall-test"])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            Self(PathBuf::from(
+                String::from_utf8(output.stdout).unwrap().trim(),
+            ))
+        }
+
+        fn run(&self, accept: bool) -> std::process::Output {
+            use std::os::unix::fs::PermissionsExt;
+            let source = self.0.join("owner's original helper");
+            let destination = self.0.join("installed helper");
+            std::fs::write(&source, "trusted fixture bytes").unwrap();
+            let verifier = self.0.join("verify helper");
+            // The external signing authority is replaced; file staging and the
+            // generated shell transaction execute normally inside this fixture.
+            std::fs::write(
+                &verifier,
+                r#"#!/bin/sh
+set -e
+for arg; do staged=$arg; done
+[ "$staged" != "$PETERFAN_TEST_SOURCE" ]
+[ "$(/bin/cat "$staged")" = 'trusted fixture bytes' ]
+[ "$(/usr/bin/stat -f '%Lp' "$(/usr/bin/dirname "$staged")")" = 700 ]
+case "$*" in *'certificate leaf[subject.OU] = "N99FMBQ662"'*) ;; *) exit 1;; esac
+[ "$PETERFAN_TEST_ACCEPT" = yes ]
+/usr/bin/printf '%s' 'changed original bytes' > "$PETERFAN_TEST_SOURCE"
+"#,
+            )
+            .unwrap();
+            std::fs::set_permissions(&verifier, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let restarter = self.0.join("record restart");
+            std::fs::write(
+                &restarter,
+                "#!/bin/sh\n/usr/bin/printf '%s\\n' \"$@\" > \"$PETERFAN_TEST_RESTART\"\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&restarter, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let checker = self.0.join("check version");
+            std::fs::write(&checker, "#!/bin/sh\n[ \"$1\" = --validate-self-reinstall-version ] && [ \"$3\" = --reinstall-from-version ] && [ \"$4\" = 1.32.5 ] && [ \"$(/bin/cat \"$2\")\" = 'trusted fixture bytes' ]\n").unwrap();
+            std::fs::set_permissions(&checker, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let script = self_reinstall_script(
+                &source,
+                &destination,
+                &self.0.join("owner's stage.XXXXXXXX"),
+                &checker,
+                "1.32.5",
+            )
+            .replace(
+                "/usr/bin/codesign",
+                &shell_quote(&verifier.to_string_lossy()),
+            )
+            .replace("/bin/launchctl", &shell_quote(&restarter.to_string_lossy()))
+            // If the original unsafe redirect returns, catch it in the
+            // private fixture without creating anything in shared /tmp.
+            .replace(
+                "/tmp/peterfan-self-reinstall.log",
+                &shell_quote(&self.0.join("unsafe log").to_string_lossy()),
+            );
+            std::process::Command::new("/bin/sh")
+                .args(["-c", &script])
+                .env("PETERFAN_TEST_SOURCE", source)
+                .env("PETERFAN_TEST_ACCEPT", if accept { "yes" } else { "no" })
+                .env("PETERFAN_TEST_RESTART", self.0.join("restart receipt"))
+                .output()
+                .unwrap()
+        }
+
+        fn stages(&self) -> usize {
+            std::fs::read_dir(&self.0)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("owner's stage.")
+                })
+                .count()
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for ReinstallFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn self_reinstall_installs_only_verified_staged_bytes_and_cleans_before_restart() {
+        let fixture = ReinstallFixture::new();
+        let output = fixture.run(true);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let receipt = fixture.0.join("restart receipt");
+        let expected = "kickstart\n-k\nsystem/kr.co.uulab.peterfan.daemon\n";
+        while std::fs::read_to_string(&receipt).ok().as_deref() != Some(expected)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(std::fs::read_to_string(&receipt).unwrap(), expected);
+        assert_eq!(
+            std::fs::read_to_string(fixture.0.join("installed helper")).unwrap(),
+            "trusted fixture bytes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.0.join("owner's original helper")).unwrap(),
+            "changed original bytes"
+        );
+        assert_eq!(fixture.stages(), 0);
+        assert!(!fixture.0.join("unsafe log").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn self_reinstall_signature_rejection_preserves_destination_and_cleans_stage() {
+        let fixture = ReinstallFixture::new();
+        std::fs::write(
+            fixture.0.join("installed helper"),
+            "existing installed bytes",
+        )
+        .unwrap();
+        let output = fixture.run(false);
+        assert!(!output.status.success());
+        assert_eq!(
+            std::fs::read_to_string(fixture.0.join("installed helper")).unwrap(),
+            "existing installed bytes"
+        );
+        assert!(!fixture.0.join("restart receipt").exists());
+        assert_eq!(fixture.stages(), 0);
+    }
+
+    #[test]
+    fn self_reinstall_rejects_security_and_runtime_downgrades() {
+        for (candidate, running) in [
+            ("1.32.4", "1.32.5"),
+            ("1.32.5-beta.1", "1.32.5"),
+            ("1.32.5", "1.32.6"),
+            ("1.32.6-beta.1", "1.32.6"),
+            ("unknown", "1.32.5"),
+            ("1.32.5", "unknown"),
+        ] {
+            assert!(
+                !self_reinstall_version_allowed(candidate, running),
+                "{candidate} from {running}"
+            );
+        }
+        for candidate in ["1.32.5", "1.32.5+build.7", "1.32.6", "1.33.0"] {
+            assert!(
+                self_reinstall_version_allowed(candidate, "1.32.5"),
+                "{candidate}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn helper_probe_caps_time_and_output_without_running_privileged_operations() {
+        let started = std::time::Instant::now();
+        assert!(bounded_command_output(
+            std::process::Command::new("/bin/sleep").arg("2"),
+            Duration::from_millis(30)
+        )
+        .is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(bounded_command_output(
+            std::process::Command::new("/usr/bin/printf").args(["%05000d", "0"]),
+            Duration::from_secs(1)
+        )
+        .is_err());
+        assert_eq!(
+            bounded_command_output(
+                std::process::Command::new("/usr/bin/printf").arg("peterfand 1.32.5\n"),
+                Duration::from_secs(1)
+            )
+            .unwrap(),
+            b"peterfand 1.32.5\n"
+        );
     }
 }

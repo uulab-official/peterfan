@@ -281,23 +281,37 @@ pub fn install(dry_run: bool) -> Result<InstallOutcome, String> {
 
 pub fn install_with_progress(
     dry_run: bool,
+    report: impl FnMut(InstallStage),
+) -> Result<InstallOutcome, String> {
+    install_with_mode(dry_run, false, report)
+}
+
+/// Explicitly replace even a healthy daemon, after a fresh administrator approval.
+pub fn repair(dry_run: bool) -> Result<InstallOutcome, String> {
+    install_with_mode(dry_run, true, |_| {})
+}
+
+fn install_with_mode(
+    dry_run: bool,
+    force: bool,
     mut report: impl FnMut(InstallStage),
 ) -> Result<InstallOutcome, String> {
     report(InstallStage::Preflight);
-    let result = install_reported(dry_run, &mut report);
+    let result = install_reported(dry_run, force, &mut report);
     finish_reported_install(result, &mut report)
 }
 
 fn install_reported(
     dry_run: bool,
+    force: bool,
     report: &mut impl FnMut(InstallStage),
 ) -> Result<InstallOutcome, String> {
     if !dry_run {
         let installed_version = crate::installed_daemon_version();
-        if required_daemon_is_healthy(
+        if reuse_existing_daemon(
+            force,
             installed_version.as_deref(),
             crate::running_daemon_version().as_deref(),
-            crate::MIN_REQUIRED_DAEMON_VERSION,
         ) {
             return Ok(InstallOutcome::Installed);
         }
@@ -355,6 +369,10 @@ fn install_reported(
         || wait_for_required_daemon(std::time::Duration::from_secs(10)),
         report,
     )
+}
+
+fn reuse_existing_daemon(force: bool, installed: Option<&str>, resident: Option<&str>) -> bool {
+    !force && required_daemon_is_healthy(installed, resident, crate::MIN_REQUIRED_DAEMON_VERSION)
 }
 
 /// Remove the daemon (LaunchDaemon, binary, log-rotation config). One admin
@@ -442,6 +460,14 @@ pub fn reinstall_via_running_daemon(_dry_run: bool) -> Result<InstallOutcome, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_force_repairs_healthy_helpers_and_default_install_reuses_them() {
+        let version = crate::MIN_REQUIRED_DAEMON_VERSION;
+        assert!(reuse_existing_daemon(false, Some(version), Some(version)));
+        assert!(!reuse_existing_daemon(true, Some(version), Some(version)));
+        assert!(!reuse_existing_daemon(false, Some(version), None));
+    }
 
     struct PlistFixture(PathBuf);
 
@@ -709,34 +735,34 @@ mod tests {
     #[test]
     fn required_daemon_health_rejects_a_stale_or_invalid_resident_after_disk_replacement() {
         assert!(!required_daemon_is_healthy(
-            Some("1.32.3"),
-            Some("1.32.2"),
-            "1.32.3"
-        ));
-        assert!(!required_daemon_is_healthy(
-            Some("1.32.3"),
-            Some("1.32.3-beta.1"),
-            "1.32.3",
-        ));
-        assert!(!required_daemon_is_healthy(
-            Some("1.32.3"),
-            Some("unknown"),
-            "1.32.3"
-        ));
-        assert!(!required_daemon_is_healthy(
-            Some("unknown"),
-            Some("1.32.3"),
-            "1.32.3"
-        ));
-        assert!(required_daemon_is_healthy(
-            Some("1.32.3"),
-            Some("1.32.3+build.7"),
-            "1.32.3",
-        ));
-        assert!(required_daemon_is_healthy(
-            Some("1.32.3"),
+            Some("1.32.5"),
             Some("1.32.4"),
-            "1.32.3"
+            "1.32.5"
+        ));
+        assert!(!required_daemon_is_healthy(
+            Some("1.32.5"),
+            Some("1.32.5-beta.1"),
+            "1.32.5",
+        ));
+        assert!(!required_daemon_is_healthy(
+            Some("1.32.5"),
+            Some("unknown"),
+            "1.32.5"
+        ));
+        assert!(!required_daemon_is_healthy(
+            Some("unknown"),
+            Some("1.32.5"),
+            "1.32.5"
+        ));
+        assert!(required_daemon_is_healthy(
+            Some("1.32.5"),
+            Some("1.32.5+build.7"),
+            "1.32.5",
+        ));
+        assert!(required_daemon_is_healthy(
+            Some("1.32.5"),
+            Some("1.32.6"),
+            "1.32.5"
         ));
     }
 

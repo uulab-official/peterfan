@@ -70,14 +70,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.32.5] — 2026-10-23 · Fan control activation and update recovery
 
-- Generate, validate and atomically replace the LaunchDaemon configuration so
-  old download-quarantine attributes cannot block macOS service registration.
-  Invalid generated content preserves the previous file.
-
 Changes since public v1.32.2 / 공개 v1.32.2 이후 변경 사항.
 
 ### English
 
+- Require an approved replacement of fan helpers older than 1.32.5 for the
+  local IPC and self-update security changes. Keep subsequent compatible
+  helper updates passwordless. Add `install-daemon --force` for explicit repair;
+  unverified resident startup now returns a failing CLI status.
+- Generate, validate and atomically replace the LaunchDaemon configuration so
+  old download-quarantine attributes cannot block macOS service registration.
+  Invalid generated content preserves the previous file.
 - Refine runner motion and small-size silhouettes; add saved random character
   selection with a shuffled one-minute rotation that respects Reduce Motion.
 - Restore macOS menu-bar click delivery and event-loop wakeups; keep a second
@@ -100,6 +103,13 @@ Changes since public v1.32.2 / 공개 v1.32.2 이후 변경 사항.
 
 ### 한국어
 
+- 로컬 IPC 인증과 헬퍼 자체 업데이트 경로를 보강했습니다. 1.32.5 미만 헬퍼는
+  관리자 승인 후 교체하며, 이후 호환되는 헬퍼의 업데이트는 암호 없이 처리합니다.
+  명시적 복구용 `install-daemon --force`를 추가하고, 실행 상태를 확인하지 못한
+  설치는 CLI에서도 실패로 반환합니다.
+- LaunchDaemon 설정을 새 파일에서 검증한 뒤 원자적으로 교체해 기존 파일의
+  다운로드 격리 속성이 서비스 등록을 막는 문제를 수정했습니다. 생성 내용이
+  유효하지 않으면 이전 파일을 보존합니다.
 - 작은 메뉴바 크기의 캐릭터 동작과 실루엣을 개선하고, 선택을 저장하는
   ‘랜덤 · 1분마다’ 순환을 추가했습니다. 동작 줄이기 설정도 반영합니다.
 - macOS 메뉴바 클릭 전달과 UI 이벤트 깨우기를 복구하고, 두 번째 클릭으로
