@@ -66,12 +66,33 @@ does not prove a newer release was downloaded, installed or relaunched. Those
 claims require a published newer release, the installed executable's identity and
 the detached install receipt to agree.
 
-Windows custom install paths are preserved by passing the running executable's
-installation directory to the bundled installer. Windows runtime installation,
-launch health and transactional rollback require separate Windows verification;
-a generated-script check or cross-compilation is not that evidence.
-The installer requires a directory writable by the current user; it does not
-request elevation for installations under protected locations such as Program Files.
+Windows custom install paths are preserved from the running executable. The
+trusted app embeds its transaction helper rather than executing the downloaded
+`install.ps1`. It stages a fixed set of files, verifies their captured SHA-256
+hashes again, waits for processes in that exact installation to exit, and retains
+previous files through startup confirmation. Copy/startup failure restores the
+previous files in reverse order. Other portable installations, unrelated user
+files, shortcuts and registry integration are preserved.
+
+Both platforms launch the replacement with a fresh correlation ID. The app
+acknowledges only after its tray and popover WebView have remained ready for five
+seconds. Helpers match that ID, PID, target version and live executable, then
+require additional process survival before recording `installed`. A timeout or
+mismatch triggers rollback. This acknowledgement is not an authorization token
+or a physical-device/public-OTA acceptance result.
+
+macOS apply helpers use a persistent adjacent native OS lock, preventing app/CLI
+helpers from replacing one installation concurrently. A failed bundle removal
+never moves the backup into a remaining app directory or reports recovery success.
+Windows likewise holds an exclusive stable file lock. Refusing a concurrent helper
+must leave the active transaction's receipt alone.
+
+The helpers require writable installation locations and do not request elevation.
+Handled I/O and startup failures are tested separately from forced helper
+termination or power loss. There is no durable crash-resume journal: after such
+an interruption, retained backup files can require manual recovery. Native
+Windows fixture tests run the real helper with private synthetic payloads; they
+are distinct from installing a signed public release on a user's Windows desktop.
 
 ## Local verification — 2026-10-23
 

@@ -22,6 +22,7 @@ pub mod mock;
 pub mod mock_monitor;
 pub mod process_control;
 pub mod system;
+pub mod update_health;
 pub mod updater;
 #[cfg(target_os = "windows")]
 pub mod windows_login_item;

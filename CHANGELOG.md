@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — Open-source contributor experience
 
+- Require a per-launch readiness acknowledgement after tray and WebView startup
+  before completing an update. Match launch ID, PID, version and live process.
+- Stage verified Windows files and restore previous files after copy/startup
+  failures; preserve other installations and user data without executing the
+  downloaded installer. Bound the downloaded CLI version check to ten seconds.
+- Serialize macOS apply helpers with a persistent native file lock and keep the
+  recovery backup when failed-bundle removal cannot complete.
+- Measure soak CPU over actual intervals, pin process identity, preserve external
+  processes/configuration, and emit CSV plus a structured result.
 - Make partial configuration edits atomic and serialize app/CLI writers. Refuse
   malformed or unreadable files instead of replacing them with defaults, preserve
   existing bytes on write failure, and retain active preferences when saving fails.
