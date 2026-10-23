@@ -2799,16 +2799,20 @@ TeamIdentifier=N99FMBQ662
         assert!(script.contains("[IO.FileShare]::None"));
         assert!(script.contains("Staged update checksum mismatch"));
         assert!(script.contains("$receipt.pid -eq $script:launched.Id"));
-        assert!(script.contains("$receipt.version -ceq $spec.version"));
+        assert!(script.contains("$receipt.version -ceq $expectedVersion"));
         assert!(script.contains("[StringComparison]::OrdinalIgnoreCase"));
         assert!(script.contains("The update failed and the previous files were restored"));
         assert!(
-            script.find("    Launch-Healthy\n").unwrap()
-                < script.find("    Write-Result 'installed'").unwrap()
+            script.find("\n    Launch-Healthy\n").unwrap()
+                < script.find("\n    Write-Result 'installed'").unwrap()
         );
         assert!(
-            script.find("    Write-Result 'installed'").unwrap()
-                < script.find("if (-not $preserveBackup)").unwrap()
+            script.find("\n    Write-Result 'installed'").unwrap()
+                < script.find("\n    $journal.phase = 'committed'").unwrap()
+        );
+        assert!(
+            script.find("\n    $journal.phase = 'committed'").unwrap()
+                < script.find("\n    Cleanup-State $journal").unwrap()
         );
     }
 

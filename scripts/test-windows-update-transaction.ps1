@@ -18,11 +18,13 @@ $tokens = $null
 $parseErrors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($Helper, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) { throw "Helper parse errors: $parseErrors" }
-$writer = $ast.Find({ param($node)
-    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Write-Result'
-}, $true)
-if ($null -eq $writer) { throw 'Embedded Write-Result function is missing.' }
-. ([ScriptBlock]::Create($writer.Extent.Text))
+foreach ($functionName in @('Assert-Regular', 'Write-DurableJson', 'Write-Result')) {
+    $writer = $ast.Find({ param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
+    }, $true)
+    if ($null -eq $writer) { throw "Embedded $functionName function is missing." }
+    . ([ScriptBlock]::Create($writer.Extent.Text))
+}
 $transaction = [Guid]::NewGuid().ToString('N')
 $spec = @{ version = '9.9.9' }
 $result = Join-Path $Root 'receipt-probe\update-result.json'
@@ -229,6 +231,8 @@ try {
     $unrelated.Refresh()
     if ($unrelated.HasExited) { throw 'Update stopped a separate portable installation.' }
     Write-Host 'PASS unrelated portable PeterFan process remained alive'
+    & (Join-Path $PSScriptRoot 'test-windows-update-recovery.ps1') -Helper $Helper `
+        -Root (Join-Path $Root 'durable-recovery') -NativeApp $fixture
 } finally {
     Stop-FixtureProcesses $Root
     Remove-Item Env:PETERFAN_TEST_HEALTH_DIR -ErrorAction SilentlyContinue
