@@ -52,7 +52,10 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — 개발 소스 v1.32.6.** 아래 표는 현재 소스의 구현 상태입니다. 공개 배포 파일과 버전이 다를 수 있으므로 [Releases](https://github.com/uulab-official/peterfan/releases/latest)에서 다운로드 버전을 확인하세요:
+**베타 — 공개 배포 v1.32.6 (2026-10-23 확인).** 아래 표는 현재 소스의 구현 상태입니다. 최신 버전은 [Releases](https://github.com/uulab-official/peterfan/releases/latest)에서 확인하세요:
+
+[팬 활성화·공개 OTA 실물 검증 기록](docs/FAN_ACTIVATION_OTA_2026-10-23.md)에서
+v1.32.6의 한 대 검증 결과와 장시간·다기종 미검증 항목을 확인할 수 있습니다.
 
 | 영역 | 상태 |
 | --- | --- |

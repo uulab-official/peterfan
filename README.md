@@ -47,6 +47,9 @@ including tiny-scale legibility, shared CPU cadence and a reproducible native
 rendering benchmark. Synthetic measurements and local signing are reported
 separately from live performance, public release and OTA delivery.
 
+[Native fan activation and public OTA acceptance](docs/FAN_ACTIVATION_OTA_2026-10-23.md)
+records the v1.32.6 one-Mac results and remaining hardware/long-run gates.
+
 ## Repository Map
 
 - `packages/cli`: CLI (`peterfan`)
@@ -93,8 +96,8 @@ login, or a license key.
 ## Install
 
 Published downloads and the current source branch may differ. The latest
-published release verified on 2026-10-22 is **v1.32.2**; the source release candidate
-is **v1.32.6**. Check [Releases](https://github.com/uulab-official/peterfan/releases/latest)
+published release verified on 2026-10-23 is **v1.32.6**, matching this source
+version. Check [Releases](https://github.com/uulab-official/peterfan/releases/latest)
 for published assets and [the production checklist](docs/PRODUCTION_CHECKLIST.md)
 for the evidence behind each version.
 

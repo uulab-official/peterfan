@@ -2,6 +2,35 @@
 
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
+The first section summarizes the current release; lower sections retain earlier
+evidence and gaps at those checkpoints.
+
+## Fan activation and public OTA acceptance — 2026-10-23
+
+- [x] Public latest release identified as `v1.32.6`; macOS and Windows assets,
+      provider digests and all three manifest hashes verified before publication.
+- [x] Final source contributor gate: 529 Rust tests passed, 7 ignored; one
+      canonical rendering test explicitly passed, plus 69 Node tests and 12
+      executable dashboard checks. Native, Windows and Linux CI passed.
+- [x] Shared approved native installer replaces quarantined service configuration
+      atomically and verifies the resident helper. On one Apple M5 Max Mac,
+      both fans reached near maximum RPM and returned to macOS automatic control.
+- [x] Existing v1.32.4 automatically discovers public v1.32.6 after about 20 seconds;
+      real OTA downloads, verifies, replaces and relaunches it with fresh native
+      readiness acknowledgement. Installed bytes/signature/notarization match.
+- [x] Final helper refuses signed older code and successfully replaces itself
+      from the updated signed app without another administrator prompt. Resident
+      version, file ownership, automatic fan control and settings remain valid.
+- [x] Correct a native codesign argument-parser error and actual GitHub release
+      tag-readback API failure. v1.32.5 remains a superseded private draft;
+      immutable tags are retained. Corrected Windows attachment succeeds.
+- [x] Final OTA-installed process passes ten-minute observation: app CPU average
+      1.63% of one core, peak 2.37%; peak RSS 69.33 MiB, growth
+      2.38 MiB and thread growth +1. Configuration remains byte-identical.
+- [ ] Six-hour observation, physical sleep/wake, forced macOS interruption and
+      additional Mac models remain unverified. Beta status is retained.
+
+See [native fan activation, public OTA and remaining limits](FAN_ACTIVATION_OTA_2026-10-23.md).
 
 ## Update transaction and runtime evidence — 2026-10-23
 

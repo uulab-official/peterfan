@@ -12,8 +12,8 @@ run:
 
 ```sh
 scripts/update-homebrew-cask.sh \
-  v1.30.0 \
-  dist/local-release/v1.30.0/PeterFan-v1.30.0.dmg
+  v1.32.6 \
+  dist/local-release/v1.32.6/PeterFan-v1.32.6.dmg
 scripts/check-homebrew.sh
 ```
 
