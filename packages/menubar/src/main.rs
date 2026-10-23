@@ -49,6 +49,7 @@ use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 mod native_runner;
 mod random_runner;
 mod runner;
+mod update_history;
 mod update_schedule;
 use random_runner::RandomRunner;
 use update_schedule::{UpdateLease, UpdateSchedule};
@@ -2508,11 +2509,20 @@ fn main() {
         }
     };
     APP_UPDATE_NETWORK_ENABLED.store(!use_mock, Ordering::Release);
+    let channel = configured_update_channel();
+    let now = now_unix();
+    // Mock launches never resolve or open the history sidecar.
+    let history = if use_mock {
+        None
+    } else {
+        load_update_history(channel, now)
+    };
     {
         let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
-        state.channel = configured_update_channel();
-        if !use_mock {
-            state.schedule.start(now_unix());
+        if use_mock {
+            state.channel = channel;
+        } else {
+            initialize_update_discovery(&mut state, channel, now, history);
         }
     }
     log_menubar_event(&format!("startup mock={use_mock}"));
@@ -6057,9 +6067,13 @@ fn check_for_updates_on_launch() {
     {
         let state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
         log_menubar_event(&format!(
-            "app update scheduler started channel={} next_check={:?}",
+            "app update scheduler started channel={} next_check={:?} last_attempt={:?} last_success={:?} phase={} install_ready={}",
             state.channel.as_str(),
-            state.schedule.next_check_unix
+            state.schedule.next_check_unix,
+            state.schedule.last_attempt_unix,
+            state.schedule.last_success_unix,
+            state.phase,
+            state.install_ready,
         ));
     }
     loop {
@@ -6093,14 +6107,85 @@ fn check_for_updates_on_launch() {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn check_for_updates_on_launch() {}
 
-fn finish_update_discovery(success: bool, pending_assets: bool, error: Option<String>) {
-    let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
-    if pending_assets {
-        state.schedule.finish_pending_assets(now_unix());
-    } else {
-        state.schedule.finish(now_unix(), success);
+fn initialize_update_discovery(
+    state: &mut AppUpdateState,
+    channel: UpdateChannel,
+    now: u64,
+    history: Option<update_history::UpdateHistory>,
+) {
+    state.channel = channel;
+    state.schedule = UpdateSchedule::new();
+    // Establish fresh discovery before restoring history: an interrupted attempt
+    // has no deadline and must never prevent this launch's 20-second check.
+    state.schedule.start(now);
+    state.phase = "idle";
+    state.latest = None;
+    state.release_url = None;
+    state.notes = None;
+    state.message = None;
+    state.install_ready = false;
+    state.check_error = None;
+    if let Some(history) = history.filter(|history| history.channel == channel) {
+        state.schedule.last_attempt_unix = history.last_attempt_unix;
+        state.schedule.last_success_unix = history.last_success_unix;
+        state.check_error = history.check_error;
     }
-    state.check_error = error;
+}
+
+fn update_history_path() -> Option<PathBuf> {
+    peterfan_platform::updater::update_install_result_path()
+        .map(|path| path.with_file_name("update-check-history.json"))
+}
+
+fn load_update_history(channel: UpdateChannel, now: u64) -> Option<update_history::UpdateHistory> {
+    let path = update_history_path()?;
+    match update_history::load(&path, channel, now, true) {
+        Ok(history) => history,
+        Err(error) => {
+            log_menubar_event(&format!("app update history read failed: {error}"));
+            None
+        }
+    }
+}
+
+fn capture_update_history(state: &AppUpdateState) -> update_history::UpdateHistory {
+    update_history::UpdateHistory::capture(
+        state.channel,
+        state.schedule.last_attempt_unix,
+        state.schedule.last_success_unix,
+        state.check_error.clone(),
+    )
+}
+
+fn persist_update_history(history: &update_history::UpdateHistory) {
+    if !APP_UPDATE_NETWORK_ENABLED.load(Ordering::Acquire) {
+        return;
+    }
+    let result = update_history_path()
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "missing update history directory",
+            )
+        })
+        .and_then(|path| update_history::save(&path, history, true));
+    if let Err(error) = result {
+        log_menubar_event(&format!("app update history save failed: {error}"));
+    }
+}
+
+fn finish_update_discovery(success: bool, pending_assets: bool, error: Option<String>) {
+    let history = {
+        let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+        if pending_assets {
+            state.schedule.finish_pending_assets(now_unix());
+        } else {
+            state.schedule.finish(now_unix(), success);
+        }
+        state.check_error = error;
+        capture_update_history(&state)
+    };
+    persist_update_history(&history);
 }
 
 /// External editors do not take the update lease; reject their stale response.
@@ -6190,7 +6275,7 @@ fn run_app_update(install: bool, automatic: bool) {
         return;
     };
     let channel = configured_update_channel();
-    {
+    let history = {
         let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
         if automatic && !state.schedule.due(now_unix()) {
             return;
@@ -6201,7 +6286,9 @@ fn run_app_update(install: bool, automatic: bool) {
         state.channel = channel;
         state.schedule.begin(now_unix());
         state.check_error = None;
-    }
+        capture_update_history(&state)
+    };
+    persist_update_history(&history);
     set_app_update_state("checking", None, None);
     log_menubar_event(if install {
         "app update install requested"
@@ -13334,6 +13421,30 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
             UpdateChannel::Stable,
             "notification-regression-test-next"
         ));
+    }
+
+    #[test]
+    fn restored_update_history_keeps_fresh_startup_and_no_release_claims() {
+        let mut state = APP_UPDATE_STATE.lock().unwrap().clone();
+        let history = update_history::UpdateHistory::capture(
+            UpdateChannel::Stable,
+            Some(90),
+            Some(80),
+            Some("offline".into()),
+        );
+        initialize_update_discovery(&mut state, UpdateChannel::Stable, 100, Some(history));
+        assert_eq!(state.schedule.last_attempt_unix, Some(90));
+        assert_eq!(state.schedule.last_success_unix, Some(80));
+        assert_eq!(state.schedule.next_check_unix, Some(120));
+        assert!(!state.schedule.due(119));
+        assert!(state.schedule.due(120));
+        assert_eq!(state.phase, "idle");
+        assert!(state.latest.is_none() && state.release_url.is_none() && state.notes.is_none());
+        assert!(!state.install_ready);
+        assert_eq!(state.check_error.as_deref(), Some("offline"));
+        state.schedule.begin(120);
+        state.schedule.finish(121, false);
+        assert_eq!(state.schedule.next_check_unix, Some(421));
     }
 
     #[test]

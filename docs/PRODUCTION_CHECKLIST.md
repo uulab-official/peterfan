@@ -3,6 +3,23 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
+## Update history recovery — 2026-10-23
+
+- [x] Restore only the selected channel's last attempt, success and bounded error
+      from a native sidecar. Preserve fresh 20-second startup discovery and
+      existing recurring/retry policy; never restore release/install authority.
+- [x] Capture outside state locks, atomically replace owned temporary files and
+      isolate mock mode from history I/O. Reject corrupt, oversized, wrong-channel,
+      unsupported, future-dated and non-regular input. FIFO/symlink regressions
+      failed before the fix and pass afterward.
+- [x] Contributor gate: 472 Rust tests passed, 7 ignored; 60 Node tests passed.
+      Native/Windows Clippy and Rust 1.88 all-target/all-feature checks passed.
+- [x] Developer ID signed/notarized/stapled local app installed with backup and
+      unchanged settings. First discovery succeeded after 20.165 seconds; after
+      restart, history was restored in idle/non-installable state before network
+      work, and fresh discovery succeeded after 20.161 seconds. Both scheduled
+      another check 21,600 seconds after success; the sidecar has Unix mode 0600.
+
 ## Measurable runner quality — 2026-10-23
 
 - [x] Define explicit CPU, tiny-artwork, anatomy, cadence and delivery targets;
@@ -58,8 +75,9 @@ See [targets, measurements and verification boundaries](RUNNER_QUALITY_TARGETS.m
 - [ ] Public release and OTA to a newer published version.
 
 See [check policy and verification boundaries](AUTOMATIC_UPDATES.md). Notification
-history and check timestamps currently reset when the app restarts. Windows
-transactional rollback and post-launch health verification remain separate work.
+deduplication remains process-local; check history is restored separately without
+trusting saved release metadata. Windows transactional rollback and post-launch
+health verification remain separate work.
 
 ## Settings interaction polish — 2026-10-23
 

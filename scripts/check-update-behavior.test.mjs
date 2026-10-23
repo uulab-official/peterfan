@@ -159,3 +159,19 @@ test('invalid metadata cannot describe the running app as current', () => {
   assert.doesNotMatch(ui.nodes['rail-update-copy'].textContent, /사용 중/);
   assert.equal(ui.nodes['rail-update-install'].disabled, true);
 });
+
+
+test('recovered idle check history never revives a cached release or current claim', () => {
+  for (const phase of ['available', 'current']) {
+    const ui = dashboard();
+    ui.context.APP_UPDATE_STATUS = { latest: '9.0.0', install_ready: true, phase, cached: true };
+    ui.update({ phase: 'idle', last_attempt_unix: now - 60, last_success_unix: now - 3600, next_check_unix: now + 20 });
+    assert.notEqual(ui.nodes['update-last-attempt'].textContent, 'Not yet');
+    assert.notEqual(ui.nodes['update-last-success'].textContent, 'Not yet');
+    assert.equal(ui.nodes['update-latest-version'].textContent, '—');
+    assert.equal(ui.nodes['rail-update-install'].disabled, true);
+    assert.equal(ui.nodes['rail-update-check'].disabled, false);
+    assert.match(ui.nodes['update-check-result'].textContent, /scheduled/);
+    assert.doesNotMatch(ui.nodes['rail-update-copy'].textContent, /is current|available.*9\.0\.0/);
+  }
+});

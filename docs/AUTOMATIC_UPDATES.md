@@ -34,9 +34,21 @@ the app is current. Malformed release versions are also failed checks. A newer r
 shown as unavailable for installation; it does not generate a ready-to-install
 notification.
 
-Optional notifications are deduplicated per version/channel for the current app
-run. Check history and notification deduplication reset when the app restarts.
-This does not change the separately persisted installation result receipt.
+Check history survives restart in the native `update-check-history.json` sidecar,
+alongside the independent installation result receipt. Only the matching update
+channel's last attempt, last successful discovery and last error are restored.
+No release metadata, current/available phase or installation readiness is loaded
+from this record. The first live check still runs 20 seconds after each launch;
+history cannot suppress it or reuse an old deadline. An interrupted attempt is
+historical information rather than an indefinitely running check.
+
+Malformed, oversized, unsupported-schema, wrong-channel and future-dated records
+fall back to fresh discovery. Non-regular files and symlinks are ignored before
+opening, so a FIFO cannot block startup. Writes replace through an owned temporary file;
+storage errors do not prevent checks. Mock mode never reads or writes this file.
+The file is diagnostic state, separate from user preferences and install receipts.
+Optional notifications remain deduplicated per version/channel for the current
+app run; notification deduplication resets when the app restarts.
 
 ## Verification boundaries
 
@@ -44,6 +56,10 @@ Deterministic policy tests cover startup, successful/manual rescheduling, bounde
 failure retries, overdue wake behavior and mutual exclusion. Dashboard tests run
 the actual embedded JavaScript against controlled check/receipt states. Browser
 fixtures exercise the Rust-generated settings screen without writing user config.
+Temporary-path native tests also exercise history round trips, interrupted
+attempts, invalid input, atomic replacement, failed-write cleanup and mock
+isolation. Restored-history dashboard fixtures must keep stale install actions
+disabled until a fresh native release check authorizes them.
 
 A real public-feed lookup confirms service access and version/asset parsing. It
 does not prove a newer release was downloaded, installed or relaunched. Those
@@ -58,6 +74,21 @@ The installer requires a directory writable by the current user; it does not
 request elevation for installations under protected locations such as Program Files.
 
 ## Local verification — 2026-10-23
+
+The restart-history pass passed 472 Rust tests (7 ignored), 60 Node tests,
+native/Windows-target Clippy, Rust 1.88 checks and all 43 smoke checks. FIFO and
+symlink cases failed before the non-regular-file guard. The signed arm64 app was
+notarized (submission `31cecce3-0c36-471b-b680-4752e61eb9a1` Accepted), stapled,
+Gatekeeper accepted and installed with backup and unchanged configuration.
+The first real check succeeded 20.165 seconds after startup and wrote history.
+After an actual app restart, native logs showed the same attempt/success in an
+idle, non-installable state before network work. A fresh check succeeded after
+20.161 seconds and scheduled another check 21,600 seconds later. The sidecar is
+mode 0600. Source hashes, install and restart evidence are recorded under
+`target/update-history/`; the signed product source matches the final committed
+tree. This pass does not create a public release or prove newer-version OTA.
+
+Earlier recurring-check implementation evidence:
 
 The full contributor gate passed: 450 Rust tests, 7 ignored, 56 Node tests, native
 runner/frontend comparisons, formatting, Clippy and Rust documentation. Windows

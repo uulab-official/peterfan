@@ -6,6 +6,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — Open-source contributor experience
 
+- Preserve the selected channel's update-check timestamps and last error across
+  restarts without restoring release/install authority or delaying the fresh
+  startup check. Ignore invalid history and isolate mock mode from its storage.
 - Reduce single-screen macOS runner redraw cost with a native layer mask while
   retaining CPU cadence, native button behavior and multi-screen image fallback.
   Add native compositing regressions and a safe manual ABBA benchmark with
