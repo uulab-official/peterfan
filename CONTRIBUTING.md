@@ -94,3 +94,19 @@ verification to make development easier.
 ## License
 
 Contributions are licensed under the project's [MIT License](./LICENSE).
+
+### Soak and recovery verification
+
+Python 3 is required by the contributor regressions (`python3` on macOS/Linux,
+`python` on Windows). `scripts/soak-test-macos.sh` accepts the existing
+`PETERFAN_SOAK_*` environment variables and defaults to six hours. To observe an
+already-running PeterFan without terminating it, set `PETERFAN_SOAK_PID`.
+The report includes interval CPU (100% = one core), RSS/thread bounds, process
+identity, host load, configuration fingerprints, CSV samples and `summary.json`.
+A shorter run is useful evidence only for its measured duration. A failed or
+interrupted run never qualifies as a successful soak or hardware/OTA test.
+
+Windows Cargo tests execute the embedded update transaction against private
+synthetic processes and files. Keep these results separate from signed public
+release installation and from power-loss recovery; see
+[update recovery verification](docs/UPDATE_RECOVERY_2026-10-23.md).

@@ -1338,26 +1338,39 @@ pub fn download_and_install_release(release: &ReleaseInfo) -> Result<(), String>
     let payload_dir = installer
         .parent()
         .ok_or("Windows installer has no payload directory")?;
-    for required in ["PeterFan.exe", "peterfan-cli.exe", "peterfan-tui.exe"] {
+    for required in [
+        "PeterFan.exe",
+        "peterfan-cli.exe",
+        "peterfan-tui.exe",
+        "uninstall.ps1",
+    ] {
         if !payload_dir.join(required).is_file() {
             return Err(format!("downloaded Windows ZIP is missing {required}"));
         }
     }
-    let version_output = std::process::Command::new(payload_dir.join("peterfan-cli.exe"))
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("could not inspect downloaded Windows CLI: {e}"))?;
-    let version_text = String::from_utf8_lossy(&version_output.stdout);
-    if !version_output.status.success()
-        || !version_text
-            .split_whitespace()
-            .any(|part| part == release.version)
-    {
-        return Err(format!(
-            "downloaded Windows payload version does not match v{}",
-            release.version
-        ));
+    verify_windows_payload_version(
+        &payload_dir.join("peterfan-cli.exe"),
+        &release.version,
+        &tmp_dir.join("payload-version.txt"),
+        std::time::Duration::from_secs(10),
+    )?;
+    // Freeze the verified payload's owned files. The detached helper copies
+    // and rechecks each digest before touching the existing installation.
+    let mut files = std::collections::BTreeMap::new();
+    for name in WINDOWS_UPDATE_FILES {
+        let path = payload_dir.join(name);
+        if path.is_file() {
+            files.insert(name.to_string(), sha256_file(&path)?);
+        }
     }
+    let nonce = format!(
+        "{:032x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            ^ u128::from(std::process::id())
+    );
 
     let result_path =
         update_install_result_path().ok_or("could not determine update result path")?;
@@ -1368,11 +1381,13 @@ pub fn download_and_install_release(release: &ReleaseInfo) -> Result<(), String>
     );
     let script_path = tmp_dir.join("apply-update.ps1");
     let script = build_windows_apply_update_script(
-        &installer,
+        payload_dir,
         &install_dir,
         &tmp_dir,
         &result_path,
         &release.version,
+        &nonce,
+        &files,
     );
     prepare_update_helper(
         &script_path,
@@ -1430,54 +1445,103 @@ fn windows_install_directory(executable: &std::path::Path) -> Result<std::path::
 }
 
 #[cfg(any(target_os = "windows", test))]
+const WINDOWS_UPDATE_FILES: [&str; 8] = [
+    "PeterFan.exe",
+    "peterfan-cli.exe",
+    "peterfan-tui.exe",
+    "uninstall.ps1",
+    "README-WINDOWS.txt",
+    "LICENSE",
+    "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md",
+];
+
+#[cfg(target_os = "windows")]
+fn verify_windows_payload_version(
+    executable: &std::path::Path,
+    expected_version: &str,
+    output_path: &std::path::Path,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    // A redirected regular file avoids deadlocking on a full pipe or a child
+    // that exits while another process retains its stdout handle.
+    let output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output_path)
+        .map_err(|error| format!("could not prepare Windows version check: {error}"))?;
+    let mut child = std::process::Command::new(executable)
+        .arg("--version")
+        .stdout(output)
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| format!("could not inspect downloaded Windows CLI: {error}"))?;
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("downloaded Windows CLI version check timed out".into());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "could not wait for downloaded Windows CLI: {error}"
+                ));
+            }
+        }
+    };
+    if !status.success()
+        || std::fs::metadata(output_path)
+            .map_err(|error| error.to_string())?
+            .len()
+            > 4096
+    {
+        return Err(format!(
+            "downloaded Windows payload version does not match v{expected_version}"
+        ));
+    }
+    let version = std::fs::read_to_string(output_path).map_err(|error| error.to_string())?;
+    if !version
+        .split_whitespace()
+        .any(|part| part == expected_version)
+    {
+        return Err(format!(
+            "downloaded Windows payload version does not match v{expected_version}"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", test))]
 fn build_windows_apply_update_script(
-    installer: &std::path::Path,
+    payload_dir: &std::path::Path,
     install_dir: &std::path::Path,
     tmp_dir: &std::path::Path,
     result_path: &std::path::Path,
     target_version: &str,
+    nonce: &str,
+    files: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    let result_tmp = result_path.with_extension("json.tmp-updater");
-    let installed = serde_json::to_string(&UpdateInstallResult::new(
-        "installed",
-        target_version,
-        format!("PeterFan v{target_version} was installed successfully."),
-    ))
-    .expect("update result serializes");
-    let failed = serde_json::to_string(&UpdateInstallResult::new(
-        "failed",
-        target_version,
-        "The Windows update failed. The installation may be incomplete; reinstall PeterFan if it does not start.",
-    ))
-    .expect("update result serializes");
+    let spec = serde_json::json!({
+        "payload_dir": payload_dir,
+        "install_dir": install_dir,
+        "tmp_dir": tmp_dir,
+        "result_path": result_path,
+        "version": target_version,
+        "nonce": nonce,
+        "files": files,
+    });
     format!(
-        "$ErrorActionPreference = 'Stop'\n\
-         $result = {result}\n\
-         $resultTmp = {result_tmp}\n\
-         $installDir = {install_dir}\n\
-         $existing = Join-Path $installDir 'PeterFan.exe'\n\
-         function Write-Result([string]$json) {{\n\
-         \tNew-Item -ItemType Directory -Force -Path (Split-Path -Parent $result) | Out-Null\n\
-         \t[System.IO.File]::WriteAllText($resultTmp, $json, [System.Text.UTF8Encoding]::new($false))\n\
-         \tMove-Item -LiteralPath $resultTmp -Destination $result -Force\n\
-         }}\n\
-         try {{\n\
-         \t& {installer} -InstallDir $installDir\n\
-         \tWrite-Result {installed}\n\
-         }} catch {{\n\
-         \tWrite-Result {failed}\n\
-         \tif (Test-Path -LiteralPath $existing -PathType Leaf) {{ Start-Process -FilePath $existing }}\n\
-         \texit 1\n\
-         }}\n\
-         Start-Sleep -Seconds 2\n\
-         Remove-Item -LiteralPath {tmp} -Recurse -Force -ErrorAction SilentlyContinue\n",
-        result = powershell_quote(result_path),
-        result_tmp = powershell_quote(&result_tmp),
-        installer = powershell_quote(installer),
-        install_dir = powershell_quote(install_dir),
-        installed = powershell_quote_str(&installed),
-        failed = powershell_quote_str(&failed),
-        tmp = powershell_quote(tmp_dir),
+        "$spec = {} | ConvertFrom-Json\n{}",
+        powershell_quote_str(&spec.to_string()),
+        include_str!("windows_update.ps1"),
     )
 }
 
@@ -1497,7 +1561,7 @@ fn find_file_named(root: &std::path::Path, name: &str) -> Option<std::path::Path
     None
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn powershell_quote(path: &std::path::Path) -> String {
     powershell_quote_str(&path.display().to_string())
 }
@@ -1690,91 +1754,117 @@ fn build_apply_update_script(
 ) -> String {
     let executable = app_path.join("Contents/MacOS/PeterFan");
     let result_tmp = result_path.with_extension("json.tmp-updater");
-    let installed = serde_json::to_string(&UpdateInstallResult::new(
-        "installed",
-        target_version,
-        format!("PeterFan v{target_version} was installed successfully."),
-    ))
-    .expect("update result serializes");
-    let rolled_back = serde_json::to_string(&UpdateInstallResult::new(
-        "rolled_back",
-        target_version,
-        "The update failed and the previous PeterFan version was restored.",
-    ))
-    .expect("update result serializes");
-    let failed = serde_json::to_string(&UpdateInstallResult::new(
-        "failed",
-        target_version,
-        "The installed app could not be moved. The existing app was left unchanged.",
-    ))
-    .expect("update result serializes");
-    let restore_failed = serde_json::to_string(&UpdateInstallResult::new(
-        "failed",
-        target_version,
-        "The update failed and the previous PeterFan version could not be restored automatically.",
-    ))
-    .expect("update result serializes");
+    let nonce = format!(
+        "{:032x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            ^ u128::from(std::process::id())
+    );
+    let health_path = crate::update_health::receipt_path(result_path, &nonce)
+        .expect("valid updater nonce and receipt path");
+    let receipt = |status, message| {
+        shell_quote_str(
+            &serde_json::to_string(&UpdateInstallResult::new(status, target_version, message))
+                .expect("update result serializes"),
+        )
+    };
     format!(
-        "#!/bin/bash\n\
-         set -u\n\
-         exec >{log} 2>&1\n\
-         cleanup_job() {{\n\
-         \t/bin/launchctl remove {updater_label} >/dev/null 2>&1 || true\n\
-         }}\n\
-         trap cleanup_job EXIT\n\
-         write_result() {{\n\
-         \t/usr/bin/printf '%s\\n' \"$1\" > {result_tmp} && /bin/mv -f {result_tmp} {result}\n\
-         }}\n\
-         launch_until_healthy() {{\n\
-         \tfor _ in 1 2 3 4; do\n\
-         \t\t/usr/bin/open -g -j {app} || /usr/bin/open -g -j -n {app} || true\n\
-         \t\tfor __ in 1 2; do\n\
-         \t\t\tsleep 1\n\
-         \t\t\t/usr/bin/pgrep -fx {executable} >/dev/null 2>&1 && return 0\n\
-         \t\tdone\n\
-         \tdone\n\
-         \treturn 1\n\
-         }}\n\
-         wait_for_previous_exit() {{\n\
-         \t# The old process holds the single-instance lock. Do not replace\n\
-         \t# the bundle until it has really exited, or the new launch can\n\
-         \t# be rejected as a duplicate and the health check can see the old\n\
-         \t# process instead of the replacement.\n\
-         \tfor _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40; do\n\
-         \t\tif ! /usr/bin/pgrep -fx {executable} >/dev/null 2>&1; then\n\
-         \t\t\treturn 0\n\
-         \t\tfi\n\
-         \t\tsleep 0.25\n\
-         \tdone\n\
-         \treturn 1\n\
-         }}\n\
-         fail_before_replace() {{\n\
-         \twrite_result {failed}\n\
-         \tlaunch_until_healthy || true\n\
-         \texit 1\n\
-         }}\n\
-         rollback() {{\n\
-         \t/usr/bin/pkill -fx {executable} >/dev/null 2>&1 || true\n\
-         \t/bin/rm -rf {app}\n\
-         \tif /bin/mv {backup} {app}; then\n\
-         \t\twrite_result {rolled_back}\n\
-         \t\tlaunch_until_healthy || true\n\
-         \telse\n\
-         \t\twrite_result {restore_failed}\n\
-         \tfi\n\
-         \texit 1\n\
-         }}\n\
-         sleep 0.5\n\
-         wait_for_previous_exit || fail_before_replace\n\
-         /bin/rm -rf {backup}\n\
-         /bin/mv {app} {backup} || fail_before_replace\n\
-         /usr/bin/ditto {new_app} {app} || rollback\n\
-         /usr/bin/codesign --verify --deep --strict {app} || rollback\n\
-         /usr/bin/xcrun stapler validate {app} >/dev/null 2>&1 || rollback\n\
-         launch_until_healthy || rollback\n\
-         write_result {installed}\n\
-         /bin/rm -rf {backup}\n\
-         /bin/rm -rf {tmp}\n",
+        r#"#!/bin/bash
+set -u
+umask 077
+exec >{log} 2>&1
+if [ "${{1:-}}" != "--lock-held" ]; then
+    [ ! -L {lock} ] && {{ [ ! -e {lock} ] || [ -f {lock} ]; }} || exit 1
+    exec /usr/bin/lockf -k -t 0 {lock} /bin/bash "$0" --lock-held
+fi
+executable={executable}
+health={health}
+nonce={nonce}
+version={version}
+cleanup_job() {{
+    /bin/rm -f "$health"
+    /bin/launchctl remove {updater_label} >/dev/null 2>&1 || true
+}}
+trap cleanup_job EXIT
+write_result() {{
+    /usr/bin/printf '%s\n' "$1" > {result_tmp} && /bin/mv -f {result_tmp} {result}
+}}
+find_app_pids() {{
+    while read -r pid command; do
+        [ "$command" = "$executable" ] && /usr/bin/printf '%s\n' "$pid"
+    done < <(/bin/ps -wwaxo pid=,comm=)
+}}
+wait_for_previous_exit() {{
+    for ((i=0; i<40; i++)); do
+        [ -z "$(find_app_pids)" ] && return 0
+        sleep 0.25
+    done
+    return 1
+}}
+launch_previous() {{
+    /usr/bin/open -g -j {app} || /usr/bin/open -g -j -n {app} || true
+}}
+health_matches() {{
+    [ -f "$health" ] && [ ! -L "$health" ] || return 1
+    [ "$(/usr/bin/plutil -extract nonce raw -o - "$health" 2>/dev/null)" = "$nonce" ] || return 1
+    [ "$(/usr/bin/plutil -extract version raw -o - "$health" 2>/dev/null)" = "$version" ] || return 1
+    health_pid=$(/usr/bin/plutil -extract pid raw -o - "$health" 2>/dev/null) || return 1
+    case "$health_pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$(/bin/ps -p "$health_pid" -o comm=)" = "$executable" ] || return 1
+    identity=$(/bin/ps -p "$health_pid" -o lstart=,comm=) || return 1
+    sleep 2
+    [ "$(/bin/ps -p "$health_pid" -o lstart=,comm=)" = "$identity" ]
+}}
+launch_until_healthy() {{
+    /bin/rm -f "$health"
+    /usr/bin/open -g -j {app} --args --update-health-token "$nonce" || return 1
+    for ((i=0; i<45; i++)); do
+        sleep 1
+        health_matches && return 0
+    done
+    return 1
+}}
+fail_before_replace() {{
+    write_result {failed}
+    launch_previous
+    exit 1
+}}
+rollback() {{
+    for pid in $(find_app_pids); do
+        if [ "$(/bin/ps -p "$pid" -o comm=)" = "$executable" ]; then
+            /bin/kill -TERM "$pid" || true
+        fi
+    done
+    if ! wait_for_previous_exit; then
+        write_result {restore_failed}
+        exit 1
+    fi
+    if ! /bin/rm -rf {app} || [ -e {app} ] || [ -L {app} ]; then
+        write_result {restore_failed}
+        exit 1
+    fi
+    if /bin/mv {backup} {app}; then
+        write_result {rolled_back}
+        launch_previous
+    else
+        write_result {restore_failed}
+    fi
+    exit 1
+}}
+sleep 0.5
+wait_for_previous_exit || fail_before_replace
+/bin/rm -rf {backup}
+/bin/mv {app} {backup} || fail_before_replace
+/usr/bin/ditto {new_app} {app} || rollback
+/usr/bin/codesign --verify --deep --strict {app} || rollback
+/usr/bin/xcrun stapler validate {app} >/dev/null 2>&1 || rollback
+launch_until_healthy || rollback
+write_result {installed} || rollback
+/bin/rm -rf {backup}
+/bin/rm -rf {tmp}
+"#,
         app = shell_quote(app_path),
         new_app = shell_quote(new_app),
         backup = shell_quote(backup_path),
@@ -1782,12 +1872,28 @@ fn build_apply_update_script(
         log = shell_quote(log_path),
         result = shell_quote(result_path),
         result_tmp = shell_quote(&result_tmp),
-        installed = shell_quote_str(&installed),
-        rolled_back = shell_quote_str(&rolled_back),
-        failed = shell_quote_str(&failed),
-        restore_failed = shell_quote_str(&restore_failed),
         executable = shell_quote(&executable),
+        lock = shell_quote(&app_path.with_extension("app.update.lock")),
+        health = shell_quote(&health_path),
+        nonce = shell_quote_str(&nonce),
+        version = shell_quote_str(target_version),
         updater_label = shell_quote_str(updater_label),
+        installed = receipt(
+            "installed",
+            "PeterFan was installed and acknowledged UI readiness."
+        ),
+        rolled_back = receipt(
+            "rolled_back",
+            "The update failed and the previous PeterFan version was restored."
+        ),
+        failed = receipt(
+            "failed",
+            "The existing app could not be moved and was left unchanged."
+        ),
+        restore_failed = receipt(
+            "failed",
+            "Automatic rollback could not complete. The previous app backup was retained."
+        ),
     )
 }
 
@@ -2670,27 +2776,108 @@ TeamIdentifier=N99FMBQ662
     }
 
     #[test]
-    fn windows_apply_script_uses_custom_install_for_apply_and_failure_relaunch() {
+    fn windows_apply_script_requires_transactional_files_and_healthy_launch() {
+        let files = WINDOWS_UPDATE_FILES
+            .into_iter()
+            .map(|name| (name.to_string(), "a".repeat(64)))
+            .collect();
         let script = build_windows_apply_update_script(
-            std::path::Path::new(r"C:\Temp\PeterFan update\install.ps1"),
+            std::path::Path::new(r"C:\Temp\PeterFan update\payload"),
             std::path::Path::new(r"D:\My Apps\O'Brien\PeterFan"),
             std::path::Path::new(r"C:\Temp\PeterFan update"),
             std::path::Path::new(r"C:\Users\Test\AppData\Local\PeterFan\update-result.json"),
             "1.2.3",
+            "0123456789abcdef0123456789abcdef",
+            &files,
         );
 
-        assert!(script.contains("& 'C:\\Temp\\PeterFan update\\install.ps1'"));
-        assert!(script.contains("Write-Result"));
-        assert!(script.contains(r#""status":"installed""#));
-        assert!(script.contains(r#""status":"failed""#));
-        assert!(script.contains("$installDir = 'D:\\My Apps\\O''Brien\\PeterFan'"));
-        assert!(script.contains("-InstallDir $installDir"));
+        assert!(!script.contains("& 'C:\\Temp\\PeterFan update\\install.ps1'"));
+        assert!(script.contains("O''Brien"));
         assert!(script.contains("$existing = Join-Path $installDir 'PeterFan.exe'"));
-        assert!(script.contains("Start-Process -FilePath $existing"));
         assert!(!script.contains("LOCALAPPDATA"));
-        assert!(script.contains("installation may be incomplete"));
-        assert!(!script.contains("existing installation was left in place"));
-        assert!(script.contains("Remove-Item -LiteralPath 'C:\\Temp\\PeterFan update'"));
+        assert!(!script.contains("Stop-Process -Name"));
+        assert!(script.contains("[IO.FileShare]::None"));
+        assert!(script.contains("Staged update checksum mismatch"));
+        assert!(script.contains("$receipt.pid -eq $script:launched.Id"));
+        assert!(script.contains("$receipt.version -ceq $spec.version"));
+        assert!(script.contains("[StringComparison]::OrdinalIgnoreCase"));
+        assert!(script.contains("The update failed and the previous files were restored"));
+        assert!(
+            script.find("    Launch-Healthy\n").unwrap()
+                < script.find("    Write-Result 'installed'").unwrap()
+        );
+        assert!(
+            script.find("    Write-Result 'installed'").unwrap()
+                < script.find("if (-not $preserveBackup)").unwrap()
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_updater_transaction_restores_failures_in_isolated_native_fixture() {
+        let root = std::env::temp_dir().join(format!(
+            "peterfan-update-transaction-test-{}",
+            std::process::id()
+        ));
+        let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/test-windows-update-transaction.ps1");
+        let helper =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/windows_update.ps1");
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(&script_path)
+            .arg("-Helper")
+            .arg(&helper)
+            .arg("-Root")
+            .arg(&root)
+            .output()
+            .expect("native Windows PowerShell fixture must start");
+        assert!(
+            output.status.success(),
+            "native update fixture failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cli = root.join("version-check.exe");
+        let version = root.join("version.txt");
+        verify_windows_payload_version(&cli, "9.9.9", &version, std::time::Duration::from_secs(5))
+            .unwrap();
+        let _ = std::fs::remove_file(&version);
+        let error = verify_windows_payload_version(
+            &root.join("version-hang.exe"),
+            "9.9.9",
+            &version,
+            std::time::Duration::from_millis(150),
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ota_health_requires_fresh_ui_ack_and_exact_process_identity() {
+        let script = build_apply_update_script(
+            std::path::Path::new("/Applications/PeterFan.app"),
+            std::path::Path::new("/tmp/update/PeterFan.app"),
+            std::path::Path::new("/tmp/update/PreviousPeterFan.app"),
+            std::path::Path::new("/tmp/update"),
+            std::path::Path::new("/tmp/update/apply-update.log"),
+            std::path::Path::new("/tmp/support/update-result.json"),
+            "1.2.3",
+            "kr.co.uulab.peterfan.updater.test-health",
+        );
+        assert!(script.contains("--update-health-token"));
+        assert!(script.contains("plutil -extract nonce raw"));
+        assert!(script.contains("plutil -extract version raw"));
+        assert!(script.contains("lstart=,comm="));
+        assert!(!script.contains("pkill -fx"));
     }
 
     #[cfg(target_os = "macos")]
@@ -2715,7 +2902,7 @@ TeamIdentifier=N99FMBQ662
         assert!(script.contains("stapler validate"));
         assert!(script.contains("open -g -j"));
         assert!(script.contains("open -g -j -n"));
-        assert!(script.contains("pgrep -fx"));
+        assert!(script.contains("find_app_pids"));
         assert!(script.contains("wait_for_previous_exit"));
         assert!(script.contains("wait_for_previous_exit || fail_before_replace"));
         assert!(script.contains("launch_until_healthy || rollback"));
@@ -2825,6 +3012,165 @@ TeamIdentifier=N99FMBQ662
 
     #[cfg(target_os = "macos")]
     struct UpdateAppFixture(std::path::PathBuf);
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn concurrent_macos_helper_refuses_before_touching_app_or_receipt() {
+        let root =
+            std::env::temp_dir().join(format!("peterfan-apply-contention-{}", std::process::id()));
+        let app = root.join("Installed/PeterFan.app");
+        let candidate = root.join("Update/PeterFan.app");
+        let backup = root.join("Update/PreviousPeterFan.app");
+        let result = root.join("Support/update-result.json");
+        for path in [&app, &candidate, result.parent().unwrap()] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(app.join("original"), b"old app").unwrap();
+        std::fs::write(&result, b"active transaction receipt").unwrap();
+        let marker = root.join("lock-ready");
+        let mut holder = std::process::Command::new("/usr/bin/lockf")
+            .args(["-k", "-t", "0"])
+            .arg(app.with_extension("app.update.lock"))
+            .args(["/bin/sh", "-c", "touch \"$1\"; sleep 2", "fixture"])
+            .arg(&marker)
+            .spawn()
+            .unwrap();
+        let start = std::time::Instant::now();
+        while !marker.exists() {
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let script = build_apply_update_script(
+            &app,
+            &candidate,
+            &backup,
+            &root.join("Update"),
+            &root.join("Update/apply.log"),
+            &result,
+            "1.2.3",
+            "kr.co.uulab.peterfan.updater.test-contention",
+        );
+        let path = root.join("Update/apply.sh");
+        std::fs::write(&path, script).unwrap();
+        let status = std::process::Command::new("/bin/bash")
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(holder.wait().unwrap().success());
+        assert!(!status.success());
+        assert_eq!(
+            std::fs::read(&result).unwrap(),
+            b"active transaction receipt"
+        );
+        assert_eq!(std::fs::read(app.join("original")).unwrap(), b"old app");
+        assert!(!backup.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ota_failed_removal_preserves_separate_recovery_backup() {
+        let root =
+            std::env::temp_dir().join(format!("peterfan-failed-removal-{}", std::process::id()));
+        let app = root.join("Installed/PeterFan.app");
+        let candidate = root.join("Update/PeterFan.app");
+        let backup = root.join("Update/PreviousPeterFan.app");
+        let result = root.join("Support/update-result.json");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::create_dir_all(&candidate).unwrap();
+        std::fs::create_dir_all(result.parent().unwrap()).unwrap();
+        std::fs::write(app.join("old-marker"), b"recovery").unwrap();
+        let script = build_apply_update_script(
+            &app,
+            &candidate,
+            &backup,
+            &root.join("Update"),
+            &root.join("Update/apply.log"),
+            &result,
+            "1.2.3",
+            "kr.co.uulab.peterfan.updater.test-failed-removal",
+        )
+        .replace(
+            "/usr/bin/codesign --verify --deep --strict",
+            "/usr/bin/true",
+        )
+        .replace("/usr/bin/xcrun stapler validate", "/usr/bin/true")
+        .replace("/usr/bin/open", "/usr/bin/true")
+        .replace("i<45", "i<2")
+        .replace("sleep 1", "sleep 0.01")
+        .replace(
+            &format!("/bin/rm -rf {}", shell_quote(&app)),
+            "/usr/bin/false",
+        );
+        let path = root.join("Update/apply.sh");
+        std::fs::write(&path, script).unwrap();
+        assert!(!std::process::Command::new("/bin/bash")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+        assert!(
+            backup.join("old-marker").exists(),
+            "failed removal must retain standalone backup"
+        );
+        assert!(!app.join("PreviousPeterFan.app").exists());
+        assert_eq!(
+            read_update_install_result_from(&result).unwrap().status,
+            "failed"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ota_missing_ui_ack_restores_old_app_after_successful_trust_checks() {
+        let root = std::env::temp_dir().join(format!("peterfan-no-ui-ack-{}", std::process::id()));
+        let app = root.join("Installed/PeterFan.app");
+        let candidate = root.join("Update/PeterFan.app");
+        let backup = root.join("Update/PreviousPeterFan.app");
+        let result = root.join("Support/update-result.json");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(candidate.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(result.parent().unwrap()).unwrap();
+        std::fs::write(app.join("old-marker"), b"preserved").unwrap();
+        std::fs::write(candidate.join("new-marker"), b"candidate").unwrap();
+        // Fixture trust/launch commands succeed; no app acknowledges its UI.
+        // Only this generated test copy shortens its deadline and substitutes
+        // external tools. Production scripts always use real tools/deadlines.
+        let script = build_apply_update_script(
+            &app,
+            &candidate,
+            &backup,
+            &root.join("Update"),
+            &root.join("Update/apply-update.log"),
+            &result,
+            "1.2.3",
+            "kr.co.uulab.peterfan.updater.test-no-ui-ack",
+        )
+        .replace(
+            "/usr/bin/codesign --verify --deep --strict",
+            "/usr/bin/true",
+        )
+        .replace("/usr/bin/xcrun stapler validate", "/usr/bin/true")
+        .replace("/usr/bin/open", "/usr/bin/true")
+        .replace("i<45", "i<2")
+        .replace("sleep 1", "sleep 0.01");
+        let script_path = root.join("Update/apply-update.sh");
+        std::fs::write(&script_path, script).unwrap();
+        assert!(!std::process::Command::new("/bin/bash")
+            .arg(&script_path)
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(std::fs::read(app.join("old-marker")).unwrap(), b"preserved");
+        assert!(!app.join("new-marker").exists());
+        assert_eq!(
+            read_update_install_result_from(&result).unwrap().status,
+            "rolled_back"
+        );
+        assert!(!backup.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(target_os = "macos")]
     impl UpdateAppFixture {

@@ -2559,6 +2559,18 @@ fn main() {
         std::process::exit(2);
     }
     let use_mock = args.iter().any(|a| a == "--mock");
+    let health_result_path = peterfan_platform::updater::update_install_result_path();
+    let mut update_health = match peterfan_platform::update_health::Pending::from_args(
+        &args,
+        health_result_path.as_deref(),
+        use_mock,
+    ) {
+        Ok(request) => request,
+        Err(error) => {
+            eprintln!("Invalid update launch: {error}");
+            std::process::exit(2);
+        }
+    };
     let _single_instance = match acquire_single_instance_lock(use_mock) {
         Ok(lock) => lock,
         Err(e) => {
@@ -2932,6 +2944,16 @@ fn main() {
             animate_runner(&mut app);
             next_runner_at =
                 now + runner_frame_interval_for_pose(app.runner_character, app.runner_cpu_pct, app.runner_frame);
+        }
+        if let Some(request) = update_health.as_mut() {
+            match request.poll(now, app.tray.is_some(), app.webview_ready, env!("CARGO_PKG_VERSION")) {
+                Ok(true) => {log_menubar_event("update launch health acknowledged");update_health = None;}
+                Ok(false) => {}
+                Err(error) => {
+                    log_menubar_event(&format!("update launch health failed: {error}"));
+                    update_health = None;
+                }
+            }
         }
         let next_tick = [
             Some(next_metric_at),
@@ -3436,7 +3458,7 @@ fn unsupported_menubar_arg(args: &[String]) -> Option<&str> {
     while i < args.len() {
         match args[i].as_str() {
             "--mock" => i += 1,
-            "--metric" | "--display" | "--character" => {
+            "--metric" | "--display" | "--character" | "--update-health-token" => {
                 if i + 1 >= args.len() {
                     return Some(args[i].as_str());
                 }
@@ -14452,6 +14474,8 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
             "graph".to_string(),
             "--character".to_string(),
             "fox".to_string(),
+            "--update-health-token".to_string(),
+            "1234567890abcdef1234567890abcdef".to_string(),
             "-psn_0_12345".to_string(),
         ];
         assert_eq!(unsupported_menubar_arg(&ok_args), None);

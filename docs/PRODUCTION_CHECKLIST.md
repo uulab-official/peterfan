@@ -3,6 +3,25 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
+## Update transaction and runtime evidence — 2026-10-23
+
+- [x] Gate success on a fresh per-launch tray/WebView readiness acknowledgement,
+      matching PID/version and additional process survival.
+- [x] Stage and recheck Windows payload hashes; restore previous files on handled
+      copy/startup failure, preserve other installations and unrelated data, and
+      bound CLI version inspection to ten seconds.
+- [x] Serialize macOS helpers and preserve the separate recovery backup if bundle
+      removal fails. Native contention/removal regressions failed without fixes.
+- [x] Local contributor gate: 505 Rust tests passed, 7 ignored; 69 Node tests
+      passed. Native/Windows Clippy, Rust 1.88, release and 43 smoke checks passed.
+- [x] Interval-based soak tool pins process identity, validates samples and
+      configuration preservation, never stops an external PID and writes a
+      structured result. Baseline installed build completed ten minutes.
+- [ ] Forced updater interruption/power-loss automatic recovery, extended
+      new-build soak, physical sleep/wake and public newer-version OTA adoption.
+
+See [failure cases, measurements and limits](UPDATE_RECOVERY_2026-10-23.md).
+
 ## Configuration and resume bug hardening — 2026-10-23
 
 - [x] Strict locked partial edits preserve malformed files and concurrent disjoint
