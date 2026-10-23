@@ -1561,6 +1561,12 @@ fn validate_self_reinstall_source(path: &str) -> Result<PathBuf, String> {
 #[cfg(target_os = "macos")]
 const DAEMON_CODE_REQUIREMENT: &str = "identifier peterfand and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"N99FMBQ662\"";
 
+#[cfg(target_os = "macos")]
+fn code_requirement_argument(requirement: &str) -> String {
+    // codesign interprets unprefixed -R arguments as requirement file paths.
+    format!("={requirement}")
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn self_reinstall_version_allowed(candidate: &str, running: &str) -> bool {
     !peterfan_platform::daemon_update_required(candidate)
@@ -1635,7 +1641,8 @@ fn verify_self_reinstall_version(candidate: &std::path::Path, running: &str) -> 
     // Its normal caller supplies an already-verified file in a root-only stage.
     bounded_command_output(
         std::process::Command::new("/usr/bin/codesign")
-            .args(["--verify", "--strict", "-R", DAEMON_CODE_REQUIREMENT])
+            .args(["--verify", "--strict", "-R"])
+            .arg(code_requirement_argument(DAEMON_CODE_REQUIREMENT))
             .arg(candidate),
         Duration::from_secs(5),
     )?;
@@ -1666,7 +1673,7 @@ fn self_reinstall_script(
     let source = shell_quote(&source.to_string_lossy());
     let destination = shell_quote(&destination.to_string_lossy());
     let stage_template = shell_quote(&stage_template.to_string_lossy());
-    let requirement = shell_quote(DAEMON_CODE_REQUIREMENT);
+    let requirement = shell_quote(&code_requirement_argument(DAEMON_CODE_REQUIREMENT));
     let version_verifier = shell_quote(&version_verifier.to_string_lossy());
     let running = shell_quote(running);
     let label = peterfan_platform::daemon_install::DAEMON_LABEL;
@@ -3219,6 +3226,31 @@ case "$*" in *'certificate leaf[subject.OU] = "N99FMBQ662"'*) ;; *) exit 1;; esa
                 "{candidate}"
             );
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_codesign_parses_and_enforces_inline_requirements() {
+        let verify = |requirement: &str| {
+            std::process::Command::new("/usr/bin/codesign")
+                .args(["--verify", "--strict", "-R"])
+                .arg(code_requirement_argument(requirement))
+                .arg("/usr/bin/true")
+                .output()
+                .unwrap()
+        };
+        let accepted = verify("anchor apple");
+        assert!(
+            accepted.status.success(),
+            "{}",
+            String::from_utf8_lossy(&accepted.stderr)
+        );
+        let rejected =
+            verify("anchor apple and identifier kr.co.uulab.peterfan.deliberately-wrong");
+        assert!(
+            !rejected.status.success(),
+            "a mismatched designated requirement must reject Apple's signed fixture"
+        );
     }
 
     #[cfg(target_os = "macos")]
