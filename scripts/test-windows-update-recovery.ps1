@@ -110,6 +110,7 @@ function Start-Helper($case, [bool]$recover, [string]$stopAt = '', [bool]$failHe
     $process.StartInfo = $start
     if (-not $process.Start()) { throw 'Fixture helper did not start.' }
     $child = @{ process = $process; started = $process.StartTime; marker = $marker;
+        script = $script;
         stdout = $process.StandardOutput.ReadToEndAsync(); stderr = $process.StandardError.ReadToEndAsync() }
     $children.Add($child)
     return $child
@@ -125,13 +126,21 @@ function Kill-Owned($child) {
     }
 }
 
+function Helper-Diagnostics($child) {
+    $child.process.Refresh()
+    $exit = if ($child.process.HasExited) { $child.process.ExitCode } else { '<running>' }
+    $stdout = if ($child.stdout.Wait(1000)) { $child.stdout.Result } else { '<stdout pending>' }
+    $stderr = if ($child.stderr.Wait(1000)) { $child.stderr.Result } else { '<stderr pending>' }
+    return "Helper: $($child.script) PID: $($child.process.Id) Exit: $exit`nstdout: $stdout`nstderr: $stderr"
+}
+
 function Wait-Barrier($child) {
     $clock = [Diagnostics.Stopwatch]::StartNew()
     while (-not (Test-Path -LiteralPath $child.marker)) {
         $child.process.Refresh()
         if ($child.process.HasExited -or $clock.ElapsedMilliseconds -ge 15000) {
             Kill-Owned $child
-            throw "Helper did not reach barrier. $($child.stdout.Result) $($child.stderr.Result)"
+            throw "Helper did not reach barrier. $(Helper-Diagnostics $child)"
         }
         Start-Sleep -Milliseconds 25
     }
@@ -139,10 +148,12 @@ function Wait-Barrier($child) {
 }
 
 function Complete-Helper($child, [bool]$success = $true) {
-    if (-not $child.process.WaitForExit(15000)) { Kill-Owned $child; throw 'Recovery helper timed out.' }
-    $output = $child.stdout.Result + $child.stderr.Result
+    if (-not $child.process.WaitForExit(15000)) {
+        Kill-Owned $child
+        throw "Recovery helper timed out. $(Helper-Diagnostics $child)"
+    }
     if (($child.process.ExitCode -eq 0) -ne $success) {
-        throw "Unexpected recovery helper exit $($child.process.ExitCode). $output"
+        throw "Unexpected recovery helper exit $($child.process.ExitCode). $(Helper-Diagnostics $child)"
     }
 }
 
@@ -200,10 +211,19 @@ function Synthetic-Interrupted($case) {
 }
 
 function Make-Committed($case) {
-    foreach ($file in $names) {
-        Copy-Item -LiteralPath (Join-Path $case.payload $file) -Destination (Join-Path $case.install $file) -Force
-    }
     $state = Get-Content -LiteralPath $case.state -Raw -Force | ConvertFrom-Json
+    $stage = Join-Path $case.install ".peterfan-stage-$($state.transaction)"
+    foreach ($entry in @($state.files)) {
+        $file = $entry.name
+        if ((Hash-File (Join-Path $case.payload $file)) -cne $case.replacement[$file]) {
+            throw "Committed fixture payload does not match its replacement manifest: $file"
+        }
+        Copy-Item -LiteralPath (Join-Path $case.payload $file) -Destination (Join-Path $case.install $file) -Force
+        # Real File.Replace/Move consumes its staged source. A committed
+        # fixture must not retain stale pre-substitution payload bytes here.
+        [IO.File]::Delete((Join-Path $stage $file))
+        $entry.new_sha256 = $case.replacement[$file]
+    }
     $state.phase = 'committed'
     [IO.File]::WriteAllText($case.state, ($state | ConvertTo-Json -Depth 6 -Compress))
     return $state
@@ -217,6 +237,9 @@ try {
     Write-Host 'PASS durable recovery: offline replay twice, immutable snapshot, new file removal, partial restore scratch'
     $case = New-Case 'committed-replay-startup-order'
     $null = Synthetic-Interrupted $case
+    # Match the native fixture's late substitution of its executable payload.
+    [IO.File]::WriteAllText((Join-Path $case.payload 'PeterFan.exe'), 'substituted executable fixture bytes')
+    $case.replacement['PeterFan.exe'] = Hash-File (Join-Path $case.payload 'PeterFan.exe')
     $null = Make-Committed $case
     $case.spec.version = '10.0.0'
     $trace = Join-Path $case.directory 'startup-trace'
@@ -296,9 +319,7 @@ try {
         $null = Synthetic-Interrupted $case
         Copy-Item -LiteralPath $NativeApp -Destination (Join-Path $case.payload 'PeterFan.exe') -Force
         $case.replacement['PeterFan.exe'] = Hash-File (Join-Path $case.payload 'PeterFan.exe')
-        $state = Make-Committed $case
-        @($state.files | Where-Object name -ceq 'PeterFan.exe')[0].new_sha256 = $case.replacement['PeterFan.exe']
-        [IO.File]::WriteAllText($case.state, ($state | ConvertTo-Json -Depth 6 -Compress))
+        $null = Make-Committed $case
         $case.spec.version = '10.0.0'
         [IO.File]::WriteAllText((Join-Path $case.install 'fixture-mode'), 'healthy')
         $env:PETERFAN_TEST_HEALTH_DIR = Split-Path -Parent $case.result
@@ -311,7 +332,8 @@ try {
             while (-not (Test-Path -LiteralPath $trace)) {
                 $helperProcess.process.Refresh()
                 if ($helperProcess.process.HasExited -or $deadline.ElapsedMilliseconds -ge 15000) {
-                    throw 'Native committed replay did not enter its bounded caller-exit wait.'
+                    Kill-Owned $helperProcess
+                    throw "Native committed replay did not enter its bounded caller-exit wait. $(Helper-Diagnostics $helperProcess)"
                 }
                 Start-Sleep -Milliseconds 25
             }
