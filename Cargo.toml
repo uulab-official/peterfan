@@ -36,13 +36,18 @@ sysinfo = "0.36"
 # Maintained drop-in fork of rust-battery. The abandoned 0.7.x crate keeps an
 # old Linux-only nix dependency with RUSTSEC-2021-0119 in Cargo.lock.
 battery = { package = "starship-battery", version = "=0.10.2" }
-tray-icon = "0.24"
+# Keep the reviewed macOS 27 backport selected until the patch is removed.
+tray-icon = "=0.24.1"
 tao = "0.35"
 macsmc = "0.1"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
 toml = "0.8"
 dirs = "6"
+
+[patch.crates-io]
+# Official macOS 27 click fix backported without raising the Rust 1.88 MSRV.
+tray-icon = { path = "vendor/tray-icon-0.24.1" }
 
 [profile.release]
 lto = "thin"

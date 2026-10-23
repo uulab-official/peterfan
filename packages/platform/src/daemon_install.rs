@@ -117,6 +117,43 @@ fn privileged_error_message(status_code: Option<i32>, stderr: &str) -> String {
     }
 }
 
+/// Milestones describe completed/entered installation stages, not bytes or elapsed time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstallStage {
+    Preflight,
+    Installing,
+    Verifying,
+    Complete,
+    Failed,
+}
+
+fn finish_reported_install(
+    result: Result<InstallOutcome, String>,
+    report: &mut impl FnMut(InstallStage),
+) -> Result<InstallOutcome, String> {
+    match &result {
+        Ok(InstallOutcome::Installed) => report(InstallStage::Complete),
+        Ok(InstallOutcome::DryRun(_)) => {}
+        _ => report(InstallStage::Failed),
+    }
+    result
+}
+
+fn run_install_steps(
+    install: impl FnOnce() -> Result<(), String>,
+    verify: impl FnOnce() -> bool,
+    report: &mut impl FnMut(InstallStage),
+) -> Result<InstallOutcome, String> {
+    report(InstallStage::Installing);
+    install()?;
+    report(InstallStage::Verifying);
+    Ok(if verify() {
+        InstallOutcome::Installed
+    } else {
+        InstallOutcome::InstalledButUnreachable
+    })
+}
+
 /// Distinct from `Err`: the privileged script ran successfully, but the
 /// daemon hasn't answered over IPC yet (slow launchd bootstrap, or a real
 /// startup failure logged to `/var/log/peterfand.err`). Not a cancellation
@@ -145,6 +182,39 @@ fn required_daemon_is_healthy(
                 && !crate::updater::is_newer(runtime, installed)
         }
         _ => false,
+    }
+}
+
+/// Verify the existing daemon without reinstalling it or requesting privileges.
+pub fn verify_existing_with_progress(mut report: impl FnMut(InstallStage)) -> Result<(), String> {
+    verify_existing_with_probe(
+        || {
+            (
+                crate::installed_daemon_version(),
+                crate::running_daemon_version(),
+            )
+        },
+        &mut report,
+    )
+}
+
+fn verify_existing_with_probe(
+    probe: impl FnOnce() -> (Option<String>, Option<String>),
+    report: &mut impl FnMut(InstallStage),
+) -> Result<(), String> {
+    report(InstallStage::Preflight);
+    report(InstallStage::Verifying);
+    let (installed, runtime) = probe();
+    if required_daemon_is_healthy(
+        installed.as_deref(),
+        runtime.as_deref(),
+        crate::MIN_REQUIRED_DAEMON_VERSION,
+    ) {
+        report(InstallStage::Complete);
+        Ok(())
+    } else {
+        report(InstallStage::Failed);
+        Err("The existing fan-control daemon could not be verified. No administrator changes were made; run Diagnostics and retry.".into())
     }
 }
 
@@ -182,6 +252,22 @@ fn wait_for_required_daemon_with_probe(
 /// `Err` means the user cancelled the prompt, the script failed, or
 /// `peterfand` wasn't found next to this binary — genuine failures.
 pub fn install(dry_run: bool) -> Result<InstallOutcome, String> {
+    install_with_progress(dry_run, |_| {})
+}
+
+pub fn install_with_progress(
+    dry_run: bool,
+    mut report: impl FnMut(InstallStage),
+) -> Result<InstallOutcome, String> {
+    report(InstallStage::Preflight);
+    let result = install_reported(dry_run, &mut report);
+    finish_reported_install(result, &mut report)
+}
+
+fn install_reported(
+    dry_run: bool,
+    report: &mut impl FnMut(InstallStage),
+) -> Result<InstallOutcome, String> {
     if !dry_run {
         let installed_version = crate::installed_daemon_version();
         if required_daemon_is_healthy(
@@ -232,21 +318,20 @@ pub fn install(dry_run: bool) -> Result<InstallOutcome, String> {
         newsyslog = NEWSYSLOG_BODY,
         newsyslog_conf = NEWSYSLOG_CONF,
     );
-    let dry_run_output = match run_privileged(&script, dry_run) {
-        Ok(out) => out,
-        Err(e) => {
-            let _ = std::fs::remove_file(&staged_bin);
-            return Err(e);
-        }
-    };
     if dry_run {
-        return Ok(InstallOutcome::DryRun(dry_run_output));
+        return run_privileged(&script, true).map(InstallOutcome::DryRun);
     }
-    if wait_for_required_daemon(std::time::Duration::from_secs(10)) {
-        Ok(InstallOutcome::Installed)
-    } else {
-        Ok(InstallOutcome::InstalledButUnreachable)
-    }
+    run_install_steps(
+        || match run_privileged(&script, false) {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                let _ = std::fs::remove_file(&staged_bin);
+                Err(error)
+            }
+        },
+        || wait_for_required_daemon(std::time::Duration::from_secs(10)),
+        report,
+    )
 }
 
 /// Remove the daemon (LaunchDaemon, binary, log-rotation config). One admin
@@ -273,6 +358,24 @@ pub fn uninstall(dry_run: bool) -> Result<InstallOutcome, String> {
 /// command, so callers should fall back to [`install`] when this returns `Err`.
 #[cfg(target_os = "macos")]
 pub fn reinstall_via_running_daemon(dry_run: bool) -> Result<InstallOutcome, String> {
+    reinstall_via_running_daemon_with_progress(dry_run, |_| {})
+}
+
+#[cfg(target_os = "macos")]
+pub fn reinstall_via_running_daemon_with_progress(
+    dry_run: bool,
+    mut report: impl FnMut(InstallStage),
+) -> Result<InstallOutcome, String> {
+    report(InstallStage::Preflight);
+    let result = reinstall_reported(dry_run, &mut report);
+    finish_reported_install(result, &mut report)
+}
+
+#[cfg(target_os = "macos")]
+fn reinstall_reported(
+    dry_run: bool,
+    report: &mut impl FnMut(InstallStage),
+) -> Result<InstallOutcome, String> {
     let bin = find_peterfand()?;
     let bin = std::fs::canonicalize(&bin).map_err(|e| e.to_string())?;
     if bin.as_path() != std::path::Path::new(APP_BUNDLE_DAEMON_BIN) {
@@ -284,6 +387,7 @@ pub fn reinstall_via_running_daemon(dry_run: bool) -> Result<InstallOutcome, Str
     if dry_run {
         return Ok(InstallOutcome::DryRun(cmd));
     }
+    report(InstallStage::Installing);
     let reply = crate::ipc::send_command_with_timeout(&cmd, std::time::Duration::from_secs(5));
     if let Some(reply) = reply.as_deref() {
         if !reply.starts_with("ok ") {
@@ -291,6 +395,7 @@ pub fn reinstall_via_running_daemon(dry_run: bool) -> Result<InstallOutcome, Str
         }
     }
 
+    report(InstallStage::Verifying);
     // The daemon verifies the bundled Developer ID signature before replying,
     // then deliberately replaces and restarts itself. Either step can close
     // IPC before the client receives the acknowledgement. Require the resident
@@ -314,6 +419,80 @@ pub fn reinstall_via_running_daemon(_dry_run: bool) -> Result<InstallOutcome, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_daemon_verification_requires_the_resident_version_before_completion() {
+        let installed = env!("CARGO_PKG_VERSION");
+        for runtime in [None, Some("unknown"), Some("1.0.0")] {
+            let mut stages = Vec::new();
+            assert!(verify_existing_with_probe(
+                || (Some(installed.into()), runtime.map(str::to_string)),
+                &mut |stage| stages.push(stage),
+            )
+            .is_err());
+            assert_eq!(
+                stages,
+                [
+                    InstallStage::Preflight,
+                    InstallStage::Verifying,
+                    InstallStage::Failed
+                ]
+            );
+        }
+        for compatible in [crate::MIN_REQUIRED_DAEMON_VERSION, installed] {
+            let mut stages = Vec::new();
+            verify_existing_with_probe(
+                || (Some(compatible.into()), Some(compatible.into())),
+                &mut |stage| stages.push(stage),
+            )
+            .unwrap();
+            assert_eq!(
+                stages,
+                [
+                    InstallStage::Preflight,
+                    InstallStage::Verifying,
+                    InstallStage::Complete
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn reported_install_stages_follow_real_work_and_stop_on_failure() {
+        let mut stages = Vec::new();
+        let result = run_install_steps(|| Ok(()), || true, &mut |stage| stages.push(stage));
+        finish_reported_install(result, &mut |stage| stages.push(stage)).unwrap();
+        assert_eq!(
+            stages,
+            [
+                InstallStage::Installing,
+                InstallStage::Verifying,
+                InstallStage::Complete
+            ]
+        );
+        stages.clear();
+        let result = run_install_steps(
+            || Err("cancelled".into()),
+            || panic!("must not verify"),
+            &mut |stage| stages.push(stage),
+        );
+        assert!(finish_reported_install(result, &mut |stage| stages.push(stage)).is_err());
+        assert_eq!(stages, [InstallStage::Installing, InstallStage::Failed]);
+        stages.clear();
+        let result = run_install_steps(|| Ok(()), || false, &mut |stage| stages.push(stage));
+        assert!(matches!(
+            finish_reported_install(result, &mut |stage| stages.push(stage)),
+            Ok(InstallOutcome::InstalledButUnreachable)
+        ));
+        assert_eq!(
+            stages,
+            [
+                InstallStage::Installing,
+                InstallStage::Verifying,
+                InstallStage::Failed
+            ]
+        );
+    }
 
     #[test]
     fn privileged_errors_distinguish_cancellation_from_script_failure() {

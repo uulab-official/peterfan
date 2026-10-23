@@ -50,6 +50,7 @@ mod native_runner;
 mod pause_clock;
 mod random_runner;
 mod runner;
+mod ui_events;
 mod update_history;
 mod update_schedule;
 use random_runner::RandomRunner;
@@ -455,6 +456,32 @@ static CONFIG_COPY_OK: AtomicBool = AtomicBool::new(false);
 /// the install thread within the same tick and stacking two macOS
 /// admin-password dialogs.
 static INSTALL_FAN_CONTROL_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+/// Stage milestones only; 100 is reserved for a confirmed healthy daemon.
+static FAN_CONTROL_INSTALL_PROGRESS: Mutex<(&str, u8)> = Mutex::new(("idle", 0));
+
+#[cfg(target_os = "macos")]
+fn report_fan_control_install_stage(stage: peterfan_platform::daemon_install::InstallStage) {
+    use peterfan_platform::daemon_install::InstallStage;
+    let mut progress = FAN_CONTROL_INSTALL_PROGRESS
+        .lock()
+        .expect("install progress poisoned");
+    *progress = match stage {
+        InstallStage::Preflight => ("preflight", 10),
+        InstallStage::Installing => ("installing", 30),
+        InstallStage::Verifying => ("verifying", 85),
+        InstallStage::Complete => ("complete", 100),
+        InstallStage::Failed => ("failed", progress.1.min(99)),
+    };
+    CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
+}
+
+fn fan_control_install_progress_snapshot() -> serde_json::Value {
+    let progress = FAN_CONTROL_INSTALL_PROGRESS
+        .lock()
+        .expect("install progress poisoned");
+    serde_json::json!({"phase": progress.0, "percent": progress.1})
+}
+
 /// Monotonic completion signal for fan-control setup. WebViews compare this
 /// with the value captured when setup started, so success, failure, and
 /// cancellation all leave the "Installing..." state immediately.
@@ -857,6 +884,7 @@ struct App {
     dashboard_script: Option<String>,
     popover_visible: bool,
     popover_show_at: Option<Instant>,
+    popover_tray_focus_loss_at: Option<Instant>,
     /// `tray-icon` normally sends both Down and Up. Open on Down for macOS
     /// menu bars that swallow Up, then consume the matching Up event.
     left_button_down_seen: bool,
@@ -2658,6 +2686,24 @@ fn main() {
     #[cfg(target_os = "macos")]
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
     let event_proxy = event_loop.create_proxy();
+    // Native callbacks otherwise fill a receiver without waking Tao. Forward
+    // before waking so an idle loop handles the click immediately, not at the
+    // next metrics refresh. Installing a handler disables the library receiver.
+    let tray_proxy = event_proxy.clone();
+    let (forward_tray, tray_events) = ui_events::channel(move || {
+        let _ = tray_proxy.send_event(());
+    });
+    TrayIconEvent::set_event_handler(Some(move |event| {
+        if matches!(event, TrayIconEvent::Click { .. }) {
+            log_menubar_event(&format!("tray native callback {event:?}"));
+            forward_tray(event);
+        }
+    }));
+    let menu_proxy = event_proxy.clone();
+    let (forward_menu, menu_events) = ui_events::channel(move || {
+        let _ = menu_proxy.send_event(());
+    });
+    MenuEvent::set_event_handler(Some(forward_menu));
 
     let mut app = App {
         monitor,
@@ -2680,6 +2726,7 @@ fn main() {
         dashboard_script: None,
         popover_visible: false,
         popover_show_at: None,
+        popover_tray_focus_loss_at: None,
         left_button_down_seen: false,
         detail_window: None,
         detail_webview: None,
@@ -2818,8 +2865,18 @@ fn main() {
                 ..
             } => {
                 if app.window.as_ref().is_some_and(|w| w.id() == window_id) {
-                    log_menubar_event("popover focus lost");
+                    #[cfg(target_os = "macos")]
+                    let tray_press = app.popover_visible
+                        && app.tray.as_ref().is_some_and(native_tray_left_press);
+                    #[cfg(not(target_os = "macos"))]
+                    let tray_press = false;
+                    log_menubar_event(&format!("popover focus lost tray_press={tray_press}"));
                     hide_popover(&mut app);
+                    // AppKit can blur the popover before delivering the same
+                    // status-item press. Preserve that click's close intent.
+                    if tray_press {
+                        app.popover_tray_focus_loss_at = Some(now);
+                    }
                 }
             }
             // The detail window is a normal decorated window, so its red
@@ -3189,7 +3246,7 @@ fn main() {
         }
 
         // Handle context-menu item selections.
-        while let Ok(ev) = MenuEvent::receiver().try_recv() {
+        while let Ok(ev) = menu_events.try_recv() {
             let id = &ev.id;
             let mut matched_display: Option<MenubarDisplay> = None;
             let mut matched_character: Option<RunnerCharacter> = None;
@@ -3393,7 +3450,7 @@ fn main() {
             }
         }
 
-        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+        while let Ok(ev) = tray_events.try_recv() {
             // Open on mouse-down. Some macOS menu-bar configurations swallow
             // mouse-up while the bar is auto-hiding or changing displays.
             // Consume the matching Up event so a normal click toggles once.
@@ -4261,13 +4318,43 @@ fn popover_position_for_rect(
     PhysicalPosition::new(x, anchor_y)
 }
 
+#[cfg(target_os = "macos")]
+fn native_tray_left_press(tray: &TrayIcon) -> bool {
+    if NSEvent::pressedMouseButtons() & 1 == 0 {
+        return false;
+    }
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let Some(window) = tray
+        .ns_status_item()
+        .and_then(|item| item.button(mtm))
+        .and_then(|button| button.window())
+    else {
+        return false;
+    };
+    let frame = window.frame();
+    let point = NSEvent::mouseLocation();
+    point.x >= frame.origin.x
+        && point.x < frame.origin.x + frame.size.width
+        && point.y >= frame.origin.y
+        && point.y < frame.origin.y + frame.size.height
+}
+
+fn consume_tray_focus_dismissal(dismissed_at: &mut Option<Instant>, now: Instant) -> bool {
+    // Bound stale state if AppKit cancels the original mouse gesture entirely.
+    dismissed_at
+        .take()
+        .is_some_and(|at| now.saturating_duration_since(at) <= Duration::from_millis(500))
+}
+
 fn toggle_popover(
     app: &mut App,
     target: &EventLoopWindowTarget<()>,
     rect: Rect,
     event_proxy: &EventLoopProxy<()>,
 ) {
-    if app.popover_visible || app.popover_show_at.is_some() {
+    let closed_by_this_press =
+        consume_tray_focus_dismissal(&mut app.popover_tray_focus_loss_at, Instant::now());
+    if app.popover_visible || app.popover_show_at.is_some() || closed_by_this_press {
         log_menubar_event("popover closed by tray click");
         hide_popover(app);
         return;
@@ -4338,6 +4425,7 @@ fn toggle_popover(
 
 fn hide_popover(app: &mut App) {
     app.popover_show_at = None;
+    app.popover_tray_focus_loss_at = None;
     if let Some(wv) = &app.webview {
         evaluate_dashboard_script(
             wv,
@@ -5204,6 +5292,7 @@ fn update(app: &mut App) {
         "applied_control_revision": applied_control_revision,
         "fan_setup_needed": fan_control_supported && !can_control,
         "fan_control_installing": INSTALL_FAN_CONTROL_IN_FLIGHT.load(Ordering::Acquire),
+        "fan_control_install_progress": fan_control_install_progress_snapshot(),
         "fan_control_install_revision": INSTALL_FAN_CONTROL_REVISION.load(Ordering::Acquire),
         "fan_control_state_ready": !fan_control_supported || (fan_data_ready && app.daemon_probe_completed),
         "fan_count": fans.len(),
@@ -5847,21 +5936,25 @@ fn install_fan_control() {
     {
         return;
     }
+    report_fan_control_install_stage(peterfan_platform::daemon_install::InstallStage::Preflight);
     let old_version = peterfan_platform::installed_daemon_version();
     let daemon_reachable = peterfan_platform::daemon_reachable();
     let plan = fan_control_install_plan(old_version.as_deref(), daemon_reachable);
     let updating_existing = old_version.is_some();
     clear_daemon_version_cache();
     let install_result = match plan {
-        FanControlInstallPlan::AlreadyReady => Ok(InstallOutcome::Installed),
+        FanControlInstallPlan::AlreadyReady => {
+            peterfan_platform::daemon_install::verify_existing_with_progress(report_fan_control_install_stage)
+                .map(|()| InstallOutcome::Installed)
+        },
         FanControlInstallPlan::SelfReinstall => {
             reinstall_or_privileged_install(
-                || peterfan_platform::daemon_install::reinstall_via_running_daemon(false),
-                || peterfan_platform::daemon_install::install(false),
+                || peterfan_platform::daemon_install::reinstall_via_running_daemon_with_progress(false, report_fan_control_install_stage),
+                || peterfan_platform::daemon_install::install_with_progress(false, report_fan_control_install_stage),
             )
         }
         FanControlInstallPlan::PrivilegedInstall => {
-            peterfan_platform::daemon_install::install(false)
+            peterfan_platform::daemon_install::install_with_progress(false, report_fan_control_install_stage)
         }
         FanControlInstallPlan::InstalledButUnavailable => Err(
             "Fan control is installed but the daemon is not responding. No administrator changes were made; run Diagnostics and retry."
@@ -5915,6 +6008,11 @@ fn install_fan_control() {
     };
     record_fan_action(action_label, &message, ok);
     *STATUS.lock().expect("status poisoned") = message.clone();
+    report_fan_control_install_stage(if ok {
+        peterfan_platform::daemon_install::InstallStage::Complete
+    } else {
+        peterfan_platform::daemon_install::InstallStage::Failed
+    });
     INSTALL_FAN_CONTROL_IN_FLIGHT.store(false, Ordering::Release);
     INSTALL_FAN_CONTROL_REVISION.fetch_add(1, Ordering::AcqRel);
     CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
@@ -6041,7 +6139,10 @@ fn maybe_silently_update_stale_daemon() {
         peterfan_platform::MIN_REQUIRED_DAEMON_VERSION
     ));
     clear_daemon_version_cache();
-    let result = peterfan_platform::daemon_install::reinstall_via_running_daemon(false);
+    let result = peterfan_platform::daemon_install::reinstall_via_running_daemon_with_progress(
+        false,
+        report_fan_control_install_stage,
+    );
     let (ok, message) = match result {
         Ok(InstallOutcome::Installed) => {
             clear_daemon_version_cache();
@@ -6058,6 +6159,7 @@ fn maybe_silently_update_stale_daemon() {
         Err(error) => (false, format!("Silent fan-control update failed: {error}")),
     };
     INSTALL_FAN_CONTROL_IN_FLIGHT.store(false, Ordering::SeqCst);
+    INSTALL_FAN_CONTROL_REVISION.fetch_add(1, Ordering::AcqRel);
     record_fan_action("silent daemon update", &message, ok);
     *STATUS.lock().expect("status poisoned") = message.clone();
     CONTROL_REFRESH_REQUESTED.store(true, Ordering::Release);
@@ -7274,10 +7376,12 @@ fn sync_native_runner_painter(app: &mut App) {
             .store(usize::MAX, Ordering::Relaxed);
         let renderer = if painter.active() { "layer" } else { "image" };
         log_menubar_event(&format!(
-            "runner renderer={renderer} screens={screens} geometry={:?} phase_us={} frame={}",
+            "runner renderer={renderer} screens={screens} geometry={:?} phase_us={} frame={} button_bounds={:?} click_regions={:?}",
             painter.attachment_geometry(),
             app.runner_native_phase_us.load(Ordering::Relaxed),
             app.runner_native_frame.load(Ordering::Relaxed),
+            button.bounds(),
+            button.subviews().iter().map(|view| view.frame()).collect::<Vec<_>>(),
         ));
     }
 }
@@ -7951,6 +8055,12 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .setup-dot.warn{background:var(--y);box-shadow:0 0 0 3px var(--warn-soft);}
 .setup-copy{min-width:0;}
 .setup-sub{font-size:10px;color:var(--dim);margin-top:1px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:215px;}
+.setup-progress{margin-top:5px;font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums;}
+.setup-progress-label{display:inline;}
+.setup-progress-percent{float:right;margin-left:8px;}
+.setup-progress-track{height:3px;width:100%;min-width:120px;margin-top:3px;background:var(--track);border-radius:3px;overflow:hidden;}
+.setup-progress-fill{height:100%;width:0;background:var(--accent);border-radius:3px;}
+.setup-progress.failed .setup-progress-fill{background:var(--y);}
 .setup-actions{display:flex;gap:4px;flex:0 0 auto;}
 .setup-actions button{background:var(--chip-bg);border:1px solid transparent;color:var(--dim);font:inherit;font-size:10px;font-weight:700;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s,border-color .15s;}
 .setup-actions button:hover{background:var(--chip-hover);color:var(--text);}
@@ -8362,7 +8472,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="data-loading" id="data-loading" role="status" aria-live="polite"><span class="data-loading-dot"></span><span id="data-loading-text">Reading system sensors…</span><button class="loading-retry" id="data-loading-retry" style="display:none" onclick="retryDashboard()">Retry</button></div>
 
 <div class="setup" id="setup-row">
-<div class="setup-copy"><div class="setup-main"><span class="setup-dot" id="setup-dot"></span><span id="setup-title">Ready</span></div><div class="setup-sub" id="setup-detail"></div></div>
+<div class="setup-copy"><div class="setup-main"><span class="setup-dot" id="setup-dot"></span><span id="setup-title">Ready</span></div><div class="setup-sub" id="setup-detail"></div><div class="setup-progress" id="setup-progress" style="display:none"><div class="setup-progress-label" id="setup-progress-label" role="status" aria-live="polite"></div><span class="setup-progress-percent" id="setup-progress-percent" aria-hidden="true">0%</span><div class="setup-progress-track" id="setup-progress-track" role="progressbar" aria-label="Installation stages" aria-valuemin="0" aria-valuemax="100"><div class="setup-progress-fill" id="setup-progress-fill"></div></div></div></div>
 <div class="setup-actions">
 <button id="setup-fan" class="primary" disabled onclick="startFanControlSetup(this)">Set Up</button>
 <div class="setup-menu-wrap">
@@ -8619,6 +8729,7 @@ window.onunhandledrejection=function(event){
   if(window.ipc)window.ipc.postMessage('js-error:'+detail.slice(0,900));
 };
 var FAN_CONTROL_FIX_PENDING=false;
+var SETUP_PROGRESS={phase:'idle',value:0,target:0,frame:null,started:null,from:0};
 var FAN_CONTROL_FIX_REVISION=0;
 var FAN_DIAGNOSTIC_PENDING=false;
 var FAN_DIAGNOSTIC_STARTED_AT=0;
@@ -8679,6 +8790,7 @@ function setRailView(view){
   if(!/^(overview|fan|settings|system)$/.test(view))view='overview';
   resetProcessConfirmation();
   RAIL_VIEW=view;
+  refreshSetupProgressMotion();
   storageSet('pf.rail.view',view);
   document.body.setAttribute('data-rail-view',view);
   applyRailView(true);
@@ -9462,6 +9574,82 @@ function markFanPending(card,mode,refresh){
   card.querySelector('.fan-rpm-row').classList.toggle('inactive',mode!=='manual');
   return true;
 }
+function cancelSetupProgressFrame(){
+  if(SETUP_PROGRESS.frame!==null)cancelAnimationFrame(SETUP_PROGRESS.frame);
+  SETUP_PROGRESS.frame=null;
+  SETUP_PROGRESS.started=null;
+}
+function setupProgressCanAnimate(){
+  return !document.hidden&&railView()==='fan'
+    &&!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+function paintSetupProgress(){
+  var state=SETUP_PROGRESS,percent=Math.min(state.target,Math.round(state.value));
+  setText('setup-progress-percent',percent+'%');
+  var track=document.getElementById('setup-progress-track');
+  var fill=document.getElementById('setup-progress-fill');
+  if(fill)fill.style.width=state.value+'%';
+  if(track){
+    track.setAttribute('aria-valuenow',String(percent));
+    track.setAttribute('aria-label',LANG==='ko'?'설치 단계':'Installation stages');
+    track.setAttribute('aria-valuetext',(LANG==='ko'?'설치 단계 ':'Installation stages ')+percent+'%');
+  }
+  var labels=LANG==='ko'
+    ?{preflight:'설치 준비',installing:'승인 및 설치',verifying:'데몬 응답 확인',complete:'설치 완료',failed:'설치 미완료'}
+    :{preflight:'Preparing',installing:'Approval and installation',verifying:'Verifying daemon',complete:'Installation complete',failed:'Installation incomplete'};
+  // Announce stage changes only; per-frame percentage belongs to the progressbar.
+  setText('setup-progress-label',(LANG==='ko'?'설치 단계 · ':'Installation stages · ')+(labels[state.phase]||''));
+}
+function tickSetupProgress(timestamp){
+  var state=SETUP_PROGRESS;
+  state.frame=null;
+  if(!setupProgressCanAnimate()){
+    state.value=state.target;state.started=null;paintSetupProgress();return;
+  }
+  if(state.started===null){state.started=timestamp;state.from=state.value;}
+  var fraction=Math.min(1,Math.max(0,(timestamp-state.started)/450));
+  state.value=Math.min(state.target,state.from+(state.target-state.from)*(1-Math.pow(1-fraction,3)));
+  paintSetupProgress();
+  if(fraction<1&&state.value<state.target)state.frame=requestAnimationFrame(tickSetupProgress);
+  else{state.value=state.target;state.started=null;}
+}
+function refreshSetupProgressMotion(){
+  var state=SETUP_PROGRESS;
+  cancelSetupProgressFrame();
+  if(!setupProgressCanAnimate()||state.phase==='failed'||state.phase==='idle'){
+    state.value=state.target;paintSetupProgress();return;
+  }
+  if(state.value<state.target)state.frame=requestAnimationFrame(tickSetupProgress);
+}
+function resetSetupProgress(){
+  cancelSetupProgressFrame();
+  SETUP_PROGRESS.phase='idle';SETUP_PROGRESS.value=0;SETUP_PROGRESS.target=0;
+  paintSetupProgress();
+}
+function renderSetupProgress(progress){
+  var state=SETUP_PROGRESS,phase=progress.phase||'idle',target=Number(progress.percent);
+  if(!Number.isFinite(target)||!['preflight','installing','verifying','complete','failed'].includes(phase)){
+    resetSetupProgress();phase='idle';target=0;
+  }
+  target=Math.max(0,Math.min(phase==='complete'?100:99,target));
+  if(target<state.target)resetSetupProgress();
+  state.phase=phase;
+  if(target!==state.target){cancelSetupProgressFrame();state.target=target;}
+  var box=document.getElementById('setup-progress');
+  if(box){box.style.display=phase==='idle'?'none':'';box.classList.toggle('failed',phase==='failed');}
+  if(phase==='failed'||phase==='idle'||!setupProgressCanAnimate()){
+    cancelSetupProgressFrame();state.value=target;paintSetupProgress();
+  } else if(state.frame===null&&state.value<target){
+    state.frame=requestAnimationFrame(tickSetupProgress);
+  } else paintSetupProgress();
+}
+function setupProgressVisibilityChanged(){refreshSetupProgressMotion();}
+document.addEventListener('visibilitychange',setupProgressVisibilityChanged);
+window.addEventListener('pagehide',cancelSetupProgressFrame);
+if(window.matchMedia){
+  var setupProgressMotionQuery=window.matchMedia('(prefers-reduced-motion: reduce)');
+  if(setupProgressMotionQuery.addEventListener)setupProgressMotionQuery.addEventListener('change',setupProgressVisibilityChanged);
+}
 function fanControlSetupButton(label){
   var fixBtn=document.createElement('button');
   fixBtn.className='note-fix-btn';
@@ -9481,6 +9669,8 @@ function startFanControlSetup(btn){
   if(FAN_CONTROL_FIX_PENDING)return;
   FAN_CONTROL_FIX_REVISION=Number((window.__pf_pending||{}).fan_control_install_revision||0);
   FAN_CONTROL_FIX_PENDING=true;
+  resetSetupProgress();
+  renderSetupProgress({phase:'preflight',percent:10});
   if(btn){
     btn.disabled=true;
     setButtonLabel(btn,LANG==='ko'?'설치 중…':'Installing…');
@@ -10666,6 +10856,7 @@ window.addEventListener('resize',function(){closeRunnerCharacterMenu(false);});
 var runnerScrollPane=document.querySelector('.main-pane');
 if(runnerScrollPane)runnerScrollPane.addEventListener('scroll',function(){closeRunnerCharacterMenu(false);},{passive:true});
 function updateSetup(d){
+  renderSetupProgress(d.fan_control_install_progress||{phase:'idle',percent:0});
   var setup=document.getElementById('setup-row');
   var fanView=railView()==='fan';
   var stateReady=d.fan_control_state_ready!==false;
@@ -11111,6 +11302,24 @@ mod tests {
             native_status_item_image_position(MenubarDisplay::Both),
             NSCellImagePosition::ImageLeft
         );
+    }
+
+    #[test]
+    fn tray_focus_dismissal_closes_once_without_swallowing_a_later_open() {
+        let now = Instant::now();
+        let mut dismissed = Some(now);
+        assert!(consume_tray_focus_dismissal(
+            &mut dismissed,
+            now + Duration::from_millis(25)
+        ));
+        assert!(dismissed.is_none());
+        assert!(!consume_tray_focus_dismissal(&mut dismissed, now));
+        dismissed = Some(now);
+        assert!(!consume_tray_focus_dismissal(
+            &mut dismissed,
+            now + Duration::from_secs(1)
+        ));
+        assert!(dismissed.is_none());
     }
 
     #[test]
