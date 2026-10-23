@@ -88,6 +88,34 @@ function setupProgressHarness(){
  vm.runInContext(['setText','cancelSetupProgressFrame','setupProgressCanAnimate','paintSetupProgress','tickSetupProgress','refreshSetupProgressMotion','resetSetupProgress','renderSetupProgress'].map(definition).join('\n'),scope);
  return {scope,nodes,pending:()=>frames.size,step(ms=75){time+=ms;const batch=[...frames.values()];frames.clear();batch.forEach(fn=>fn(time));},finish(){for(let i=0;i<12&&frames.size;i++)this.step();}};
 }
+test('Set Up first opens settings without starting installation, then explicit activation installs',()=>{
+ const messages=[];
+ const scope={view:'fan',railView:()=>scope.view,setRailView:view=>{scope.view=view;messages.push('view:'+view);},
+  startFanControlSetup:()=>messages.push('install'),updateSetup:()=>{},window:{__pf_pending:{}},
+  closeSetupMenu:()=>{},requestAnimationFrame:fn=>fn(),document:{getElementById:()=>({focus:()=>{}})}};
+ vm.createContext(scope);
+ const handler=source.match(/id="setup-fan"[^>]*onclick="([^"]+)"/)[1];
+ if(source.includes('function handleFanSetupAction('))vm.runInContext(definition('handleFanSetupAction'),scope);
+ vm.runInContext(handler.replace(/this/g,'null'),scope);
+ assert.equal(scope.view,'settings');assert(!messages.includes('install'));
+ vm.runInContext(handler.replace(/this/g,'null'),scope);
+ assert.equal(messages.filter(x=>x==='install').length,1);
+});
+test('fan setup and install progress remain visible on the settings destination',()=>{
+ const node=()=>({style:{},classList:{contains:()=>false,toggle(){}},setAttribute(){},textContent:''});
+ const nodes=Object.fromEntries(['setup-row','setup-fan'].map(id=>[id,node()]));
+ const scope={LANG:'ko',FAN_CONTROL_FIX_PENDING:false,APP_UPDATE_CHECK_PENDING:false,LOGIN_ITEM_TOGGLE_PENDING:false,
+  view:'settings',railView:()=>scope.view,renderSetupProgress:()=>{},document:{getElementById:id=>nodes[id]||null}};
+ vm.createContext(scope);vm.runInContext(definition('updateSetup'),scope);
+ const data={fan_control_state_ready:true,fan_control_supported:true,fan_count:2,controllable_fan_count:2,fan_setup_needed:true};
+ scope.updateSetup(data);
+ assert.equal(nodes['setup-row'].style.display,'flex');assert.equal(nodes['setup-fan'].disabled,false);
+ assert.equal(nodes['setup-fan'].textContent,'팬 제어 활성화');
+ scope.view='fan';scope.updateSetup(data);assert.equal(nodes['setup-fan'].textContent,'설정하기');
+ scope.view='overview';scope.updateSetup(data);assert.equal(nodes['setup-row'].style.display,'none');
+ scope.view='settings';scope.FAN_CONTROL_FIX_PENDING=true;scope.updateSetup(data);
+ assert.equal(nodes['setup-fan'].disabled,true);assert.equal(nodes['setup-fan'].textContent,'설치 중…');
+});
 test('setup progress initializes before the initial navigation render',()=>{
  assert(source.indexOf("var SETUP_PROGRESS={")<source.indexOf('setRailView(railView());'));
 });
@@ -118,7 +146,9 @@ test('hidden panels and Reduce Motion cancel frames and show the latest reported
  ui.scope.document.hidden=false;ui.scope.refreshSetupProgressMotion();assert.equal(ui.scope.SETUP_PROGRESS.value,85);assert.equal(ui.pending(),0);
  ui.scope.resetSetupProgress();ui.scope.reduced=true;ui.scope.renderSetupProgress({phase:'preflight',percent:10});assert.equal(ui.pending(),0);assert.equal(ui.scope.SETUP_PROGRESS.value,10);
  ui.scope.reduced=false;ui.scope.renderSetupProgress({phase:'installing',percent:30});assert.equal(ui.pending(),1);
- ui.scope.view='settings';ui.scope.refreshSetupProgressMotion();assert.equal(ui.pending(),0);
+ ui.scope.view='settings';ui.scope.refreshSetupProgressMotion();assert.equal(ui.pending(),1);ui.finish();assert.equal(ui.scope.SETUP_PROGRESS.value,30);
+ ui.scope.renderSetupProgress({phase:'verifying',percent:85});assert.equal(ui.pending(),1);
+ ui.scope.view='system';ui.scope.refreshSetupProgressMotion();assert.equal(ui.pending(),0);
  ui.scope.renderSetupProgress({phase:'installing',percent:NaN});assert.equal(ui.scope.SETUP_PROGRESS.value,0);assert.equal(ui.pending(),0);
 });
 console.log(`${passed} dashboard behavior checks passed, ${failed} failed`);
