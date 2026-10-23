@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — Open-source contributor experience
 
+- Check for releases periodically while the menu-bar app runs, retry failed
+  checks with bounded backoff and share one update lock across automatic/manual
+  checks, installation and channel changes. Show check history and next retry in
+  Settings; background discovery never installs updates.
 - Match settings save/import acknowledgements to the originating window and request;
   retain drafts during pending, failed or unconfirmed operations, and distinguish
   disk persistence from confirmed daemon reload.

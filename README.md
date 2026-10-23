@@ -38,7 +38,7 @@ It combines:
 | Safety | Capability checks, RPM verification, restore-on-exit, critical-temperature override |
 | Notifications | Optional CPU Core Average threshold, fan write/readback failure alerts, and signed update availability; the daemon's 90°C safety alert remains independent |
 | Automation | JSON output, local HTTP API, shell completions |
-| Updates | Explicit update check and install actions in the menu-bar app, plus CLI updates; signed release assets are verified before replacement and relaunch |
+| Updates | Background release checks with scheduled retries, check history in Settings and explicit installation; signed release assets are verified before replacement and relaunch |
 | Integrity | Installed-app, GitHub release, offline local DMG, and complete release-directory verification for SHA-256, bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |
 | Windows | Native tray app plus real CPU, memory, disk, network, process, and battery metrics; firmware ACPI thermal zones are shown as system temperatures when available, while CPU-core temperature and fan access remain explicitly unsupported |
 
@@ -323,7 +323,16 @@ Run the local menu-bar app from this checkout:
 ./script/build_and_run.sh --logs   # launch, then stream PeterFan logs
 ```
 
-Check for updates:
+The menu-bar app checks for releases 20 seconds after launch and every six hours
+after a successful check. Failed checks retry after 5 minutes, then 15 minutes,
+then hourly. An overdue check runs within 30 seconds of waking from sleep.
+Settings shows the latest check, last successful check and next scheduled check;
+manual checks are available at any time when another update action is not running.
+Background checks never install updates or open a dialog. Optional notifications
+announce an installable newer release once per version/channel during that app run.
+See [automatic update behavior and verification limits](docs/AUTOMATIC_UPDATES.md).
+
+Check for updates from the CLI:
 
 ```bash
 peterfan update

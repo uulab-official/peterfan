@@ -3,6 +3,28 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
+## Automatic update reliability — 2026-10-23
+
+- [x] Replace launch-only discovery with a 20-second startup check, six-hour
+      successful interval and bounded 5/15/60-minute retries. Incomplete verified
+      assets retry without claiming a failed metadata request.
+- [x] Serialize background/manual checks, installation, channel changes and
+      config imports. Clear stale channel metadata and detect external channel
+      edits within the scheduler's 30-second poll.
+- [x] Show last attempt, last success and next check; reject stale/mismatched
+      installation receipts and keep failed check details visible.
+- [x] Preserve Windows custom install paths and PowerShell literal/Unicode
+      encoding; script preparation failure cannot leave a new pending receipt.
+- [x] Full contributor gate: 450 Rust tests passed, 7 ignored; 56 Node tests
+      passed. Native/Windows Clippy and Rust 1.88 check passed. Browser fixtures
+      confirmed visible failures, manual recovery and disabled incomplete assets.
+- [ ] Installed native app automatic-check readback and new candidate signing.
+- [ ] Public release and OTA to a newer published version.
+
+See [check policy and verification boundaries](AUTOMATIC_UPDATES.md). Notification
+history and check timestamps currently reset when the app restarts. Windows
+transactional rollback and post-launch health verification remain separate work.
+
 ## Settings interaction polish — 2026-10-23
 
 - [x] Match save/import results to window-specific requests; retain newer drafts,

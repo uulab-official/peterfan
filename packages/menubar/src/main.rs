@@ -45,7 +45,9 @@ use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
 mod random_runner;
 mod runner;
+mod update_schedule;
 use random_runner::RandomRunner;
+use update_schedule::{UpdateLease, UpdateSchedule};
 
 #[cfg(target_os = "macos")]
 use block2::RcBlock;
@@ -409,6 +411,9 @@ const SETTINGS_RESULTS_MAX: usize = 32;
 /// right-click menu. GitHub checks from inside the WebView were unreliable on
 /// some Macs and could race the native installer dialog.
 static APP_UPDATE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+// Mock sessions must never contact release services, even from manual actions.
+static APP_UPDATE_NETWORK_ENABLED: AtomicBool = AtomicBool::new(false);
+static APP_UPDATE_NOTIFIED: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static APP_UPDATE_STATE: Mutex<AppUpdateState> = Mutex::new(AppUpdateState {
     phase: "idle",
     latest: None,
@@ -416,6 +421,9 @@ static APP_UPDATE_STATE: Mutex<AppUpdateState> = Mutex::new(AppUpdateState {
     notes: None,
     message: None,
     install_ready: false,
+    channel: UpdateChannel::Stable,
+    schedule: UpdateSchedule::new(),
+    check_error: None,
 });
 /// A completed fan command invalidates the cached daemon snapshot. The event
 /// loop consumes this on its next wake so confirmed UI state does not wait for
@@ -565,6 +573,9 @@ struct AppUpdateState {
     notes: Option<String>,
     message: Option<String>,
     install_ready: bool,
+    channel: UpdateChannel,
+    schedule: UpdateSchedule,
+    check_error: Option<String>,
 }
 
 fn set_app_update_state(
@@ -595,6 +606,12 @@ fn app_update_state_snapshot() -> serde_json::Value {
         "notes": state.notes,
         "message": state.message,
         "install_ready": state.install_ready,
+        "channel": state.channel.as_str(),
+        "last_attempt_unix": state.schedule.last_attempt_unix,
+        "last_success_unix": state.schedule.last_success_unix,
+        "next_check_unix": state.schedule.next_check_unix,
+        "check_error": state.check_error,
+        "auto_check_enabled": APP_UPDATE_NETWORK_ENABLED.load(Ordering::Acquire),
     })
 }
 
@@ -1186,18 +1203,14 @@ fn save_temperature_source(source: TemperatureSource) {
     let _ = peterfan_platform::config::save(&cfg);
 }
 
-fn save_update_channel(channel: UpdateChannel) {
+fn save_update_channel(channel: UpdateChannel) -> std::io::Result<PathBuf> {
     let mut cfg = peterfan_platform::config::load();
     cfg.menubar.update_channel = channel;
-    let _ = peterfan_platform::config::save(&cfg);
+    peterfan_platform::config::save(&cfg)
 }
 
 fn configured_update_channel() -> UpdateChannel {
     peterfan_platform::config::load().menubar.update_channel
-}
-
-fn fetch_configured_release() -> Result<peterfan_platform::updater::ReleaseInfo, String> {
-    peterfan_platform::updater::fetch_release_for_channel(configured_update_channel())
 }
 
 /// Persist the UI language choice so it survives a relaunch.
@@ -1367,10 +1380,23 @@ fn import_config(config_text: &str) -> SettingsSaveResult {
         Ok(config) => config,
         Err(error) => return SettingsSaveResult::failed(format!("config import failed: {error}")),
     };
+    // Import can change the update channel. Hold the same lease through save
+    // and reconciliation so it cannot race a check or an installer.
+    let Some(_lease) = UpdateLease::acquire(&APP_UPDATE_IN_FLIGHT) else {
+        return SettingsSaveResult::failed(
+            "config import failed: an update is in progress; retry after it finishes".into(),
+        );
+    };
     let rules = config.rules.len();
     if let Err(error) = peterfan_platform::config::save(&config) {
         return SettingsSaveResult::failed(format!("config import failed: {error}"));
     }
+    reconcile_update_channel(
+        &mut APP_UPDATE_STATE.lock().expect("app update state poisoned"),
+        config.menubar.update_channel,
+        now_unix(),
+        APP_UPDATE_NETWORK_ENABLED.load(Ordering::Acquire),
+    );
     reload_after_settings_save(format!("config imported ({rules} rules)"))
 }
 
@@ -2474,6 +2500,14 @@ fn main() {
             return;
         }
     };
+    APP_UPDATE_NETWORK_ENABLED.store(!use_mock, Ordering::Release);
+    {
+        let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+        state.channel = configured_update_channel();
+        if !use_mock {
+            state.schedule.start(now_unix());
+        }
+    }
     log_menubar_event(&format!("startup mock={use_mock}"));
     load_fan_action_log();
 
@@ -2893,10 +2927,30 @@ fn main() {
                     refresh_after_pending = true;
                 } else if let Some(value) = c.strip_prefix("updatechannel:") {
                     if let Some(channel) = UpdateChannel::parse(value) {
-                        app.update_channel = channel;
-                        save_update_channel(channel);
-                        *STATUS.lock().expect("status poisoned") =
-                            format!("update channel set to {}", channel.as_str());
+                        if let Some(_lease) = UpdateLease::acquire(&APP_UPDATE_IN_FLIGHT) {
+                            match save_update_channel(channel) {
+                                Ok(_) => {
+                                    app.update_channel = channel;
+                                    let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+                                    reconcile_update_channel(
+                                        &mut state, channel, now_unix(),
+                                        APP_UPDATE_NETWORK_ENABLED.load(Ordering::Acquire),
+                                    );
+                                    *STATUS.lock().expect("status poisoned") =
+                                        format!("update channel set to {}", channel.as_str());
+                                }
+                                Err(error) => {
+                                    let message = format!("Couldn't save update channel: {error}");
+                                    let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+                                    state.phase = "channel_failed";
+                                    state.message = Some(message.clone());
+                                    *STATUS.lock().expect("status poisoned") = message;
+                                }
+                            }
+                        } else {
+                            *STATUS.lock().expect("status poisoned") =
+                                "Update in progress; change the channel after it finishes.".into();
+                        }
                     }
                     refresh_after_pending = true;
                 } else if c == "toggle-login-item" || c == "togglelogin" {
@@ -4504,6 +4558,7 @@ fn update(app: &mut App) {
     // editor converge without an app restart. The privileged daemon still
     // validates the same file before applying rules.
     let config = peterfan_platform::config::load();
+    app.update_channel = config.menubar.update_channel;
     app.monitor.refresh_quick();
     let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
     let popover_scheduled = app.popover_show_at.is_some();
@@ -5976,46 +6031,122 @@ fn maybe_prompt_stale_daemon_update() {
 #[cfg(not(target_os = "macos"))]
 fn maybe_prompt_stale_daemon_update() {}
 
-/// Silent background check, run once after launch. It deliberately does not
-/// open a dialog; menu-bar apps launched at login should not steal focus.
-/// Manual update actions use the native check and install flows.
+/// Quiet recurring discovery. Wall-clock deadlines plus a bounded poll notice
+/// overdue work on wake without issuing a burst of missed checks.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn check_for_updates_on_launch() {
-    std::thread::sleep(Duration::from_secs(20));
-    if APP_UPDATE_IN_FLIGHT.load(Ordering::Acquire) {
-        return;
+    {
+        let state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+        log_menubar_event(&format!(
+            "app update scheduler started channel={} next_check={:?}",
+            state.channel.as_str(),
+            state.schedule.next_check_unix
+        ));
     }
-    if let Ok(release) = fetch_configured_release() {
-        if APP_UPDATE_IN_FLIGHT.load(Ordering::Acquire) {
+    loop {
+        if QUIT.load(Ordering::Acquire) || !APP_UPDATE_NETWORK_ENABLED.load(Ordering::Acquire) {
             return;
         }
-        if peterfan_platform::updater::is_newer(env!("CARGO_PKG_VERSION"), &release.version) {
-            set_app_update_state(
-                "available",
-                Some(&release),
-                Some(format!("PeterFan v{} is available.", release.version)),
+        if let Some(_lease) = UpdateLease::acquire(&APP_UPDATE_IN_FLIGHT) {
+            reconcile_update_channel(
+                &mut APP_UPDATE_STATE.lock().expect("app update state poisoned"),
+                configured_update_channel(),
+                now_unix(),
+                true,
             );
-            *STATUS.lock().expect("status poisoned") = format!(
-                "update available: {} (use Updates to install)",
-                release.version
-            );
-            if peterfan_platform::config::load().notifications.updates {
-                post_native_notification(
-                    "PeterFan — update available",
-                    format!(
-                        "PeterFan v{} is ready. Open Settings to install it.",
-                        release.version
-                    ),
-                );
-            }
-        } else {
-            set_app_update_state("current", Some(&release), None);
         }
+        let due = APP_UPDATE_STATE
+            .lock()
+            .expect("app update state poisoned")
+            .schedule
+            .due(now_unix());
+        if due {
+            run_app_update(false, true);
+        }
+        let delay = APP_UPDATE_STATE
+            .lock()
+            .expect("app update state poisoned")
+            .schedule
+            .poll_delay(now_unix());
+        std::thread::sleep(delay);
     }
-    // Network hiccup or GitHub rate limit: fail silently, try again next launch.
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn check_for_updates_on_launch() {}
+
+fn finish_update_discovery(success: bool, pending_assets: bool, error: Option<String>) {
+    let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+    if pending_assets {
+        state.schedule.finish_pending_assets(now_unix());
+    } else {
+        state.schedule.finish(now_unix(), success);
+    }
+    state.check_error = error;
+}
+
+/// External editors do not take the update lease; reject their stale response.
+fn discard_stale_update_channel(
+    state: &mut AppUpdateState,
+    requested: UpdateChannel,
+    configured: UpdateChannel,
+    now: u64,
+) -> bool {
+    if requested == configured {
+        return false;
+    }
+    reset_update_channel(state, configured, now, true);
+    true
+}
+
+fn reconcile_update_channel(
+    state: &mut AppUpdateState,
+    configured: UpdateChannel,
+    now: u64,
+    checks_enabled: bool,
+) -> bool {
+    if state.channel == configured {
+        return false;
+    }
+    reset_update_channel(state, configured, now, checks_enabled);
+    true
+}
+
+fn reset_update_channel(
+    state: &mut AppUpdateState,
+    configured: UpdateChannel,
+    now: u64,
+    checks_enabled: bool,
+) {
+    state.phase = "idle";
+    state.latest = None;
+    state.release_url = None;
+    state.notes = None;
+    state.install_ready = false;
+    state.channel = configured;
+    state.schedule = UpdateSchedule::new();
+    if checks_enabled {
+        state.schedule.next_check_unix = Some(now);
+    }
+    state.message = Some("Update channel changed; checking the selected channel next.".into());
+    state.check_error = None;
+}
+
+/// Keep notification deduplication separate from discovery so repeated checks
+/// still refresh metadata. Bounded per-process history also covers channel flips.
+fn claim_update_notification(channel: UpdateChannel, version: &str) -> bool {
+    let key = format!("{}:{version}", channel.as_str());
+    let mut notified = APP_UPDATE_NOTIFIED
+        .lock()
+        .expect("update notifications poisoned");
+    if notified.contains(&key) {
+        return false;
+    }
+    notified.push_back(key);
+    while notified.len() > 32 {
+        notified.pop_front();
+    }
+    true
+}
 
 /// Keep discovery and installation as explicit actions in the dashboard.
 /// Both use the native updater so WebView networking never sits in the trust
@@ -6023,20 +6154,63 @@ fn check_for_updates_on_launch() {}
 /// genuine one-click update; Settings exposes both buttons.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run_update_interactive(install: bool) {
-    if APP_UPDATE_IN_FLIGHT
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    run_app_update(install, false);
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn run_app_update(install: bool, automatic: bool) {
+    if !APP_UPDATE_NETWORK_ENABLED.load(Ordering::Acquire) {
+        set_app_update_state(
+            "disabled",
+            None,
+            Some("Update checks are disabled in mock mode.".into()),
+        );
         return;
     }
-
+    let Some(_lease) = UpdateLease::acquire(&APP_UPDATE_IN_FLIGHT) else {
+        return;
+    };
+    let channel = configured_update_channel();
+    {
+        let mut state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+        if automatic && !state.schedule.due(now_unix()) {
+            return;
+        }
+        if state.channel != channel {
+            state.schedule = UpdateSchedule::new();
+        }
+        state.channel = channel;
+        state.schedule.begin(now_unix());
+        state.check_error = None;
+    }
     set_app_update_state("checking", None, None);
     log_menubar_event(if install {
         "app update install requested"
     } else {
         "app update check started"
     });
-    match fetch_configured_release() {
+    let fetched = peterfan_platform::updater::fetch_release_for_channel(channel);
+    // Config imports or external edits can change channel without this lease.
+    // Such a response must never be offered or installed for the new channel.
+    if discard_stale_update_channel(
+        &mut APP_UPDATE_STATE.lock().expect("app update state poisoned"),
+        channel,
+        configured_update_channel(),
+        now_unix(),
+    ) {
+        log_menubar_event("app update result discarded: update channel changed");
+        return;
+    }
+    let pending_assets = fetched.as_ref().is_ok_and(|release| {
+        peterfan_platform::updater::is_newer(env!("CARGO_PKG_VERSION"), &release.version)
+            && !peterfan_platform::updater::is_installable_release(release)
+    });
+    finish_update_discovery(
+        fetched.is_ok(),
+        pending_assets,
+        fetched.as_ref().err().cloned(),
+    );
+    match fetched {
         Ok(release)
             if !peterfan_platform::updater::is_newer(
                 env!("CARGO_PKG_VERSION"),
@@ -6065,6 +6239,18 @@ fn run_update_interactive(install: bool) {
             set_app_update_state("available", Some(&release), Some(message.clone()));
             *STATUS.lock().expect("status poisoned") = message.clone();
             log_menubar_event(&message);
+            if automatic
+                && peterfan_platform::config::load().notifications.updates
+                && claim_update_notification(channel, &release.version)
+            {
+                post_native_notification(
+                    "PeterFan — update available",
+                    format!(
+                        "PeterFan v{} is ready. Open Settings to install it.",
+                        release.version
+                    ),
+                );
+            }
         }
         Ok(release) => {
             set_app_update_state(
@@ -6106,7 +6292,12 @@ fn run_update_interactive(install: bool) {
             log_menubar_event(&message);
         }
     }
-    APP_UPDATE_IN_FLIGHT.store(false, Ordering::Release);
+    let state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
+    log_menubar_event(&format!(
+        "app update completed automatic={automatic} phase={} channel={} last_attempt={:?} last_success={:?} next_check={:?}",
+        state.phase, state.channel.as_str(), state.schedule.last_attempt_unix,
+        state.schedule.last_success_unix, state.schedule.next_check_unix
+    ));
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -7203,8 +7394,8 @@ fn dashboard_html_with_runner_pack(
             )
             .replace(">App updates<", ">앱 업데이트<")
             .replace(
-                "Notify after the silent launch check finds a release",
-                "백그라운드 확인에서 새 버전 발견 시 알림",
+                "Notify once per version when a verified update is ready",
+                "검증된 새 버전이 준비되면 버전당 한 번 알림",
             )
             .replace(">Load average<", ">로드 평균<")
             .replace(">Power<", ">소비 전력<")
@@ -7231,13 +7422,16 @@ fn dashboard_html_with_runner_pack(
             .replace(">Latest<", ">최신<")
             .replace(">Installed app<", ">설치된 앱<")
             .replace(">Latest signed<", ">최신 서명 릴리스<")
+            .replace(">Last attempt<", ">마지막 확인 시도<")
+            .replace(">Last successful check<", ">마지막 확인 성공<")
+            .replace(">Next automatic check<", ">다음 자동 확인<")
             .replace(">Core details<", ">코어 상세<")
             .replace(">Check for Updates<", ">업데이트 확인<")
             .replace(">Install Update<", ">지금 업데이트<")
             .replace(">View Release<", ">릴리즈 보기<")
             .replace(
-                "Check for a signed release, then install it when ready.",
-                "서명된 새 버전을 확인한 뒤 준비되면 바로 설치합니다.",
+                "Automatically checks every 6 hours. Failed checks retry; installation is your choice.",
+                "6시간마다 자동 확인하며, 실패하면 재시도합니다. 설치는 직접 선택합니다.",
             )
             .replace("Checking your Mac…", "Mac 상태 확인 중…")
             .replace(
@@ -7559,6 +7753,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .panel-pill.warn{background:var(--warn-soft);color:var(--y);}
 .panel-pill.info{background:var(--accent-soft);color:var(--accent);}
 .rail-panel .panel-copy{display:none;}
+#rail-update-panel .panel-copy{display:block;color:var(--dim);font-size:10.5px;line-height:1.5;margin-bottom:10px;overflow-wrap:anywhere;}
 .view-loading{position:absolute;z-index:8;top:48px;left:var(--content-x);right:var(--content-x);display:flex;align-items:center;gap:7px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;color:var(--dim);font-size:10px;line-height:1.35;background:var(--surface-raised);box-shadow:0 5px 16px rgba(0,0,0,.14);}
 .view-loading .data-loading-dot{width:6px;height:6px;}
 #rail-settings-pill,#rail-more-pill{display:none;}
@@ -7874,7 +8069,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <input class="notification-toggle" id="notification-fan-toggle" type="checkbox" aria-label="Fan control failures" checked onchange="setNotificationBoolean('fan-failures',this.checked)">
 </div>
 <div class="notification-row">
-<div><div class="notification-title">App updates</div><div class="notification-copy">Notify after the silent launch check finds a release</div></div>
+<div><div class="notification-title">App updates</div><div class="notification-copy">Notify once per version when a verified update is ready</div></div>
 <input class="notification-toggle" id="notification-update-toggle" type="checkbox" aria-label="App updates" checked onchange="setNotificationBoolean('updates',this.checked)">
 </div>
 </div>
@@ -7928,11 +8123,14 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 
 <div class="rail-panel" id="rail-update-panel">
 <div class="panel-title-row"><div class="panel-title">Updates</div><span class="panel-pill info" id="rail-update-pill">Ready</span></div>
-<div class="panel-copy" id="rail-update-copy">Check for a signed release, then install it when ready.</div>
+<div class="panel-copy" id="rail-update-copy">Automatically checks every 6 hours. Failed checks retry; installation is your choice.</div>
 <div class="health-grid" id="update-version-grid">
 <div class="health-row"><span class="health-label">Installed app</span><span class="health-value" id="update-current-version">—</span></div>
 <div class="health-row"><span class="health-label">Latest signed</span><span class="health-value" id="update-latest-version">—</span></div>
 <div class="health-row"><span class="health-label">Status</span><span class="health-value" id="update-check-result" role="status" aria-live="polite" aria-atomic="true">—</span></div>
+<div class="health-row"><span class="health-label">Last attempt</span><span class="health-value" id="update-last-attempt">—</span></div>
+<div class="health-row"><span class="health-label">Last successful check</span><span class="health-value" id="update-last-success">—</span></div>
+<div class="health-row"><span class="health-label">Next automatic check</span><span class="health-value" id="update-next-check">—</span></div>
 <div class="health-row"><span class="health-label">Update channel</span><select class="update-channel-select" id="update-channel" aria-label="Update channel" onchange="changeUpdateChannel(this.value)"><option value="stable">Stable releases</option><option value="pre-release">Pre-release builds</option></select></div>
 </div>
 <div class="release-notes-card" id="update-release-notes-card" style="display:none"><div class="release-notes-title">Release Notes</div><div class="release-notes-body" id="update-release-notes">—</div></div>
@@ -8108,6 +8306,7 @@ function loadUpdateStatusSnapshot(){
     var saved=JSON.parse(raw),savedAt=Number(saved&&saved.saved_at||0);
     if(!savedAt||Date.now()-savedAt>15*60*1000)return null;
     delete saved.saved_at;
+    saved.cached=true;
     return saved;
   }catch(e){return null;}
 }
@@ -8264,10 +8463,40 @@ function formatReleaseNotes(body){
   if(text.length>700)text=text.slice(0,697)+'...';
   return text;
 }
+function updateCheckTime(value,empty){
+  var unix=Number(value);
+  if(!Number.isFinite(unix)||unix<=0)return empty;
+  return new Date(unix*1000).toLocaleString(LANG==='ko'?'ko-KR':'en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+}
+function updateCheckMetadata(status,native){
+  ['channel','last_attempt_unix','last_success_unix','next_check_unix','check_error','auto_check_enabled'].forEach(function(key){status[key]=native[key];});
+  return status;
+}
+function reconcileUpdateReceipt(receipt,current,now){
+  if(!receipt)return null;
+  var timestamp=Number(receipt.updated_at_unix),age=now-timestamp;
+  if(!Number.isFinite(timestamp)||timestamp<=0||age<0||age>24*60*60)return null;
+  var comparison=compareVersions(current,receipt.version);
+  if(comparison===null)return null;
+  if(receipt.status==='installed')return comparison===0?receipt:null;
+  // A detached installer can still be working, but a stale receipt must not
+  // imply permanent progress after a crash or an interrupted installation.
+  if(receipt.status==='pending'){
+    if(comparison===0)return null;
+    return age<=5*60&&comparison<0?receipt:null;
+  }
+  return (receipt.status==='failed'||receipt.status==='rolled_back')&&comparison<0?receipt:null;
+}
 function renderUpdateStatus(status){
   if(status)APP_UPDATE_STATUS=status;
   var s=APP_UPDATE_STATUS||{};
   var phase=s.phase||'';
+  var never=LANG==='ko'?'아직 없음':'Not yet';
+  setText('update-last-attempt',updateCheckTime(s.last_attempt_unix,never));
+  setText('update-last-success',updateCheckTime(s.last_success_unix,never));
+  setText('update-next-check',s.auto_check_enabled===false
+    ?(LANG==='ko'?'모의 실행에서 꺼짐':'Disabled in mock mode')
+    :updateCheckTime(s.next_check_unix,phase==='checking'?(LANG==='ko'?'확인 중':'Checking'):'—'));
   var current=s.current||(window.__pf_pending&&window.__pf_pending.app_version)||'';
   setText('update-current-version',current?('v'+String(current).replace(/^v/,'')):'—');
   var validLatest=s.latest&&compareVersions(s.latest,s.latest)!==null;
@@ -8300,8 +8529,22 @@ function renderUpdateStatus(status){
     pillText=LANG==='ko'?'재실행 중':'Relaunching';
     pillTone='ok';
     setText('update-check-result',LANG==='ko'?'업데이트 준비 완료':'update ready');
+  } else if(phase==='disabled'||s.auto_check_enabled===false){
+    msg=LANG==='ko'?'모의 실행에서는 업데이트 서버에 연결하지 않습니다.':'Update services are disabled in mock mode.';
+    pillText=LANG==='ko'?'꺼짐':'Disabled';
+    setText('update-check-result',LANG==='ko'?'모의 실행':'mock mode');
+  } else if(phase==='channel_failed'){
+    msg=s.message||(LANG==='ko'?'업데이트 채널을 저장하지 못했습니다.':'The update channel could not be saved.');
+    pillText=LANG==='ko'?'저장 실패':'Save failed';
+    pillTone='warn';
+    setText('update-check-result',LANG==='ko'?'채널 저장 실패':'channel save failed');
+  } else if(s.check_error){
+    msg=(LANG==='ko'?'업데이트 확인 실패. 자동으로 다시 시도합니다. ':'Update check failed. Another check is scheduled. ')+s.check_error;
+    pillText=LANG==='ko'?'재시도 예정':'Retry scheduled';
+    pillTone='warn';
+    setText('update-check-result',LANG==='ko'?'확인 실패 · 재시도 예정':'check failed · retry scheduled');
   } else if(phase==='failed'){
-    msg=s.message||(LANG==='ko'?'업데이트를 완료하지 못했습니다. 기존 앱은 변경하지 않았습니다.':'The update could not be completed. The existing app was not changed.');
+    msg=s.message||(LANG==='ko'?'업데이트를 완료하지 못했습니다. 설치 상태를 확인하고 다시 시도해 주세요.':'The update could not be completed. Check the installation and try again.');
     pillText=LANG==='ko'?'실패':'Failed';
     pillTone='warn';
     setText('update-check-result',LANG==='ko'?'업데이트 실패':'update failed');
@@ -8326,19 +8569,22 @@ function renderUpdateStatus(status){
     pillTone='warn';
     setText('update-check-result',LANG==='ko'?'이전 버전 복원':'previous version restored');
   } else if(s.install_status==='failed'){
-    msg=(LANG==='ko'?'업데이트를 완료하지 못했습니다. 기존 앱은 변경하지 않았습니다.':(s.install_message||'The update could not be completed.'));
+    msg=(LANG==='ko'?'업데이트를 완료하지 못했습니다. 설치 상태를 확인하고 다시 시도해 주세요.':(s.install_message||'The update could not be completed.'));
     pillText=LANG==='ko'?'실패':'Failed';
     pillTone='warn';
     setText('update-check-result',LANG==='ko'?'설치 실패':'installation failed');
   } else if(s.latest){
     var comparison=compareVersions(current,s.latest);
     var newer=comparison<0,ahead=comparison>0;
-    if(comparison===null){s=Object.assign({},s,{message:LANG==='ko'?'릴리스 버전을 확인할 수 없습니다. 다시 확인해 주세요.':'Release version could not be verified. Please check again.'});}
-    msg=ahead
+    msg=comparison===null
+      ?(LANG==='ko'?'릴리스 버전을 확인할 수 없습니다. 다시 확인해 주세요.':'Release version could not be verified. Please check again.')
+      :ahead
       ?(LANG==='ko'
         ?'현재 버전이 공개 서명 릴리스보다 최신입니다. 공식 릴리스가 공개되면 업데이트할 수 있습니다.'
         :'The current version is newer than the public signed release. An update will appear when the official release is published.')
-      :(s.message||(newer
+      :newer&&!s.install_ready
+        ?(LANG==='ko'?'새 버전을 확인했습니다. 검증된 설치 파일이 준비될 때까지 자동으로 다시 확인합니다.':(s.message||'The new release is still preparing verified files. Another check is scheduled.'))
+      :((LANG==='ko'?'':s.message)||(newer
         ?(LANG==='ko'?'새 서명 릴리스를 사용할 수 있습니다.':'A newer signed PeterFan release is available.')
         :(LANG==='ko'?'최신 서명 릴리스를 사용 중입니다.':'You are running the latest signed release.')));
     pillText=comparison===null?(LANG==='ko'?'확인 필요':'Needs verification'):newer
@@ -8349,8 +8595,10 @@ function renderUpdateStatus(status){
       ?(LANG==='ko'?'업데이트 가능':'update available')
       :(ahead?(LANG==='ko'?'서명 릴리스보다 앞섬':'ahead of signed release'):(LANG==='ko'?'최신 상태':'up to date')));
   } else {
-    setText('update-check-result',LANG==='ko'?'대기 중':'ready');
+    msg=s.message||(LANG==='ko'?'6시간마다 자동으로 확인합니다. 실패하면 자동으로 재시도합니다.':'Updates are checked every 6 hours, with automatic retries after failures.');
+    setText('update-check-result',LANG==='ko'?'자동 확인 대기 중':'automatic check scheduled');
   }
+  if(s.cached)msg=(LANG==='ko'?'이전 세션의 확인 결과입니다. ':'Result from a previous session. ')+msg;
   if(copy)copy.textContent=msg;
   setPanelPill('rail-update-pill',pillText,pillTone);
   if(link){
@@ -8363,7 +8611,7 @@ function renderUpdateStatus(status){
     var updateKnown=!!s.latest&&comparison<0;
     var checking=!!s.checking||phase==='checking';
     var installing=phase==='downloading'||phase==='queued';
-    var canInstall=updateKnown&&s.install_ready===true&&!s.checking&&phase!=='checking'&&!installing;
+    var canInstall=s.auto_check_enabled!==false&&updateKnown&&s.install_ready===true&&!s.checking&&phase!=='checking'&&!installing;
     install.style.display='';
     install.disabled=!canInstall;
     install.textContent=installing
@@ -9019,13 +9267,15 @@ function startAppUpdate(mode,btn){
       ?(LANG==='ko'?'설치 준비 중…':'Preparing…')
       :(LANG==='ko'?'확인 중…':'Checking…'));
   }
-  renderUpdateStatus({
+  var previous=APP_UPDATE_STATUS||{};
+  renderUpdateStatus(updateCheckMetadata({
     current:(window.__pf_pending&&window.__pf_pending.app_version)||'',
     phase:'checking',
     message:mode==='install'
       ?(LANG==='ko'?'설치할 서명 릴리스를 확인 중입니다.':'Checking the signed release before installation.')
       :''
-  });
+  },previous));
+  updateUpdateChannel(window.__pf_pending||{});
   window.ipc.postMessage(mode==='install'?'installupdate':'checkupdates');
   setTimeout(function(){
     if(APP_UPDATE_CHECK_PENDING){
@@ -9050,7 +9300,8 @@ function changeUpdateChannel(value){
 function updateUpdateChannel(d){
   var select=document.getElementById('update-channel');
   if(!select)return;
-  select.value=d.update_channel==='pre-release'?'pre-release':'stable';
+  var channel=(d.app_update_status&&d.app_update_status.channel)||d.update_channel;
+  select.value=channel==='pre-release'?'pre-release':'stable';
   select.disabled=APP_UPDATE_CHECK_PENDING;
   var options=select.options;
   if(options.length>=2){
@@ -10172,7 +10423,7 @@ function updateRail(d){
   APP_UPDATE_CHECK_PENDING=nativePending;
   updateUpdateChannel(d);
   if(view==='settings'){
-    var persisted=d.update_install_result;
+    var persisted=reconcileUpdateReceipt(d.update_install_result,d.app_version||'',Date.now()/1000);
     if(nativePhase!=='idle'){
       APP_UPDATE_STATUS={
         current:d.app_version||'',
@@ -10184,9 +10435,9 @@ function updateRail(d){
         phase:nativePhase,
         persisted:false
       };
-    } else if(persisted&&(!APP_UPDATE_STATUS||APP_UPDATE_STATUS.persisted)){
+    } else if(persisted){
       var persistedKey=[persisted.status||'',persisted.version||'',persisted.updated_at_unix||''].join(':');
-      if(persistedKey!==APP_PERSISTED_UPDATE_KEY){
+      if(persistedKey!==APP_PERSISTED_UPDATE_KEY||!APP_UPDATE_STATUS||!APP_UPDATE_STATUS.persisted){
         APP_PERSISTED_UPDATE_KEY=persistedKey;
         APP_UPDATE_STATUS={
           current:d.app_version||'',
@@ -10197,11 +10448,15 @@ function updateRail(d){
         };
       }
     }
+    if(nativePhase==='idle'&&(!persisted||!APP_UPDATE_STATUS||!APP_UPDATE_STATUS.persisted)){
+      APP_UPDATE_STATUS={current:d.app_version||'',phase:'idle',message:nativeUpdate.message||''};
+    }
+    if(APP_UPDATE_STATUS)updateCheckMetadata(APP_UPDATE_STATUS,nativeUpdate);
     if(APP_UPDATE_STATUS){APP_UPDATE_STATUS.current=d.app_version||APP_UPDATE_STATUS.current;renderUpdateStatus();}
     else renderUpdateStatus({current:d.app_version||''});
     var updCheck=document.getElementById('rail-update-check');
     if(updCheck){
-      updCheck.disabled=nativePending;
+      updCheck.disabled=nativePending||nativeUpdate.auto_check_enabled===false;
       updCheck.textContent=nativePending
         ?(LANG==='ko'?'확인 중…':'Checking…')
         :(LANG==='ko'?'업데이트 확인':'Check for Updates');
@@ -12915,6 +13170,90 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
             assert!(html.contains(r#"id="startup-toggle" class="panel-action secondary" disabled"#));
             assert!(html.contains("toggleStartupItem(this)"));
         }
+    }
+
+    #[test]
+    fn automatic_update_notification_is_deduplicated_per_channel_and_version() {
+        let version = "notification-regression-test";
+        assert!(claim_update_notification(UpdateChannel::Stable, version));
+        assert!(!claim_update_notification(UpdateChannel::Stable, version));
+        assert!(claim_update_notification(
+            UpdateChannel::PreRelease,
+            version
+        ));
+        assert!(!claim_update_notification(
+            UpdateChannel::PreRelease,
+            version
+        ));
+        assert!(claim_update_notification(
+            UpdateChannel::Stable,
+            "notification-regression-test-next"
+        ));
+    }
+
+    #[test]
+    fn stale_release_response_clears_old_channel_metadata_and_schedules_new_channel() {
+        let mut state = AppUpdateState {
+            phase: "available",
+            latest: Some("9.0.0".into()),
+            release_url: Some("https://example.invalid/release".into()),
+            notes: Some("Old channel".into()),
+            message: None,
+            install_ready: true,
+            channel: UpdateChannel::Stable,
+            schedule: UpdateSchedule::new(),
+            check_error: Some("old error".into()),
+        };
+        assert!(!discard_stale_update_channel(
+            &mut state,
+            UpdateChannel::Stable,
+            UpdateChannel::Stable,
+            10
+        ));
+        assert!(state.install_ready);
+        assert!(discard_stale_update_channel(
+            &mut state,
+            UpdateChannel::Stable,
+            UpdateChannel::PreRelease,
+            20
+        ));
+        assert_eq!(state.channel, UpdateChannel::PreRelease);
+        assert_eq!(state.phase, "idle");
+        assert!(state.latest.is_none() && state.release_url.is_none() && state.notes.is_none());
+        assert!(!state.install_ready);
+        assert!(state.check_error.is_none());
+        assert!(state.schedule.due(20));
+        assert!(state.schedule.last_success_unix.is_none());
+        state.schedule.begin(20);
+        state.schedule.finish(21, true);
+        assert!(!reconcile_update_channel(
+            &mut state,
+            UpdateChannel::PreRelease,
+            22,
+            true
+        ));
+        assert_eq!(
+            state.schedule.next_check_unix,
+            Some(21 + update_schedule::CHECK_INTERVAL)
+        );
+        assert!(reconcile_update_channel(
+            &mut state,
+            UpdateChannel::Stable,
+            23,
+            true
+        ));
+        assert!(state.schedule.due(23));
+        assert!(state.schedule.last_success_unix.is_none());
+        assert!(reconcile_update_channel(
+            &mut state,
+            UpdateChannel::PreRelease,
+            24,
+            false
+        ));
+        assert!(
+            !state.schedule.due(24),
+            "mock imports must not schedule network work"
+        );
     }
 
     #[test]
