@@ -23,11 +23,16 @@ function runCase({ mode = '--verify', own = [], foreign = [], buildFail = false,
     const raw = join(root, 'target/release/peterfan-menubar');
     const state = join(root, 'state.json');
     const events = join(root, 'events.txt');
-    writeFileSync(state, JSON.stringify([
+    const inventory = join(root, 'state.ps');
+    const inspections = join(root, 'inspections.txt');
+    const initialState = [
       ...own.map((kind, i) => ({ pid: 100 + i, exe: kind === 'raw' ? raw : app })),
       ...foreign.map((exe, i) => ({ pid: 900 + i, exe })),
-    ]));
+    ];
+    writeFileSync(state, JSON.stringify(initialState));
+    writeFileSync(inventory, initialState.map(p => `  ${p.pid} ${p.exe}\n`).join(''));
     writeFileSync(events, '');
+    writeFileSync(inspections, '');
     if (!missing) { mkdirSync(join(root, 'dist/PeterFan.app/Contents/MacOS'), { recursive: true }); writeFileSync(app, 'fixture'); chmodSync(app, 0o755); }
     const tool = join(bin, 'tool.cjs');
     writeFileSync(tool, `#!${process.execPath}
@@ -35,21 +40,46 @@ const fs=require('node:fs'),path=require('node:path');
 const name=path.basename(process.argv[1]),args=process.argv.slice(2),env=process.env;
 let state=JSON.parse(fs.readFileSync(env.FAKE_STATE));
 const log=s=>fs.appendFileSync(env.FAKE_EVENTS,s+'\\n');
+const persist=()=>{fs.writeFileSync(env.FAKE_STATE,JSON.stringify(state));fs.writeFileSync(env.FAKE_INVENTORY,state.map(p=>'  '+p.pid+' '+p.exe+'\\n').join(''))};
 if(name==='uname'){console.log(env.FAKE_PLATFORM);process.exit(0)}
-if(name==='ps'){
- if(env.FAKE_PS_FAIL==='1')process.exit(2);
- if(args.includes('-p')){const p=state.find(p=>p.pid===Number(args[args.indexOf('-p')+1]));if(p)console.log(env.FAKE_REUSED==='1'?'/Applications/Other.app/Contents/MacOS/PeterFan':p.exe)}
- else for(const p of state)console.log('  '+p.pid+' '+p.exe);
- process.exit(0);
-}
 if(name==='cargo'){log('build '+args.join(' '));process.exit(env.FAKE_BUILD_FAIL==='1'?1:0)}
-if(name==='fake-kill'){log('kill '+args.join(' '));state=state.filter(p=>p.pid!==Number(args.at(-1)));fs.writeFileSync(env.FAKE_STATE,JSON.stringify(state));process.exit(0)}
-if(name==='open'){log('open');state.push({pid:555,exe:env.FAKE_OPEN_FOREIGN==='1'?'/Applications/PeterFan.app/Contents/MacOS/PeterFan':env.FAKE_APP});fs.writeFileSync(env.FAKE_STATE,JSON.stringify(state));process.exit(0)}
-if(name==='sleep')process.exit(0);
+if(name==='fake-kill'){log('kill '+args.join(' '));state=state.filter(p=>p.pid!==Number(args.at(-1)));persist();process.exit(0)}
+if(name==='open'){log('open');state.push({pid:555,exe:env.FAKE_OPEN_FOREIGN==='1'?'/Applications/PeterFan.app/Contents/MacOS/PeterFan':env.FAKE_APP});persist();process.exit(0)}
 throw Error('Unexpected fake tool '+name);
 `);
     chmodSync(tool, 0o755);
-    for (const name of ['uname', 'ps', 'cargo', 'fake-kill', 'open', 'sleep']) symlinkSync(tool, join(bin, name));
+    for (const name of ['uname', 'cargo', 'fake-kill', 'open']) symlinkSync(tool, join(bin, name));
+    // Polling must exercise every launcher iteration without booting a Node VM
+    // for each ps/sleep call. Mutation tools refresh this text view with JSON.
+    const ps = join(bin, 'ps');
+    writeFileSync(ps, `#!/bin/sh
+[ "$FAKE_PS_FAIL" != 1 ] || exit 2
+target=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -p ]; then shift; target=$1; fi
+  shift
+done
+if [ -z "$target" ]; then
+  printf 'inventory\\n' >> "$FAKE_INSPECTIONS"
+else
+  printf 'identity\\n' >> "$FAKE_INSPECTIONS"
+fi
+while read -r pid executable; do
+  if [ -z "$target" ]; then
+    printf '  %s %s\\n' "$pid" "$executable"
+  elif [ "$pid" = "$target" ]; then
+    if [ "$FAKE_REUSED" = 1 ]; then
+      printf '%s\\n' '/Applications/Other.app/Contents/MacOS/PeterFan'
+    else
+      printf '%s\\n' "$executable"
+    fi
+  fi
+done < "$FAKE_INVENTORY"
+`);
+    chmodSync(ps, 0o755);
+    const sleep = join(bin, 'sleep');
+    writeFileSync(sleep, '#!/bin/sh\nexit 0\n');
+    chmodSync(sleep, 0o755);
     const bashEnv = join(root, 'bash-env');
     writeFileSync(bashEnv, 'kill() { "$FAKE_BIN/fake-kill" "$@"; }\n');
     const bundle = join(root, 'scripts/bundle-macos.sh');
@@ -59,12 +89,12 @@ throw Error('Unexpected fake tool '+name);
     writeFileSync(script, launcher);
     const result = spawnSync('bash', [script, mode], { encoding: 'utf8', timeout: 10000, env: {
       ...process.env, PATH: `${bin}:${process.env.PATH}`, BASH_ENV: bashEnv, FAKE_BIN: bin,
-      FAKE_STATE: state, FAKE_EVENTS: events, FAKE_APP: app, FAKE_PLATFORM: platform,
+      FAKE_STATE: state, FAKE_INVENTORY: inventory, FAKE_INSPECTIONS: inspections, FAKE_EVENTS: events, FAKE_APP: app, FAKE_PLATFORM: platform,
       FAKE_BUILD_FAIL: buildFail ? '1' : '0', FAKE_OPEN_FOREIGN: openForeign ? '1' : '0',
       FAKE_PS_FAIL: psFail ? '1' : '0', FAKE_REUSED: reused ? '1' : '0',
     } });
     assert.ifError(result.error);
-    return { ...result, events: readFileSync(events, 'utf8').trim().split('\n').filter(Boolean), remaining: JSON.parse(readFileSync(state)), app, raw };
+    return { ...result, inspections: readFileSync(inspections, 'utf8').trim().split('\n').filter(Boolean), events: readFileSync(events, 'utf8').trim().split('\n').filter(Boolean), remaining: JSON.parse(readFileSync(state)), app, raw };
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
@@ -100,6 +130,7 @@ test('verify never counts an unrelated installed instance as success', () => {
   const result = runCase({ openForeign: true });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /from this checkout, found 0/);
+  assert.equal(result.inspections.filter(kind => kind === 'inventory').length, 24);
 });
 test('help is available without macOS and performs no actions', () => {
   const result = runCase({ mode: '--help', platform: 'Linux' });
@@ -124,4 +155,6 @@ test('PID path recheck protects an executable that changed since inventory', () 
   assert.notEqual(result.status, 0);
   assert.equal(result.events.length, 1);
   assert.match(result.stderr, /did not exit/);
+  assert.equal(result.inspections.filter(kind => kind === 'identity').length, 1);
+  assert.equal(result.inspections.filter(kind => kind === 'inventory').length, 22);
 });
