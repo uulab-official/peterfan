@@ -88,9 +88,10 @@ with patch.object(m.subprocess,'run',return_value=result):
 
 test('soak writes a positive structured receipt and fails closed on configuration change or missing samples', () => python(`
 with tempfile.TemporaryDirectory() as d:
-    settings=m.Settings.from_env({'PETERFAN_SOAK_PID':'123','PETERFAN_SOAK_SECONDS':'30','PETERFAN_SOAK_LOG_DIR':d})
     identity=m.Identity('/Applications/PeterFan.app/Contents/MacOS/peterfan-menubar','start')
     for scenario in ['pass','changed','missing','threshold']:
+        case=Path(d)/scenario
+        settings=m.Settings.from_env({'PETERFAN_SOAK_PID':'123','PETERFAN_SOAK_SECONDS':'30','PETERFAN_SOAK_LOG_DIR':str(case)})
         sampler=Mock(); sampler.identity.return_value=identity
         snapshots=[m.Snapshot(t,c,2048,2) for t,c in [(0,1),(10,1.1),(20,1.5),(30,1.7)]]
         sampler.snapshot.side_effect=RuntimeError('missing sample') if scenario=='missing' else snapshots
@@ -99,15 +100,19 @@ with tempfile.TemporaryDirectory() as d:
         if scenario=='threshold': settings.limits['peak_cpu_percent']=1
         with patch.object(m.os,'getloadavg',return_value=(0.,0.,0.),create=True), patch.object(m,'PsSampler',return_value=sampler), patch.object(m.time,'sleep'), patch.object(m,'config_fingerprint',side_effect=[original,after]), patch.object(m.subprocess,'Popen',side_effect=AssertionError('external PID must never launch')):
             result=m.run(settings)
-        receipts=sorted(Path(d).glob('*/summary.json'),key=lambda p:p.stat().st_mtime_ns)
-        receipt=m.json.loads(receipts[-1].read_text())
+        # Filesystem timestamps may tie on Windows; select this case's unique output.
+        receipts=list(case.glob('*/summary.json'))
+        assert len(receipts)==1, receipts
+        receipt=m.json.loads(receipts[0].read_text())
+        # A previous case may even have a later timestamp; it must never be read.
+        m.os.utime(receipts[0], (2145916800,2145916800))
         assert receipt['passed'] == (scenario=='pass'), receipt
         assert result == (0 if scenario=='pass' else 1)
         assert receipt['owned_process'] is False
         if scenario=='pass':
             assert receipt['samples']==3
             assert abs(receipt['metrics']['average_cpu_percent']-100*.7/30)<1e-8
-            assert len((receipts[-1].parent/'samples.csv').read_text().splitlines())==4
+            assert len((receipts[0].parent/'samples.csv').read_text().splitlines())==4
         if scenario=='missing': assert receipt['samples']==0
         if scenario=='changed': assert receipt['config_preserved'] is False
 `));
