@@ -401,6 +401,10 @@ static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static FAN_COMMAND_LOCK: Mutex<()> = Mutex::new(());
 /// Last control result, shown in the popover.
 static STATUS: Mutex<String> = Mutex::new(String::new());
+/// Keep recent settings acknowledgements per request so one window cannot
+/// mistake another window's save (or an older status message) for its own.
+static SETTINGS_RESULTS: Mutex<VecDeque<serde_json::Value>> = Mutex::new(VecDeque::new());
+const SETTINGS_RESULTS_MAX: usize = 32;
 /// One native update pipeline shared by the popover, detail window, and
 /// right-click menu. GitHub checks from inside the WebView were unreliable on
 /// some Macs and could race the native installer dialog.
@@ -1262,22 +1266,91 @@ fn parse_automation_rules(rules_json: &str) -> Result<Vec<Rule>, String> {
     Ok(rules)
 }
 
-fn save_automation_rules(rules_json: &str) -> String {
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SettingsOperation {
+    Rules,
+    ImportConfig,
+}
+
+#[derive(serde::Deserialize)]
+struct SettingsRequest {
+    id: String,
+    operation: SettingsOperation,
+    payload: String,
+}
+
+fn parse_settings_request(request_json: &str) -> Option<SettingsRequest> {
+    let request: SettingsRequest = serde_json::from_str(request_json).ok()?;
+    if request.id.is_empty()
+        || request.id.len() > 128
+        || !request
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return None;
+    }
+    Some(request)
+}
+
+struct SettingsSaveResult {
+    ok: bool,
+    daemon_reload: &'static str,
+    message: String,
+}
+
+impl SettingsSaveResult {
+    fn failed(message: String) -> Self {
+        Self {
+            ok: false,
+            daemon_reload: "not_attempted",
+            message,
+        }
+    }
+}
+
+fn settings_saved_result(
+    message: String,
+    reply: Option<&str>,
+    daemon_supported: bool,
+) -> SettingsSaveResult {
+    let (daemon_reload, suffix) = if !daemon_supported {
+        ("not_applicable", String::new())
+    } else {
+        match reply {
+            Some(reply) if reply.starts_with("ok reloaded (") => ("reloaded", String::new()),
+            Some(reply) => ("failed", format!("; daemon reload failed: {reply}")),
+            None => ("deferred", "; daemon reload pending".to_string()),
+        }
+    };
+    SettingsSaveResult {
+        ok: true,
+        daemon_reload,
+        message: format!("{message}{suffix}"),
+    }
+}
+
+fn reload_after_settings_save(message: String) -> SettingsSaveResult {
+    #[cfg(unix)]
+    let reply = peterfan_platform::ipc::send_command("reload");
+    #[cfg(not(unix))]
+    let reply: Option<String> = None;
+    settings_saved_result(message, reply.as_deref(), cfg!(unix))
+}
+
+fn save_automation_rules(rules_json: &str) -> SettingsSaveResult {
     let rules = match parse_automation_rules(rules_json) {
         Ok(rules) => rules,
-        Err(error) => return format!("rules save failed: {error}"),
+        Err(error) => return SettingsSaveResult::failed(format!("rules save failed: {error}")),
     };
     let mut cfg = peterfan_platform::config::load();
     cfg.rules = rules;
     let count = cfg.rules.len();
     if let Err(error) = peterfan_platform::config::save(&cfg) {
-        return format!("rules save failed: {error}");
+        return SettingsSaveResult::failed(format!("rules save failed: {error}"));
     }
-    #[cfg(unix)]
-    if peterfan_platform::ipc::send_command("reload").is_none() {
-        return format!("rules saved ({count}); daemon reload pending");
-    }
-    format!("rules saved ({count})")
+    reload_after_settings_save(format!("rules saved ({count})"))
 }
 
 fn parse_imported_config(config_text: &str) -> Result<Config, String> {
@@ -1289,20 +1362,36 @@ fn parse_imported_config(config_text: &str) -> Result<Config, String> {
     Ok(config)
 }
 
-fn import_config(config_text: &str) -> String {
+fn import_config(config_text: &str) -> SettingsSaveResult {
     let config = match parse_imported_config(config_text) {
         Ok(config) => config,
-        Err(error) => return format!("config import failed: {error}"),
+        Err(error) => return SettingsSaveResult::failed(format!("config import failed: {error}")),
     };
     let rules = config.rules.len();
     if let Err(error) = peterfan_platform::config::save(&config) {
-        return format!("config import failed: {error}");
+        return SettingsSaveResult::failed(format!("config import failed: {error}"));
     }
-    #[cfg(unix)]
-    if peterfan_platform::ipc::send_command("reload").is_none() {
-        return format!("config imported ({rules} rules); daemon reload pending");
+    reload_after_settings_save(format!("config imported ({rules} rules)"))
+}
+
+fn run_settings_request(request_json: &str) -> Option<String> {
+    let request = parse_settings_request(request_json)?;
+    let result = match request.operation {
+        SettingsOperation::Rules => save_automation_rules(&request.payload),
+        SettingsOperation::ImportConfig => import_config(&request.payload),
+    };
+    let mut results = SETTINGS_RESULTS.lock().expect("settings results poisoned");
+    results.push_back(serde_json::json!({
+        "id": request.id,
+        "operation": request.operation,
+        "ok": result.ok,
+        "daemon_reload": result.daemon_reload,
+        "message": result.message,
+    }));
+    while results.len() > SETTINGS_RESULTS_MAX {
+        results.pop_front();
     }
-    format!("config imported ({rules} rules)")
+    Some(result.message)
 }
 
 fn copy_config_export() {
@@ -2702,6 +2791,7 @@ fn main() {
             now, app.runner_character, runner_should_animate(app.display, app.reduce_motion),
         ) {
             switch_runner_character(&mut app, character);
+            next_runner_at = now;
             next_metric_at = now;
         }
         if runner_should_animate(app.display, app.reduce_motion) && now >= next_runner_cpu_at {
@@ -2843,18 +2933,24 @@ fn main() {
                 } else if let Some(value) = c.strip_prefix("character:") {
                     if value == "random" {
                         set_runner_random(&mut app);
+                        next_runner_at = now;
                         refresh_after_pending = true;
                     } else if let Some(character) = RunnerCharacter::parse(value) {
                         set_runner_character(&mut app, character);
                         next_runner_at = now;
                         refresh_after_pending = true;
                     }
+                } else if let Some(request) = c.strip_prefix("settingsrequest:") {
+                    if let Some(status) = run_settings_request(request) {
+                        *STATUS.lock().expect("status poisoned") = status;
+                    }
+                    refresh_after_pending = true;
                 } else if let Some(json) = c.strip_prefix("rules:") {
-                    let status = save_automation_rules(json);
+                    let status = save_automation_rules(json).message;
                     *STATUS.lock().expect("status poisoned") = status;
                     refresh_after_pending = true;
                 } else if let Some(config_text) = c.strip_prefix("importconfig:") {
-                    let status = import_config(config_text);
+                    let status = import_config(config_text).message;
                     *STATUS.lock().expect("status poisoned") = status;
                     refresh_after_pending = true;
                 } else if c.starts_with("notifications:") {
@@ -3029,6 +3125,7 @@ fn main() {
             }
             if matched_random {
                 set_runner_random(&mut app);
+                next_runner_at = Instant::now();
                 update(&mut app);
             }
             if let Some(character) = matched_character {
@@ -3515,6 +3612,7 @@ fn build_popover(
                 || body.starts_with("updatechannel:")
                 || body.starts_with("display:")
                 || body.starts_with("character:")
+                || body.starts_with("settingsrequest:")
                 || body.starts_with("rules:")
                 || body.starts_with("importconfig:")
                 || body.starts_with("notifications:")
@@ -3702,6 +3800,7 @@ fn open_detail_window(
                 || body.starts_with("updatechannel:")
                 || body.starts_with("display:")
                 || body.starts_with("character:")
+                || body.starts_with("settingsrequest:")
                 || body.starts_with("rules:")
                 || body.starts_with("importconfig:")
                 || body.starts_with("notifications:")
@@ -4957,6 +5056,7 @@ fn update(app: &mut App) {
         "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, daemon_version.as_deref()),
         "curve_points": &app.dashboard_slow_cache.curve_points,
         "last_cmd_status": STATUS.lock().expect("status poisoned").clone(),
+        "settings_results": SETTINGS_RESULTS.lock().expect("settings results poisoned").clone(),
     });
     payload["config_toml"] = serde_json::json!(config.to_toml());
     payload["menubar_display"] = serde_json::json!(app.display.as_str());
@@ -9008,7 +9108,7 @@ function updateNotificationSettings(d){
   if(temperatureToggle)temperatureToggle.checked=temperatureEnabled;
   if(temperatureInput){
     temperatureInput.disabled=!temperatureEnabled;
-    if(temperatureEnabled)temperatureInput.value=String(Math.round(threshold));
+    if(temperatureEnabled&&document.activeElement!==temperatureInput)temperatureInput.value=String(Math.round(threshold));
   }
   var fanToggle=document.getElementById('notification-fan-toggle');
   var updateToggle=document.getElementById('notification-update-toggle');
@@ -9020,7 +9120,31 @@ function updateNotificationSettings(d){
 var AUTOMATION_RULES=null;
 var AUTOMATION_RULES_RENDERED='';
 var AUTOMATION_RULES_DIRTY=false;
-var AUTOMATION_RULES_SAVE_PENDING=false;
+var AUTOMATION_RULES_SAVE_PENDING=null;
+var AUTOMATION_RULES_EDIT_REVISION=0;
+var SETTINGS_REQUEST_SESSION='';
+var SETTINGS_REQUEST_COUNTER=0;
+function settingsRequest(operation,payload,revision){
+  if(!SETTINGS_REQUEST_SESSION){
+    SETTINGS_REQUEST_SESSION=window.crypto&&typeof window.crypto.randomUUID==='function'?window.crypto.randomUUID():Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+  }
+  return {id:SETTINGS_REQUEST_SESSION+'-'+(++SETTINGS_REQUEST_COUNTER),operation:operation,payload:payload,revision:revision};
+}
+function settingsResult(d,request){
+  if(!request||!Array.isArray(d.settings_results))return null;
+  return d.settings_results.find(function(result){return result.id===request.id&&result.operation===request.operation;})||null;
+}
+function settingsSavedText(result,imported,newerEdits){
+  var text=LANG==='ko'?(imported?'설정을 가져왔습니다':'규칙을 저장했습니다'):(imported?'Config imported':'Rules saved');
+  if(result.daemon_reload==='reloaded')text+=LANG==='ko'?'. 데몬에 다시 적용했습니다':'. Daemon reloaded';
+  else if(result.daemon_reload==='deferred')text+=LANG==='ko'?'. 데몬 다시 적용 대기 중':'. Daemon reload pending';
+  else if(result.daemon_reload==='failed')text+=LANG==='ko'?'. 데몬 다시 적용 실패':'. Daemon reload failed';
+  if(newerEdits)text+=LANG==='ko'?'. 이후 변경사항은 저장되지 않았습니다':'. Newer changes are unsaved';
+  return text;
+}
+function settingsSavedTone(result,newerEdits){
+  return newerEdits||result.daemon_reload==='deferred'||result.daemon_reload==='failed'?'warn':'ok';
+}
 function automationRuleFromData(rule){
   var when=String((rule&&rule.when)||'on_battery').toLowerCase();
   var profile=String((rule&&rule.profile)||'balanced').toLowerCase();
@@ -9060,20 +9184,18 @@ function automationSetStatus(text,tone){
 }
 function automationMarkDirty(){
   AUTOMATION_RULES_DIRTY=true;
-  AUTOMATION_RULES_SAVE_PENDING=false;
-  automationSetStatus(LANG==='ko'?'변경사항이 저장되지 않았습니다':'Unsaved changes','warn');
+  AUTOMATION_RULES_EDIT_REVISION++;
+  automationSetStatus(AUTOMATION_RULES_SAVE_PENDING?(LANG==='ko'?'저장 중입니다. 이후 변경사항은 아직 저장되지 않았습니다':'Saving earlier changes. Newer changes are unsaved'):(LANG==='ko'?'변경사항이 저장되지 않았습니다':'Unsaved changes'),'warn');
 }
 function renderAutomationRules(d){
   var incoming=(d.rules||[]).map(automationRuleFromData);
   var incomingSignature=automationRulesSignature(incoming);
-  var lastStatus=String(d.last_cmd_status||'');
-  if(AUTOMATION_RULES_SAVE_PENDING&&lastStatus.indexOf('rules saved')===0){
-    AUTOMATION_RULES_SAVE_PENDING=false;
-    AUTOMATION_RULES_DIRTY=false;
-    automationSetStatus(LANG==='ko'?'규칙을 저장하고 데몬에 다시 적용했습니다':'Rules saved and daemon reloaded','ok');
-  } else if(AUTOMATION_RULES_SAVE_PENDING&&lastStatus.indexOf('rules save failed:')===0){
-    AUTOMATION_RULES_SAVE_PENDING=false;
-    automationSetStatus(lastStatus.slice('rules save failed:'.length), 'warn');
+  var result=settingsResult(d,AUTOMATION_RULES_SAVE_PENDING);
+  if(result){
+    var newerEdits=AUTOMATION_RULES_EDIT_REVISION!==AUTOMATION_RULES_SAVE_PENDING.revision;
+    AUTOMATION_RULES_SAVE_PENDING=null;
+    AUTOMATION_RULES_DIRTY=!result.ok||newerEdits;
+    automationSetStatus(result.ok?settingsSavedText(result,false,newerEdits):String(result.message||'Rules save failed'),result.ok?settingsSavedTone(result,newerEdits):'warn');
   }
   if(AUTOMATION_RULES===null||(!AUTOMATION_RULES_DIRTY&&!AUTOMATION_RULES_SAVE_PENDING)){
     if(AUTOMATION_RULES===null||(!AUTOMATION_RULES_DIRTY&&incomingSignature!==automationRulesSignature(AUTOMATION_RULES))){
@@ -9087,7 +9209,7 @@ function renderAutomationRules(d){
   setPanelPill('automation-pill',LANG==='ko'?((AUTOMATION_RULES||[]).length+'개 규칙'):((AUTOMATION_RULES||[]).length+' rules'),(AUTOMATION_RULES||[]).length?'info':'');
   var add=document.getElementById('automation-add'),save=document.getElementById('automation-save');
   if(add)add.disabled=AUTOMATION_RULES_SAVE_PENDING||(AUTOMATION_RULES||[]).length>=32;
-  if(save)save.disabled=AUTOMATION_RULES_SAVE_PENDING;
+  if(save)save.disabled=!!AUTOMATION_RULES_SAVE_PENDING;
   if(signature===AUTOMATION_RULES_RENDERED)return;
   AUTOMATION_RULES_RENDERED=signature;
   list.innerHTML='';
@@ -9138,13 +9260,22 @@ function applyQuietAcPreset(){
 }
 function saveAutomationRules(){
   if(AUTOMATION_RULES_SAVE_PENDING)return;
-  AUTOMATION_RULES_SAVE_PENDING=true;
-  automationSetStatus(LANG==='ko'?'규칙을 저장하고 데몬에 다시 적용하는 중…':'Saving rules and reloading the daemon…','');
+  var request=settingsRequest('rules',JSON.stringify(automationRulesPayload()),AUTOMATION_RULES_EDIT_REVISION);
+  AUTOMATION_RULES_SAVE_PENDING=request;
+  AUTOMATION_RULES_DIRTY=true;
+  automationSetStatus(LANG==='ko'?'규칙 저장을 확인하는 중…':'Confirming rules save…','');
   var save=document.getElementById('automation-save');if(save)save.disabled=true;
-  window.ipc.postMessage('rules:'+JSON.stringify(automationRulesPayload()));
+  window.ipc.postMessage('settingsrequest:'+JSON.stringify(request));
+  setTimeout(function(){
+    if(AUTOMATION_RULES_SAVE_PENDING!==request)return;
+    AUTOMATION_RULES_SAVE_PENDING=null;AUTOMATION_RULES_DIRTY=true;
+    automationSetStatus(LANG==='ko'?'저장 확인 응답이 없습니다. 변경사항은 유지했습니다. 저장된 설정을 확인한 뒤 다시 시도하세요':'Save confirmation not received. Your edits are kept. Check the saved settings before retrying','warn');
+    renderAutomationRules({rules:[]});
+  },15000);
 }
 var CONFIG_IMPORT_DIRTY=false;
-var CONFIG_IMPORT_PENDING=false;
+var CONFIG_IMPORT_PENDING=null;
+var CONFIG_IMPORT_EDIT_REVISION=0;
 var CONFIG_COPY_REVISION_SEEN=0;
 function configTransferSetStatus(text,tone){
   var status=document.getElementById('config-transfer-status');
@@ -9152,29 +9283,29 @@ function configTransferSetStatus(text,tone){
 }
 function markConfigImportDirty(){
   CONFIG_IMPORT_DIRTY=true;
-  configTransferSetStatus(LANG==='ko'?'가져올 설정이 변경되었습니다':'Config text changed','warn');
+  CONFIG_IMPORT_EDIT_REVISION++;
+  configTransferSetStatus(CONFIG_IMPORT_PENDING?(LANG==='ko'?'가져오는 중입니다. 이후 변경사항은 아직 저장되지 않았습니다':'Importing earlier text. Newer changes are unsaved'):(LANG==='ko'?'가져올 설정이 변경되었습니다':'Config text changed'),'warn');
 }
 function updateConfigTransfer(d){
   var textarea=document.getElementById('config-transfer-text');
   var copy=document.getElementById('config-copy');
   var importer=document.getElementById('config-import');
-  var lastStatus=String(d.last_cmd_status||'');
-  if(textarea&&!CONFIG_IMPORT_DIRTY&&!CONFIG_IMPORT_PENDING&&typeof d.config_toml==='string'&&document.activeElement!==textarea&&textarea.value!==d.config_toml)textarea.value=d.config_toml;
-  if(CONFIG_IMPORT_PENDING&&lastStatus.indexOf('config imported')===0){
-    CONFIG_IMPORT_PENDING=false;CONFIG_IMPORT_DIRTY=false;
-    configTransferSetStatus(LANG==='ko'?'설정을 가져오고 데몬에 다시 적용했습니다':'Config imported and daemon reloaded','ok');
-  } else if(CONFIG_IMPORT_PENDING&&lastStatus.indexOf('config import failed:')===0){
-    CONFIG_IMPORT_PENDING=false;
-    configTransferSetStatus(lastStatus.slice('config import failed:'.length),'warn');
+  var result=settingsResult(d,CONFIG_IMPORT_PENDING);
+  if(result){
+    var newerEdits=CONFIG_IMPORT_EDIT_REVISION!==CONFIG_IMPORT_PENDING.revision;
+    CONFIG_IMPORT_PENDING=null;
+    CONFIG_IMPORT_DIRTY=!result.ok||newerEdits;
+    configTransferSetStatus(result.ok?settingsSavedText(result,true,newerEdits):String(result.message||'Config import failed'),result.ok?settingsSavedTone(result,newerEdits):'warn');
   }
+  if(textarea&&!CONFIG_IMPORT_DIRTY&&!CONFIG_IMPORT_PENDING&&typeof d.config_toml==='string'&&document.activeElement!==textarea&&textarea.value!==d.config_toml)textarea.value=d.config_toml;
   var revision=Number(d.config_copy_revision||0);
   if(revision>CONFIG_COPY_REVISION_SEEN){
     CONFIG_COPY_REVISION_SEEN=revision;
-    configTransferSetStatus(d.config_copy_ok?(LANG==='ko'?'현재 설정을 클립보드에 복사했습니다':'Current config copied to clipboard'):(LANG==='ko'?'설정 복사 실패':'Config copy failed'),d.config_copy_ok?'ok':'warn');
+    if(!CONFIG_IMPORT_PENDING&&!result)configTransferSetStatus(d.config_copy_ok?(LANG==='ko'?'현재 설정을 클립보드에 복사했습니다':'Current config copied to clipboard'):(LANG==='ko'?'설정 복사 실패':'Config copy failed'),d.config_copy_ok?'ok':'warn');
   }
   setPanelPill('config-transfer-pill',CONFIG_IMPORT_PENDING?(LANG==='ko'?'적용 중':'Applying'):(CONFIG_IMPORT_DIRTY?(LANG==='ko'?'변경됨':'Edited'):(LANG==='ko'?'준비됨':'Ready')),CONFIG_IMPORT_PENDING?'warn':(CONFIG_IMPORT_DIRTY?'info':''));
-  if(copy)copy.disabled=CONFIG_IMPORT_PENDING;
-  if(importer)importer.disabled=CONFIG_IMPORT_PENDING;
+  if(copy)copy.disabled=!!CONFIG_IMPORT_PENDING;
+  if(importer)importer.disabled=!!CONFIG_IMPORT_PENDING;
 }
 function copyConfigExport(){
   if(CONFIG_IMPORT_PENDING)return;
@@ -9186,9 +9317,17 @@ function importConfig(){
   var textarea=document.getElementById('config-transfer-text');
   var value=textarea?textarea.value.trim():'';
   if(!value){configTransferSetStatus(LANG==='ko'?'가져올 TOML을 붙여넣으세요':'Paste a TOML config first','warn');return;}
-  CONFIG_IMPORT_PENDING=true;
-  configTransferSetStatus(LANG==='ko'?'설정을 검증하고 데몬에 다시 적용하는 중…':'Validating config and reloading the daemon…','');
-  window.ipc.postMessage('importconfig:'+value);
+  var request=settingsRequest('import_config',value,CONFIG_IMPORT_EDIT_REVISION);
+  CONFIG_IMPORT_PENDING=request;CONFIG_IMPORT_DIRTY=true;
+  configTransferSetStatus(LANG==='ko'?'설정 가져오기를 확인하는 중…':'Confirming config import…','');
+  var importer=document.getElementById('config-import');if(importer)importer.disabled=true;
+  window.ipc.postMessage('settingsrequest:'+JSON.stringify(request));
+  setTimeout(function(){
+    if(CONFIG_IMPORT_PENDING!==request)return;
+    CONFIG_IMPORT_PENDING=null;CONFIG_IMPORT_DIRTY=true;
+    configTransferSetStatus(LANG==='ko'?'가져오기 확인 응답이 없습니다. 입력은 유지했습니다. 저장된 설정을 확인한 뒤 다시 시도하세요':'Import confirmation not received. Your text is kept. Check the saved settings before retrying','warn');
+    updateConfigTransfer({});
+  },15000);
 }
 function setSetupMenuOpen(open){
   var menu=document.getElementById('setup-menu');
@@ -12554,10 +12693,13 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
             assert!(html.contains("function applyQuietAcPreset()"));
             assert!(html.contains("function updateConfigTransfer(d)"));
             assert!(html.contains("window.ipc.postMessage('copyconfig')"));
-            assert!(html.contains("window.ipc.postMessage('importconfig:'+value)"));
-            assert!(html.contains(
-                "window.ipc.postMessage('rules:'+JSON.stringify(automationRulesPayload()))"
-            ));
+            assert!(html.contains("settingsRequest('import_config',value"));
+            assert!(
+                html.contains("settingsRequest('rules',JSON.stringify(automationRulesPayload())")
+            );
+            assert!(
+                html.contains("window.ipc.postMessage('settingsrequest:'+JSON.stringify(request))")
+            );
             assert!(html.contains("d.rules"));
             assert!(html.contains("d.config_toml"));
         }
@@ -12993,7 +13135,15 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
         assert!(en.contains("var FAN_CONTROL_FIX_REVISION=0;"));
         assert!(en.contains("Number(d.fan_control_install_revision||0)>FAN_CONTROL_FIX_REVISION"));
         assert!(en.contains("if(!current.fan_control_installing)FAN_CONTROL_FIX_PENDING=false;"));
-        assert!(!en.contains("},15000);"));
+        let setup = en
+            .split("function startFanControlSetup(btn){")
+            .nth(1)
+            .unwrap()
+            .split("function runFanDiagnostics(btn){")
+            .next()
+            .unwrap();
+        assert!(!setup.contains("},15000);"));
+        assert!(setup.contains("},60000);"));
     }
 
     #[test]
@@ -14133,6 +14283,80 @@ rules = [{ when = "on_ac", profile = "maximum" }]
             "rules = [{ when = \"cpu_above:NaN\", profile = \"silent\" }]"
         )
         .is_err());
+    }
+
+    #[test]
+    fn settings_requests_keep_the_window_request_id_and_operation() {
+        let request = parse_settings_request(
+            r#"{"id":"window-1_request-2","operation":"rules","payload":"[]"}"#,
+        )
+        .unwrap();
+        assert_eq!(request.id, "window-1_request-2");
+        assert_eq!(request.operation, SettingsOperation::Rules);
+        assert_eq!(request.payload, "[]");
+        let imported = parse_settings_request(
+            r#"{"id":"window-2_request-1","operation":"import_config","payload":"profile = 'silent'"}"#,
+        )
+        .unwrap();
+        assert_eq!(imported.operation, SettingsOperation::ImportConfig);
+    }
+
+    #[test]
+    fn settings_requests_reject_invalid_ids_and_unknown_operations() {
+        for id in ["".to_string(), "wrong id".to_string(), "x".repeat(129)] {
+            assert!(parse_settings_request(
+                &serde_json::json!({"id": id, "operation": "rules", "payload": "[]"}).to_string()
+            )
+            .is_none());
+        }
+        assert!(parse_settings_request(
+            r#"{"id":"window-1","operation":"run_shell","payload":"anything"}"#
+        )
+        .is_none());
+        assert!(parse_settings_request("not JSON").is_none());
+    }
+
+    #[test]
+    fn settings_reload_results_require_explicit_daemon_confirmation() {
+        let confirmed = settings_saved_result(
+            "rules saved (1)".into(),
+            Some("ok reloaded (1 rules) (smc)"),
+            true,
+        );
+        assert!(confirmed.ok);
+        assert_eq!(confirmed.daemon_reload, "reloaded");
+        for reply in ["error: permission denied", "ok legacy daemon", ""] {
+            let failed = settings_saved_result("rules saved (1)".into(), Some(reply), true);
+            assert!(
+                failed.ok,
+                "The disk save succeeded even when daemon reload failed"
+            );
+            assert_eq!(failed.daemon_reload, "failed");
+            assert!(failed.message.contains("daemon reload failed"));
+        }
+        let deferred = settings_saved_result("rules saved (1)".into(), None, true);
+        assert!(deferred.ok);
+        assert_eq!(deferred.daemon_reload, "deferred");
+        assert!(deferred.message.contains("daemon reload pending"));
+        let windows = settings_saved_result("rules saved (1)".into(), None, false);
+        assert_eq!(windows.daemon_reload, "not_applicable");
+        assert_eq!(windows.message, "rules saved (1)");
+    }
+
+    #[test]
+    fn invalid_settings_payload_returns_a_correlated_failure_without_saving() {
+        let id = "unit-test-invalid-rules";
+        let status = run_settings_request(
+            &serde_json::json!({"id": id, "operation": "rules", "payload": "not JSON"}).to_string(),
+        )
+        .unwrap();
+        assert!(status.starts_with("rules save failed:"));
+        let results = SETTINGS_RESULTS.lock().unwrap();
+        let result = results.iter().find(|result| result["id"] == id).unwrap();
+        assert_eq!(result["operation"], "rules");
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["daemon_reload"], "not_attempted");
+        assert!(result.get("payload").is_none());
     }
 
     #[test]

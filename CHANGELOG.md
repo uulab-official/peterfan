@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — Open-source contributor experience
 
+- Match settings save/import acknowledgements to the originating window and request;
+  retain drafts during pending, failed or unconfirmed operations, and distinguish
+  disk persistence from confirmed daemon reload.
+- Preserve focused notification temperature edits across live refreshes and reset
+  the Windows runner frame deadline for random selections as for fixed selections.
 - Replace stale setup/backend guidance in four languages and document mock-first,
   credential-free contributor checks, supported platforms and current release limits.
 - Declare the verified Rust 1.88 minimum; check minimum Rust on macOS/Windows,

@@ -3,6 +3,22 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
+## Settings interaction polish — 2026-10-23
+
+- [x] Match save/import results to window-specific requests; retain newer drafts,
+      failed drafts and unconfirmed drafts without automatic resubmission.
+- [x] Distinguish saved configuration from confirmed, deferred or failed daemon
+      reload; a nonempty error reply cannot report successful reload.
+- [x] Preserve focused temperature input across live snapshots and align random
+      runner frame scheduling with fixed character selection on Windows.
+- [x] Full contributor checks: 437 Rust tests passed, 7 ignored; 42 Node tests
+      passed. Rust 1.99 native/Windows-target Clippy and Rust 1.88 check passed.
+- [x] Regenerated real dashboard HTML and verified draft/input preservation in
+      dark/light 440×520 browser fixtures, without writing real settings.
+
+See [reproductions and evidence limits](INTERACTION_POLISH_2026-10-23.md).
+Source and browser checks do not imply a public release or physical fan test.
+
 ## Local v1.32.4 production polish — 2026-10-22
 
 - [x] Settings/system process rendering no longer throws an out-of-scope
