@@ -225,40 +225,104 @@ fn sausage(canvas: &mut RunnerCanvas, phase: f32, load: f32) {
     );
 }
 
-fn party(canvas: &mut RunnerCanvas, phase: f32, load: f32) {
-    // An eight-count disco step. Ankles alternate between planted support and
-    // a low side tap; the knee solver keeps both leg segments the same length.
-    let sway = phase.sin() * (0.7 + load * 0.4);
-    let bob = -(phase * 2.0).sin().powi(2) * 0.6;
-    let neck = Pt::new(24.0 + sway, 11.7 + bob);
-    let hip = Pt::new(24.0 + sway * 0.55, 19.6 + bob);
-    for (side, angle) in [(-1.0, phase), (1.0, phase + PI)] {
-        let shoulder = Pt::new(neck.x + side * 2.4, neck.y + 1.3);
-        let lift = angle.sin();
-        let hand = Pt::new(
-            neck.x + side * (10.0 + load * 0.6),
-            10.5 - lift * (4.5 + load * 2.0),
-        );
-        let elbow = knee_between(shoulder, hand, 6.0, side);
-        path(canvas, &[shoulder, elbow, hand], 2.9);
-        canvas.disc(hand, 1.6, INK);
-        let ankle = Pt::new(
-            24.0 + side * (6.7 + angle.cos() * 1.8),
-            28.0 - angle.sin().max(0.0) * (2.0 + load * 2.5),
-        );
-        let leg_hip = Pt::new(hip.x + side * 1.2, hip.y);
-        let knee = knee_between(leg_hip, ankle, 6.3, side);
-        path(canvas, &[leg_hip, knee, ankle], 3.0);
-        canvas.line(ankle, Pt::new(ankle.x + side * 2.2, ankle.y), 3.0, INK);
+// Keep the authored skeleton available separately from rasterization: support
+// contacts and limb lengths are properties of the dance, not of antialiasing.
+struct PartyPose {
+    neck: Pt,
+    hip: Pt,
+    shoulders: [Pt; 2],
+    elbows: [Pt; 2],
+    hands: [Pt; 2],
+    leg_hips: [Pt; 2],
+    knees: [Pt; 2],
+    ankles: [Pt; 2],
+}
+
+fn party_pose(phase: f32, load: f32) -> PartyPose {
+    let beat = phase.sin();
+    let accent = phase.cos();
+    let energy = 0.65 + load * 0.35;
+    // Counts 1–4 load the left foot; counts 5–8 load the right. The
+    // supporting ankle stays fixed while the other foot lifts into a side tap.
+    // Both feet touch at the transfer, including the 7 -> 0 cycle seam.
+    let bounce = 0.55 * (phase * 2.0).cos();
+    let hip = Pt::new(24.0 - 2.4 * beat * energy, 19.6 + bounce);
+    let neck = Pt::new(24.0 - 0.8 * beat * energy + 0.5 * accent, 11.5 + bounce);
+    let shoulders = [
+        Pt::new(neck.x - 2.1, neck.y + 1.1),
+        Pt::new(neck.x + 2.1, neck.y + 1.1),
+    ];
+    // A bent low hand and an overhead disco point are deliberately offset.
+    // They never become the mirrored jumping-jack pose of the old cycle.
+    let hands = [
+        Pt::new(
+            neck.x - 6.8 - 1.3 * beat - 2.8 * load,
+            15.2 + 2.3 * beat + 1.3 * accent,
+        ),
+        Pt::new(
+            neck.x + 7.3 + 0.9 * accent + 2.8 * load,
+            7.5 - 3.8 * beat * energy,
+        ),
+    ];
+    let elbows = std::array::from_fn(|i| {
+        knee_between(shoulders[i], hands[i], 6.0, if i == 0 { -1.0 } else { 1.0 })
+    });
+    let leg_hips = [Pt::new(hip.x - 1.1, hip.y), Pt::new(hip.x + 1.1, hip.y)];
+    let ankles = [
+        Pt::new(
+            18.0 - 1.8 * (-beat).max(0.0),
+            28.0 - 3.4 * (-beat).max(0.0) * energy,
+        ),
+        Pt::new(
+            30.0 + 1.8 * beat.max(0.0),
+            28.0 - 3.4 * beat.max(0.0) * energy,
+        ),
+    ];
+    let knees = std::array::from_fn(|i| {
+        knee_between(leg_hips[i], ankles[i], 7.0, if i == 0 { -1.0 } else { 1.0 })
+    });
+    PartyPose {
+        neck,
+        hip,
+        shoulders,
+        elbows,
+        hands,
+        leg_hips,
+        knees,
+        ankles,
     }
-    canvas.line(neck, hip, 5.4, INK);
-    // A short neck keeps the head visibly joined without merging the shoulders.
-    canvas.line(neck, Pt::new(neck.x, 9.0 + bob), 2.8, INK);
-    canvas.disc(Pt::new(neck.x, 6.9 + bob), 3.4, INK);
+}
+
+fn party(canvas: &mut RunnerCanvas, phase: f32, load: f32) {
+    let pose = party_pose(phase, load);
+    for i in 0..2 {
+        path(
+            canvas,
+            &[pose.shoulders[i], pose.elbows[i], pose.hands[i]],
+            2.9,
+        );
+        canvas.disc(pose.hands[i], 1.5, INK);
+        path(
+            canvas,
+            &[pose.leg_hips[i], pose.knees[i], pose.ankles[i]],
+            3.0,
+        );
+        let side = if i == 0 { -1.0 } else { 1.0 };
+        canvas.line(
+            pose.ankles[i],
+            Pt::new(pose.ankles[i].x + side * 2.1, pose.ankles[i].y),
+            3.0,
+            INK,
+        );
+    }
+    canvas.line(pose.neck, pose.hip, 4.8, INK);
+    let head = Pt::new(pose.neck.x + 0.35 * phase.sin(), pose.neck.y - 4.8);
+    canvas.line(pose.neck, head, 2.8, INK);
+    canvas.disc(head, 3.3, INK);
     canvas.triangle(
-        Pt::new(neck.x - 2.7, 4.5 + bob),
-        Pt::new(neck.x + 2.7, 4.5 + bob),
-        Pt::new(neck.x - 1.8, 1.9 + bob),
+        Pt::new(head.x - 2.6, head.y - 2.3),
+        Pt::new(head.x + 2.6, head.y - 2.3),
+        Pt::new(head.x - 1.7, head.y - 4.6),
         INK,
     );
 }
@@ -275,6 +339,106 @@ mod tests {
         RunnerCharacter::Sausage,
         RunnerCharacter::Party,
     ];
+
+    fn distance(a: Pt, b: Pt) -> f32 {
+        (a.x - b.x).hypot(a.y - b.y)
+    }
+
+    fn pose_points(pose: &PartyPose) -> Vec<Pt> {
+        let mut points = vec![pose.hip, pose.neck];
+        for i in 0..2 {
+            points.extend([
+                pose.shoulders[i],
+                pose.elbows[i],
+                pose.hands[i],
+                pose.leg_hips[i],
+                pose.knees[i],
+                pose.ankles[i],
+            ]);
+        }
+        points
+    }
+
+    #[test]
+    fn party_keeps_support_foot_planted_and_transfers_weight() {
+        for load in [0.0, 0.3, 0.65, 1.0] {
+            for sample in 0..128 {
+                let phase = sample as f32 * TAU / 128.0;
+                let pose = party_pose(phase, load);
+                let support = usize::from(phase.sin() < 0.0);
+                let planted = pose.ankles[support];
+                assert!((planted.x - if support == 0 { 18.0 } else { 30.0 }).abs() < 0.001);
+                assert!((planted.y - 28.0).abs() < 0.001);
+                assert!(pose.ankles[1 - support].y <= 28.001);
+            }
+            let left = party_pose(PI * 0.5, load);
+            let right = party_pose(PI * 1.5, load);
+            assert!(
+                right.hip.x - left.hip.x >= 3.1,
+                "dance must visibly transfer its weight"
+            );
+            assert!(
+                left.neck.x > left.hip.x && right.neck.x < right.hip.x,
+                "torso counterbalances the loaded hip"
+            );
+            assert!(left.ankles[1].y < 26.0 && right.ankles[0].y < 26.0);
+        }
+    }
+
+    #[test]
+    fn party_preserves_limb_lengths_and_asymmetric_hand_accents() {
+        for load in [0.0, 0.5, 1.0] {
+            for sample in 0..128 {
+                let pose = party_pose(sample as f32 * TAU / 128.0, load);
+                for i in 0..2 {
+                    for length in [
+                        distance(pose.shoulders[i], pose.elbows[i]),
+                        distance(pose.elbows[i], pose.hands[i]),
+                    ] {
+                        assert!((length - 6.0).abs() < 0.001, "arm must not stretch");
+                    }
+                    for length in [
+                        distance(pose.leg_hips[i], pose.knees[i]),
+                        distance(pose.knees[i], pose.ankles[i]),
+                    ] {
+                        assert!((length - 7.0).abs() < 0.001, "leg must not stretch");
+                    }
+                }
+                assert!(
+                    pose.hands[0].y - pose.hands[1].y > 1.0,
+                    "hands must retain distinct high and low accents"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn party_wraps_without_a_pose_jump() {
+        for load in [0.0, 0.5, 1.0] {
+            let start = pose_points(&party_pose(0.0, load));
+            let wrap = pose_points(&party_pose(TAU, load));
+            assert!(start
+                .iter()
+                .zip(&wrap)
+                .all(|(&a, &b)| distance(a, b) < 0.001));
+            let step = TAU / 8.0;
+            let deltas: Vec<_> = (0..8)
+                .map(|i| {
+                    let from = pose_points(&party_pose(i as f32 * step, load));
+                    let to = pose_points(&party_pose((i + 1) as f32 * step, load));
+                    from.iter()
+                        .zip(&to)
+                        .map(|(&a, &b)| distance(a, b))
+                        .fold(0.0_f32, f32::max)
+                })
+                .collect();
+            let ordinary = deltas[..7].iter().copied().fold(0.0_f32, f32::max);
+            assert!(
+                deltas[7] <= ordinary * 1.05,
+                "last-to-first step must not exceed the ordinary movement envelope"
+            );
+        }
+    }
 
     #[test]
     fn dancer_and_jogger_joint_solver_preserves_both_segments() {

@@ -3,6 +3,33 @@
 This checklist is the release gate for PeterFan. A checked item must be backed
 by an automated test, a release-script check, or a recorded real-Mac result.
 
+## Measurable runner quality — 2026-10-23
+
+- [x] Define explicit CPU, tiny-artwork, anatomy, cadence and delivery targets;
+      retain missed targets and evidence boundaries in the quality report.
+- [x] Matched single-screen image/layer ABBA: median app CPU 6.7815% to 0.7995%
+      of one core (88.21% reduction). Bitmap-only experiment gave 0.29% and is
+      not accepted as a performance improvement. Global compositor samples do
+      not establish renderer energy cost or RunCat parity.
+- [x] Native offscreen compositing proves visible upright frame changes,
+      transparency and appearance tint. A blank-mask mutation fails. Layer
+      detach/drop, multi-screen/static fallback and bitmap bounds are tested.
+- [x] Rework push-up anatomy, ghost cloth/eyes/load expression and dancer weight
+      transfer. Review all twenty at actual 27×18 points in light/dark canonical
+      previews and all eight poses of the revised three. Shared quality gates
+      and the 20–180 ms CPU frame curve pass.
+- [x] Full contributor gate: 463 Rust tests passed, 7 ignored; 59 Node tests
+      passed. Native Rust 1.99 Clippy and Rust 1.88 all-target/all-feature check
+      passed. Native desktop capture was unavailable; preview screenshots and
+      offscreen framework tests are distinct evidence.
+- [ ] Measure the signed installed candidate at live low load (<=3% app CPU).
+- [ ] Verify local signing, notarization, installation and automatic checks for
+      this renderer candidate, preserving settings and a recoverable backup.
+- [ ] Same-machine RunCat comparison, multi-monitor hardware/energy measurement,
+      extended soak and public release/newer-version OTA.
+
+See [targets, measurements and verification boundaries](RUNNER_QUALITY_TARGETS.md).
+
 ## Automatic update reliability — 2026-10-23
 
 - [x] Replace launch-only discovery with a 20-second startup check, six-hour

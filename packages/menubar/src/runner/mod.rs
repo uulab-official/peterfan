@@ -342,19 +342,19 @@ mod tests {
             (RunnerCharacter::Penguin, 17842549327519254898),
             (RunnerCharacter::Dinosaur, 15058960733293060519),
             (RunnerCharacter::Robot, 1051873174812331672),
-            (RunnerCharacter::Ghost, 2339930189399242971),
+            (RunnerCharacter::Ghost, 6736284455208130496),
             (RunnerCharacter::Bird, 13421969405852252869),
             (RunnerCharacter::Duck, 1592897135956606108),
             (RunnerCharacter::Sheep, 15666925849922417778),
             (RunnerCharacter::Fish, 2170793970494020032),
             (RunnerCharacter::Slime, 11022887547196944267),
             (RunnerCharacter::Human, 10818114304678795052),
-            (RunnerCharacter::Pushup, 14433021395043304816),
+            (RunnerCharacter::Pushup, 10388017236602389515),
             (RunnerCharacter::Orbit, 4004691478766109493),
             (RunnerCharacter::Sushi, 3930794999910381531),
             (RunnerCharacter::City, 10273532310764104654),
             (RunnerCharacter::Sausage, 9376091003029328735),
-            (RunnerCharacter::Party, 17265817817313831926),
+            (RunnerCharacter::Party, 16461965804262683436),
         ];
 
         let actual = expected.map(|(character, _)| {

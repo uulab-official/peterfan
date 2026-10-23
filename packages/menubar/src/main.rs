@@ -16,11 +16,13 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 #[cfg(target_os = "macos")]
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicU32, AtomicUsize};
@@ -43,6 +45,8 @@ use tao::window::{Window, WindowBuilder};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
+#[cfg(target_os = "macos")]
+mod native_runner;
 mod random_runner;
 mod runner;
 mod update_schedule;
@@ -57,12 +61,13 @@ use objc2::rc::Retained;
 use objc2::AllocAnyThread;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSCellImagePosition, NSEvent, NSImage, NSImageCacheMode, NSScreen, NSWindow, NSWorkspace,
+    NSBitmapFormat, NSBitmapImageRep, NSCellImagePosition, NSDeviceRGBColorSpace, NSEvent, NSImage,
+    NSImageCacheMode, NSScreen, NSWindow, NSWorkspace,
 };
 #[cfg(target_os = "macos")]
 use objc2_foundation::{
-    MainThreadMarker, NSData, NSDate, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize,
-    NSString, NSTimer,
+    MainThreadMarker, NSDate, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
+    NSTimer,
 };
 
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
@@ -889,6 +894,8 @@ struct App {
     runner_band: usize,
     #[cfg(target_os = "macos")]
     runner_native_timer: Option<Retained<NSTimer>>,
+    #[cfg(target_os = "macos")]
+    runner_native_painter: Rc<RefCell<native_runner::NativeRunnerPainter>>,
     #[cfg(target_os = "macos")]
     runner_native_cpu_bits: Arc<AtomicU32>,
     #[cfg(target_os = "macos")]
@@ -2616,6 +2623,8 @@ fn main() {
         #[cfg(target_os = "macos")]
         runner_native_timer: None,
         #[cfg(target_os = "macos")]
+        runner_native_painter: Rc::new(RefCell::new(native_runner::NativeRunnerPainter::default())),
+        #[cfg(target_os = "macos")]
         runner_native_cpu_bits: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
         #[cfg(target_os = "macos")]
         runner_native_motion_cpu_bits: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
@@ -2800,6 +2809,15 @@ fn main() {
             if app.reduce_motion != reduce_motion {
                 app.reduce_motion = reduce_motion;
                 app.runner_frame = 0;
+                #[cfg(target_os = "macos")]
+                {
+                    // A static accessibility presentation uses the neutral
+                    // pose rather than freezing halfway through an exercise.
+                    stop_native_runner_timer(&mut app);
+                    app.runner_native_frame.store(0, Ordering::Relaxed);
+                    app.runner_native_applied_icon
+                        .store(usize::MAX, Ordering::Relaxed);
+                }
                 app.last_runner_icon = None;
                 apply_runner_icon(&mut app);
             }
@@ -4211,9 +4229,9 @@ fn toggle_popover(
         w.set_outer_position(position);
         app.popover_show_at = Some(Instant::now() + POPOVER_SHOW_DELAY);
         log_menubar_event(&format!(
-        "popover scheduled position=({:.0},{:.0}) size=({POPOVER_W:.0},{height:.0}) scale={scale:.2}",
-        position.x, position.y
-    ));
+            "popover scheduled position=({:.0},{:.0}) size=({POPOVER_W:.0},{height:.0}) scale={scale:.2}",
+            position.x, position.y
+        ));
     }
 }
 
@@ -5126,8 +5144,9 @@ fn update(app: &mut App) {
         serde_json::json!(app.runner_assets.pack.character().as_str());
     payload["runner_cpu_pct"] = serde_json::json!(app.runner_cpu_pct);
     payload["runner_reduce_motion"] = serde_json::json!(app.reduce_motion);
-    payload["runner_interval_ms"] = serde_json::json!((!app.reduce_motion)
-        .then(|| runner_character_interval(app.runner_character, app.runner_cpu_pct).as_millis()));
+    payload["runner_interval_ms"] = serde_json::json!((!app.reduce_motion).then(|| {
+        runner_character_interval(app.runner_character, app.runner_cpu_pct).as_millis()
+    }));
     payload["network_rate_text"] = serde_json::json!(format!("{}/s", bytes((rx + tx) as u64)));
     payload["load_avg_text"] = serde_json::json!(load_avg_text);
     payload["power_text"] = serde_json::json!(power_text);
@@ -6295,8 +6314,11 @@ fn run_app_update(install: bool, automatic: bool) {
     let state = APP_UPDATE_STATE.lock().expect("app update state poisoned");
     log_menubar_event(&format!(
         "app update completed automatic={automatic} phase={} channel={} last_attempt={:?} last_success={:?} next_check={:?}",
-        state.phase, state.channel.as_str(), state.schedule.last_attempt_unix,
-        state.schedule.last_success_unix, state.schedule.next_check_unix
+        state.phase,
+        state.channel.as_str(),
+        state.schedule.last_attempt_unix,
+        state.schedule.last_success_unix,
+        state.schedule.next_check_unix
     ));
 }
 
@@ -6579,34 +6601,55 @@ fn make_runner_native_image_from_rgba(
         &format!("native cache frame {frame_index}"),
         rgba,
     )?;
-    let mut encoded = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut encoded, RUNNER_PIXEL_WIDTH, RUNNER_PIXEL_HEIGHT);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder
-            .write_header()
-            .and_then(|mut writer| writer.write_image_data(rgba))
-            .map_err(|error| {
-                RunnerBuildError::cache(
-                    character,
-                    format!("native cache frame {frame_index}"),
-                    format!("png encode: {error}"),
-                )
-            })?;
+    // Allocate the final raster eagerly. NSImage(data:) retains an encoded
+    // ImageIO representation: AppKit status-item snapshot draws can revisit
+    // its PNG decode and purgeable pixel cache on every animation cycle.
+    // A null planes pointer asks the bitmap representation to own its storage.
+    let bitmap = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            RUNNER_PIXEL_WIDTH as isize,
+            RUNNER_PIXEL_HEIGHT as isize,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            NSBitmapFormat::AlphaNonpremultiplied,
+            (RUNNER_PIXEL_WIDTH * 4) as isize,
+            32,
+        )
     }
-    let data = NSData::from_vec(encoded);
-    let image = NSImage::initWithData(NSImage::alloc(), &data).ok_or_else(|| {
+    .ok_or_else(|| {
         RunnerBuildError::cache(
             character,
             format!("native cache frame {frame_index}"),
-            "nsimage decode returned nil",
+            "bitmap allocation returned nil",
         )
     })?;
+    let pixels = bitmap.bitmapData();
+    if pixels.is_null()
+        || bitmap.bytesPerRow() != (RUNNER_PIXEL_WIDTH * 4) as isize
+        || bitmap.pixelsHigh() != RUNNER_PIXEL_HEIGHT as isize
+    {
+        return Err(RunnerBuildError::cache(
+            character,
+            format!("native cache frame {frame_index}"),
+            "bitmap allocation returned invalid storage",
+        ));
+    }
+    // SAFETY: AppKit owns this non-planar RGBA8 allocation, its requested
+    // stride/height were checked above, and validate_runner_rgba_frame checked
+    // the source length. No references to the bitmap pixels escape this copy.
+    unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), pixels, rgba.len()) };
+    let logical_size = NSSize::new(27.0, 18.0);
+    bitmap.setSize(logical_size);
+    let image = NSImage::initWithSize(NSImage::alloc(), logical_size);
+    image.addRepresentation(&bitmap);
     // Keep a raster cache for repeated status-item snapshot draws. The native
     // timer reuses these tiny images without changing the shared CPU cadence.
     image.setCacheMode(NSImageCacheMode::Always);
-    image.setSize(NSSize::new(27.0, 18.0));
     // Template mode keeps every runner as the same white status-item glyph on
     // both light and dark menu bars.
     image.setTemplate(true);
@@ -6751,9 +6794,9 @@ fn sync_native_runner_timer(app: &mut App) {
         return;
     };
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    let Some(button) = status_item.button(mtm) else {
+    if status_item.button(mtm).is_none() {
         return;
-    };
+    }
 
     let character = app.runner_character;
     let images = app.runner_assets.native_images.clone();
@@ -6764,6 +6807,7 @@ fn sync_native_runner_timer(app: &mut App) {
     let scheduled_tick_us = Arc::clone(&app.runner_native_tick_us);
     let band = Arc::clone(&app.runner_native_band);
     let applied_icon = Arc::clone(&app.runner_native_applied_icon);
+    let painter = Rc::clone(&app.runner_native_painter);
     phase_us.store(0, Ordering::Relaxed);
     band.store(runner_load_band(app.runner_cpu_pct), Ordering::Relaxed);
     scheduled_tick_us.store(RUNNER_NATIVE_TICK.as_micros() as u64, Ordering::Relaxed);
@@ -6792,7 +6836,7 @@ fn sync_native_runner_timer(app: &mut App) {
             frame.store(u64::from(next_frame), Ordering::Relaxed);
             let index = next_band * usize::from(RUNNER_FRAME_COUNT) + usize::from(next_frame);
             if let Some(image) = images.get(index) {
-                button.setImage(Some(&**image));
+                painter.borrow().paint(image);
                 applied_icon.store(index, Ordering::Relaxed);
             }
         }
@@ -6884,6 +6928,8 @@ fn switch_runner_character(app: &mut App, character: RunnerCharacter) -> bool {
 
 fn apply_runner_icon(app: &mut App) {
     #[cfg(target_os = "macos")]
+    sync_native_runner_painter(app);
+    #[cfg(target_os = "macos")]
     let desired = runner_enabled(app.display).then(|| {
         app.runner_native_band.load(Ordering::Relaxed) * usize::from(RUNNER_FRAME_COUNT)
             + app.runner_native_frame.load(Ordering::Relaxed) as usize
@@ -6920,7 +6966,11 @@ fn apply_runner_icon(app: &mut App) {
             let image = desired
                 .and_then(|index| app.runner_assets.native_images.get(index))
                 .map(|image| &**image);
-            button.setImage(image);
+            if let Some(image) = image {
+                app.runner_native_painter.borrow().paint(image);
+            } else {
+                button.setImage(None);
+            }
             app.last_runner_icon = desired;
             app.runner_native_applied_icon
                 .store(desired.unwrap_or(usize::MAX), Ordering::Relaxed);
@@ -6932,6 +6982,47 @@ fn apply_runner_icon(app: &mut App) {
         if tray.set_icon_with_as_template(icon, false).is_ok() {
             app.last_runner_icon = desired;
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn sync_native_runner_painter(app: &mut App) {
+    let Some(status_item) = app.tray.as_ref().and_then(TrayIcon::ns_status_item) else {
+        return;
+    };
+    // This function is reached only by the main event loop's tray updates.
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let Some(button) = status_item.button(mtm) else {
+        return;
+    };
+    let screens = NSScreen::screens(mtm).len();
+    let eligible = native_runner::eligible(app.display, app.reduce_motion, screens);
+    let mut painter = app.runner_native_painter.borrow_mut();
+    let was_active = painter.active();
+    let button_changed = painter.bind(&button);
+    if eligible && !painter.active() {
+        let transparent = vec![0; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize];
+        if let Ok(placeholder) =
+            make_runner_native_image_from_rgba(app.runner_character, 0, &transparent)
+        {
+            painter.attach(&placeholder);
+        }
+    } else if !eligible && was_active {
+        painter.detach();
+    }
+    painter.sync();
+    if button_changed || was_active != painter.active() {
+        // The timer observes this shared painter on its next tick, so monitor
+        // attachment does not restart the current pose, phase or CPU easing.
+        app.runner_native_applied_icon
+            .store(usize::MAX, Ordering::Relaxed);
+        let renderer = if painter.active() { "layer" } else { "image" };
+        log_menubar_event(&format!(
+            "runner renderer={renderer} screens={screens} geometry={:?} phase_us={} frame={}",
+            painter.attachment_geometry(),
+            app.runner_native_phase_us.load(Ordering::Relaxed),
+            app.runner_native_frame.load(Ordering::Relaxed),
+        ));
     }
 }
 
@@ -11750,6 +11841,55 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn native_runner_image_rejects_malformed_buffers_before_allocating_pixels() {
+        let expected = (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize;
+        for len in [0, expected - 1, expected + 1] {
+            let result =
+                make_runner_native_image_from_rgba(RunnerCharacter::Ghost, 7, &vec![255; len]);
+            let message = result
+                .expect_err("invalid RGBA length must fail")
+                .to_string();
+            assert!(message.contains("native cache frame 7"));
+            assert!(message.contains(&format!("expected {expected} rgba bytes, got {len}")));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_runner_image_preserves_eager_rgba_backing_and_template_geometry() {
+        use objc2_app_kit::{NSBitmapFormat, NSBitmapImageRep};
+
+        let mut rgba = vec![0; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize];
+        rgba[..12].copy_from_slice(&[241, 37, 19, 127, 17, 229, 61, 255, 53, 73, 233, 0]);
+        let image = make_runner_native_image_from_rgba(RunnerCharacter::Cat, 0, &rgba)
+            .expect("native RGBA image");
+        assert_eq!(image.size(), NSSize::new(27.0, 18.0));
+        assert!(image.isTemplate());
+        let representations = image.representations();
+        assert_eq!(representations.len(), 1);
+        let bitmap = representations
+            .objectAtIndex(0)
+            .downcast::<NSBitmapImageRep>()
+            .expect("eager bitmap representation");
+        assert_eq!(bitmap.pixelsWide(), RUNNER_PIXEL_WIDTH as isize);
+        assert_eq!(bitmap.pixelsHigh(), RUNNER_PIXEL_HEIGHT as isize);
+        assert_eq!(bitmap.size(), image.size());
+        assert_eq!(bitmap.bitsPerSample(), 8);
+        assert_eq!(bitmap.samplesPerPixel(), 4);
+        assert_eq!(bitmap.bitsPerPixel(), 32);
+        assert!(!bitmap.isPlanar());
+        assert_eq!(bitmap.bitmapFormat(), NSBitmapFormat::AlphaNonpremultiplied);
+        assert_eq!(bitmap.bytesPerRow(), (RUNNER_PIXEL_WIDTH * 4) as isize);
+        let data = bitmap.bitmapData();
+        assert!(!data.is_null());
+        // The representation owns this contiguous RGBA allocation for its
+        // lifetime, and the validated dimensions above bound the read.
+        let actual = unsafe { std::slice::from_raw_parts(data, rgba.len()) };
+        assert_eq!(actual, rgba);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn native_runner_timer_closure_only_indexes_prebuilt_native_images() {
         let body = extract_block_body(
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")),
@@ -11762,7 +11902,7 @@ mod tests {
             "runner_load_band_with_hysteresis(",
             "let index =",
             "images.get(index)",
-            "button.setImage(Some(&**image));",
+            "painter.borrow().paint(image);",
             "runner_native_next_delay(",
         ] {
             assert!(
@@ -12073,9 +12213,14 @@ mod tests {
                 assert!(width >= 12, "{character:?} is too narrow: {width}px");
                 assert!(height >= 24, "{character:?} is too short: {height}px");
             } else if character == RunnerCharacter::Pushup {
-                // An elevated plank needs vertical room as well as a long body.
+                // The top pose is a shallow plank, not a steep incline. Its
+                // contacts, rigid spine, fixed arm lengths and chest stroke
+                // are independently checked by the procedural pose tests.
                 assert!(width >= 30, "push-up is too narrow: {width}px");
-                assert!(height >= 20, "push-up plank is flattened: {height}px");
+                assert!(
+                    (16..=20).contains(&height),
+                    "push-up top pose lost its shallow proportions: {height}px"
+                );
             } else if matches!(character, RunnerCharacter::Penguin | RunnerCharacter::Robot) {
                 // Upright anatomy stays legible without decorative horizontal
                 // speed lines that previously inflated this width check.

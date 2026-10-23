@@ -347,42 +347,49 @@ pub(crate) fn ghost_source_cycle(cpu_pct: f32) -> [RgbaFrame; 8] {
     std::array::from_fn(|pose| {
         let solid = (255, 255, 255, 255);
         let load = cpu_pct.clamp(0.0, 100.0) / 100.0;
-        let amplitude = 1.0 + load * 1.2;
+        let amplitude = 1.0 + load * 1.6;
         let wave = [0.0, 0.7, 1.0, 0.7, 0.0, -0.7, -1.0, -0.7];
         let bob = [0.0, -0.6, -1.2, -0.6, 0.0, -0.6, -1.2, -0.6][pose];
         let mut canvas = RunnerCanvas::new();
         canvas.disc(Pt::new(25.0, 12.0 + bob), 8.0, solid);
         canvas.rect(17.0, 12.0 + bob, 33.0, 21.5 + bob, solid);
-        // Cloth ends in rounded folds. Pointed teeth made the silhouette look
-        // like a spiked jellyfish, especially after downsampling to 27×18.
-        let hem_floor = (0..3)
-            .map(|segment| wave[(pose + segment * 2) % 8])
-            .fold(f32::NEG_INFINITY, f32::max);
-        for segment in 0..3 {
-            let x = 19.0 + segment as f32 * 6.0;
-            let flutter = (wave[(pose + segment * 2) % 8] - hem_floor) * amplitude;
-            canvas.disc(
-                Pt::new(x + flutter * 0.25, 22.0 + bob + flutter),
-                2.6,
-                solid,
-            );
+        // One broad cloth panel, with two travelling folds joined to the
+        // belly. Separate hanging discs read as tentacles at menu-bar size.
+        let hem = |x: f32| {
+            let phase = (x - 17.0) * std::f32::consts::TAU / 8.0
+                - pose as f32 * std::f32::consts::FRAC_PI_4;
+            23.0 + bob + phase.cos() * (0.85 + load * 0.95)
+        };
+        for segment in 0..16 {
+            let left = 17.0 + segment as f32;
+            let right = left + 1.0;
+            let a = Pt::new(left, 20.0 + bob);
+            let b = Pt::new(right, 20.0 + bob);
+            let c = Pt::new(right, hem(right));
+            let d = Pt::new(left, hem(left));
+            canvas.triangle(a, b, c, solid);
+            canvas.triangle(a, c, d, solid);
         }
-        let hand_wave = wave[pose] * amplitude;
+        // Increased load lifts and opens these short sleeves, making effort
+        // readable after rasterization without lengthening them into tentacles.
+        let hand_wave = wave[pose] * amplitude * 0.65;
+        let sleeve_reach = load * 1.5;
         canvas.line(
-            Pt::new(18.0, 15.0 + bob),
-            Pt::new(13.0, 18.0 + bob + hand_wave),
-            3.0,
+            Pt::new(18.0, 15.2 + bob),
+            Pt::new(14.5 - sleeve_reach, 17.2 + bob + hand_wave),
+            3.7,
             solid,
         );
         canvas.line(
-            Pt::new(32.0, 15.0 + bob),
-            Pt::new(36.5, 17.0 + bob - hand_wave),
-            3.0,
+            Pt::new(32.0, 15.2 + bob),
+            Pt::new(35.0 + sleeve_reach, 16.8 + bob - hand_wave),
+            3.7,
             solid,
         );
-        canvas.erase_disc(Pt::new(24.5, 11.5 + bob), 1.2);
-        canvas.erase_disc(Pt::new(29.5, 11.5 + bob), 1.2);
-        canvas.erase_disc(Pt::new(27.5, 16.0 + bob), 1.4);
+        // Eye separation and cavity area survive the actual 27×18 tray scale.
+        canvas.erase_disc(Pt::new(24.3, 11.5 + bob), 1.5);
+        canvas.erase_disc(Pt::new(29.5, 11.5 + bob), 1.5);
+        canvas.erase_disc(Pt::new(27.5, 16.0 + bob), 1.2);
         canvas.finish()
     })
 }
@@ -511,13 +518,14 @@ struct PushupPose {
 }
 
 fn pushup_pose(cpu_pct: f32, frame: u8) -> PushupPose {
-    // Rotate a rigid toe-to-shoulder chain. Independent Y curves made the old
-    // character sag and stretch instead of lowering a straight plank.
-    const ANGLES: [f32; 8] = [33.4, 29.0, 21.5, 14.5, 12.0, 16.0, 24.0, 30.0];
-    let angle = ANGLES[usize::from(frame % FRAME_COUNT)];
+    // A shallow, rigid plank rotates around the planted toes. The chest
+    // lowers by about five source pixels, rather than tipping from a steep
+    // incline into a different exercise. Load changes exertion subtly while
+    // the shared runner clock remains responsible for repetition speed.
+    const LOWERING: [f32; 8] = [0.0, 0.15, 0.50, 0.85, 1.0, 0.75, 0.40, 0.10];
     let effort = cpu_pct.clamp(0.0, 100.0) / 100.0;
-    let depth = [0.0, -0.6, -2.1, -3.8, -4.5, -3.8, -2.1, -0.6][usize::from(frame % FRAME_COUNT)];
-    let angle = (angle + depth * effort).to_radians();
+    let lowering = LOWERING[usize::from(frame % FRAME_COUNT)];
+    let angle = (21.0 + effort - lowering * (9.0 + effort)).to_radians();
     let direction = Pt::new(angle.cos(), -angle.sin());
     let toe = Pt::new(3.8, 27.7);
     let on_spine = |distance: f32| {
@@ -534,8 +542,8 @@ fn pushup_pose(cpu_pct: f32, frame: u8) -> PushupPose {
     let dx = hand.x - shoulder.x;
     let dy = hand.y - shoulder.y;
     let distance = dx.hypot(dy);
-    let along = (9.15_f32.powi(2) - 9.35_f32.powi(2) + distance.powi(2)) / (2.0 * distance);
-    let bend = (9.15_f32.powi(2) - along.powi(2)).max(0.0).sqrt();
+    let along = (6.05_f32.powi(2) - 6.25_f32.powi(2) + distance.powi(2)) / (2.0 * distance);
+    let bend = (6.05_f32.powi(2) - along.powi(2)).max(0.0).sqrt();
     let elbow = Pt::new(
         shoulder.x + (dx * along - dy * bend) / distance,
         shoulder.y + (dy * along + dx * bend) / distance,
@@ -674,8 +682,8 @@ mod tests {
                 assert!((p.toe.x - 3.8).abs() < 0.01 && (p.toe.y - 27.7).abs() < 0.01);
                 assert!((p.hand.x - 36.0).abs() < 0.01 && (p.hand.y - 27.7).abs() < 0.01);
                 assert!((distance(p.toe, p.shoulder) - 32.0).abs() < 0.01);
-                assert!((distance(p.shoulder, p.elbow) - 9.15).abs() < 0.01);
-                assert!((distance(p.elbow, p.hand) - 9.35).abs() < 0.01);
+                assert!((distance(p.shoulder, p.elbow) - 6.05).abs() < 0.01);
+                assert!((distance(p.elbow, p.hand) - 6.25).abs() < 0.01);
                 for joint in [p.knee, p.hip] {
                     let area = (joint.x - p.toe.x) * (p.shoulder.y - p.toe.y)
                         - (joint.y - p.toe.y) * (p.shoulder.x - p.toe.x);
@@ -716,10 +724,10 @@ mod tests {
 
     #[test]
     fn pushup_top_pose_extends_the_arm_instead_of_holding_half_a_rep() {
-        let p = super::pushup_pose(0.0, 0);
+        let p = super::pushup_pose(100.0, 0);
         let upper = super::Pt::new(p.elbow.x - p.shoulder.x, p.elbow.y - p.shoulder.y);
         let lower = super::Pt::new(p.hand.x - p.elbow.x, p.hand.y - p.elbow.y);
-        let alignment = (upper.x * lower.x + upper.y * lower.y) / (9.15 * 9.35);
+        let alignment = (upper.x * lower.x + upper.y * lower.y) / (6.05 * 6.25);
         assert!(
             alignment > 0.98,
             "top pose arm is still bent: alignment={alignment}"
@@ -727,22 +735,22 @@ mod tests {
     }
 
     #[test]
-    fn pushup_has_a_raised_plank_and_a_visibly_lower_bottom() {
-        let top = super::make_pushup_runner_rgba(0.0, 0);
-        let bottom = super::make_pushup_runner_rgba(0.0, 4);
-        let top_bounds = crate::runner::measure_frame(&top).expect("top").bounds;
-        let low_bounds = crate::runner::measure_frame(&bottom)
-            .expect("bottom")
-            .bounds;
-        assert!(
-            top_bounds.min_y <= 8,
-            "plank is flattened at y={}",
-            top_bounds.min_y
-        );
-        assert!(
-            low_bounds.min_y >= top_bounds.min_y + 9,
-            "full body must visibly descend"
-        );
+    fn pushup_has_a_shallow_plank_and_a_controlled_chest_stroke() {
+        for cpu in [0.0, 30.0, 65.0, 100.0] {
+            let top = super::pushup_pose(cpu, 0);
+            let bottom = super::pushup_pose(cpu, 4);
+            let stroke = bottom.shoulder.y - top.shoulder.y;
+            assert!((4.0..=6.0).contains(&stroke), "chest stroke {stroke}");
+            for frame in 0..8 {
+                let p = super::pushup_pose(cpu, frame);
+                let angle = (p.toe.y - p.shoulder.y)
+                    .atan2(p.shoulder.x - p.toe.x)
+                    .to_degrees();
+                assert!((11.99..=22.01).contains(&angle), "inclined plank {angle}");
+                assert!(p.elbow.y < p.hand.y, "elbow folds below the floor");
+                assert!(p.elbow.x < p.hand.x, "elbow folds ahead of the wrist");
+            }
+        }
     }
 
     #[test]
@@ -793,6 +801,83 @@ mod tests {
                     }
                 }
                 assert!(visor_pixels >= 2, "robot pose {pose} at {cpu_pct}% loses its visible visor ({visor_pixels} dark pixels)");
+            }
+        }
+    }
+
+    // Area sampling models the loss of detail at the physical 27×18 tray
+    // footprint, rather than testing only the enlarged source artwork.
+    fn tray_alpha(frame: &[u8]) -> Vec<u8> {
+        let mut result = vec![0; 27 * 18];
+        for y in 0..18 {
+            for x in 0..27 {
+                let left = x as f32 * crate::runner::PIXEL_WIDTH as f32 / 27.0;
+                let right = (x + 1) as f32 * crate::runner::PIXEL_WIDTH as f32 / 27.0;
+                let top = y as f32 * crate::runner::PIXEL_HEIGHT as f32 / 18.0;
+                let bottom = (y + 1) as f32 * crate::runner::PIXEL_HEIGHT as f32 / 18.0;
+                let mut alpha = 0.0;
+                for sy in top.floor() as u32..bottom.ceil() as u32 {
+                    for sx in left.floor() as u32..right.ceil() as u32 {
+                        let area = (right.min(sx as f32 + 1.0) - left.max(sx as f32))
+                            * (bottom.min(sy as f32 + 1.0) - top.max(sy as f32));
+                        alpha += area
+                            * f32::from(
+                                frame[((sy * crate::runner::PIXEL_WIDTH + sx) * 4 + 3) as usize],
+                            );
+                    }
+                }
+                result[y * 27 + x] = (alpha / ((right - left) * (bottom - top))).round() as u8;
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn ghost_keeps_two_separate_eyes_at_the_actual_tray_footprint() {
+        for cpu in [0.0, 30.0, 65.0, 100.0] {
+            let cycle = crate::runner::assets::build_cycle(RunnerCharacter::Ghost, cpu)
+                .expect("ghost cycle");
+            for (pose, frame) in cycle.iter().enumerate() {
+                let tiny = tray_alpha(frame);
+                let has_two_eyes = (2..10).any(|y| {
+                    let mut cavities = 0;
+                    let mut inside_cavity = false;
+                    for x in 2..25 {
+                        let dark = tiny[y * 27 + x] < 150
+                            && tiny[(y - 2) * 27 + x] > 180
+                            && tiny[(y + 2) * 27 + x] > 180;
+                        if dark && !inside_cavity {
+                            cavities += 1;
+                        }
+                        inside_cavity = dark;
+                    }
+                    cavities >= 2
+                });
+                assert!(
+                    has_two_eyes,
+                    "ghost eyes merge or vanish at {cpu}%, pose {pose}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ghost_hem_remains_a_connected_sheet_instead_of_separate_tentacles() {
+        for cpu in [0.0, 100.0] {
+            for frame in super::ghost_source_cycle(cpu) {
+                // Across the whole belly the hem starts with continuous cloth.
+                // Each column terminates once, without a gap then a hanging disc.
+                for x in 18..33 {
+                    let mut entered_cloth = false;
+                    let mut left_cloth = false;
+                    for y in 18..28 {
+                        let solid =
+                            frame[((y * crate::runner::PIXEL_WIDTH + x) * 4 + 3) as usize] > 128;
+                        assert!(!(solid && left_cloth), "disconnected cloth at {x},{y}");
+                        left_cloth |= entered_cloth && !solid;
+                        entered_cloth |= solid;
+                    }
+                }
             }
         }
     }

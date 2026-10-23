@@ -42,6 +42,11 @@ It combines:
 | Integrity | Installed-app, GitHub release, offline local DMG, and complete release-directory verification for SHA-256, bundle id, Team ID, code signature, notarization, Gatekeeper, and bundled helper |
 | Windows | Native tray app plus real CPU, memory, disk, network, process, and battery metrics; firmware ACPI thermal zones are shown as system temperatures when available, while CPU-core temperature and fan access remain explicitly unsupported |
 
+Runner refinement is tracked against [measurable quality targets](docs/RUNNER_QUALITY_TARGETS.md),
+including tiny-scale legibility, shared CPU cadence and a reproducible native
+rendering benchmark. Synthetic measurements and local signing are reported
+separately from live performance, public release and OTA delivery.
+
 ## Repository Map
 
 - `packages/cli`: CLI (`peterfan`)
