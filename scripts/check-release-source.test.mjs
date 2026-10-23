@@ -147,7 +147,7 @@ const args = process.argv.slice(2);
 const e = process.env;
 if (args[0] === 'api') {
   if (e.TEST_API_FAIL) process.exit(1);
-  if (args[1] !== 'repos/example/PeterFan/commits/tags/v1.2.3') process.exit(2);
+  if (args[1] !== 'repos/example/PeterFan/commits/v1.2.3') process.exit(2);
   console.log(e.TEST_REMOTE_SHA);
 } else if (args[0] === 'release' && args[1] === 'view') {
   if (e.TEST_VIEW_FAIL) process.exit(1);
