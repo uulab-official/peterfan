@@ -21,8 +21,10 @@ local signed-app execution and public OTA remain separate acceptance levels.
 The previous Windows helper ran the downloaded installer, replaced files one by
 one and reported success when that script returned. The new helper is embedded
 in the trusted app. It stages a fixed allowlist, checks captured file hashes,
-waits only for processes from the target installation, retains a reverse rollback
-journal and backs up previous files until the replacement acknowledges startup.
+waits only for processes from the target installation and backs up previous files
+until the replacement acknowledges startup. The subsequent
+[interruption recovery pass](WINDOWS_UPDATE_RECOVERY.md) makes the journal durable
+and retains immutable snapshots for recovery on the next helper invocation.
 Existing shortcuts, registry integration and unrelated files are untouched.
 
 The shared readiness writer emits a private atomic JSON receipt only when tray
@@ -65,9 +67,10 @@ have a regression. Reports retain failed as well as successful runs.
 
 ## Remaining boundaries
 
-Handled I/O/startup errors have rollback; forced helper termination and power loss
-have no durable automatic resume protocol and can require manual recovery from
-retained backup files. No machine-wide sleep, network disruption, fan-control
+Handled I/O/startup errors have rollback. Windows now replays a validated durable
+journal on the next helper invocation; unattended boot recovery and real power-loss
+acceptance remain unverified. macOS forced interruption can still require manual
+recovery from retained backup files. No machine-wide sleep, network disruption, fan-control
 setup or privileged daemon replacement is forced during this pass. A local app
 health acknowledgement and a ten-minute observation do not establish six-hour
 stability, low-load energy targets, physical sleep/wake acceptance, a signed

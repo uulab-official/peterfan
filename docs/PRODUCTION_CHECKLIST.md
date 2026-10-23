@@ -10,6 +10,9 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Stage and recheck Windows payload hashes; restore previous files on handled
       copy/startup failure, preserve other installations and unrelated data, and
       bound CLI version inspection to ten seconds.
+- [x] Persist immutable Windows snapshots and a validated transaction journal;
+      recover interrupted work on the next helper invocation. Portable PowerShell
+      passes 20 replay, forced-termination, lifecycle and corruption cases.
 - [x] Serialize macOS helpers and preserve the separate recovery backup if bundle
       removal fails. Native contention/removal regressions failed without fixes.
 - [x] Local contributor gate: 505 Rust tests passed, 7 ignored; 69 Node tests
@@ -17,10 +20,12 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 - [x] Interval-based soak tool pins process identity, validates samples and
       configuration preservation, never stops an external PID and writes a
       structured result. Baseline installed build completed ten minutes.
-- [ ] Forced updater interruption/power-loss automatic recovery, extended
+- [ ] Unattended boot/power-loss recovery, macOS forced-interruption recovery, extended
       new-build soak, physical sleep/wake and public newer-version OTA adoption.
 
 See [failure cases, measurements and limits](UPDATE_RECOVERY_2026-10-23.md).
+Windows retry behavior and native verification boundaries are documented in
+[interrupted update recovery](WINDOWS_UPDATE_RECOVERY.md).
 
 ## Configuration and resume bug hardening — 2026-10-23
 

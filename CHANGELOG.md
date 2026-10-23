@@ -6,6 +6,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — Open-source contributor experience
 
+- Keep Windows update snapshots and a validated on-disk transaction journal.
+  Replace existing files atomically and recover interrupted apply/rollback work
+  on the next helper invocation, without a downloaded payload or network access.
 - Require a per-launch readiness acknowledgement after tray and WebView startup
   before completing an update. Match launch ID, PID, version and live process.
 - Stage verified Windows files and restore previous files after copy/startup
