@@ -105,7 +105,9 @@ candidate `d6fc3886cfaf1d7b74e9e726349ea770c74a785e44e8d1ae3eadbbca2c7a0e72`.
 Sixteen shared source/dependency hashes matched; the probe changed only the
 layer eligibility policy. Raw local evidence is
 `target/quality-goal/layer-abba.json` and `probe-layer-provenance.json`.
-Subsequent diagnostics and test-only changes are verified separately.
+Later diagnostics, cleanup, Reduce Motion handling and ghost artwork changes
+are verified separately. The measured Cat pixels and animated clock are
+unchanged; the final installed candidate also has its own live measurement.
 
 Global WindowServer CPU medians were 30.577% and 18.126%. These include unrelated
 desktop work and varying host load, so they do not isolate compositor cost or
@@ -118,3 +120,31 @@ mask fails the visibility regression. Canonical-frame browser QA covers all
 twenty characters in light/dark themes and all eight poses of the revised three.
 Native menu-bar screenshot capture was unavailable; browser imagery and owned
 offscreen rendering are not a physical display capture.
+
+## Installed candidate
+
+Product source `1f97687` was built for arm64, Developer ID signed, accepted by
+Apple notarization (`0ed35b07-ec1c-4b83-846f-ccf33cf3a3fd`), stapled and Gatekeeper
+accepted. The installed app/helper match the signed candidate; the prior app
+and configuration are backed up. Configuration bytes are unchanged and one
+normal native process runs. Runtime logs confirm nonempty 27×18 layer geometry,
+WebView readiness and Random rotation. The automatic release check started
+20.157 seconds after startup, succeeded and scheduled another check 21,600
+seconds later. Public latest remains v1.32.2; this does not prove delivery of a
+newer published update.
+
+Three live 30-second samples with saved Random settings measured app CPU at
+1.366%, 1.533% and 1.599% of one core (mean **1.4993%**). Host CPU samples averaged
+29.3754% across all cores. Before measuring, low load was defined as host mean
+CPU at or below 20%, so the separate low-load acceptance target remains
+**unverified** despite the observed app CPU being below 3%. No other processes
+or user settings were changed to manufacture an idle environment. Raw evidence:
+`target/quality-goal/live-installed.json` and `runtime-verification.json`.
+
+The full local contributor gate passed 463 Rust tests (7 intentionally ignored)
+and 59 Node tests, with native/Windows-target Clippy, Rust 1.88 checks, generated
+runner comparisons and documentation. All 43 release/mock/package smoke checks
+passed. CLI doctor reports healthy metrics, no issues and thermal readiness;
+privileged fan-control readiness remains `needs_setup` and is outside this
+rendering pass. Energy, multi-monitor hardware behavior, extended soak and
+same-machine RunCat comparison remain unverified.

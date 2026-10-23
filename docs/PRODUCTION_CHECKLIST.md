@@ -22,9 +22,14 @@ by an automated test, a release-script check, or a recorded real-Mac result.
       passed. Native Rust 1.99 Clippy and Rust 1.88 all-target/all-feature check
       passed. Native desktop capture was unavailable; preview screenshots and
       offscreen framework tests are distinct evidence.
-- [ ] Measure the signed installed candidate at live low load (<=3% app CPU).
-- [ ] Verify local signing, notarization, installation and automatic checks for
-      this renderer candidate, preserving settings and a recoverable backup.
+- [ ] Live low-load target (<=3% app CPU, host mean <=20%) remains unverified:
+      three installed 30-second samples averaged 1.4993% app CPU, but host CPU
+      averaged 29.3754%, so these qualify as ordinary-workload evidence only.
+- [x] Product source `1f97687` is Developer ID signed, notarized, stapled and
+      Gatekeeper accepted. Installed app/helper hashes match; one native process,
+      unchanged settings, backup, layer geometry and Random rotation are observed.
+      Automatic discovery succeeded 20.157 seconds after startup and scheduled
+      another check exactly 21,600 seconds after success.
 - [ ] Same-machine RunCat comparison, multi-monitor hardware/energy measurement,
       extended soak and public release/newer-version OTA.
 
