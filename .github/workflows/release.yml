@@ -425,7 +425,7 @@ jobs:
           sha256sum "${release_files[@]}" | sort -k2 | tee checksums.txt
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.release-notes.outputs.version }}
           name: "PeterFan ${{ needs.release-notes.outputs.version }}"
