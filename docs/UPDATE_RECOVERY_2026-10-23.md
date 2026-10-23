@@ -103,3 +103,13 @@ unchanged settings. Actual native logs show startup readiness acknowledged after
 matched the installed app and the receipt was mode 0600. The app was then restarted
 normally to verify history restoration and fresh update discovery. App/helper
 hashes still match the trusted candidate. The privileged daemon was not replaced.
+
+The first native Windows run caught a real PowerShell/.NET interop defect:
+`File.Replace` received an empty backup path from ordinary `$null`. Passing an
+explicit `NullString.Value` preserves the intended null argument. The actual
+embedded writer now has a create/replace/cleanup runtime probe, with locked-file
+preservation additionally exercised on Windows. The defect was reproduced and
+fixed in isolated portable PowerShell; the complete Windows suite is rerun before
+main integration. This change affects Windows-only embedded source. Rebuilding
+the macOS workspace produced byte-identical menu-bar and daemon executables, so
+the already-notarized local app remains the same tested artifact.

@@ -36,7 +36,11 @@ function Write-Result([string]$status, [string]$message) {
         updated_at_unix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() } | ConvertTo-Json -Compress
     try {
         [IO.File]::WriteAllText($temporary, $json, [Text.UTF8Encoding]::new($false))
-        if ([IO.File]::Exists($result)) { [IO.File]::Replace($temporary, $result, $null) }
+        if ([IO.File]::Exists($result)) {
+            # PowerShell converts an ordinary $null string argument to "".
+            # File.Replace requires a genuine null for its optional backup.
+            [IO.File]::Replace($temporary, $result, [Management.Automation.Language.NullString]::Value)
+        }
         else { [IO.File]::Move($temporary, $result) }
     } finally {
         if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }

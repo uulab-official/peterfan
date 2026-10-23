@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Helper,
-    [Parameter(Mandatory = $true)][string]$Root
+    [Parameter(Mandatory = $true)][string]$Root,
+    [switch]$ReceiptOnly
 )
 
 # Native CI fixture only. No real application paths, registry, shortcuts, user
@@ -10,6 +11,48 @@ $ErrorActionPreference = 'Stop'
 if (Test-Path -LiteralPath $Root) { throw "Fixture path already exists: $Root" }
 [IO.Directory]::CreateDirectory($Root) | Out-Null
 $Root = [IO.Path]::GetFullPath($Root)
+# Exercise the actual embedded writer before launching any fixture process.
+# This also runs on portable PowerShell, catching .NET null-string binding
+# differences that a syntax-only parser cannot detect.
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($Helper, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count) { throw "Helper parse errors: $parseErrors" }
+$writer = $ast.Find({ param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Write-Result'
+}, $true)
+if ($null -eq $writer) { throw 'Embedded Write-Result function is missing.' }
+. ([ScriptBlock]::Create($writer.Extent.Text))
+$transaction = [Guid]::NewGuid().ToString('N')
+$spec = @{ version = '9.9.9' }
+$result = Join-Path $Root 'receipt-probe\update-result.json'
+Write-Result 'pending' 'receipt probe pending'
+Write-Result 'installed' 'receipt probe installed'
+$receipt = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
+if ($receipt.status -ne 'installed' -or $receipt.version -ne '9.9.9') {
+    throw 'Atomic receipt replacement did not publish the new contents.'
+}
+$probeChecks = 'create, replace, and cleanup'
+if ($env:OS -eq 'Windows_NT') {
+    $before = [IO.File]::ReadAllText($result)
+    $heldReceipt = [IO.File]::Open($result, [IO.FileMode]::Open,
+        [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $rejected = $false
+    try {
+        try { Write-Result 'failed' 'must preserve the locked receipt' }
+        catch { $rejected = $true }
+        if (-not $rejected -or [IO.File]::ReadAllText($result) -cne $before) {
+            throw 'A rejected atomic replacement did not preserve the existing receipt.'
+        }
+    } finally { $heldReceipt.Dispose() }
+    $probeChecks += ', plus locked-file preservation'
+}
+if (@(Get-ChildItem -LiteralPath (Split-Path -Parent $result) -Filter '*.tmp-*').Count -ne 0) {
+    throw 'Receipt writer left a temporary file.'
+}
+Write-Host "PASS atomic update receipt $probeChecks"
+if ($ReceiptOnly) { exit 0 }
+
 $fixture = Join-Path $Root 'version-check.exe'
 Add-Type -OutputAssembly $fixture -OutputType ConsoleApplication -TypeDefinition @'
 using System;
