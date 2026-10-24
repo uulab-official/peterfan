@@ -1,6 +1,7 @@
 # CPU menu-bar widget
 
-Status: implemented in source; not included in the installed v1.32.7 release.
+Status: included in v1.32.8 source. See [release and installed acceptance](CPU_WIDGET_RELEASE_2026-10-24.md)
+for publication, actual OTA and the new final-build observation.
 
 In macOS Settings, enable **CPU widget** to add a separate menu-bar item alongside
 the runner. Choose **Bar**, **History** or **Number**. Graphs can also show a numeric
@@ -35,7 +36,7 @@ CPU-widget path. Windows hides these Mac-only controls.
   320/390px widths, light/dark appearance and keyboard toggling. Exported pages
   use fixture data and simulated acknowledgements; they do not perform disk saves.
 
-The concurrent six-hour observation covers the unchanged installed **v1.32.7**
+The completed six-hour observation covers the unchanged installed **v1.32.7**
 app and helper. It does not validate this new native feature. Native release,
 signed-artifact OTA adoption and a final-build long run remain separate gates.
 

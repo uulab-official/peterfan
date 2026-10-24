@@ -52,11 +52,13 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — 공개 배포 v1.32.7 (2026-10-24 확인).** 아래 표는 현재 소스의 구현 상태입니다. 최신 버전은 [Releases](https://github.com/uulab-official/peterfan/releases/latest)에서 확인하세요:
+**베타 — 소스 v1.32.8 (2026-10-24).** 아래 표는 현재 소스의 구현 상태입니다. 최신 버전은 [Releases](https://github.com/uulab-official/peterfan/releases/latest)에서 확인하세요:
 
 [장시간 안전성·공개 OTA 실물 검증 기록](docs/LONG_RUN_SAFETY_2026-10-24.md)에서
-v1.32.7의 한 대 검증 결과를 확인할 수 있습니다. 최종 설치본의 6시간 관측은
-진행 중이며 다기종·물리적 잠자기 검증은 남아 있습니다.
+v1.32.7의 한 대 6시간 검증 통과 결과를 확인할 수 있습니다. v1.32.8에는
+러너와 별도로 켜는 CPU 바·히스토리·숫자 위젯이 포함됩니다. 실제 배포·OTA와
+새 설치본 검증은 [별도 기록](docs/CPU_WIDGET_RELEASE_2026-10-24.md)으로 구분합니다.
+다기종·물리적 잠자기 검증은 남아 있습니다.
 
 | 영역 | 상태 |
 | --- | --- |

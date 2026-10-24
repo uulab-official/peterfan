@@ -48,7 +48,9 @@ rendering benchmark. Synthetic measurements and local signing are reported
 separately from live performance, public release and OTA delivery.
 
 [Long-run safety and native OTA acceptance](docs/LONG_RUN_SAFETY_2026-10-24.md)
-records the v1.32.7 one-Mac results; final six-hour observation is in progress.
+records the completed v1.32.7 one-Mac six-hour result. The optional CPU widget
+is included in v1.32.8 source; its release and new installed-build acceptance
+are tracked separately in [CPU widget release acceptance](docs/CPU_WIDGET_RELEASE_2026-10-24.md).
 
 ## Repository Map
 
@@ -96,8 +98,8 @@ login, or a license key.
 ## Install
 
 Published downloads and the current source branch may differ. The latest
-published release verified on 2026-10-24 is **v1.32.7**, matching this source
-version. Check [Releases](https://github.com/uulab-official/peterfan/releases/latest)
+published release verified on 2026-10-24 is **v1.32.7**; this source prepares
+v1.32.8. Check [Releases](https://github.com/uulab-official/peterfan/releases/latest)
 for published assets and [the production checklist](docs/PRODUCTION_CHECKLIST.md)
 for the evidence behind each version.
 
