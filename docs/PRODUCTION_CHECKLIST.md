@@ -5,15 +5,21 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 The first section summarizes the current release; lower sections retain earlier
 evidence and gaps at those checkpoints.
 
-## Long-run safety candidate — 2026-10-24
+## Long-run safety release and active observation — 2026-10-24
 
 - [x] Final v1.32.7 contributor gate: 536 Rust tests plus the explicit canonical
       rendering test, 70 Node tests and 12 executable dashboard checks passed.
-- [ ] Native/Windows/Linux CI and final signed release verification.
-- [ ] Final installed app and corrected resident helper, physical fan response,
-      preserved settings and automatic update discovery.
+- [x] Public latest release identified as `v1.32.7`; all four assets and three
+      manifest hashes match provider digests. Source main CI passes all six jobs;
+      the native Windows release workflow and signed/notarized Mac artifacts pass.
+- [x] Public OTA v1.32.6 -> v1.32.7 completes with fresh native UI readiness;
+      installed app bytes/signature/notarization match. The secure helper upgrades
+      to v1.32.7 without another approval. Both fans reach at least 95% maximum
+      in 9.22 seconds and return to confirmed automatic mode; settings are unchanged.
 - [ ] Six-hour observation of the same final app and daemon, with CPU, RSS,
       thread counts, process identity, health and scheduled update-check evidence.
+      Started 2026-10-24 10:55:13 KST; expected finish 16:55:13 KST. This item
+      stays unchecked until the complete valid observation and final receipt pass.
 - [ ] Physical sleep/wake, forced macOS interruption and additional Mac models.
       Beta status is retained; elapsed uptime is not an observation result.
 
