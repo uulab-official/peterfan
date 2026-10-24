@@ -9,6 +9,7 @@ import csv
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -63,6 +64,32 @@ def healthy_cache(version):
     return cache
 
 
+def app_observer_environment(plan):
+    return {**os.environ, 'PETERFAN_SOAK_PID': str(plan['app_pid']),
+            'PETERFAN_MENUBAR_BIN': plan['app_executable'],
+            'PETERFAN_SOAK_SECONDS': str(plan['requested_seconds']),
+            'PETERFAN_SOAK_SAMPLE_SECONDS': str(plan['sample_interval_seconds']),
+            'PETERFAN_SOAK_LOG_DIR': str(ROOT / 'observer'),
+            'PETERFAN_SOAK_MAX_AVG_CPU': str(LIMITS['average_cpu_percent']),
+            'PETERFAN_SOAK_MAX_PEAK_CPU': str(LIMITS['peak_cpu_percent']),
+            'PETERFAN_SOAK_MAX_RSS_KB': str(LIMITS['peak_rss_kb']),
+            'PETERFAN_SOAK_MAX_RSS_GROWTH_KB': str(LIMITS['rss_growth_kb']),
+            'PETERFAN_SOAK_MAX_THREAD_GROWTH': str(LIMITS['thread_growth'])}
+
+
+def validate_app_summary(summary, duration):
+    if (not summary['passed'] or summary['requested_seconds'] != duration
+            or not math.isfinite(summary['measured_seconds'])
+            or summary['measured_seconds'] < duration or not summary['config_preserved']):
+        raise RuntimeError('app terminal acceptance failed')
+    if summary['thresholds'] != LIMITS:
+        raise RuntimeError('app observer acceptance limits differ from production limits')
+    for metric, limit in LIMITS.items():
+        value = summary['metrics'][metric]
+        if not math.isfinite(value) or value > limit:
+            raise RuntimeError('app threshold exceeded or invalid: ' + metric)
+
+
 def main():
     os.umask(0o077)
     plan = json.loads((ROOT / 'launch.json').read_text())
@@ -106,11 +133,7 @@ def main():
                                       '-t', str(duration + 180)], stdin=subprocess.DEVNULL,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         app_log = (ROOT / 'app-observer.log').open('wb')
-        env = {**os.environ, 'PETERFAN_SOAK_PID': str(plan['app_pid']),
-               'PETERFAN_MENUBAR_BIN': plan['app_executable'],
-               'PETERFAN_SOAK_SECONDS': str(duration),
-               'PETERFAN_SOAK_SAMPLE_SECONDS': str(interval),
-               'PETERFAN_SOAK_LOG_DIR': str(ROOT / 'observer')}
+        env = app_observer_environment(plan)
         child = subprocess.Popen([sys.executable, str(ROOT / 'observer-source.py')], env=env,
                                  stdin=subprocess.DEVNULL, stdout=app_log,
                                  stderr=subprocess.STDOUT, close_fds=True)
@@ -175,8 +198,7 @@ def main():
             raise RuntimeError('missing/ambiguous app terminal receipt')
         app_summary = json.loads(receipts[0].read_text())
         result['app_summary'] = str(receipts[0])
-        if not app_summary['passed'] or app_summary['measured_seconds'] < duration or not app_summary['config_preserved']:
-            raise RuntimeError('app terminal acceptance failed')
+        validate_app_summary(app_summary, duration)
         for field, path in [('app_sha256', plan['app_executable']), ('daemon_sha256', '/usr/local/bin/peterfand'), ('config_sha256', plan['config_path'])]:
             if sha(path) != plan[field]:
                 raise RuntimeError(field + ' changed')

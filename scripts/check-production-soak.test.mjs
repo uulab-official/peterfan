@@ -49,3 +49,31 @@ for case in [valid,*cases]:
         else: assert case==valid and result==valid
     assert calls==['temps'],calls
 `));
+
+test('production app acceptance rejects relaxed child thresholds and independently checks every metric', () => python(`
+import copy
+valid={'passed':True,'requested_seconds':21600,'measured_seconds':21600.2,'config_preserved':True,'thresholds':dict(m.LIMITS),'metrics':{key:0 for key in m.LIMITS}}
+valid['metrics']['peak_rss_kb']=1024
+m.validate_app_summary(valid,21600)
+for field in m.LIMITS:
+    for kind in ['relaxed','over_limit','nan','missing']:
+        bad=copy.deepcopy(valid)
+        if kind=='relaxed': bad['thresholds'][field]=m.LIMITS[field]+100
+        if kind=='over_limit': bad['metrics'][field]=m.LIMITS[field]+1
+        if kind=='nan': bad['metrics'][field]=float('nan')
+        if kind=='missing': del bad['metrics'][field]
+        try: m.validate_app_summary(bad,21600)
+        except (RuntimeError,KeyError): pass
+        else: raise AssertionError((field,kind,bad))
+`));
+
+test('production app environment pins all five acceptance limits despite inherited overrides', () => python(`
+plan={'app_pid':123,'app_executable':'/Applications/PeterFan.app/Contents/MacOS/PeterFan','requested_seconds':21600,'sample_interval_seconds':10}
+with patch.dict(m.os.environ,{'PETERFAN_SOAK_MAX_AVG_CPU':'100','PETERFAN_SOAK_MAX_PEAK_CPU':'100','PETERFAN_SOAK_MAX_RSS_KB':'999999999','PETERFAN_SOAK_MAX_RSS_GROWTH_KB':'999999999','PETERFAN_SOAK_MAX_THREAD_GROWTH':'999999999'}):
+    env=m.app_observer_environment(plan)
+assert env['PETERFAN_SOAK_MAX_AVG_CPU']=='8'
+assert env['PETERFAN_SOAK_MAX_PEAK_CPU']=='35'
+assert env['PETERFAN_SOAK_MAX_RSS_KB']=='262144'
+assert env['PETERFAN_SOAK_MAX_RSS_GROWTH_KB']=='65536'
+assert env['PETERFAN_SOAK_MAX_THREAD_GROWTH']=='16'
+`));

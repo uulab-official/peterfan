@@ -124,10 +124,17 @@ terminal receipts through fsynced temporary files and atomic replacement, and
 record handled SIGTERM/SIGINT as failure. Publication failures force a failed
 result even if the bounded retry persists it. Tests cover sample/CSV/terminal
 ENOSPC, partial writes, reservation failure, directory-sync failure and actual
-termination of an owned test observer. All **81 Node tests** pass locally,
+termination of an owned test observer. All **83 Node tests** pass locally,
 including the unchanged existing behavior tests. Documentation and repository
 policy checks also pass. These are QA-only changes; the public v1.32.7 tag,
 artifacts and installed app/helper have not been replaced.
+
+Review also found that inherited `PETERFAN_SOAK_MAX_*` variables could relax the
+child observer's limits. New launches pin all five values and independently
+validate every app metric against the production limits, including rejection of
+non-finite or missing metrics. The first launchd-owned attempt had no inherited overrides in a read-only
+process-environment audit. Final thresholds and raw measurements must always
+be independently checked at acceptance.
 
 `start-installed-soak.py` freezes the observer sources and verified baseline in
 a private directory under `~/Library/Application Support/PeterFan QA/`. It
@@ -148,23 +155,24 @@ indexed by `target/production-six-hour-preflight/launchd-calibration.json`.
 Only this worktree's reproducible Rust compiler caches were removed to recover
 space; source, release distributions and runtime evidence were retained.
 
-## Replacement six-hour observation — in progress
+## Disk-pressure guard acceptance and replacement observation
 
-A fresh full measurement of the same final installed app and resident helper
-started at approximately **2026-10-24 13:17:22 KST**; expected completion is
-approximately **19:17:22 KST**. The observation source is frozen from QA commit
-`c9e5c70`; the installed release source remains the immutable v1.32.7 tag above.
-The new job is `kr.co.uulab.peterfan.qa-soak.20261024t041721354368z`.
-
-Frozen scripts, identity/hash baseline, live ten-second CSV, helper-health
-samples, launchd status and final receipts are retained locally in
+The first launchd-owned full attempt started at **13:17:22 KST**. Disk space
+fell below 512 MiB at approximately **13:23:08 KST**. The new guard correctly
+stopped only its own observers, retained failed combined/app receipts and
+launchd exit code 1, and preserved the external app/helper and configuration.
+It recorded 33 helper samples and 336.45 seconds; this is **not** six-hour
+acceptance. Evidence remains in
 `~/Library/Application Support/PeterFan QA/production-six-hour-20261024T041721354368Z/`.
-The active pointer remains
-`target/production-six-hour-preflight/active-run-path.txt`. An hourly thread
-follow-up stays quiet on unchanged progress and reports completion, failure or
-required action. Scheduled automatic discovery must succeed inside this fresh
-window, with native-log/history agreement and a new 21,600-second deadline.
+A simultaneous short calibration also failed on the same storage guard.
 
-The six-hour gate remains unchecked until the entire replacement observation
-and terminal receipts pass. Physical sleep/wake, forced Mac installation
-interruption, Windows runtime soak and other Mac models remain unverified.
+Additional space was recovered by removing only this worktree's reproducible
+Windows cross-compile debug cache. A new full attempt will be recorded here
+once the final frozen observer is launched with adequate free space. The active
+pointer is `target/production-six-hour-preflight/active-run-path.txt`; failed
+windows are preserved and never combined. The six-hour gate remains unchecked.
+
+Scheduled automatic discovery must succeed inside the eventual fresh window,
+with native-log/history agreement and a new 21,600-second deadline. Physical
+sleep/wake, forced Mac installation interruption, Windows runtime soak and
+other Mac models remain unverified.

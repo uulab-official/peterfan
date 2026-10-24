@@ -18,12 +18,12 @@ evidence and gaps at those checkpoints.
       in 9.22 seconds and return to confirmed automatic mode; settings are unchanged.
 - [ ] Six-hour observation of the same final app and daemon, with CPU, RSS,
       thread counts, process identity, health and scheduled update-check evidence.
-      First observation was interrupted without terminal receipts amid confirmed
-      host disk exhaustion; it does not pass. Fresh full measurement started at
-      approximately 2026-10-24 13:17:22 KST; expected finish 19:17:22 KST. This
-      stays unchecked until the complete valid observation and final receipts pass.
+      First observation was interrupted without receipts amid host disk exhaustion.
+      The 13:17 KST replacement correctly failed the new low-space guard at 13:23,
+      retaining failed receipts/exit code 1. Neither window passes or is combined.
+      This stays unchecked until a full valid observation and final receipts pass.
 - [x] Repair observer storage/signal handling with real fsynced reserves, atomic
-      failed receipts, disk-space guards and temporary launchd ownership. All 81
+      failed receipts, disk-space guards and temporary launchd ownership. All 83
       Node tests pass locally; installed app/helper calibration passes and an
       observer-only SIGTERM correctly retains failed receipts/exit code 1.
       App/helper identities, configuration and the primary checkout are preserved.
