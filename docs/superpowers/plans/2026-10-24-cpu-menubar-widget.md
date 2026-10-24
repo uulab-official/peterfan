@@ -81,5 +81,5 @@ Actions: `OpenDashboard`, `Enabled(bool)`, `Style(CpuWidgetStyle)`, `Percentage(
 - [x] Export light/dark CPU raster/settings previews; exercise keyboard, save failure and all style choices.
 - [x] Run scoped then appropriate complete Rust/Node checks with a disk-space guard; no installed app launch/replacement.
 - [x] Obtain an independent read-only code review and fix actionable findings.
-- [ ] Commit, publish/attach PR, verify exact-head CI and integrate remote main within existing authorization.
-- [ ] Update the existing heartbeat with source/runtime evidence boundaries; retain the v1.32.7 final-run acceptance gate.
+- [x] Commit, publish/attach PR, verify exact-head CI and integrate remote main within existing authorization. PR18 merged as `67a48a3`; PR head and main each passed all six CI jobs.
+- [x] Update the existing heartbeat with source/runtime evidence boundaries; retain the v1.32.7 final-run acceptance gate. Installed v1.32.7 subsequently passed its own six-hour window; the unreleased CPU widget requires separate native-release/runtime acceptance.

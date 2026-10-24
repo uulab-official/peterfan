@@ -171,17 +171,68 @@ Windows cross-compile debug cache. A final strict-limit 30-second calibration
 passes with app/helper receipts and launchd exit code 0; the app's default
 8%/35% CPU limits and every reported metric are independently verified.
 
-A new full observation starts at **2026-10-24 13:25:23 KST**, with expected
-completion after **19:25:23 KST**. Frozen QA source is commit `6924ba4`; installed
+A new full observation started at **2026-10-24 13:25:23 KST** and completed at
+**19:25:23 KST**. Frozen QA source is commit `6924ba4`; installed
 app/helper source remains immutable v1.32.7. Evidence is under
 `~/Library/Application Support/PeterFan QA/production-six-hour-20261024T042522812585Z/`.
 Its temporary job is `kr.co.uulab.peterfan.qa-soak.20261024t042522812585z`.
 The active pointer is `target/production-six-hour-preflight/active-run-path.txt`;
-failed windows are preserved and never combined. The six-hour gate remains
-unchecked until the entire new window passes. The hourly follow-up remains
-active and stays quiet on healthy unchanged progress.
+failed windows are preserved and never combined. The complete replacement
+window passes the six-hour gate, as detailed below.
 
-Scheduled automatic discovery must succeed inside the eventual fresh window,
-with native-log/history agreement and a new 21,600-second deadline. Physical
+Scheduled automatic discovery is verified below through native-log/history
+agreement and a new 21,600-second deadline. Physical
 sleep/wake, forced Mac installation interruption, Windows runtime soak and
 other Mac models remain unverified.
+
+## Completed six-hour acceptance
+
+Both final receipts report `passed: true`, empty errors, the original five
+production limits and more than 21,600 measured seconds. The temporary launchd
+job completed with **exit code 0**. Its final state was saved before removing
+only that job; the installed app and daemon were not stopped or replaced.
+
+| Measurement | Installed app | Resident daemon | Limit |
+| --- | ---: | ---: | ---: |
+| Measured seconds | 21,600.137238 | 21,600.184873 | >=21,600 |
+| Samples | 2,134 | 2,132 | Complete interval coverage |
+| Largest interval/gap, seconds | 11.602788 | 11.730272 | <=32 |
+| Average CPU, % of one core | 1.412630 | 0.467774 | <=8 |
+| Peak interval CPU, % of one core | 3.783408 | 0.879806 | <=35 |
+| Peak RSS, KiB | 78,496 | 9,936 | <=262,144 |
+| Final RSS growth, KiB | 7,856 | 208 | <=65,536 |
+| Peak thread growth | 1 | 0 | <=16 |
+
+Growth uses the terminal receipt's initial sampler snapshot, taken before the
+first CSV row. Independent full-CSV checks also find RSS peak-to-minimum spans
+of 14,080/288 KiB and thread spans of 4/1 (app/daemon). All numeric values are
+finite, sample counts and elapsed intervals reconcile with the receipts, and
+weighted CPU averages and peaks agree within CSV rounding. Earlier interrupted
+or failed runs contribute no time or samples to this result.
+
+All **2,132** daemon health records retain fresh sensors, automatic mode,
+matching desired/applied revision **3**, empty manual targets/overrides and
+zero cumulative sensor, fan-write and fan-readback failures. No failsafe, native
+error or related app/daemon crash report appears in the observed window. The
+same app PID **278** and helper PID **324**, start identities, executable hashes,
+configuration bytes and frozen script hashes remain intact. The primary dirty
+checkout and its local `main` ref are also unchanged.
+
+Natural scheduled update discovery starts at **16:53:56 KST** and succeeds at
+**16:53:57 KST**, reporting stable/current with no installation. Native log and
+persisted history agree on attempt `1792828436`, success `1792828437` and next
+check `1792850037` (**22:53:57 KST**, exactly 21,600 seconds later). No forced
+check, app restart or setting change was used to produce this evidence.
+
+The [structured summary and evidence digests](evidence/2026-10-24-six-hour-v1.32.7.json)
+index both receipts, complete CSVs, health records, frozen sources and saved
+launchd/update evidence. Original files remain in the private run directory
+above; the independent final audit is also retained as
+`target/production-six-hour-preflight/final-acceptance-audit.json`.
+
+This acceptance covers immutable installed **v1.32.7 / `4a9114f9` on one
+Mac17,7**, under normal automatic fan control. The CPU-widget changes in
+[PR18](https://github.com/uulab-official/peterfan/pull/18) remain unreleased source
+and are not covered by this run. Physical sleep/wake, forced installation or
+power-loss recovery, sustained commanded fan writes, other Mac models and a
+Windows runtime soak remain separate gates. Beta status is retained.

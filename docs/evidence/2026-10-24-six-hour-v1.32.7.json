@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "result": "passed",
+  "installed_version": "1.32.7",
+  "release_source": "4a9114f9b74ae54aa028df9ca2bb5499f9fa87de",
+  "frozen_qa_source": "6924ba472d9f221f542396f2cff706c6bf0a7bf6",
+  "hardware_model": "Mac17,7",
+  "scope": "one Mac, unchanged installed app/helper, normal Auto mode; no forced heat, sleep or interruption",
+  "started_at_utc": "2026-10-24T04:25:22.979664+00:00",
+  "finished_at_utc": "2026-10-24T10:25:23.307226+00:00",
+  "requested_seconds": 21600,
+  "limits": {
+    "average_cpu_percent": 8,
+    "peak_cpu_percent": 35,
+    "peak_rss_kb": 262144,
+    "rss_growth_kb": 65536,
+    "thread_growth": 16
+  },
+  "launchd_exit_code": 0,
+  "processes": {
+    "daemon": {
+      "samples": 2132,
+      "measured_seconds": 21600.184872625003,
+      "max_gap_seconds": 11.73027199999342,
+      "metrics": {
+        "average_cpu_percent": 0.4677737741404846,
+        "peak_cpu_percent": 0.879806103739811,
+        "peak_rss_kb": 9936,
+        "rss_growth_kb": 208,
+        "thread_growth": 0
+      },
+      "raw_rss_span_kb": 288.0,
+      "raw_thread_span": 1.0
+    },
+    "app": {
+      "samples": 2134,
+      "measured_seconds": 21600.137237999996,
+      "max_gap_seconds": 11.602787999999236,
+      "metrics": {
+        "average_cpu_percent": 1.4126299135877742,
+        "peak_cpu_percent": 3.7834075798796767,
+        "peak_rss_kb": 78496,
+        "rss_growth_kb": 7856,
+        "thread_growth": 1
+      },
+      "raw_rss_span_kb": 14080.0,
+      "raw_thread_span": 4.0
+    }
+  },
+  "all_control_health_samples": 2132,
+  "sensor_fan_cumulative_errors": 0,
+  "automatic_control_revision": 3,
+  "manual_targets_empty": true,
+  "overrides_empty": true,
+  "config_preserved": true,
+  "pinned_processes_and_executable_hashes_preserved": true,
+  "primary_checkout_preserved": true,
+  "native_run_errors": [],
+  "related_new_crash_reports": [],
+  "automatic_update": {
+    "last_attempt_unix": 1792828436,
+    "last_success_unix": 1792828437,
+    "next_check_unix": 1792850037,
+    "native_log_unix_ms": 1792828437330,
+    "persisted_history": {
+      "schema_version": 1,
+      "channel": "stable",
+      "last_attempt_unix": 1792828436,
+      "last_success_unix": 1792828437,
+      "check_error": null
+    }
+  },
+  "growth_semantics": "terminal metrics use final RSS minus the initial sampler snapshot, and peak threads minus that initial snapshot; the initial snapshot precedes the first CSV row",
+  "raw_evidence_directory": "~/Library/Application Support/PeterFan QA/production-six-hour-20261024T042522812585Z/",
+  "evidence_sha256": {
+    "launch.json": "2d8dd4f873f26f26cdefbda2fce86b5d7928a7aae48512886c2bcfcc05ac1154",
+    "processes.json": "57d7cc7579d6b770f9ec33187a269d878da6b447cfd453c788959c6099d75a13",
+    "combined-summary.json": "b6c30edec04e8c2d7d77a2ed3f4082135dbd7c908ac1909c96a937fb49071105",
+    "observer/menubar-uojk502k/summary.json": "1a460f6d5eefaf34760213036fdac4676927188fdce42928639655043b0181ab",
+    "daemon-samples.csv": "4782aff74adb230c912885b007ac4ffa47868819ff8f69c4df03cf05125205b7",
+    "observer/menubar-uojk502k/samples.csv": "5008d4434d11a848ab83f6abbf9bf2809b5ed6668624a128a0fc4fba262db012",
+    "daemon-health.jsonl": "074589512d4405ae7cd12b6672032e413b6642bc500bd58a4255da00ad367e74",
+    "observer-source.py": "19da67abdcdb6a0478cb669452b4f16f3ee41db340394677945a5ab759a98587",
+    "supervisor.py": "212feabf99c297e7a7c721e6716032da78253df216356c870e4679e262a77bf1",
+    "launcher-source.py": "ea7056ec88161bd5064b9ec4061d0dee6092648810d269230210405b1d03b790",
+    "final-launchd-exit.txt": "e881ca501341a01629849ffa027cea5f67cda37732c036701e7ea1971748c607",
+    "final-acceptance-audit.json": "1c2914ba74ab6e5a962f58ae34d6b075db6af24d2acababf8d6534fc6d8e7c87",
+    "update-history-final.json": "61267cb01bc93a87fca9de38c165c6d3127e6db2ceb12010a52fd522852c292b",
+    "native-log-window.txt": "e1d41f781d05a430f47daa83195187a0789ec1a18a8e4bc9a9cb9f710497be72",
+    "update-history-baseline.json": "6a07ea21ac6e77c3537de165cd845711ae7b9d9958dae23eab28212d820f73ae"
+  },
+  "not_covered": [
+    "unreleased CPU widget source merged in PR18",
+    "physical sleep/wake",
+    "forced macOS update interruption or power loss",
+    "sustained commanded fan writes",
+    "other Mac models",
+    "Windows runtime soak"
+  ]
+}
