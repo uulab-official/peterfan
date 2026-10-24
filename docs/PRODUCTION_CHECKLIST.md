@@ -5,7 +5,7 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 The first section summarizes the current release; lower sections retain earlier
 evidence and gaps at those checkpoints.
 
-## Long-run safety release and active observation — 2026-10-24
+## Long-run safety release and completed acceptance — 2026-10-24
 
 - [x] Final v1.32.7 contributor gate: 536 Rust tests plus the explicit canonical
       rendering test, 70 Node tests and 12 executable dashboard checks passed.
@@ -16,13 +16,19 @@ evidence and gaps at those checkpoints.
       installed app bytes/signature/notarization match. The secure helper upgrades
       to v1.32.7 without another approval. Both fans reach at least 95% maximum
       in 9.22 seconds and return to confirmed automatic mode; settings are unchanged.
-- [ ] Six-hour observation of the same final app and daemon, with CPU, RSS,
+- [x] Six-hour observation of the same final app and daemon, with CPU, RSS,
       thread counts, process identity, health and scheduled update-check evidence.
       First observation was interrupted without receipts amid host disk exhaustion.
       The 13:17 KST replacement correctly failed the new low-space guard at 13:23,
       retaining failed receipts/exit code 1. Neither window passes or is combined.
-      Final strict-limit observer started fresh at 13:25:23 KST; expected finish
-      after 19:25:23 KST. This stays unchecked until the full window/receipts pass.
+      Final strict-limit window passes at 13:25:23–19:25:23 KST: app 2,134
+      samples/21,600.137 seconds; daemon 2,132/21,600.185. Both receipts pass,
+      launchd exits 0 and largest gaps are 11.603/11.730 seconds. App CPU
+      average/peak is 1.413/3.783% of one core; daemon 0.468/0.880%. Peak RSS
+      is 78,496/9,936 KiB; final RSS growth 7,856/208 KiB; thread growth 1/0.
+      All limits, identities/hashes/settings, complete raw samples, zero health
+      errors and natural 16:53:57 update success/history/next six-hour deadline
+      are independently checked. No earlier window is aggregated.
 - [x] Repair observer storage/signal handling with real fsynced reserves, atomic
       failed receipts, disk-space guards and temporary launchd ownership. All 83
       Node tests pass locally; installed app/helper calibration passes and an
@@ -30,6 +36,9 @@ evidence and gaps at those checkpoints.
       App/helper identities, configuration and the primary checkout are preserved.
 - [ ] Physical sleep/wake, forced macOS interruption and additional Mac models.
       Beta status is retained; elapsed uptime is not an observation result.
+- [x] Optional CPU-widget source is merged through PR18 with six passing CI jobs.
+      It remains unreleased and is not covered by the installed v1.32.7 soak.
+      Native release/OTA adoption and a new final-build long run are separate gates.
 
 See [failure paths and acceptance protocol](LONG_RUN_SAFETY_2026-10-24.md).
 
