@@ -99,17 +99,72 @@ fan-write or fan-readback failures. Fresh automatic update discovery succeeds on
 the final installed app, with persisted success history and a 21,600-second next
 check. These results apply to this one Mac.
 
-## Six-hour observation — in progress
+## Interrupted first observation and observer repair
 
-The final installed app and resident helper began fresh measurement at
-**2026-10-24 10:55:13 KST**; expected finish is **16:55:13 KST**. Both observers are
-running detached, ten-second samples are present and initial helper health is
-valid. Neither measured process will be replaced during this window.
+The first run started at **2026-10-24 10:55:13 KST**. Its helper CSV stops at
+12:38:40 KST (618 samples, 6,206.86 seconds); the independent app observer stops
+at 12:49:51 KST (685 samples, 6,878.21 seconds). Both observers disappeared
+without terminal receipts. The original run is **inconclusive and does not pass**
+the six-hour gate; neither duration will be added to the replacement run.
 
-Frozen scripts, SHA-256/identity baseline, live CSV, control-health samples and
-final receipts are retained locally in
-`target/production-six-hour-20261024T015512Z/`. An hourly thread follow-up stays
-quiet on unchanged progress and reports completion, failure or required action.
-Six hours have not yet elapsed; no long-run pass or final metrics are claimed.
-Physical sleep/wake, forced Mac installation interruption, Windows runtime soak
-and other Mac models remain unverified.
+The host had approximately 306 MiB free when investigated. OS services report
+`ENOSPC` / “No space left on device” from 12:39 KST. The precise observer exit
+exception/signal was not retained, so the evidence establishes concurrent disk
+exhaustion rather than a conclusively captured observer exit cause. The app and
+helper retain their pinned PIDs, start identities and executable hashes, with
+healthy automatic control, matching applied revisions, empty manual targets and
+zero cumulative sensor/fan errors. No corresponding app/helper crash report is
+present after observation start. Configuration and the primary dirty checkout
+remain unchanged. Original CSVs and the separate `interruption-audit.json` remain
+in `target/production-six-hour-20261024T015512Z/`; no final observer receipt was
+invented for this interrupted window.
+
+The QA tools now reserve 256 KiB of real fsynced storage per observer, write
+terminal receipts through fsynced temporary files and atomic replacement, and
+record handled SIGTERM/SIGINT as failure. Publication failures force a failed
+result even if the bounded retry persists it. Tests cover sample/CSV/terminal
+ENOSPC, partial writes, reservation failure, directory-sync failure and actual
+termination of an owned test observer. All **81 Node tests** pass locally,
+including the unchanged existing behavior tests. Documentation and repository
+policy checks also pass. These are QA-only changes; the public v1.32.7 tag,
+artifacts and installed app/helper have not been replaced.
+
+`start-installed-soak.py` freezes the observer sources and verified baseline in
+a private directory under `~/Library/Application Support/PeterFan QA/`. It
+registers a temporary per-user launchd job, so macOS retains its exit status.
+There is no KeepAlive restart and no persistent LaunchAgents entry. The
+supervisor refuses startup below 1 GiB free and fails the run below 512 MiB,
+terminating only its owned observer/sleep-assertion children. Original application
+processes and user settings are never signalled or restored. A reserve cannot
+guarantee a receipt after SIGKILL, device failure or competing writes; missing
+receipts still invalidate acceptance.
+
+Two 30-second installed-app/helper calibrations produced passing combined and
+app receipts with launchd exit code 0. A separate owned supervisor was sent
+SIGTERM: combined and app receipts both fail, launchd records exit code 1, and
+both owned children stop. The external app/helper and configuration remain
+unchanged. These short calibrations are **not** six-hour acceptance. Evidence is
+indexed by `target/production-six-hour-preflight/launchd-calibration.json`.
+Only this worktree's reproducible Rust compiler caches were removed to recover
+space; source, release distributions and runtime evidence were retained.
+
+## Replacement six-hour observation — in progress
+
+A fresh full measurement of the same final installed app and resident helper
+started at approximately **2026-10-24 13:17:22 KST**; expected completion is
+approximately **19:17:22 KST**. The observation source is frozen from QA commit
+`c9e5c70`; the installed release source remains the immutable v1.32.7 tag above.
+The new job is `kr.co.uulab.peterfan.qa-soak.20261024t041721354368z`.
+
+Frozen scripts, identity/hash baseline, live ten-second CSV, helper-health
+samples, launchd status and final receipts are retained locally in
+`~/Library/Application Support/PeterFan QA/production-six-hour-20261024T041721354368Z/`.
+The active pointer remains
+`target/production-six-hour-preflight/active-run-path.txt`. An hourly thread
+follow-up stays quiet on unchanged progress and reports completion, failure or
+required action. Scheduled automatic discovery must succeed inside this fresh
+window, with native-log/history agreement and a new 21,600-second deadline.
+
+The six-hour gate remains unchecked until the entire replacement observation
+and terminal receipts pass. Physical sleep/wake, forced Mac installation
+interruption, Windows runtime soak and other Mac models remain unverified.
