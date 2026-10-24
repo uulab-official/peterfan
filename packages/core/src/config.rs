@@ -219,6 +219,60 @@ impl MenubarDisplay {
     }
 }
 
+/// Appearance of the independent CPU menu-bar widget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CpuWidgetStyle {
+    #[default]
+    Bar,
+    History,
+    Number,
+}
+
+impl CpuWidgetStyle {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "bar" => Some(Self::Bar),
+            "history" => Some(Self::History),
+            "number" => Some(Self::Number),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Bar => "bar",
+            Self::History => "history",
+            Self::Number => "number",
+        }
+    }
+}
+
+/// A separately enabled CPU item; existing installations keep their layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CpuWidgetConfig {
+    pub enabled: bool,
+    pub style: CpuWidgetStyle,
+    pub show_percentage: bool,
+}
+
+impl Default for CpuWidgetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            style: CpuWidgetStyle::Bar,
+            show_percentage: true,
+        }
+    }
+}
+
+impl CpuWidgetConfig {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Animated character used by the CPU-responsive menu-bar runner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -446,6 +500,7 @@ pub struct MenubarConfig {
     /// Show the compact per-core CPU activity graph in the overview header.
     #[serde(default = "default_show_cpu_core_graph")]
     pub show_cpu_core_graph: bool,
+    pub cpu_widget: CpuWidgetConfig,
     /// User picked "Don't Ask Again" on the first-run fan-control setup
     /// prompt — stop offering it automatically (still reachable via the
     /// right-click menu).
@@ -470,6 +525,7 @@ impl Default for MenubarConfig {
             temperature_source: TemperatureSource::default(),
             update_channel: UpdateChannel::default(),
             show_cpu_core_graph: default_show_cpu_core_graph(),
+            cpu_widget: CpuWidgetConfig::default(),
             setup_prompt_dismissed: false,
             daemon_update_prompt_dismissed_for: None,
             daemon_update_prompt_snoozed_until_unix: None,
@@ -487,6 +543,7 @@ impl MenubarConfig {
             && self.temperature_source == TemperatureSource::CoreAverage
             && self.update_channel == UpdateChannel::Stable
             && self.show_cpu_core_graph
+            && self.cpu_widget.is_default()
             && !self.setup_prompt_dismissed
             && self.daemon_update_prompt_dismissed_for.is_none()
             && self.daemon_update_prompt_snoozed_until_unix.is_none()
@@ -797,6 +854,34 @@ mod tests {
         assert_eq!(back.notifications.temperature_c, Some(82.0));
         assert!(back.notifications.fan_failures);
         assert!(!back.notifications.updates);
+    }
+
+    #[test]
+    fn cpu_widget_preferences_survive_legacy_partial_and_full_roundtrip() {
+        let legacy = Config::from_toml("[menubar]\ncharacter = \"fox\"\n").unwrap();
+        let value = serde_json::to_value(&legacy.menubar).unwrap();
+        assert_eq!(value["cpu_widget"]["enabled"], false);
+        assert_eq!(value["cpu_widget"]["style"], "bar");
+        assert_eq!(value["cpu_widget"]["show_percentage"], true);
+        for style in ["bar", "history", "number"] {
+            let original = format!("interval_secs = 7\n[menubar]\ncharacter = \"fox\"\n[menubar.cpu_widget]\nenabled = true\nstyle = \"{style}\"\nshow_percentage = false\n");
+            let cfg = Config::from_toml(&original).unwrap();
+            let saved = cfg.to_toml();
+            assert!(saved.contains("[menubar.cpu_widget]"));
+            let restored = Config::from_toml(&saved).unwrap();
+            let value = serde_json::to_value(&restored.menubar).unwrap();
+            assert_eq!(value["cpu_widget"]["enabled"], true);
+            assert_eq!(value["cpu_widget"]["style"], style);
+            assert_eq!(value["cpu_widget"]["show_percentage"], false);
+            assert_eq!(restored.interval_secs, 7);
+            assert_eq!(restored.menubar.character, RunnerCharacter::Fox);
+        }
+        assert!(!Config::default().to_toml().contains("[menubar]"));
+        let partial = Config::from_toml("[menubar.cpu_widget]\nenabled = true\n").unwrap();
+        assert_eq!(
+            serde_json::to_value(partial.menubar).unwrap()["cpu_widget"]["style"],
+            "bar"
+        );
     }
 
     #[test]

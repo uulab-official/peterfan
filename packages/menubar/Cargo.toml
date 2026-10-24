@@ -31,7 +31,7 @@ libc = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAccessibility", "NSAppearance", "NSBitmapImageRep", "NSButton", "NSColor", "NSGraphics", "NSImage", "NSImageRep", "NSEvent", "NSScreen", "NSStatusItem", "NSView", "NSWindow", "NSWorkspace", "block2", "objc2-core-graphics", "objc2-quartz-core"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAccessibility", "NSAppearance", "NSBitmapImageRep", "NSButton", "NSColor", "NSGraphics", "NSFont", "NSFontDescriptor", "objc2-core-foundation", "NSImage", "NSImageRep", "NSEvent", "NSScreen", "NSStatusItem", "NSView", "NSWindow", "NSWorkspace", "block2", "objc2-core-graphics", "objc2-quartz-core"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["CALayer", "CATransaction", "objc2-core-graphics", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSData", "NSDate", "NSGeometry", "NSRunLoop", "NSString", "NSTimer", "block2"] }
 

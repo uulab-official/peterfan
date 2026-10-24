@@ -1,6 +1,6 @@
 # CPU Menu-Bar Widget Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add the approved optional CPU bar/history/number widget alongside the runner.
 
@@ -42,10 +42,10 @@ objc2/AppKit, embedded HTML/JavaScript and existing Node behavior tests.
 `CpuWidgetHistory::default/push/current/render_rgba`, `WIDGET_PIXEL_WIDTH=64`,
 `WIDGET_PIXEL_HEIGHT=36`, and `title(config, Option<f32>) -> String`.
 
-- [ ] Write default/legacy/partial/round-trip tests and raster/history edge tests.
-- [ ] Confirm failing behavior before implementation; root coordinates Cargo tests.
-- [ ] Implement the minimal types, 60-sample optional-value history and original template raster.
-- [ ] Verify 0/50/100%, invalid readings, bounded history and stable title formatting.
+- [x] Write default/legacy/partial/round-trip tests and raster/history edge tests.
+- [x] Confirm failing behavior before implementation; root coordinates Cargo tests.
+- [x] Implement the minimal types, 60-sample optional-value history and original template raster.
+- [x] Verify 0/50/100%, invalid readings, bounded history and stable title formatting.
 
 ### Task 2: Independent native status item
 
@@ -58,28 +58,28 @@ creates an initially hidden owned item. Methods: `tray() -> &TrayIcon`,
 `menu_action(&MenuId) -> Option<CpuWidgetAction>`.
 Actions: `OpenDashboard`, `Enabled(bool)`, `Style(CpuWidgetStyle)`, `Percentage(bool)`.
 
-- [ ] Test width/image-position contracts and native bitmap dimensions/alpha.
-- [ ] Build native template images with owned storage, fixed size, digit font and cached updates.
-- [ ] Add localized right-click settings without any fan-control action.
-- [ ] Verify creation/drop/disabled behavior and retain menu IDs for main-loop dispatch.
+- [x] Test width/image-position contracts and native bitmap dimensions/alpha.
+- [x] Build native template images with owned storage, fixed size, digit font and cached updates.
+- [x] Add localized right-click settings without any fan-control action.
+- [x] Verify creation/drop/disabled behavior and retain menu IDs for main-loop dispatch.
 
 ### Task 3: Main-loop/settings integration
 
 **Files:** Modify `packages/menubar/src/main.rs`; create `scripts/check-cpu-widget.test.mjs`.
 
-- [ ] Write failing JS regressions for real IPC routing, unavailable platform, delayed/stale save results and retry.
-- [ ] Add App fields/lifecycle, reuse one-second CPU samples and preflight a hidden item before enabling-save.
-- [ ] Add typed `SettingsOperation::CpuWidget` acknowledgements; apply preferences only after successful persistence.
-- [ ] Add Settings controls/live preview; native click/menu routing uses the correct tray ID and rectangle.
-- [ ] Route existing `cpu-core-graph:` messages through both WebView bridges and test the regression.
-- [ ] Verify saved preference reapplication after config import without modifying installed config during QA.
+- [x] Write failing JS regressions for real IPC routing, unavailable platform, delayed/stale save results and retry.
+- [x] Add App fields/lifecycle, reuse one-second CPU samples and preflight a hidden item before enabling-save.
+- [x] Add typed `SettingsOperation::CpuWidget` acknowledgements; apply preferences only after successful persistence.
+- [x] Add Settings controls/live preview; native click/menu routing uses the correct tray ID and rectangle.
+- [x] Route existing `cpu-core-graph:` messages through both WebView bridges and test the regression.
+- [x] Verify saved preference reapplication after config import without modifying installed config during QA.
 
 ### Task 4: Reviewable validation and integration
 
 **Files:** QA preview/export and feature documentation appropriate to existing tooling.
 
-- [ ] Export light/dark CPU raster/settings previews; exercise keyboard, save failure and all style choices.
-- [ ] Run scoped then appropriate complete Rust/Node checks with a disk-space guard; no installed app launch/replacement.
-- [ ] Obtain an independent read-only code review and fix actionable findings.
+- [x] Export light/dark CPU raster/settings previews; exercise keyboard, save failure and all style choices.
+- [x] Run scoped then appropriate complete Rust/Node checks with a disk-space guard; no installed app launch/replacement.
+- [x] Obtain an independent read-only code review and fix actionable findings.
 - [ ] Commit, publish/attach PR, verify exact-head CI and integrate remote main within existing authorization.
 - [ ] Update the existing heartbeat with source/runtime evidence boundaries; retain the v1.32.7 final-run acceptance gate.
