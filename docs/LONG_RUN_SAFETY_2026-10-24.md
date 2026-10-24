@@ -99,17 +99,89 @@ fan-write or fan-readback failures. Fresh automatic update discovery succeeds on
 the final installed app, with persisted success history and a 21,600-second next
 check. These results apply to this one Mac.
 
-## Six-hour observation — in progress
+## Interrupted first observation and observer repair
 
-The final installed app and resident helper began fresh measurement at
-**2026-10-24 10:55:13 KST**; expected finish is **16:55:13 KST**. Both observers are
-running detached, ten-second samples are present and initial helper health is
-valid. Neither measured process will be replaced during this window.
+The first run started at **2026-10-24 10:55:13 KST**. Its helper CSV stops at
+12:38:40 KST (618 samples, 6,206.86 seconds); the independent app observer stops
+at 12:49:51 KST (685 samples, 6,878.21 seconds). Both observers disappeared
+without terminal receipts. The original run is **inconclusive and does not pass**
+the six-hour gate; neither duration will be added to the replacement run.
 
-Frozen scripts, SHA-256/identity baseline, live CSV, control-health samples and
-final receipts are retained locally in
-`target/production-six-hour-20261024T015512Z/`. An hourly thread follow-up stays
-quiet on unchanged progress and reports completion, failure or required action.
-Six hours have not yet elapsed; no long-run pass or final metrics are claimed.
-Physical sleep/wake, forced Mac installation interruption, Windows runtime soak
-and other Mac models remain unverified.
+The host had approximately 306 MiB free when investigated. OS services report
+`ENOSPC` / “No space left on device” from 12:39 KST. The precise observer exit
+exception/signal was not retained, so the evidence establishes concurrent disk
+exhaustion rather than a conclusively captured observer exit cause. The app and
+helper retain their pinned PIDs, start identities and executable hashes, with
+healthy automatic control, matching applied revisions, empty manual targets and
+zero cumulative sensor/fan errors. No corresponding app/helper crash report is
+present after observation start. Configuration and the primary dirty checkout
+remain unchanged. Original CSVs and the separate `interruption-audit.json` remain
+in `target/production-six-hour-20261024T015512Z/`; no final observer receipt was
+invented for this interrupted window.
+
+The QA tools now reserve 256 KiB of real fsynced storage per observer, write
+terminal receipts through fsynced temporary files and atomic replacement, and
+record handled SIGTERM/SIGINT as failure. Publication failures force a failed
+result even if the bounded retry persists it. Tests cover sample/CSV/terminal
+ENOSPC, partial writes, reservation failure, directory-sync failure and actual
+termination of an owned test observer. All **83 Node tests** pass locally,
+including the unchanged existing behavior tests. Documentation and repository
+policy checks also pass. These are QA-only changes; the public v1.32.7 tag,
+artifacts and installed app/helper have not been replaced.
+
+Review also found that inherited `PETERFAN_SOAK_MAX_*` variables could relax the
+child observer's limits. New launches pin all five values and independently
+validate every app metric against the production limits, including rejection of
+non-finite or missing metrics. The first launchd-owned attempt had no inherited overrides in a read-only
+process-environment audit. Final thresholds and raw measurements must always
+be independently checked at acceptance.
+
+`start-installed-soak.py` freezes the observer sources and verified baseline in
+a private directory under `~/Library/Application Support/PeterFan QA/`. It
+registers a temporary per-user launchd job, so macOS retains its exit status.
+There is no KeepAlive restart and no persistent LaunchAgents entry. The
+supervisor refuses startup below 1 GiB free and fails the run below 512 MiB,
+terminating only its owned observer/sleep-assertion children. Original application
+processes and user settings are never signalled or restored. A reserve cannot
+guarantee a receipt after SIGKILL, device failure or competing writes; missing
+receipts still invalidate acceptance.
+
+Two 30-second installed-app/helper calibrations produced passing combined and
+app receipts with launchd exit code 0. A separate owned supervisor was sent
+SIGTERM: combined and app receipts both fail, launchd records exit code 1, and
+both owned children stop. The external app/helper and configuration remain
+unchanged. These short calibrations are **not** six-hour acceptance. Evidence is
+indexed by `target/production-six-hour-preflight/launchd-calibration.json`.
+Only this worktree's reproducible Rust compiler caches were removed to recover
+space; source, release distributions and runtime evidence were retained.
+
+## Disk-pressure guard acceptance and replacement observation
+
+The first launchd-owned full attempt started at **13:17:22 KST**. Disk space
+fell below 512 MiB at approximately **13:23:08 KST**. The new guard correctly
+stopped only its own observers, retained failed combined/app receipts and
+launchd exit code 1, and preserved the external app/helper and configuration.
+It recorded 33 helper samples and 336.45 seconds; this is **not** six-hour
+acceptance. Evidence remains in
+`~/Library/Application Support/PeterFan QA/production-six-hour-20261024T041721354368Z/`.
+A simultaneous short calibration also failed on the same storage guard.
+
+Additional space was recovered by removing only this worktree's reproducible
+Windows cross-compile debug cache. A final strict-limit 30-second calibration
+passes with app/helper receipts and launchd exit code 0; the app's default
+8%/35% CPU limits and every reported metric are independently verified.
+
+A new full observation starts at **2026-10-24 13:25:23 KST**, with expected
+completion after **19:25:23 KST**. Frozen QA source is commit `6924ba4`; installed
+app/helper source remains immutable v1.32.7. Evidence is under
+`~/Library/Application Support/PeterFan QA/production-six-hour-20261024T042522812585Z/`.
+Its temporary job is `kr.co.uulab.peterfan.qa-soak.20261024t042522812585z`.
+The active pointer is `target/production-six-hour-preflight/active-run-path.txt`;
+failed windows are preserved and never combined. The six-hour gate remains
+unchecked until the entire new window passes. The hourly follow-up remains
+active and stays quiet on healthy unchanged progress.
+
+Scheduled automatic discovery must succeed inside the eventual fresh window,
+with native-log/history agreement and a new 21,600-second deadline. Physical
+sleep/wake, forced Mac installation interruption, Windows runtime soak and
+other Mac models remain unverified.

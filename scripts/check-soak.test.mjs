@@ -138,3 +138,247 @@ with tempfile.TemporaryDirectory() as d:
     assert receipt['config_preserved'] and not receipt['owned_process']
     assert continuous.call_count==2
 `));
+
+test('soak releases real reserved space to retain failed sample and CSV ENOSPC receipts', () => python(`
+import errno
+for fault in ['sample','csv']:
+    with tempfile.TemporaryDirectory() as d:
+        settings=m.Settings.from_env({'PETERFAN_SOAK_PID':'123','PETERFAN_SOAK_SECONDS':'30','PETERFAN_SOAK_LOG_DIR':d})
+        identity=m.Identity('/Applications/PeterFan.app/Contents/MacOS/PeterFan','start')
+        sampler=Mock(); sampler.identity.return_value=identity
+        original={'exists':True,'sha256':'unchanged'}
+        disk={'full':False,'released':False,'reserve_seen':False,'samples':0}
+        real_unlink=Path.unlink; real_write=Path.write_text; real_replace=m.os.replace; real_writer=m.csv.writer
+        def exhausted():
+            reserves=list(Path(d).glob('*/.terminal-reserve-*'))
+            disk['reserve_seen']=len(reserves)==1 and 65536 <= reserves[0].stat().st_size <= 1048576
+            if reserves and hasattr(reserves[0].stat(),'st_blocks'):
+                assert reserves[0].stat().st_blocks*512 >= reserves[0].stat().st_size
+            disk['full']=True
+            raise OSError(errno.ENOSPC,'injected full volume')
+        def snapshot(_identity):
+            disk['samples']+=1
+            if fault=='sample' and disk['samples']==2: exhausted()
+            return m.Snapshot((disk['samples']-1)*10,1.,2048,2)
+        sampler.snapshot.side_effect=snapshot
+        class Writer:
+            def __init__(self,*args,**kwargs): self.inner=real_writer(*args,**kwargs)
+            def writerow(self,row):
+                if fault=='csv' and row[0]!='elapsed_seconds': exhausted()
+                return self.inner.writerow(row)
+        def unlink(path,*args,**kwargs):
+            result=real_unlink(path,*args,**kwargs)
+            if Path(path).name.startswith('.terminal-reserve-'):
+                disk['released']=True; disk['full']=False
+            return result
+        def write(path,*args,**kwargs):
+            if disk['full']: raise OSError(errno.ENOSPC,'no space for terminal receipt')
+            return real_write(path,*args,**kwargs)
+        def replace(source,destination,*args,**kwargs):
+            if disk['full']: raise OSError(errno.ENOSPC,'no space for terminal receipt')
+            return real_replace(source,destination,*args,**kwargs)
+        with patch.object(m,'PsSampler',return_value=sampler), patch.object(m.os,'getloadavg',return_value=(0.,0.,0.),create=True), patch.object(m.time,'sleep'), patch.object(m,'config_fingerprint',return_value=original), patch.object(m.csv,'writer',Writer), patch.object(Path,'unlink',unlink), patch.object(Path,'write_text',write), patch.object(m.os,'replace',side_effect=replace), patch.object(m.subprocess,'Popen',side_effect=AssertionError('external PID must never launch')):
+            status=m.run(settings)
+        receipt=m.json.loads(next(Path(d).glob('*/summary.json')).read_text())
+        assert status==1 and not receipt['passed'],receipt
+        assert disk['reserve_seen'] and disk['released'],disk
+        assert receipt['config_preserved'] and not receipt['owned_process'],receipt
+        assert any('full volume' in error for error in receipt['errors']),receipt
+        assert not list(Path(d).glob('*/.terminal-reserve-*'))
+`));
+
+test('soak retries terminal ENOSPC as a failed durable receipt and never reports PASS', () => python(`
+import errno, io
+for persistent in [False,True]:
+    with tempfile.TemporaryDirectory() as d:
+        settings=m.Settings.from_env({'PETERFAN_SOAK_PID':'123','PETERFAN_SOAK_SECONDS':'30','PETERFAN_SOAK_LOG_DIR':d})
+        sampler=Mock(); sampler.identity.return_value=m.Identity('/Applications/PeterFan.app/Contents/MacOS/PeterFan','start')
+        sampler.snapshot.side_effect=[m.Snapshot(t,1.,2048,2) for t in [0,10,20,30]]
+        original={'exists':False,'sha256':None}
+        attempts=[0]; real_write=Path.write_text; real_replace=m.os.replace
+        def failure():
+            attempts[0]+=1
+            if persistent or attempts[0]==1: raise OSError(errno.ENOSPC,'injected terminal ENOSPC')
+        def write(path,*args,**kwargs):
+            if path.name=='summary.json': failure()
+            return real_write(path,*args,**kwargs)
+        def replace(source,destination,*args,**kwargs):
+            if Path(destination).name=='summary.json': failure()
+            return real_replace(source,destination,*args,**kwargs)
+        stderr=io.StringIO(); stdout=io.StringIO()
+        with patch.object(m,'PsSampler',return_value=sampler), patch.object(m.os,'getloadavg',return_value=(0.,0.,0.),create=True), patch.object(m.time,'sleep'), patch.object(m,'config_fingerprint',return_value=original), patch.object(Path,'write_text',write), patch.object(m.os,'replace',side_effect=replace), patch.object(m.sys,'stderr',stderr), patch.object(m.sys,'stdout',stdout), patch.object(m.subprocess,'Popen',side_effect=AssertionError('external PID must never launch')):
+            status=m.run(settings)
+        assert status==1 and not stdout.getvalue().startswith('PASS'),stdout.getvalue()
+        receipts=list(Path(d).glob('*/summary.json'))
+        if not persistent:
+            assert len(receipts)==1
+            receipt=m.json.loads(receipts[0].read_text())
+            assert not receipt['passed'] and receipt['config_preserved'],receipt
+            assert any('terminal' in error for error in receipt['errors']),receipt
+        else:
+            assert len(stderr.getvalue()) <= 4096 and 'terminal' in stderr.getvalue(),stderr.getvalue()
+            assert not receipts or not m.json.loads(receipts[0].read_text())['passed']
+        assert 1 <= attempts[0] <= 2,attempts
+        assert not list(Path(d).glob('*/.terminal-reserve-*'))
+`));
+
+test('soak reserves and fsyncs emergency bytes before sampling and fails closed if reservation fails', () => python(`
+import errno
+with tempfile.TemporaryDirectory() as d:
+    settings=m.Settings.from_env({'PETERFAN_SOAK_PID':'123','PETERFAN_SOAK_SECONDS':'30','PETERFAN_SOAK_LOG_DIR':d})
+    sampler=Mock(); sampler.identity.return_value=m.Identity('/Applications/PeterFan.app/Contents/MacOS/PeterFan','start')
+    sampler.snapshot.side_effect=[m.Snapshot(t,1.,2048,2) for t in [0,10,20,30]]
+    original={'exists':False,'sha256':None}; real_sync=m.os.fsync; synced=[0]
+    def sync(descriptor):
+        synced[0]+=1
+        if synced[0]==1: raise OSError(errno.ENOSPC,'injected reserve fsync failure')
+        return real_sync(descriptor)
+    with patch.object(m,'PsSampler',return_value=sampler), patch.object(m.os,'getloadavg',return_value=(0.,0.,0.),create=True), patch.object(m.time,'sleep'), patch.object(m,'config_fingerprint',return_value=original), patch.object(m.os,'fsync',side_effect=sync), patch.object(m.subprocess,'Popen',side_effect=AssertionError('external PID must never launch')):
+        status=m.run(settings)
+    sampler.snapshot.assert_not_called()
+    receipt=m.json.loads(next(Path(d).glob('*/summary.json')).read_text())
+    assert status==1 and not receipt['passed'] and receipt['config_preserved'],receipt
+    assert any('reserve fsync failure' in error for error in receipt['errors']),receipt
+    assert not list(Path(d).glob('*/.terminal-reserve-*'))
+`));
+
+test('soak records scoped SIGTERM and SIGINT failures and restores previous handlers', () => python(`
+for signum in [m.signal.SIGTERM,m.signal.SIGINT]:
+    with tempfile.TemporaryDirectory() as d:
+        settings=m.Settings.from_env({'PETERFAN_SOAK_PID':'123','PETERFAN_SOAK_SECONDS':'30','PETERFAN_SOAK_LOG_DIR':d})
+        previous={sig:m.signal.getsignal(sig) for sig in [m.signal.SIGTERM,m.signal.SIGINT]}
+        sampler=Mock(); sampler.identity.return_value=m.Identity('/Applications/PeterFan.app/Contents/MacOS/PeterFan','start')
+        sampler.snapshot.return_value=m.Snapshot(0.,1.,2048,2)
+        original={'exists':True,'sha256':'unchanged'}
+        def interrupt(_duration):
+            handler=m.signal.getsignal(signum)
+            assert callable(handler),'run did not install its scoped handler'
+            handler(signum,None)
+        with patch.object(m,'PsSampler',return_value=sampler), patch.object(m.os,'getloadavg',return_value=(0.,0.,0.),create=True), patch.object(m.time,'sleep',side_effect=interrupt), patch.object(m,'config_fingerprint',return_value=original), patch.object(m.subprocess,'Popen',side_effect=AssertionError('external PID must never launch')):
+            status=m.run(settings)
+        receipt=m.json.loads(next(Path(d).glob('*/summary.json')).read_text())
+        assert status==1 and not receipt['passed'] and receipt['config_preserved'],receipt
+        assert any(m.signal.Signals(signum).name in error for error in receipt['errors']),receipt
+        assert all(m.signal.getsignal(sig)==handler for sig,handler in previous.items())
+        assert not list(Path(d).glob('*/.terminal-reserve-*'))
+`));
+
+test('soak reserve closes its descriptor before unlink and never removes foreign files', () => python(`
+with tempfile.TemporaryDirectory() as d:
+    output=Path(d)
+    foreign=output/'.terminal-reserve-foreign'; foreign.write_bytes(b'preserve')
+    reservation=m.reserve_result_space(output)
+    descriptor=reservation.descriptor
+    assert reservation.path.stat().st_size==m.RESULT_RESERVE_BYTES
+    real_unlink=Path.unlink
+    def unlink(path,*args,**kwargs):
+        if path==reservation.path:
+            try: m.os.fstat(descriptor)
+            except OSError: pass
+            else: raise AssertionError('open reserve cannot be unlinked portably')
+        return real_unlink(path,*args,**kwargs)
+    with patch.object(Path,'unlink',unlink):
+        reservation.release(); reservation.release()
+    assert not reservation.path.exists()
+    assert foreign.read_bytes()==b'preserve'
+`));
+
+test('soak partial terminal writes are cleaned and retried only as failed receipts', () => python(`
+import errno
+with tempfile.TemporaryDirectory() as d:
+    output=Path(d); reservation=m.reserve_result_space(output)
+    receipt={'passed':True,'errors':[],'config_preserved':True}
+    real_write=m.os.write; injected=[False]
+    def write(descriptor,data):
+        if not injected[0]:
+            injected[0]=True
+            real_write(descriptor,data[:20])
+            raise OSError(errno.ENOSPC,'injected partial terminal write')
+        return real_write(descriptor,data)
+    with patch.object(m.os,'write',side_effect=write):
+        persisted=m.publish_terminal_result(output,receipt,reservation)
+    assert persisted and not receipt['passed'],receipt
+    saved=m.json.loads((output/'summary.json').read_text())
+    assert not saved['passed'] and saved['config_preserved'],saved
+    assert any('partial terminal write' in error for error in saved['errors']),saved
+    assert not list(output.glob('.terminal-*'))
+`));
+
+test('soak terminal publication supports a named supervisor result and rejects path escape', () => python(`
+with tempfile.TemporaryDirectory() as d:
+    output=Path(d)/'run'; output.mkdir()
+    unrelated=output/'summary.json'; unrelated.write_bytes(b'preserve default receipt')
+    reservation=m.reserve_result_space(output)
+    receipt={'passed':False,'errors':['injected failed supervisor result']}
+    for filename in ['../outside.json','/absolute.json','..','nested/result.json',r'nested\\result.json']:
+        try: m.publish_terminal_result(output,receipt,reservation,filename=filename)
+        except ValueError: pass
+        else: raise AssertionError(filename)
+        assert reservation.path.exists(),'invalid arguments consumed reserve'
+    assert m.publish_terminal_result(output,receipt,reservation,filename='combined-summary.json')
+    assert m.json.loads((output/'combined-summary.json').read_text())==receipt
+    assert unrelated.read_bytes()==b'preserve default receipt'
+    assert not list(output.glob('.terminal-*'))
+`));
+
+test('soak withdraws an unconfirmed PASS if directory sync and failed replacement cannot persist', () => python(`
+import errno,io
+with tempfile.TemporaryDirectory() as d:
+    output=Path(d); reservation=m.reserve_result_space(output)
+    receipt={'passed':True,'errors':[]}; summary=output/'summary.json'
+    real_sync=m._sync_directory; real_replace=m.os.replace; attempts=[0]
+    def sync(directory):
+        if summary.exists() and m.json.loads(summary.read_text())['passed']:
+            raise OSError(errno.EIO,'injected post-rename directory sync failure')
+        return real_sync(directory)
+    def replace(source,destination):
+        attempts[0]+=1
+        if attempts[0]>1: raise OSError(errno.ENOSPC,'injected failed replacement')
+        return real_replace(source,destination)
+    with patch.object(m,'_sync_directory',side_effect=sync), patch.object(m.os,'replace',side_effect=replace), patch.object(m.sys,'stderr',io.StringIO()):
+        persisted=m.publish_terminal_result(output,receipt,reservation)
+    assert not persisted and not receipt['passed'],receipt
+    assert not summary.exists(),'unconfirmed positive receipt survived'
+    assert attempts[0]==2
+    assert not list(output.glob('.terminal-*'))
+`));
+
+test('soak SIGTERM on an owned observer child durably fails without touching external target or private config', { skip: process.platform === 'win32' }, () => python(`
+import subprocess,time,signal
+child_code='''
+import importlib.util,sys
+from pathlib import Path
+from unittest.mock import Mock,patch
+sys.dont_write_bytecode=True
+spec=importlib.util.spec_from_file_location('soak_child',sys.argv[1]); m=importlib.util.module_from_spec(spec); sys.modules['soak_child']=m; spec.loader.exec_module(m)
+root=Path(sys.argv[2]); ready=root/'ready'; private_home=root/'home'
+settings=m.Settings.from_env({'PETERFAN_SOAK_PID':'123','PETERFAN_SOAK_SECONDS':'30','PETERFAN_SOAK_LOG_DIR':str(root/'logs')})
+sampler=Mock(); sampler.identity.return_value=m.Identity('/Applications/PeterFan.app/Contents/MacOS/PeterFan','start')
+def snapshot(_identity):
+    ready.write_text('ready')
+    return m.Snapshot(m.observation_clock(),1.,2048,2)
+sampler.snapshot.side_effect=snapshot
+with patch.object(m,'PsSampler',return_value=sampler), patch.object(Path,'home',return_value=private_home), patch.object(m.subprocess,'Popen',side_effect=AssertionError('external PID must never launch')):
+    status=m.run(settings)
+sys.exit(status)
+'''
+with tempfile.TemporaryDirectory() as d:
+    root=Path(d); config=root/'home/Library/Application Support/peterfan/config.toml'; config.parent.mkdir(parents=True); config.write_bytes(b'private original config')
+    child=subprocess.Popen([sys.executable,'-c',child_code,sys.argv[1],str(root)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    try:
+        deadline=time.monotonic()+10
+        while not (root/'ready').exists():
+            assert child.poll() is None,'observer exited before readiness'
+            assert time.monotonic()<deadline,'observer readiness timed out'
+            time.sleep(.01)
+        child.send_signal(signal.SIGTERM)
+        stdout,stderr=child.communicate(timeout=10)
+        assert child.returncode==1,(stdout,stderr,child.returncode)
+        receipt=m.json.loads(next((root/'logs').glob('*/summary.json')).read_text())
+        assert not receipt['passed'] and receipt['config_preserved'] and not receipt['owned_process'],receipt
+        assert any('SIGTERM' in error for error in receipt['errors']),receipt
+        assert config.read_bytes()==b'private original config'
+        assert not list((root/'logs').glob('*/.terminal-*'))
+    finally:
+        if child.poll() is None: child.kill(); child.wait(timeout=10)
+`));

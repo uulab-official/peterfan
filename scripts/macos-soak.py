@@ -21,6 +21,147 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 
+RESULT_RESERVE_BYTES = 256 * 1024
+MAX_TERMINAL_RESULT_BYTES = 64 * 1024
+
+
+def _sync_directory(directory):
+    if os.name == 'posix':
+        descriptor = os.open(directory, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def _write_all(descriptor, data):
+    remaining = memoryview(data)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise OSError('terminal storage write made no progress')
+        remaining = remaining[written:]
+
+
+class ResultReservation:
+    def __init__(self, path, descriptor):
+        self.path, self.descriptor = Path(path), descriptor
+        self.released = False
+        metadata = os.fstat(descriptor)
+        self.identity = (metadata.st_dev, metadata.st_ino)
+
+    def release(self):
+        """Idempotently release only this run's owned reserve, never other files."""
+        if self.released:
+            return
+        # Windows disallows unlinking an open file. The captured identity still
+        # prevents this cleanup from removing a replacement at the same path.
+        if self.descriptor is not None:
+            descriptor, self.descriptor = self.descriptor, None
+            os.close(descriptor)
+        try:
+            metadata = self.path.lstat()
+        except FileNotFoundError:
+            self.released = True
+            return
+        if (metadata.st_dev, metadata.st_ino) != self.identity:
+            raise RuntimeError('terminal reserve identity changed; refusing removal')
+        self.path.unlink()
+        self.released = True
+        _sync_directory(self.path.parent)
+
+
+def reserve_result_space(output):
+    """Reserve 256 KiB of real, fsynced storage before starting observation."""
+    descriptor, path = tempfile.mkstemp(prefix='.terminal-reserve-', dir=output)
+    reservation = ResultReservation(path, descriptor)
+    try:
+        # Random bytes avoid sparse extents and transparent zero compression.
+        for _ in range(RESULT_RESERVE_BYTES // 65536):
+            _write_all(descriptor, os.urandom(65536))
+        os.fsync(descriptor)
+        metadata = os.fstat(descriptor)
+        if metadata.st_size != RESULT_RESERVE_BYTES or (
+            hasattr(metadata, 'st_blocks') and metadata.st_blocks * 512 < RESULT_RESERVE_BYTES
+        ):
+            raise OSError('terminal reserve did not allocate its requested bytes')
+        _sync_directory(output)
+        return reservation
+    except BaseException:
+        reservation.release()
+        raise
+
+
+def _record_error(receipt, context, error):
+    receipt['passed'] = False
+    receipt.setdefault('errors', []).append(f'{context}{type(error).__name__}: {error}'[:1024])
+
+
+def _stderr(message):
+    try:
+        print(message[:1023], file=sys.stderr, flush=True)
+    except OSError:
+        pass
+
+
+def _terminal_path(output, filename):
+    if not isinstance(filename, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', filename):
+        raise ValueError('terminal receipt filename must be a simple basename')
+    return Path(output) / filename
+
+
+def _write_terminal_result(output, receipt, *, filename='summary.json'):
+    summary = _terminal_path(output, filename)
+    data = (json.dumps(receipt, indent=2, allow_nan=False) + '\n').encode('utf-8')
+    if len(data) > MAX_TERMINAL_RESULT_BYTES:
+        raise ValueError('terminal receipt exceeds 64 KiB limit')
+    descriptor, path = tempfile.mkstemp(prefix='.terminal-result-', dir=output)
+    try:
+        _write_all(descriptor, data)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.replace(path, summary)
+        path = None
+        _sync_directory(output)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if path is not None:
+            os.unlink(path)
+
+
+def publish_terminal_result(output, receipt, reservation, *, filename='summary.json'):
+    """Publish atomically and durably; return persistence success, not run PASS.
+
+    Finalization releases the reserve. Any publication error makes the run fail,
+    even if the bounded retry successfully preserves its failed terminal receipt.
+    Callers must check both this return value and receipt['passed'].
+    """
+    summary = _terminal_path(output, filename)
+    if reservation is not None:
+        try:
+            reservation.release()
+        except Exception as error:
+            _record_error(receipt, 'terminal reserve release: ', error)
+    for _ in range(2):
+        try:
+            _write_terminal_result(output, receipt, filename=filename)
+            return True
+        except Exception as error:
+            _record_error(receipt, 'terminal receipt publication: ', error)
+    # A rename may have completed before directory fsync failed. Do not leave
+    # an unconfirmed positive receipt behind if the failed retry cannot replace it.
+    try:
+        if summary.exists() and json.loads(summary.read_text())['passed']:
+            summary.unlink()
+            _sync_directory(output)
+    except Exception as error:
+        _record_error(receipt, 'unconfirmed terminal receipt removal: ', error)
+    _stderr('FAIL terminal receipt could not be persisted: ' + receipt['errors'][-1])
+    return False
+
+
 def bounded(env, key, default, low, high, integer=False):
     raw = env.get(key, str(default))
     if integer and not re.fullmatch(r"[0-9]+", raw):
@@ -209,10 +350,17 @@ def run(settings):
         'config_path': str(config_path), 'owned_process': settings.pid is None,
     }
     proc, pinned, sampler = None, None, None
+    reservation, published = None, False
+    previous_handlers = {}
     config_before = None
+    def interrupted(signum, _frame):
+        raise KeyboardInterrupt(f'soak interrupted by {signal.Signals(signum).name}')
     try:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous_handlers[signum] = signal.signal(signum, interrupted)
         config_before = config_fingerprint(config_path)
         receipt['config_before'] = config_before
+        reservation = reserve_result_space(output)
         if settings.pid is None:
             if not settings.app.is_file() or not os.access(settings.app, os.X_OK):
                 raise RuntimeError(f'{settings.app} is not executable; build release first')
@@ -238,6 +386,8 @@ def run(settings):
         with (output / 'samples.csv').open('w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(['elapsed_seconds', 'interval_seconds', 'cpu_percent', 'cpu_seconds', 'rss_kb', 'threads', 'host_load_1m'])
+            csvfile.flush()
+            os.fsync(csvfile.fileno())
             while previous.clock - first.clock < settings.duration:
                 remaining = settings.duration - (previous.clock - first.clock)
                 time.sleep(min(settings.interval, remaining))
@@ -249,6 +399,7 @@ def run(settings):
                 cpu = cpu_percent(previous.cpu_seconds, current.cpu_seconds, elapsed)
                 writer.writerow([round(current.clock-first.clock, 6), round(elapsed, 6), round(cpu, 6), current.cpu_seconds, current.rss_kb, current.threads, os.getloadavg()[0]])
                 csvfile.flush()
+                os.fsync(csvfile.fileno())
                 peak_cpu = max(peak_cpu, cpu)
                 peak_rss, peak_threads = max(peak_rss, current.rss_kb), max(peak_threads, current.threads)
                 receipt['samples'] += 1
@@ -268,12 +419,16 @@ def run(settings):
             if metrics[key] > limit:
                 receipt['errors'].append(f'{key}: {metrics[key]:.3f} > {limit}')
     except (Exception, KeyboardInterrupt) as error:
-        receipt['errors'].append(f'{type(error).__name__}: {error}')
+        _record_error(receipt, '', error)
     finally:
+        # The first termination request fails the observation; repeated signals
+        # must not interrupt its bounded terminal publication and cleanup.
+        for signum in previous_handlers:
+            signal.signal(signum, signal.SIG_IGN)
         try:
             guarded_terminate(proc, pinned, sampler.identity if sampler else lambda: None)
         except Exception as error:
-            receipt['errors'].append(f'cleanup: {error}')
+            _record_error(receipt, 'cleanup: ', error)
         try:
             after = config_fingerprint(config_path)
             receipt['config_after'] = after
@@ -281,15 +436,26 @@ def run(settings):
             if not receipt['config_preserved']:
                 receipt['errors'].append('configuration changed during observation; no restore attempted')
         except Exception as error:
-            receipt['errors'].append(f'configuration verification: {error}')
+            _record_error(receipt, 'configuration verification: ', error)
         receipt['finished_at'] = utc_now()
-        receipt['host_context']['load_average_end'] = os.getloadavg()
+        try:
+            receipt['host_context']['load_average_end'] = os.getloadavg()
+        except Exception as error:
+            _record_error(receipt, 'final host sample: ', error)
         receipt['passed'] = not receipt['errors'] and receipt['samples'] > 0
-        (output / 'summary.json').write_text(json.dumps(receipt, indent=2) + '\n')
-    print(f"{'PASS' if receipt['passed'] else 'FAIL'} PeterFan macOS soak: {output / 'summary.json'}")
-    for error in receipt['errors']:
-        print(f'  {error}', file=sys.stderr)
-    return 0 if receipt['passed'] else 1
+        try:
+            published = publish_terminal_result(output, receipt, reservation)
+        finally:
+            for signum, previous in previous_handlers.items():
+                signal.signal(signum, previous)
+    passed = published and receipt['passed']
+    try:
+        print(f"{'PASS' if passed else 'FAIL'} PeterFan macOS soak: {output / 'summary.json'}", flush=True)
+    except OSError:
+        pass
+    if receipt['errors']:
+        _stderr('\n'.join(f'  {error}' for error in receipt['errors']))
+    return 0 if passed else 1
 
 
 def main():
@@ -304,10 +470,6 @@ def main():
     except (ValueError, OverflowError) as error:
         print(f'error: {error}', file=sys.stderr)
         return 2
-    def interrupted(_signal, _frame):
-        raise KeyboardInterrupt('soak interrupted')
-    signal.signal(signal.SIGTERM, interrupted)
-    signal.signal(signal.SIGINT, interrupted)
     return run(settings)
 
 

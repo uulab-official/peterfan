@@ -18,8 +18,16 @@ evidence and gaps at those checkpoints.
       in 9.22 seconds and return to confirmed automatic mode; settings are unchanged.
 - [ ] Six-hour observation of the same final app and daemon, with CPU, RSS,
       thread counts, process identity, health and scheduled update-check evidence.
-      Started 2026-10-24 10:55:13 KST; expected finish 16:55:13 KST. This item
-      stays unchecked until the complete valid observation and final receipt pass.
+      First observation was interrupted without receipts amid host disk exhaustion.
+      The 13:17 KST replacement correctly failed the new low-space guard at 13:23,
+      retaining failed receipts/exit code 1. Neither window passes or is combined.
+      Final strict-limit observer started fresh at 13:25:23 KST; expected finish
+      after 19:25:23 KST. This stays unchecked until the full window/receipts pass.
+- [x] Repair observer storage/signal handling with real fsynced reserves, atomic
+      failed receipts, disk-space guards and temporary launchd ownership. All 83
+      Node tests pass locally; installed app/helper calibration passes and an
+      observer-only SIGTERM correctly retains failed receipts/exit code 1.
+      App/helper identities, configuration and the primary checkout are preserved.
 - [ ] Physical sleep/wake, forced macOS interruption and additional Mac models.
       Beta status is retained; elapsed uptime is not an observation result.
 
