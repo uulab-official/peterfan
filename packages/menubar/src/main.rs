@@ -15152,10 +15152,22 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
 
     #[test]
     fn insecure_or_unknown_daemon_never_self_updates_silently() {
-        for disk in ["1.26.24", "1.27.22", "1.32.4", "1.32.5"] {
+        for disk in ["1.26.24", "1.27.22", "1.32.4"] {
             for resident in [None, Some("1.32.4"), Some("1.32.5")] {
                 assert!(!daemon_can_self_update_silently(disk, resident));
             }
+        }
+    }
+
+    #[test]
+    fn secure_previous_helpers_upgrade_to_long_run_safety_without_reapproval() {
+        for version in ["1.32.5", "1.32.6"] {
+            assert!(!daemon_control_usable(Some(version), Some(version)));
+            assert!(daemon_can_self_update_silently(version, Some(version)));
+            assert_eq!(
+                fan_control_install_plan(Some(version), Some(version), true),
+                FanControlInstallPlan::SelfReinstall
+            );
         }
     }
 

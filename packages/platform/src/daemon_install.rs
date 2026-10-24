@@ -735,34 +735,34 @@ mod tests {
     #[test]
     fn required_daemon_health_rejects_a_stale_or_invalid_resident_after_disk_replacement() {
         assert!(!required_daemon_is_healthy(
-            Some("1.32.5"),
+            Some("1.32.7"),
             Some("1.32.4"),
-            "1.32.5"
+            "1.32.7"
         ));
         assert!(!required_daemon_is_healthy(
-            Some("1.32.5"),
-            Some("1.32.5-beta.1"),
-            "1.32.5",
+            Some("1.32.7"),
+            Some("1.32.7-beta.1"),
+            "1.32.7",
         ));
         assert!(!required_daemon_is_healthy(
-            Some("1.32.5"),
+            Some("1.32.7"),
             Some("unknown"),
-            "1.32.5"
+            "1.32.7"
         ));
         assert!(!required_daemon_is_healthy(
             Some("unknown"),
-            Some("1.32.5"),
-            "1.32.5"
+            Some("1.32.7"),
+            "1.32.7"
         ));
         assert!(required_daemon_is_healthy(
-            Some("1.32.5"),
-            Some("1.32.5+build.7"),
-            "1.32.5",
+            Some("1.32.7"),
+            Some("1.32.7+build.7"),
+            "1.32.7",
         ));
         assert!(required_daemon_is_healthy(
-            Some("1.32.5"),
-            Some("1.32.6"),
-            "1.32.5"
+            Some("1.32.7"),
+            Some("1.32.8"),
+            "1.32.7"
         ));
     }
 
