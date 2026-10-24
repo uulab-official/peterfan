@@ -152,6 +152,7 @@ for actual,log,health,expected in [
 test('installed launcher freezes explicit helper version and defaults legacy baselines to app version', () => python(`
 spec=importlib.util.spec_from_file_location('launcher',Path(sys.argv[1]).with_name('start-installed-soak.py'))
 launcher=importlib.util.module_from_spec(spec);spec.loader.exec_module(launcher)
+from datetime import timezone
 for daemon_version,expected in [('1.32.7','1.32.7'),(None,'1.32.8')]:
     with tempfile.TemporaryDirectory() as d:
         home=Path(d)
@@ -162,7 +163,7 @@ for daemon_version,expected in [('1.32.7','1.32.7'),(None,'1.32.8')]:
         baseline={'version':'1.32.8','app_pid':123,'daemon_pid':456,'app_started':'pinned-start','daemon_started':'pinned-start','app_executable':'/Applications/PeterFan.app/Contents/MacOS/PeterFan','config_path':str(config),'app_sha256':'pinned','daemon_sha256':'pinned','config_sha256':'pinned'}
         if daemon_version is not None: baseline['daemon_version']=daemon_version
         source=home/'baseline.json';source.write_text(json.dumps(baseline))
-        with patch.object(launcher.sys,'argv',['launcher','--baseline',str(source)]), patch.object(launcher.sys,'platform','darwin'), patch.object(launcher.Path,'home',return_value=home), patch.object(launcher,'sha',return_value='pinned'), patch.object(launcher,'identity',return_value='pinned-start'), patch.object(launcher.subprocess,'check_output',return_value='source-commit'), patch.object(launcher.subprocess,'run'), patch.object(launcher.shutil,'disk_usage',return_value=Mock(free=2*1024**3)):
+        with patch.object(launcher.sys,'argv',['launcher','--baseline',str(source)]), patch.object(launcher.sys,'platform','darwin'), patch.object(launcher.os,'getuid',return_value=home.stat().st_uid,create=True), patch.object(launcher,'ZoneInfo',return_value=timezone.utc), patch.object(launcher.Path,'home',return_value=home), patch.object(launcher,'sha',return_value='pinned'), patch.object(launcher,'identity',return_value='pinned-start'), patch.object(launcher.subprocess,'check_output',return_value='source-commit'), patch.object(launcher.subprocess,'run'), patch.object(launcher.shutil,'disk_usage',return_value=Mock(free=2*1024**3)):
             launcher.main()
         launches=list((home/'Library/Application Support/PeterFan QA').glob('production-six-hour-*/launch.json'))
         assert len(launches)==1,launches
