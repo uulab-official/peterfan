@@ -124,3 +124,17 @@ for executable in ['/Applications/PeterFan.app/Contents/MacOS/PeterFan','/tmp/bu
 for executable in ['/tmp/PeterFan','/Applications/Other.app/Contents/MacOS/PeterFan','/Applications/PeterFan.app/PeterFan','/bin/sleep','PeterFan.app/Contents/MacOS/PeterFan']:
     assert not m.is_menu_bar_executable(executable), executable
 `));
+
+test('soak rejects Darwin suspend gaps even when uptime advances by a normal sample interval', () => python(`
+with tempfile.TemporaryDirectory() as d:
+    settings=m.Settings.from_env({'PETERFAN_SOAK_PID':'123','PETERFAN_SOAK_SECONDS':'30','PETERFAN_SOAK_LOG_DIR':d})
+    identity=m.Identity('/Applications/PeterFan.app/Contents/MacOS/PeterFan','start')
+    original={'exists':True,'sha256':'unchanged'}
+    with patch.object(m.sys,'platform','darwin'), patch.object(m.time,'CLOCK_MONOTONIC_RAW',4,create=True), patch.object(m.time,'clock_gettime',side_effect=[0.,130.],create=True) as continuous, patch.object(m.time,'monotonic',side_effect=[0.,10.,20.,30.]), patch.object(m.time,'sleep'), patch.object(m.PsSampler,'identity',return_value=identity), patch.object(m,'ps',return_value='00:01.00 2048'), patch.object(m,'thread_count',return_value=2), patch.object(m.os,'getloadavg',return_value=(0.,0.,0.),create=True), patch.object(m,'config_fingerprint',return_value=original), patch.object(m.subprocess,'Popen',side_effect=AssertionError('external process must never launch')):
+        status=m.run(settings)
+    receipt=m.json.loads(next(Path(d).glob('*/summary.json')).read_text())
+    assert status==1 and not receipt['passed'],receipt
+    assert any('sample gap exceeded' in e for e in receipt['errors']),receipt
+    assert receipt['config_preserved'] and not receipt['owned_process']
+    assert continuous.call_count==2
+`));

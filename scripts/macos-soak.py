@@ -93,6 +93,15 @@ def cpu_percent(before, after, elapsed):
     return 100 * (after - before) / elapsed
 
 
+def observation_clock():
+    # Darwin monotonic()/uptime pauses during suspend. This public raw clock
+    # includes sleep without wall-clock/NTP jumps, so gaps invalidate the run.
+    # Fail closed if the supported native clock cannot be read.
+    if sys.platform == 'darwin':
+        return time.clock_gettime(time.CLOCK_MONOTONIC_RAW)
+    return time.monotonic()
+
+
 def ps(pid, columns):
     result = subprocess.run(['/bin/ps', '-ww', '-p', str(pid), '-o', columns],
                             capture_output=True, text=True, timeout=10, check=True,
@@ -155,7 +164,7 @@ class PsSampler:
             raise RuntimeError('non-positive RSS/thread sample')
         if self.identity() != pinned:
             raise RuntimeError('process identity changed during sample')
-        return Snapshot(time.monotonic(), cpu, rss, threads)
+        return Snapshot(observation_clock(), cpu, rss, threads)
 
 
 def config_fingerprint(path):

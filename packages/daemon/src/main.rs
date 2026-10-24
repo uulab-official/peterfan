@@ -54,7 +54,6 @@ const FAN_READBACK_PROGRESS_GRACE_MS: u64 = 6_000;
 const FAN_READBACK_MIN_PROGRESS_RPM: u32 = 50;
 const FAN_READBACK_STALE_CONFIRMATIONS: u32 = 3;
 const FAN_READBACK_RETRY_SECS: u64 = 15;
-#[cfg(any(unix, test))]
 const SENSOR_STALE_MIN_MS: u64 = 6_000;
 
 /// Move a requested fan duty toward its target at a bounded rate. The control
@@ -628,7 +627,6 @@ fn unix_now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-#[cfg(any(unix, test))]
 fn sensor_stale_after_ms(interval_secs: u64) -> u64 {
     interval_secs
         .max(1)
@@ -636,17 +634,30 @@ fn sensor_stale_after_ms(interval_secs: u64) -> u64 {
         .max(SENSOR_STALE_MIN_MS)
 }
 
-#[cfg(any(unix, test))]
 fn sensor_sample_freshness(
     sampled_at_unix_ms: Option<u64>,
     now_unix_ms: u64,
     interval_secs: u64,
 ) -> (Option<u64>, bool) {
-    let age_ms = sampled_at_unix_ms.map(|sampled| now_unix_ms.saturating_sub(sampled));
+    let age_ms = sampled_at_unix_ms.and_then(|sampled| now_unix_ms.checked_sub(sampled));
     let stale = age_ms
         .map(|age| age > sensor_stale_after_ms(interval_secs))
         .unwrap_or(true);
     (age_ms, stale)
+}
+
+fn fresh_control_temperatures(state: &State, now_ms: u64) -> Result<(f32, f32), &'static str> {
+    if state.control_health.consecutive_sensor_failures != 0
+        || sensor_sample_freshness(
+            state.last_temps_sampled_at_unix_ms,
+            now_ms,
+            state.config.interval_secs,
+        )
+        .1
+    {
+        return Err("temperature sample is stale or failed");
+    }
+    control_temperatures(&state.last_temps)
 }
 
 fn fan_target_rpm(fan: &peterfan_core::types::Fan, duty_percent: u8) -> Option<(u32, u32)> {
@@ -918,28 +929,41 @@ fn control_loop_while(
             Ok(temps) => (temps, None),
             Err(error) => (Vec::new(), Some(error.to_string())),
         };
-        let (fans_now, fan_read_error) = match provider.fans() {
-            Ok(fans) => (fans, None),
-            Err(error) => (Vec::new(), Some(error.to_string())),
-        };
-        let power_now = provider.power_watts();
-        {
-            let mut s = shared.lock().expect("state poisoned");
-            s.last_fans = fans_now.clone();
-            s.last_power_w = power_now;
-        }
-        let (representative_temp, safety_temp) = match control_temperatures(&temps) {
-            Ok(values) if temperature_read_error.is_none() => {
+        match control_temperatures(&temps) {
+            Ok(_) if temperature_read_error.is_none() => {
                 let mut s = shared.lock().expect("state poisoned");
                 s.last_temps = temps.clone();
                 s.last_temps_sampled_at_unix_ms = Some(unix_now_ms());
                 s.control_health.consecutive_sensor_failures = 0;
                 s.control_health.last_sensor_ok_unix = Some(unix_now());
-                values
             }
             _ => {
                 let reason = temperature_read_error
                     .unwrap_or_else(|| "no trustworthy temperature reading".to_string());
+                // Invalidate immediately, before waiting for slow hardware:
+                // a queued worker must not overtake this restore using the old
+                // sample. In-flight writes recheck this health before success.
+                let first_failure = {
+                    let mut s = shared.lock().expect("state poisoned");
+                    s.last_temps_sampled_at_unix_ms = None;
+                    let first = !s.control_health.failsafe_active;
+                    s.control_health.failsafe_active = true;
+                    s.control_health.sensor_failure_count =
+                        s.control_health.sensor_failure_count.saturating_add(1);
+                    s.control_health.consecutive_sensor_failures = s
+                        .control_health
+                        .consecutive_sensor_failures
+                        .saturating_add(1);
+                    s.control_health.last_error =
+                        Some(format!("sensor fail-safe: {reason}; restoring OS auto"));
+                    s.fan_targets.clear();
+                    s.fan_readbacks.clear();
+                    s.fan_readback_trackers.clear();
+                    first
+                };
+                // State is unlocked before taking the hardware lock. Any
+                // in-flight manual write finishes before this final restore.
+                let write_guard = FAN_WRITE_LOCK.lock().expect("fan write lock poisoned");
                 let restore_errors = restore_fans_to_auto(provider, fan_ids);
                 let detail = if restore_errors.is_empty() {
                     format!("sensor fail-safe: {reason}; fans returned to OS auto")
@@ -949,16 +973,8 @@ fn control_loop_while(
                         restore_errors.join(", ")
                     )
                 };
-                let first_failure = !state.control_health.failsafe_active;
                 {
                     let mut s = shared.lock().expect("state poisoned");
-                    s.control_health.failsafe_active = true;
-                    s.control_health.sensor_failure_count =
-                        s.control_health.sensor_failure_count.saturating_add(1);
-                    s.control_health.consecutive_sensor_failures = s
-                        .control_health
-                        .consecutive_sensor_failures
-                        .saturating_add(1);
                     s.control_health.last_error = Some(detail.clone());
                     if !restore_errors.is_empty() {
                         s.control_health.fan_write_failure_count = s
@@ -967,6 +983,7 @@ fn control_loop_while(
                             .saturating_add(restore_errors.len() as u64);
                     }
                 }
+                drop(write_guard);
                 if first_failure {
                     eprintln!("peterfand: {detail}");
                 }
@@ -977,6 +994,38 @@ fn control_loop_while(
                 continue;
             }
         };
+        // Do not delay failed-sensor invalidation behind unrelated hardware
+        // reads. RPM and power sampling are needed only for a usable scan.
+        let (fans_now, fan_read_error) = match provider.fans() {
+            Ok(fans) => (fans, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
+        let power_now = provider.power_watts();
+        {
+            let mut s = shared.lock().expect("state poisoned");
+            s.last_fans = fans_now.clone();
+            s.last_power_w = power_now;
+        }
+
+        // Sensor scans can block while the cached worker updates targets or
+        // enters a cooldown. Re-read live state only after taking the write
+        // lock, without holding State while waiting for that lock.
+        let write_guard = FAN_WRITE_LOCK.lock().expect("fan write lock poisoned");
+        let current = shared.lock().expect("state poisoned").clone();
+        if current.control_revision != state.control_revision {
+            continue;
+        }
+        let state = current;
+        let Ok((representative_temp, safety_temp)) =
+            fresh_control_temperatures(&state, unix_now_ms())
+        else {
+            if once {
+                break;
+            }
+            // A long SMC write can age the just-read sample while we wait.
+            // Release the guard and scan again before resuming control.
+            continue;
+        };
 
         // Keep sampling sensors during cooldown, but do not repeat the prior
         // fail-safe's restore, diagnostics, counters, or retry deadline.
@@ -985,6 +1034,7 @@ fn control_loop_while(
             .retry_after_unix
             .is_some_and(|retry_after| unix_now() < retry_after)
         {
+            drop(write_guard);
             if once {
                 break;
             }
@@ -1037,15 +1087,11 @@ fn control_loop_while(
                 current.fan_readback_trackers.clear();
             }
             eprintln!("peterfand: {detail}");
+            drop(write_guard);
             if once {
                 break;
             }
             sleep_control_interval(interval);
-            continue;
-        }
-
-        let write_guard = FAN_WRITE_LOCK.lock().expect("fan write lock poisoned");
-        if shared.lock().expect("state poisoned").control_revision != state.control_revision {
             continue;
         }
 
@@ -1226,6 +1272,9 @@ fn apply_cached_control_request(
     fan_ids: &[String],
     shared: &Arc<Mutex<State>>,
 ) {
+    // A queued wakeup represents the latest intent, not a saved State clone.
+    // Taking this lock first also observes any intervening fail-safe restore.
+    let _write_guard = FAN_WRITE_LOCK.lock().expect("fan write lock poisoned");
     let state = shared.lock().expect("state poisoned").clone();
     if !state.auto && !state.manual {
         return;
@@ -1239,13 +1288,15 @@ fn apply_cached_control_request(
     }
 
     let needs_temperature = !state.auto || !state.fan_overrides.is_empty();
-    let control_temps = needs_temperature
-        .then(|| control_temperatures(&state.last_temps))
-        .transpose();
-    let Ok(control_temps) = control_temps else {
+    let control_temps = fresh_control_temperatures(&state, unix_now_ms());
+    if needs_temperature && control_temps.is_err() {
         return;
+    }
+    let (representative_temp, safety_temp) = if needs_temperature {
+        control_temps.expect("fresh sensor sample checked")
+    } else {
+        (0.0, 0.0)
     };
-    let (representative_temp, safety_temp) = control_temps.unwrap_or((0.0, 0.0));
     let critical_now = needs_temperature && safety_temp >= state.config.critical_temp_c;
     let duty = state.held_duty.unwrap_or_else(|| {
         state
@@ -1254,7 +1305,6 @@ fn apply_cached_control_request(
             .duty_at(representative_temp)
     });
 
-    let _write_guard = FAN_WRITE_LOCK.lock().expect("fan write lock poisoned");
     if shared.lock().expect("state poisoned").control_revision != state.control_revision {
         return;
     }
@@ -1286,10 +1336,18 @@ fn apply_cached_control_request(
         return;
     }
     if write_errors.is_empty() {
-        current.control_health.failsafe_active = false;
-        current.control_health.consecutive_fan_write_failures = 0;
-        current.control_health.retry_after_unix = None;
-        current.control_health.last_error = None;
+        let fresh_sensors = fresh_control_temperatures(&current, unix_now_ms()).is_ok();
+        if needs_temperature && !fresh_sensors {
+            return;
+        }
+        // Auto remains available without a usable sensor, but writing Auto is
+        // not evidence that a sensor failure has recovered.
+        if fresh_sensors {
+            current.control_health.failsafe_active = false;
+            current.control_health.consecutive_fan_write_failures = 0;
+            current.control_health.retry_after_unix = None;
+            current.control_health.last_error = None;
+        }
         current.applied_control_revision = state.control_revision;
         publish_successful_fan_targets(&mut current, requested_targets);
     } else {
@@ -1476,7 +1534,48 @@ fn read_ipc_request(
     Ok(line)
 }
 
-/// Accept IPC connections and apply commands to the shared state.
+/// One hardware worker plus one pending wakeup bounds command-burst resources.
+/// A full channel already promises another pass over the latest shared State.
+#[cfg(unix)]
+struct ControlApplyWorker {
+    sender: Option<std::sync::mpsc::SyncSender<()>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+impl ControlApplyWorker {
+    fn spawn(apply: impl Fn() + Send + 'static) -> std::io::Result<Self> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let thread = thread::Builder::new()
+            .name("fan-control-apply".into())
+            .spawn(move || {
+                while receiver.recv().is_ok() {
+                    apply();
+                }
+            })?;
+        Ok(Self {
+            sender: Some(sender),
+            thread: Some(thread),
+        })
+    }
+
+    fn request(&self) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.try_send(());
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ControlApplyWorker {
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 #[cfg(unix)]
 fn spawn_ipc_server(
     shared: Arc<Mutex<State>>,
@@ -1496,6 +1595,18 @@ fn spawn_ipc_server(
     println!("peterfand: listening on {}", path.display());
 
     std::thread::spawn(move || {
+        let worker_provider = Arc::clone(&provider);
+        let worker_shared = Arc::clone(&shared);
+        let worker = match ControlApplyWorker::spawn(move || {
+            apply_cached_control_request(worker_provider.as_ref(), &fan_ids, &worker_shared)
+        }) {
+            Ok(worker) => Some(worker),
+            Err(error) => {
+                // The periodic loop is still woken by every accepted command.
+                eprintln!("peterfand: cached control worker unavailable ({error})");
+                None
+            }
+        };
         for conn in listener.incoming() {
             let Ok(mut stream) = conn else { continue };
             let Ok(peer_uid) = ipc_peer_uid(&stream) else {
@@ -1525,12 +1636,9 @@ fn spawn_ipc_server(
             // in a worker while clients confirm it through the apply revision.
             let _ = writeln!(stream, "{reply}");
             if changed {
-                let shared = Arc::clone(&shared);
-                let provider = Arc::clone(&provider);
-                let fan_ids = fan_ids.clone();
-                std::thread::spawn(move || {
-                    apply_cached_control_request(provider.as_ref(), &fan_ids, &shared);
-                });
+                if let Some(worker) = &worker {
+                    worker.request();
+                }
             }
         }
     });
@@ -2265,6 +2373,11 @@ mod tests {
         );
     }
 
+    type WriteGate = (
+        std::sync::mpsc::SyncSender<()>,
+        Mutex<std::sync::mpsc::Receiver<()>>,
+    );
+
     struct FaultProvider {
         fail_temperatures: bool,
         fail_fan_reads: AtomicBool,
@@ -2273,6 +2386,11 @@ mod tests {
         fan_read_calls: std::sync::atomic::AtomicUsize,
         duty_calls: std::sync::atomic::AtomicUsize,
         auto_calls: std::sync::atomic::AtomicUsize,
+        first_duty_gate: Option<WriteGate>,
+        first_auto_gate: Option<WriteGate>,
+        failed_sample_notice: Option<std::sync::mpsc::SyncSender<()>>,
+        auto_notice: Option<std::sync::mpsc::SyncSender<()>>,
+        write_events: Mutex<Vec<String>>,
     }
 
     impl FaultProvider {
@@ -2285,6 +2403,11 @@ mod tests {
                 fan_read_calls: std::sync::atomic::AtomicUsize::new(0),
                 duty_calls: std::sync::atomic::AtomicUsize::new(0),
                 auto_calls: std::sync::atomic::AtomicUsize::new(0),
+                first_duty_gate: None,
+                first_auto_gate: None,
+                failed_sample_notice: None,
+                auto_notice: None,
+                write_events: Mutex::new(Vec::new()),
             }
         }
 
@@ -2330,6 +2453,9 @@ mod tests {
             use peterfan_core::types::{Celsius, SensorKind, SensorSource, TempSensor};
 
             if self.fail_temperatures {
+                if let Some(notice) = &self.failed_sample_notice {
+                    let _ = notice.try_send(());
+                }
                 return Err(peterfan_core::error::CoreError::Hardware(
                     "injected sensor failure".into(),
                 ));
@@ -2364,9 +2490,19 @@ mod tests {
         fn set_fan_duty(
             &self,
             _fan_id: &str,
-            _duty_percent: u8,
+            duty_percent: u8,
         ) -> peterfan_core::error::Result<()> {
-            self.duty_calls.fetch_add(1, Ordering::Relaxed);
+            let call = self.duty_calls.fetch_add(1, Ordering::Relaxed);
+            if call == 0 {
+                if let Some((started, resume)) = &self.first_duty_gate {
+                    let _ = started.try_send(());
+                    let _ = resume.lock().unwrap().recv_timeout(Duration::from_secs(3));
+                }
+            }
+            self.write_events
+                .lock()
+                .unwrap()
+                .push(format!("duty:{duty_percent}"));
             if self.fail_writes {
                 Err(peterfan_core::error::CoreError::Hardware(
                     "injected fan write failure".into(),
@@ -2377,7 +2513,17 @@ mod tests {
         }
 
         fn set_fan_auto(&self, _fan_id: &str) -> peterfan_core::error::Result<()> {
-            self.auto_calls.fetch_add(1, Ordering::Relaxed);
+            let call = self.auto_calls.fetch_add(1, Ordering::Relaxed);
+            if call == 0 {
+                if let Some((started, resume)) = &self.first_auto_gate {
+                    let _ = started.try_send(());
+                    let _ = resume.lock().unwrap().recv_timeout(Duration::from_secs(3));
+                }
+            }
+            self.write_events.lock().unwrap().push("auto".into());
+            if let Some(notice) = &self.auto_notice {
+                let _ = notice.try_send(());
+            }
             if self.fail_auto {
                 Err(peterfan_core::error::CoreError::Hardware(
                     "injected automatic restore failure".into(),
@@ -2445,7 +2591,7 @@ mod tests {
         assert_eq!(state.control_health.consecutive_sensor_failures, 1);
         assert_eq!(state.last_temps.len(), 1);
         assert_eq!(state.last_temps[0].id, "cpu.die.hot");
-        assert_eq!(state.last_temps_sampled_at_unix_ms, Some(1_234));
+        assert_eq!(state.last_temps_sampled_at_unix_ms, None);
         assert!(state
             .control_health
             .last_error
@@ -2986,10 +3132,286 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn cached_apply_burst_is_bounded_and_finishes_at_the_latest_target() {
+        use std::sync::atomic::AtomicUsize;
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+        let mut provider = FaultProvider::new(false, false);
+        provider.first_duty_gate = Some((started_tx, Mutex::new(resume_rx)));
+        let provider = Arc::new(provider);
+        let shared = prepared_cached_state();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let worker_provider = Arc::clone(&provider);
+        let worker_state = Arc::clone(&shared);
+        let worker_calls = Arc::clone(&calls);
+        let worker = ControlApplyWorker::spawn(move || {
+            worker_calls.fetch_add(1, Ordering::Relaxed);
+            apply_cached_control_request(
+                worker_provider.as_ref(),
+                &["fan.test".into()],
+                &worker_state,
+            );
+        })
+        .unwrap();
+        worker.request();
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        for target in 31..=80 {
+            let mut state = shared.lock().unwrap();
+            state.held_duty = Some(target);
+            state.control_revision += 1;
+            drop(state);
+            worker.request();
+        }
+        resume_tx.send(()).unwrap();
+        drop(worker);
+        assert!(
+            calls.load(Ordering::Relaxed) <= 2,
+            "burst created {} apply jobs",
+            calls.load(Ordering::Relaxed)
+        );
+        assert_eq!(
+            provider.write_events.lock().unwrap().last().unwrap(),
+            "duty:80"
+        );
+        let state = shared.lock().unwrap();
+        assert_eq!(state.applied_control_revision, state.control_revision);
+    }
+
+    #[cfg(unix)]
+    fn prepared_cached_state() -> Arc<Mutex<State>> {
+        let shared = test_state();
+        {
+            let mut state = shared.lock().unwrap();
+            state.manual = true;
+            state.held_duty = Some(30);
+            state.last_temps = FaultProvider::new(false, false).temperatures().unwrap();
+            state.last_temps_sampled_at_unix_ms = Some(unix_now_ms());
+        }
+        shared
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_apply_rejects_failed_missing_or_stale_sensor_cache() {
+        for (sampled_at, failed) in [
+            (Some(unix_now_ms()), true),
+            (None, false),
+            (Some(unix_now_ms().saturating_sub(120_000)), false),
+            (Some(unix_now_ms().saturating_add(120_000)), false),
+        ] {
+            let provider = FaultProvider::new(false, false);
+            let shared = prepared_cached_state();
+            {
+                let mut state = shared.lock().unwrap();
+                state.last_temps_sampled_at_unix_ms = sampled_at;
+                state.control_health.consecutive_sensor_failures = u32::from(failed);
+                state.control_health.failsafe_active = true;
+                state.control_health.last_error = Some("untrusted sensor cache".into());
+            }
+            apply_cached_control_request(&provider, &["fan.test".into()], &shared);
+            assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 0);
+            let state = shared.lock().unwrap();
+            assert!(state.control_health.failsafe_active);
+            assert_eq!(state.applied_control_revision, 0);
+            assert_eq!(
+                state.control_health.last_error.as_deref(),
+                Some("untrusted sensor cache")
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_auto_does_not_clear_a_sensor_failure() {
+        let provider = FaultProvider::new(false, false);
+        let shared = prepared_cached_state();
+        {
+            let mut state = shared.lock().unwrap();
+            state.auto = true;
+            state.manual = false;
+            state.control_health.consecutive_sensor_failures = 1;
+            state.control_health.failsafe_active = true;
+            state.control_health.last_error = Some("sensor unavailable".into());
+        }
+        apply_cached_control_request(&provider, &["fan.test".into()], &shared);
+        assert_eq!(provider.auto_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 0);
+        let state = shared.lock().unwrap();
+        assert!(state.control_health.failsafe_active);
+        assert_eq!(
+            state.control_health.last_error.as_deref(),
+            Some("sensor unavailable")
+        );
+    }
+
+    #[test]
+    fn periodic_write_rechecks_sample_age_after_waiting_for_hardware() {
+        let provider = Arc::new(FaultProvider::new(false, false));
+        let shared = test_state();
+        let write_guard = FAN_WRITE_LOCK.lock().unwrap();
+        let loop_provider = Arc::clone(&provider);
+        let loop_state = Arc::clone(&shared);
+        let control = thread::spawn(move || {
+            let mut monitor = peterfan_platform::mock_monitor();
+            control_loop_while(
+                loop_provider.as_ref(),
+                monitor.as_mut(),
+                &["fan.test".into()],
+                true,
+                &loop_state,
+                || true,
+            )
+            .unwrap();
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut state = shared.lock().unwrap();
+            if state.last_temps_sampled_at_unix_ms.is_some() {
+                // Deterministically model the sample aging while the slow SMC
+                // writer owns the lock, without a multi-second test sleep.
+                state.last_temps_sampled_at_unix_ms = Some(unix_now_ms().saturating_sub(120_000));
+                break;
+            }
+            drop(state);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sensor scan did not finish"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        drop(write_guard);
+        control.join().unwrap();
+        assert_eq!(provider.duty_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(shared.lock().unwrap().applied_control_revision, 0);
+        let recovered = FaultProvider::new(false, false);
+        let mut monitor = peterfan_platform::mock_monitor();
+        control_loop_while(
+            &recovered,
+            monitor.as_mut(),
+            &["fan.test".into()],
+            true,
+            &shared,
+            || true,
+        )
+        .unwrap();
+        assert_eq!(recovered.duty_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_inflight_write_finishes_before_sensor_failure_restores_auto() {
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+        let (failed_tx, failed_rx) = std::sync::mpsc::sync_channel(1);
+        let (auto_tx, auto_rx) = std::sync::mpsc::sync_channel(1);
+        let (auto_started_tx, auto_started_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_auto_tx, resume_auto_rx) = std::sync::mpsc::sync_channel(1);
+        let mut provider = FaultProvider::new(true, false);
+        provider.first_duty_gate = Some((started_tx, Mutex::new(resume_rx)));
+        provider.first_auto_gate = Some((auto_started_tx, Mutex::new(resume_auto_rx)));
+        provider.failed_sample_notice = Some(failed_tx);
+        provider.auto_notice = Some(auto_tx);
+        let provider = Arc::new(provider);
+        let shared = prepared_cached_state();
+        let worker_provider = Arc::clone(&provider);
+        let worker_state = Arc::clone(&shared);
+        let worker = ControlApplyWorker::spawn(move || {
+            apply_cached_control_request(
+                worker_provider.as_ref(),
+                &["fan.test".into()],
+                &worker_state,
+            )
+        })
+        .unwrap();
+        worker.request();
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let failure_provider = Arc::clone(&provider);
+        let failure_state = Arc::clone(&shared);
+        let failure = thread::spawn(move || {
+            let mut monitor = peterfan_platform::mock_monitor();
+            control_loop_while(
+                failure_provider.as_ref(),
+                monitor.as_mut(),
+                &["fan.test".into()],
+                true,
+                &failure_state,
+                || true,
+            )
+            .unwrap();
+        });
+        failed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_millis(100);
+        let invalidated_before_write_finished = loop {
+            let state = shared.lock().unwrap();
+            if state.control_health.consecutive_sensor_failures > 0
+                && state.last_temps_sampled_at_unix_ms.is_none()
+            {
+                break true;
+            }
+            drop(state);
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(1));
+        };
+        // Queue another command before the old write returns: even if the
+        // worker wins the mutex again, it must observe the failed sample.
+        worker.request();
+        let restored_before_write_finished =
+            auto_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+        resume_tx.send(()).unwrap();
+        auto_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        let failure_preserved_during_restore = {
+            let state = shared.lock().unwrap();
+            state.control_health.failsafe_active
+                && state.applied_control_revision == 0
+                && state.fan_targets.is_empty()
+        };
+        resume_auto_tx.send(()).unwrap();
+        failure.join().unwrap();
+        drop(worker);
+        assert!(
+            invalidated_before_write_finished,
+            "failed sample stayed usable while waiting for hardware"
+        );
+        assert!(
+            failure_preserved_during_restore,
+            "old write reported success after the sample failed"
+        );
+        assert!(
+            !restored_before_write_finished,
+            "failure restore raced the manual write"
+        );
+        assert_eq!(*provider.write_events.lock().unwrap(), ["duty:30", "auto"]);
+        assert!(shared.lock().unwrap().control_health.failsafe_active);
+        // Only a genuinely fresh successful sensor sample may resume the saved intent.
+        let recovered = FaultProvider::new(false, false);
+        let mut monitor = peterfan_platform::mock_monitor();
+        control_loop_while(
+            &recovered,
+            monitor.as_mut(),
+            &["fan.test".into()],
+            true,
+            &shared,
+            || true,
+        )
+        .unwrap();
+        assert_eq!(recovered.duty_calls.load(Ordering::Relaxed), 1);
+        assert!(!shared.lock().unwrap().control_health.failsafe_active);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cached_control_request_confirms_hardware_write_immediately() {
         let provider = FaultProvider::new(false, false);
         let shared = test_state();
-        shared.lock().unwrap().last_temps = provider.temperatures().unwrap();
+        {
+            let mut state = shared.lock().unwrap();
+            state.last_temps = provider.temperatures().unwrap();
+            state.last_temps_sampled_at_unix_ms = Some(unix_now_ms());
+        }
 
         let reply = handle_command("profile performance", &shared);
         assert!(reply.starts_with("ok performance"));
@@ -3208,21 +3630,21 @@ case "$*" in *'certificate leaf[subject.OU] = "N99FMBQ662"'*) ;; *) exit 1;; esa
     #[test]
     fn self_reinstall_rejects_security_and_runtime_downgrades() {
         for (candidate, running) in [
-            ("1.32.4", "1.32.5"),
-            ("1.32.5-beta.1", "1.32.5"),
-            ("1.32.5", "1.32.6"),
-            ("1.32.6-beta.1", "1.32.6"),
-            ("unknown", "1.32.5"),
-            ("1.32.5", "unknown"),
+            ("1.32.6", "1.32.7"),
+            ("1.32.7-beta.1", "1.32.7"),
+            ("1.32.7", "1.32.8"),
+            ("1.32.8-beta.1", "1.32.8"),
+            ("unknown", "1.32.7"),
+            ("1.32.7", "unknown"),
         ] {
             assert!(
                 !self_reinstall_version_allowed(candidate, running),
                 "{candidate} from {running}"
             );
         }
-        for candidate in ["1.32.5", "1.32.5+build.7", "1.32.6", "1.33.0"] {
+        for candidate in ["1.32.7", "1.32.7+build.7", "1.32.8", "1.33.0"] {
             assert!(
-                self_reinstall_version_allowed(candidate, "1.32.5"),
+                self_reinstall_version_allowed(candidate, "1.32.7"),
                 "{candidate}"
             );
         }

@@ -1141,7 +1141,9 @@ fn api_doctor_json(
     let mcaps = monitor.capabilities();
     let caps = provider.capabilities();
     let daemon_reachable = allow_daemon && peterfan_platform::daemon_reachable();
-    let installed_daemon_version = peterfan_platform::installed_daemon_version();
+    let installed_daemon_version = allow_daemon
+        .then(peterfan_platform::installed_daemon_version)
+        .flatten();
     let daemon_update_required = installed_daemon_version
         .as_deref()
         .is_some_and(peterfan_platform::daemon_update_required);
@@ -1188,7 +1190,9 @@ fn api_doctor_json(
         "support": {
             "binary": std::env::current_exe().ok().map(|path| path.display().to_string()),
             "expected_team_id": peterfan_platform::updater::EXPECTED_TEAM_ID,
-            "update_install_result": peterfan_platform::updater::read_update_install_result(),
+            "update_install_result": allow_daemon
+                .then(peterfan_platform::updater::read_update_install_result)
+                .flatten(),
         },
     })
 }
@@ -3040,8 +3044,10 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
     let caps = provider.capabilities();
     let mcaps = monitor.capabilities();
     let elevated = is_elevated();
-    let daemon_reachable = peterfan_platform::daemon_reachable();
-    let installed_daemon_version = peterfan_platform::installed_daemon_version();
+    let daemon_reachable = !mock && peterfan_platform::daemon_reachable();
+    let installed_daemon_version = (!mock)
+        .then(peterfan_platform::installed_daemon_version)
+        .flatten();
     let daemon_update_required = installed_daemon_version
         .as_deref()
         .is_some_and(peterfan_platform::daemon_update_required);
@@ -3064,7 +3070,9 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
         issues.push("daemon_update_required");
     }
     #[cfg(target_os = "macos")]
-    let cpu_temperature_probe = peterfan_platform::cpu_temperature_probe();
+    let cpu_temperature_probe = (!mock)
+        .then(peterfan_platform::cpu_temperature_probe)
+        .flatten();
 
     if json {
         let fan_control = serde_json::json!({
@@ -3080,7 +3088,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
         #[cfg(target_os = "macos")]
         let fan_control = {
             let mut fan_control = fan_control;
-            if let Some(p) = peterfan_platform::fan_control_probe() {
+            if let Some(p) = (!mock).then(peterfan_platform::fan_control_probe).flatten() {
                 fan_control["smc_opened"] = serde_json::json!(p.opened);
                 fan_control["fan_mode_key"] = serde_json::json!(p.mode_key);
                 fan_control["ftst_key"] = serde_json::json!(p.ftst);
@@ -3126,7 +3134,9 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
                 "support": {
                     "binary": std::env::current_exe().ok().map(|path| path.display().to_string()),
                     "expected_team_id": peterfan_platform::updater::EXPECTED_TEAM_ID,
-                    "update_install_result": peterfan_platform::updater::read_update_install_result(),
+                    "update_install_result": (!mock)
+                        .then(peterfan_platform::updater::read_update_install_result)
+                        .flatten(),
                 },
             }))?
         );
@@ -3257,7 +3267,7 @@ fn cmd_doctor(mock: bool, json: bool) -> Result<()> {
         print_check("running as root", elevated);
         print_check("peterfand daemon reachable", daemon_reachable);
         #[cfg(target_os = "macos")]
-        if let Some(p) = peterfan_platform::fan_control_probe() {
+        if let Some(p) = (!mock).then(peterfan_platform::fan_control_probe).flatten() {
             print_kv("  SMC opened", if p.opened { "yes" } else { "no" });
             print_kv("  fan mode key", p.mode_key.unwrap_or("not found"));
             print_kv(
@@ -5291,6 +5301,10 @@ mod tests {
         );
         assert_eq!(status, 200);
         assert_eq!(value["schema_version"], 1);
+        assert!(value["fan_control"]["installed_daemon_version"].is_null());
+        assert_eq!(value["fan_control"]["daemon_update_required"], false);
+        assert_eq!(value["fan_control"]["daemon_reachable"], false);
+        assert!(value["support"]["update_install_result"].is_null());
         assert_eq!(value["health"], "ok");
         assert!(value["checks"]["metrics_ready"].as_bool().unwrap_or(false));
         assert!(value["support"]["expected_team_id"].is_string());

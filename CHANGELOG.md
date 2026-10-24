@@ -68,6 +68,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Validate release tags against main, pin source commits and restrict write tokens
   to artifact publication jobs; cover rejection paths with offline tests.
 
+## [1.32.7] — 2026-10-24 · Bounded control work and fresh sensor safety
+
+- Coalesce rapid control requests into one persistent worker with one pending
+  wakeup. Read the latest requested state after acquiring the fan-write lock,
+  preventing unbounded waiting threads and stale queued fan targets.
+- Serialize sensor-failure fallback with fan writes. Reject cached manual control
+  when the sensor sample is stale or failed; only fresh valid readings may
+  restore manual control and clear the sensor failsafe.
+- Require the corrected helper while retaining passwordless replacement from
+  secure v1.32.5/v1.32.6 helpers. Preserve the separate security capability floor.
+- 빠른 연속 제어 요청을 제한된 작업자로 합쳐 대기 스레드 증가와 이전 목표값의
+  지연 적용을 방지합니다. 센서 실패 시 자동 제어 복원을 직렬화하고, 정상적인
+  최신 측정값을 얻기 전까지 수동 제어 재개와 안전 상태 해제를 막습니다.
+- Keep mock API/CLI diagnostics isolated from the installed helper, native SMC
+  probes and real update receipts, so contributor checks do not depend on the
+  host's installed release.
+- Use the suspend-inclusive Darwin clock in the soak observer; reject hidden
+  sleep gaps even when ordinary uptime advances by only a normal interval.
+- Six-hour acceptance is recorded separately after the final installed build
+  completes observation; this release note does not claim a completed soak.
+
 ## [1.32.6] — 2026-10-23 · Verified signed-helper update
 
 - Correct inline code-signing requirement arguments in both private staging and
