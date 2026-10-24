@@ -21,7 +21,8 @@ evidence and gaps at those checkpoints.
       First observation was interrupted without receipts amid host disk exhaustion.
       The 13:17 KST replacement correctly failed the new low-space guard at 13:23,
       retaining failed receipts/exit code 1. Neither window passes or is combined.
-      This stays unchecked until a full valid observation and final receipts pass.
+      Final strict-limit observer started fresh at 13:25:23 KST; expected finish
+      after 19:25:23 KST. This stays unchecked until the full window/receipts pass.
 - [x] Repair observer storage/signal handling with real fsynced reserves, atomic
       failed receipts, disk-space guards and temporary launchd ownership. All 83
       Node tests pass locally; installed app/helper calibration passes and an

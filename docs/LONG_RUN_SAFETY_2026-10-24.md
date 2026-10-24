@@ -167,10 +167,19 @@ acceptance. Evidence remains in
 A simultaneous short calibration also failed on the same storage guard.
 
 Additional space was recovered by removing only this worktree's reproducible
-Windows cross-compile debug cache. A new full attempt will be recorded here
-once the final frozen observer is launched with adequate free space. The active
-pointer is `target/production-six-hour-preflight/active-run-path.txt`; failed
-windows are preserved and never combined. The six-hour gate remains unchecked.
+Windows cross-compile debug cache. A final strict-limit 30-second calibration
+passes with app/helper receipts and launchd exit code 0; the app's default
+8%/35% CPU limits and every reported metric are independently verified.
+
+A new full observation starts at **2026-10-24 13:25:23 KST**, with expected
+completion after **19:25:23 KST**. Frozen QA source is commit `6924ba4`; installed
+app/helper source remains immutable v1.32.7. Evidence is under
+`~/Library/Application Support/PeterFan QA/production-six-hour-20261024T042522812585Z/`.
+Its temporary job is `kr.co.uulab.peterfan.qa-soak.20261024t042522812585z`.
+The active pointer is `target/production-six-hour-preflight/active-run-path.txt`;
+failed windows are preserved and never combined. The six-hour gate remains
+unchecked until the entire new window passes. The hourly follow-up remains
+active and stays quiet on healthy unchanged progress.
 
 Scheduled automatic discovery must succeed inside the eventual fresh window,
 with native-log/history agreement and a new 21,600-second deadline. Physical
