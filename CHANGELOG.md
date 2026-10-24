@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — Open-source contributor experience
 
+- Add an optional, independent macOS CPU menu-bar widget beside the runner:
+  bar, 60-sample history or numeric percentage, with optional numbers beside
+  graphs. It defaults off, reuses the existing CPU sample and preserves settings
+  on save failure. Both status items open the dashboard at the item clicked.
+- Restore the per-core CPU graph setting's IPC routing in both dashboard hosts.
 - Make the fan view's Set Up action open Settings first. Show an explicit
   Enable/Reinstall Fan Control action and installation progress at the destination,
   so opening settings never requests administrator installation by itself.

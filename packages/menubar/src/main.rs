@@ -45,6 +45,10 @@ use tao::window::{Window, WindowBuilder};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
+mod cpu_widget;
+mod cpu_widget_app;
+#[cfg(target_os = "macos")]
+mod native_cpu_widget;
 #[cfg(target_os = "macos")]
 mod native_runner;
 mod pause_clock;
@@ -80,8 +84,8 @@ use tray_icon::{
 use wry::{WebView, WebViewBuilder, RGBA};
 
 use peterfan_core::config::{
-    Config, CustomCurveConfig, Language, MenubarDisplay, NotificationConfig, ResolvedLanguage,
-    Rule, RunnerCharacter, TemperatureSource, UpdateChannel,
+    Config, CpuWidgetConfig, CustomCurveConfig, Language, MenubarDisplay, NotificationConfig,
+    ResolvedLanguage, Rule, RunnerCharacter, TemperatureSource, UpdateChannel,
 };
 use peterfan_core::error::CoreError;
 use peterfan_core::metrics::{DiskInfo, ProcSort, ProcessInfo};
@@ -558,6 +562,13 @@ fn parse_process_quit_command(
     })
 }
 
+fn is_native_preference_command(command: &str) -> bool {
+    matches!(command, "cpu-core-graph:0" | "cpu-core-graph:1")
+        || command.starts_with("display:")
+        || command.starts_with("character:")
+        || command.starts_with("settingsrequest:")
+}
+
 fn is_native_process_command(command: &str) -> bool {
     command.starts_with("processfilter:") || parse_process_quit_command(command).is_some()
 }
@@ -876,6 +887,11 @@ struct App {
     notification_runtime: NotificationRuntime,
     language: Language,
     show_cpu_core_graph: bool,
+    cpu_widget_config: CpuWidgetConfig,
+    cpu_widget_history: cpu_widget::CpuWidgetHistory,
+    cpu_widget_error: Option<String>,
+    #[cfg(target_os = "macos")]
+    cpu_widget_native: Option<native_cpu_widget::NativeCpuWidget>,
     tray: Option<TrayIcon>,
     tray_menu: Option<TrayMenu>,
     window: Option<Window>,
@@ -885,6 +901,7 @@ struct App {
     popover_visible: bool,
     popover_show_at: Option<Instant>,
     popover_tray_focus_loss_at: Option<Instant>,
+    popover_anchor_tray: Option<String>,
     /// `tray-icon` normally sends both Down and Up. Open on Down for macOS
     /// menu bars that swallow Up, then consume the matching Up event.
     left_button_down_seen: bool,
@@ -1355,6 +1372,7 @@ fn parse_automation_rules(rules_json: &str) -> Result<Vec<Rule>, String> {
 enum SettingsOperation {
     Rules,
     ImportConfig,
+    CpuWidget,
 }
 
 #[derive(serde::Deserialize)]
@@ -1477,6 +1495,9 @@ fn run_settings_request(request_json: &str) -> Option<String> {
     let result = match request.operation {
         SettingsOperation::Rules => save_automation_rules(&request.payload),
         SettingsOperation::ImportConfig => import_config(&request.payload),
+        SettingsOperation::CpuWidget => {
+            SettingsSaveResult::failed("CPU widget requires the GUI event loop".into())
+        }
     };
     let mut results = SETTINGS_RESULTS.lock().expect("settings results poisoned");
     results.push_back(serde_json::json!({
@@ -2395,6 +2416,7 @@ fn recover_after_pause(app: &mut App, now: Instant) {
         app.dashboard_slow_cache = DashboardSlowCache::default();
     }
     if plan.clear_dashboard_histories {
+        app.cpu_widget_history = cpu_widget::CpuWidgetHistory::default();
         app.fan_hist.clear();
         app.cpu_h.clear();
         app.per_core_h.clear();
@@ -2684,6 +2706,7 @@ fn main() {
     let update_channel = saved.update_channel;
     let language = saved.language;
     let show_cpu_core_graph = saved.show_cpu_core_graph;
+    let cpu_widget_config = saved.cpu_widget;
 
     let (monitor, provider): (Box<dyn SystemMonitor>, std::sync::Arc<dyn HardwareProvider>) =
         if use_mock {
@@ -2734,6 +2757,11 @@ fn main() {
         notification_runtime: NotificationRuntime::default(),
         language,
         show_cpu_core_graph,
+        cpu_widget_config,
+        cpu_widget_history: cpu_widget::CpuWidgetHistory::default(),
+        cpu_widget_error: None,
+        #[cfg(target_os = "macos")]
+        cpu_widget_native: None,
         tray: None,
         tray_menu: None,
         window: None,
@@ -2743,6 +2771,7 @@ fn main() {
         popover_visible: false,
         popover_show_at: None,
         popover_tray_focus_loss_at: None,
+        popover_anchor_tray: None,
         left_button_down_seen: false,
         detail_window: None,
         detail_webview: None,
@@ -2846,6 +2875,10 @@ fn main() {
             Event::NewEvents(StartCause::Init) => {
                 build_tray(&mut app);
                 #[cfg(target_os = "macos")]
+                if let Err(error) = cpu_widget_app::apply(&mut app, cpu_widget_config, false) {
+                    app.cpu_widget_error = Some(error.clone());report_preference_failure("CPU widget", error);
+                }
+                #[cfg(target_os = "macos")]
                 sync_native_runner_timer(&mut app);
                 // Offer one-time setup right away instead of leaving it
                 // buried in the right-click menu — other fan-control apps
@@ -2880,18 +2913,23 @@ fn main() {
                 window_id,
                 ..
             } => {
-                if app.window.as_ref().is_some_and(|w| w.id() == window_id) {
+                // Ordering out an old anchor can deliver a delayed blur after
+                // its replacement has been scheduled but is still hidden.
+                if app.popover_visible && app.window.as_ref().is_some_and(|w| w.id() == window_id) {
                     #[cfg(target_os = "macos")]
                     let tray_press = app.popover_visible
-                        && app.tray.as_ref().is_some_and(native_tray_left_press);
+                        && (app.tray.as_ref().is_some_and(|tray| app.popover_anchor_tray.as_deref() == Some(tray.id().as_ref()) && native_tray_left_press(tray))
+                            || app.cpu_widget_native.as_ref().is_some_and(|widget| app.popover_anchor_tray.as_deref() == Some(widget.tray().id().as_ref()) && native_tray_left_press(widget.tray())));
                     #[cfg(not(target_os = "macos"))]
                     let tray_press = false;
                     log_menubar_event(&format!("popover focus lost tray_press={tray_press}"));
+                    let owner = app.popover_anchor_tray.clone();
                     hide_popover(&mut app);
                     // AppKit can blur the popover before delivering the same
                     // status-item press. Preserve that click's close intent.
                     if tray_press {
                         app.popover_tray_focus_loss_at = Some(now);
+                        app.popover_anchor_tray = owner;
                     }
                 }
             }
@@ -3180,8 +3218,18 @@ fn main() {
                         refresh_after_pending = true;
                     }
                 } else if let Some(request) = c.strip_prefix("settingsrequest:") {
-                    if let Some(status) = run_settings_request(request) {
-                        *STATUS.lock().expect("status poisoned") = status;
+                    let parsed = parse_settings_request(request);
+                    let operation = parsed.as_ref().map(|r| r.operation);
+                    let status = if operation == Some(SettingsOperation::CpuWidget) {
+                        parsed.map(|request| cpu_widget_app::request(&mut app, request))
+                    } else { run_settings_request(request) };
+                    if let Some(status) = status { *STATUS.lock().expect("status poisoned") = status; }
+                    if operation == Some(SettingsOperation::ImportConfig) {
+                        #[cfg(target_os = "macos")]
+                        {
+                            let config = peterfan_platform::config::load().menubar.cpu_widget;
+                            if let Err(error) = cpu_widget_app::apply(&mut app, config, false) { app.cpu_widget_error = Some(error); }
+                        }
                     }
                     refresh_after_pending = true;
                 } else if let Some(json) = c.strip_prefix("rules:") {
@@ -3264,6 +3312,32 @@ fn main() {
         // Handle context-menu item selections.
         while let Ok(ev) = menu_events.try_recv() {
             let id = &ev.id;
+            #[cfg(target_os = "macos")]
+            if let Some(action) = app.cpu_widget_native.as_ref().and_then(|widget| widget.menu_action(id)) {
+                use native_cpu_widget::CpuWidgetAction;
+                match action {
+                    CpuWidgetAction::OpenDashboard => {
+                        if let Some((tray_id, rect)) = app.cpu_widget_native.as_ref().and_then(|widget| widget.tray().rect().map(|rect| (widget.tray().id().as_ref().to_string(), rect))) {
+                            hide_popover(&mut app);
+                            toggle_popover(&mut app, target, &tray_id, rect, &event_proxy);
+                        }
+                    }
+                    preference => {
+                        let mut config = app.cpu_widget_config;
+                        match preference {
+                            CpuWidgetAction::Enabled(enabled) => config.enabled = enabled,
+                            CpuWidgetAction::Style(style) => config.style = style,
+                            CpuWidgetAction::Percentage(show) => config.show_percentage = show,
+                            CpuWidgetAction::OpenDashboard => unreachable!(),
+                        }
+                        if let Err(error) = cpu_widget_app::apply(&mut app, config, true) {
+                            report_preference_failure("CPU widget", error);
+                        }
+                    }
+                }
+                next_metric_at = now;*control_flow = ControlFlow::WaitUntil(now);
+                continue;
+            }
             let mut matched_display: Option<MenubarDisplay> = None;
             let mut matched_character: Option<RunnerCharacter> = None;
             let mut matched_random = false;
@@ -3474,9 +3548,16 @@ fn main() {
                 button: MouseButton::Left,
                 button_state,
                 rect,
+                id,
                 ..
             } = ev
             {
+                let runner = app.tray.as_ref().map(|tray| (tray.id().as_ref(), tray.rect()));
+                #[cfg(target_os = "macos")]
+                let cpu = app.cpu_widget_native.as_ref().map(|widget| (widget.tray().id().as_ref(), widget.tray().rect()));
+                #[cfg(not(target_os = "macos"))]
+                let cpu = None;
+                let Some(live_rect) = clicked_tray_anchor(id.as_ref(), runner, cpu, rect) else { continue; };
                 let should_toggle = route_left_click(button_state, &mut app.left_button_down_seen);
                 log_menubar_event(&format!(
                     "tray left-click state={button_state:?} toggle={should_toggle} rect={rect:?}"
@@ -3486,8 +3567,7 @@ fn main() {
                     // the native status item. Re-read it at click time so a
                     // mixed-DPI display switch cannot anchor the popover to a
                     // stale menu-bar position.
-                    let live_rect = app.tray.as_ref().and_then(TrayIcon::rect).unwrap_or(rect);
-                    toggle_popover(&mut app, target, live_rect, &event_proxy);
+                    toggle_popover(&mut app, target, id.as_ref(), live_rect, &event_proxy);
                     if app.popover_show_at.is_some() {
                         // Tray events are drained after the normal wake deadline is
                         // calculated. Wake once immediately to inject a payload
@@ -3856,9 +3936,7 @@ fn build_popover(
                 || body == "toggle-login-item"
                 || body == "togglelogin"
                 || body.starts_with("updatechannel:")
-                || body.starts_with("display:")
-                || body.starts_with("character:")
-                || body.starts_with("settingsrequest:")
+                || is_native_preference_command(body)
                 || body.starts_with("rules:")
                 || body.starts_with("importconfig:")
                 || body.starts_with("notifications:")
@@ -4044,9 +4122,7 @@ fn open_detail_window(
                 || body == "toggle-login-item"
                 || body == "togglelogin"
                 || body.starts_with("updatechannel:")
-                || body.starts_with("display:")
-                || body.starts_with("character:")
-                || body.starts_with("settingsrequest:")
+                || is_native_preference_command(body)
                 || body.starts_with("rules:")
                 || body.starts_with("importconfig:")
                 || body.starts_with("notifications:")
@@ -4355,6 +4431,28 @@ fn native_tray_left_press(tray: &TrayIcon) -> bool {
         && point.y < frame.origin.y + frame.size.height
 }
 
+fn clicked_tray_anchor(
+    id: &str,
+    runner: Option<(&str, Option<Rect>)>,
+    cpu: Option<(&str, Option<Rect>)>,
+    event_rect: Rect,
+) -> Option<Rect> {
+    let valid = |rect: &Rect| {
+        rect.size.width > 0
+            && rect.size.height > 0
+            && rect.position.x.is_finite()
+            && rect.position.y.is_finite()
+    };
+    runner
+        .into_iter()
+        .chain(cpu)
+        .find(|(candidate, _)| *candidate == id)
+        .and_then(|(_, live)| {
+            live.filter(valid)
+                .or_else(|| valid(&event_rect).then_some(event_rect))
+        })
+}
+
 fn consume_tray_focus_dismissal(dismissed_at: &mut Option<Instant>, now: Instant) -> bool {
     // Bound stale state if AppKit cancels the original mouse gesture entirely.
     dismissed_at
@@ -4362,19 +4460,35 @@ fn consume_tray_focus_dismissal(dismissed_at: &mut Option<Instant>, now: Instant
         .is_some_and(|at| now.saturating_duration_since(at) <= Duration::from_millis(500))
 }
 
+fn tray_press_closes_popover(
+    owner: Option<&str>,
+    clicked: &str,
+    open: bool,
+    dismissed: bool,
+) -> bool {
+    owner == Some(clicked) && (open || dismissed)
+}
+
 fn toggle_popover(
     app: &mut App,
     target: &EventLoopWindowTarget<()>,
+    tray_id: &str,
     rect: Rect,
     event_proxy: &EventLoopProxy<()>,
 ) {
     let closed_by_this_press =
         consume_tray_focus_dismissal(&mut app.popover_tray_focus_loss_at, Instant::now());
-    if app.popover_visible || app.popover_show_at.is_some() || closed_by_this_press {
+    if tray_press_closes_popover(
+        app.popover_anchor_tray.as_deref(),
+        tray_id,
+        app.popover_visible || app.popover_show_at.is_some(),
+        closed_by_this_press,
+    ) {
         log_menubar_event("popover closed by tray click");
         hide_popover(app);
         return;
     }
+    hide_popover(app);
     if let Some(detail) = &app.detail_window {
         detail.set_visible(false);
     }
@@ -4437,11 +4551,13 @@ fn toggle_popover(
             position.x, position.y
         ));
     }
+    app.popover_anchor_tray = Some(tray_id.to_string());
 }
 
 fn hide_popover(app: &mut App) {
     app.popover_show_at = None;
     app.popover_tray_focus_loss_at = None;
+    app.popover_anchor_tray = None;
     if let Some(wv) = &app.webview {
         evaluate_dashboard_script(
             wv,
@@ -4782,6 +4898,16 @@ fn update(app: &mut App) {
     // validates the same file before applying rules.
     let config = peterfan_platform::config::load();
     app.update_channel = config.menubar.update_channel;
+    if app.cpu_widget_config != config.menubar.cpu_widget {
+        #[cfg(target_os = "macos")]
+        if let Err(error) = cpu_widget_app::apply(app, config.menubar.cpu_widget, false) {
+            app.cpu_widget_error = Some(error);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            app.cpu_widget_config = config.menubar.cpu_widget;
+        }
+    }
     app.monitor.refresh_quick();
     let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
     let popover_scheduled = app.popover_show_at.is_some();
@@ -4867,6 +4993,7 @@ fn update(app: &mut App) {
 
     push_hist(&mut app.fan_hist, fastest_pct);
     app.cpu_h.push(cpu.usage_percent);
+    cpu_widget_app::refresh(app, cpu.usage_percent);
     if app.per_core_h.len() != cpu.per_core.len() {
         app.per_core_h = (0..cpu.per_core.len())
             .map(|_| RangedHistory::new())
@@ -5341,6 +5468,10 @@ fn update(app: &mut App) {
         "settings_results": SETTINGS_RESULTS.lock().expect("settings results poisoned").clone(),
     });
     payload["config_toml"] = serde_json::json!(config.to_toml());
+    payload["cpu_widget"] = serde_json::json!(app.cpu_widget_config);
+    payload["cpu_widget_supported"] = serde_json::json!(cfg!(target_os = "macos"));
+    payload["cpu_widget_error"] = serde_json::json!(app.cpu_widget_error);
+    payload["cpu_widget_history"] = serde_json::json!(app.cpu_widget_history.values());
     payload["menubar_display"] = serde_json::json!(app.display.as_str());
     payload["runner_character"] = serde_json::json!(app.runner_character.as_str());
     payload["runner_random"] = serde_json::json!(app.random_runner.enabled());
@@ -8058,7 +8189,9 @@ fn dashboard_html_with_runner_pack(
             );
         }
     }
-    html.replace("__RUNNER_OPTIONS__", &runner_picker_options(lang))
+    html.replace("__CPU_WIDGET_SETTINGS__", include_str!("cpu_widget.html"))
+        .replace("__CPU_WIDGET_SCRIPT__", include_str!("cpu_widget.js"))
+        .replace("__RUNNER_OPTIONS__", &runner_picker_options(lang))
         .replace("__RUNNER_CHARACTERS__", &runner_character_values_json())
         .replace("__RUNNER_PREVIEWS__", runner_preview_alpha_json())
         .replace("__RUNNER_PREVIEW_FRAMES__", runner_preview_frames_json())
@@ -8565,6 +8698,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="runner-pace" id="runner-pace">CPU runner · waiting</div>
 </div>
 </div>
+__CPU_WIDGET_SETTINGS__
 <div class="settings-item" id="show-core-graph-setting">
 <div><div class="settings-item-title">CPU core graph</div><div class="settings-item-copy">Show live per-core CPU activity in the overview.</div></div>
 <button id="cpu-core-graph-toggle" class="panel-action secondary" aria-pressed="true" onclick="toggleCpuCoreGraph(this)">On</button>
@@ -9354,7 +9488,7 @@ window.__pf={
    if(d.temp_present)drawChart('temp-chart', d.temp_stale?[]:d.temp_hist, cssColor('--y','#f4c95d'), null, function(v){return v.toFixed(0)+'°C';});
    document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){var active=b.dataset.range===d.chart_range;b.classList.toggle('active',active);b.setAttribute('aria-pressed',active?'true':'false');});
  } else if(view==='settings'||view==='system'){
-   if(view==='settings'){updateSetup(d);updateMenubarDisplay(d);}
+   if(view==='settings'){updateSetup(d);updateMenubarDisplay(d);renderCpuWidget(d);}
    else {
      updateHardwareAvailability(d);
      set('system-load',d.load_avg_text||'—');
@@ -10601,6 +10735,7 @@ function setProcSort(s){
   if(mem){mem.classList.toggle('active',s==='mem');mem.setAttribute('aria-pressed',s==='mem'?'true':'false');}
   window.ipc.postMessage('procsort:'+s);
 }
+__CPU_WIDGET_SCRIPT__
 function setMenubarDisplay(style){
   if(!/^(number|cat|both)$/.test(style))return;
   var data=window.__pf_pending||{};
@@ -11338,6 +11473,74 @@ mod tests {
     /// on left-click by default, silently pre-empting our own click handler
     /// and making the popover permanently unreachable. No OS/window-server
     /// interaction needed — `TrayIconAttributes` is plain data.
+    #[test]
+    fn cpu_widget_anchor_tracks_clicked_item_and_rejects_invalid_native_geometry() {
+        let runner = tray_rect(100., 0., 52, 30);
+        let cpu = tray_rect(500., 0., 98, 30);
+        let event = tray_rect(501., 0., 98, 30);
+        assert_eq!(
+            clicked_tray_anchor(
+                "cpu",
+                Some(("runner", Some(runner))),
+                Some(("cpu", Some(cpu))),
+                event
+            ),
+            Some(cpu)
+        );
+        assert_eq!(
+            clicked_tray_anchor(
+                "runner",
+                Some(("runner", Some(runner))),
+                Some(("cpu", Some(cpu))),
+                event
+            ),
+            Some(runner)
+        );
+        assert_eq!(
+            clicked_tray_anchor(
+                "unknown",
+                Some(("runner", Some(runner))),
+                Some(("cpu", Some(cpu))),
+                event
+            ),
+            None
+        );
+        assert_eq!(
+            clicked_tray_anchor(
+                "cpu",
+                Some(("runner", Some(runner))),
+                Some(("cpu", Some(tray_rect(0., 0., 98, 0)))),
+                event
+            ),
+            Some(event)
+        );
+        assert_eq!(
+            clicked_tray_anchor("cpu", None, Some(("cpu", None)), Rect::default()),
+            None
+        );
+        assert_eq!(
+            clicked_tray_anchor(
+                "cpu",
+                None,
+                Some(("cpu", Some(tray_rect(f64::NAN, 0., 98, 30)))),
+                event
+            ),
+            Some(event)
+        );
+    }
+
+    #[test]
+    fn native_preference_bridges_accept_cpu_graph_and_widget_requests() {
+        assert!(is_native_preference_command("cpu-core-graph:1"));
+        assert!(is_native_preference_command("cpu-core-graph:0"));
+        assert!(is_native_preference_command("settingsrequest:{}"));
+        assert!(is_native_preference_command("display:both"));
+        assert!(!is_native_preference_command("cpu-core-graph:invalid"));
+        assert!(!is_native_preference_command("cmd:hold:1"));
+        let bridge_call = ["|| is_native_preference", "_command(body)"].concat();
+        assert_eq!(include_str!("main.rs").matches(&bridge_call).count(), 2);
+    }
+
     #[test]
     fn tray_attributes_route_clicks_correctly() {
         let (menu_on_left_click, menu_on_right_click) = click_routing();
@@ -13034,6 +13237,76 @@ mod tests {
             );
             assert!(ko.contains(runner_character_label(ResolvedLanguage::Ko, character)));
         }
+    }
+
+    #[test]
+    fn cpu_widget_settings_are_present_and_resolved_in_both_localizations() {
+        for language in [ResolvedLanguage::En, ResolvedLanguage::Ko] {
+            let html = dashboard_html(language, false);
+            assert!(html.contains("id=\"cpu-widget-setting\""));
+            assert!(html.contains("function renderCpuWidget(d)"));
+            assert!(html.contains("function setCpuWidget(field,value)"));
+            assert!(!html.contains("__CPU_WIDGET_"));
+            assert!(html.contains("renderCpuWidget(d);"));
+        }
+    }
+
+    #[test]
+    #[ignore = "writes isolated CPU-widget settings previews; no installed app operations"]
+    fn render_cpu_widget_settings_for_visual_qa() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target/cpu-widget-qa");
+        std::fs::create_dir_all(&directory).unwrap();
+        for language in [ResolvedLanguage::En, ResolvedLanguage::Ko] {
+            let lang = if language == ResolvedLanguage::Ko {
+                "ko"
+            } else {
+                "en"
+            };
+            let html = dashboard_html(language, false);
+            let bootstrap = r#"<script>
+window.__pf_pending={menubar_display:'both',runner_character:'cat',runner_random:false,runner_cpu_pct:45,runner_interval_ms:81,runner_reduce_motion:true,cpu_pct:45,cpu_widget_supported:true,cpu_widget:{enabled:true,style:'bar',show_percentage:true},cpu_widget_history:Array.from({length:60},function(_,i){return Math.max(0,Math.min(100,45+35*Math.sin(i*.3)));}),settings_results:[]};
+window.ipc={postMessage:function(message){document.body.dataset.lastCommand=message;if(message.indexOf('settingsrequest:')===0){var r=JSON.parse(message.slice(16));setTimeout(function(){var d=window.__pf_pending;d.cpu_widget=JSON.parse(r.payload);d.settings_results=[{id:r.id,operation:r.operation,ok:true}];renderCpuWidget(d);},80);}}};
+document.body.classList.add('data-ready');var loading=document.getElementById('data-loading');if(loading)loading.hidden=true;
+setRailView('settings');updateMenubarDisplay(window.__pf_pending);renderCpuWidget(window.__pf_pending);
+</script>"#;
+            std::fs::write(
+                directory.join(format!("settings-{lang}.html")),
+                html.replace("</body>", &format!("{bootstrap}</body>")),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn cpu_widget_cross_item_click_reanchors_and_same_item_toggles_closed() {
+        assert!(!tray_press_closes_popover(
+            Some("runner"),
+            "cpu",
+            true,
+            false
+        ));
+        assert!(!tray_press_closes_popover(
+            Some("cpu"),
+            "runner",
+            true,
+            false
+        ));
+        assert!(tray_press_closes_popover(Some("cpu"), "cpu", true, false));
+        assert!(tray_press_closes_popover(
+            Some("runner"),
+            "runner",
+            false,
+            true
+        ));
+        assert!(!tray_press_closes_popover(
+            Some("runner"),
+            "cpu",
+            false,
+            true
+        ));
+        assert!(!tray_press_closes_popover(None, "cpu", false, false));
     }
 
     #[test]

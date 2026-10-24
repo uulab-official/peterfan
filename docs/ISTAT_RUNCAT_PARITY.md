@@ -16,6 +16,7 @@ Reference points:
 | Capability | PeterFan | Product status |
 | --- | --- | --- |
 | Aggregate and per-core CPU usage | Live values and 2m/1h/1d history; Apple Silicon P/E group averages, peaks, and individual core detail | Ready |
+| Independent CPU menu-bar item | Optional bar, 60-sample history or percentage beside the runner; graph percentage can be hidden | Implemented in source; unreleased |
 | CPU frequency and load average | Live values; 1/5/15m load in System | Ready |
 | Memory, swap, and macOS breakdown | Live values and history | Ready |
 | Disk capacity and read/write activity | Live values and history | Ready |
