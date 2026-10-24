@@ -6,11 +6,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — Open-source contributor experience
 
-- Add an optional, independent macOS CPU menu-bar widget beside the runner:
-  bar, 60-sample history or numeric percentage, with optional numbers beside
-  graphs. It defaults off, reuses the existing CPU sample and preserves settings
-  on save failure. Both status items open the dashboard at the item clicked.
-- Restore the per-core CPU graph setting's IPC routing in both dashboard hosts.
 - Make the fan view's Set Up action open Settings first. Show an explicit
   Enable/Reinstall Fan Control action and installation progress at the destination,
   so opening settings never requests administrator installation by itself.
@@ -72,6 +67,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   images without recorded provenance from the current tree.
 - Validate release tags against main, pin source commits and restrict write tokens
   to artifact publication jobs; cover rejection paths with offline tests.
+
+## [1.32.8] — 2026-10-24 · Independent CPU menu-bar widget
+
+- Add an optional, independent macOS CPU menu-bar widget beside the runner:
+  bar, 60-sample history or numeric percentage, with optional numbers beside
+  graphs. It defaults off, reuses the existing CPU sample and preserves settings
+  on save failure. Both status items open the dashboard at the item clicked.
+- Restore the per-core CPU graph setting's IPC routing in both dashboard hosts.
+- Keep healthy compatible v1.32.7 fan helpers without another administrator
+  installation. Installed acceptance pins app and helper versions independently
+  while retaining all resource, identity, health and update-check requirements.
 
 ## [1.32.7] — 2026-10-24 · Bounded control work and fresh sensor safety
 

@@ -77,3 +77,99 @@ assert env['PETERFAN_SOAK_MAX_RSS_KB']=='262144'
 assert env['PETERFAN_SOAK_MAX_RSS_GROWTH_KB']=='65536'
 assert env['PETERFAN_SOAK_MAX_THREAD_GROWTH']=='16'
 `));
+
+const versionRun = `
+from types import SimpleNamespace
+import copy
+
+def run_versions(app_version, pinned_daemon, actual_daemon, log_version, health_versions=None):
+    with tempfile.TemporaryDirectory() as d:
+        m.ROOT=Path(d)
+        shutil.copyfile(sys.argv[2],m.ROOT/'observer-source.py')
+        app=m.ROOT/'PeterFan';app.write_bytes(b'app')
+        config=m.ROOT/'config.json';config.write_bytes(b'{}')
+        log=m.ROOT/'menubar.log'
+        log.write_text(f'101 v{log_version} app update completed automatic=true phase=current channel=stable last_attempt=Some(101) last_success=Some(101) next_check=Some(21701)\\n')
+        (m.ROOT/'update-check-history.json').write_text(json.dumps({'check_error':None,'last_success_unix':101}))
+        plan={'version':app_version,'app_pid':123,'daemon_pid':456,'app_started':'app-start','daemon_started':'helper-start','app_executable':str(app),'config_path':str(config),'requested_seconds':30,'sample_interval_seconds':10,'scope':'fixture only','job_label':'fixture','observer_sha256':'pinned','supervisor_sha256':'pinned','app_sha256':'pinned','daemon_sha256':'pinned','config_sha256':'pinned','require_scheduled_update':True,'started_unix':100,'menubar_log_path':str(log),'menubar_log_offset':0}
+        if pinned_daemon is not None: plan['daemon_version']=pinned_daemon
+        (m.ROOT/'launch.json').write_text(json.dumps(plan))
+        receipt=m.ROOT/'observer/menubar-fixture/summary.json';receipt.parent.mkdir(parents=True)
+        receipt.write_text(json.dumps({'passed':True,'requested_seconds':30,'measured_seconds':30,'config_preserved':True,'thresholds':dict(m.LIMITS),'metrics':{key:0 for key in m.LIMITS}}))
+        original_load=m.importlib.util.module_from_spec
+        def load(spec):
+            module=original_load(spec)
+            original_exec=spec.loader.exec_module
+            def execute(target):
+                original_exec(target)
+                class Sampler:
+                    def __init__(self,pid): self.pid=pid;self.clock=-10
+                    def identity(self):
+                        return target.Identity(str(app),'app-start') if self.pid==123 else target.Identity('/usr/local/bin/peterfand','helper-start')
+                    def snapshot(self,pinned):
+                        assert self.identity()==pinned
+                        self.clock+=10
+                        return target.Snapshot(self.clock,0,1024,1)
+                target.PsSampler=Sampler
+                target.ps=lambda *_:'fixture-start'
+            spec.loader.exec_module=execute
+            return module
+        health=iter(health_versions) if health_versions else None
+        def response(command):
+            if command=='version': return 'ok peterfand '+actual_daemon
+            if command=='status': return 'ok auto (macos)'
+            assert command=='temps'
+            return 'ok '+json.dumps({'daemon_version':next(health) if health else actual_daemon,'mode':'auto','fan_targets':{},'fan_overrides':{},'applied_control_revision':3,'control_revision':3,'temps_stale':False,'control_health':{'failsafe_active':False,'last_error':None,**{key:0 for key in m.COUNTERS}}})
+        process=Mock(pid=789);process.poll.return_value=None;process.wait.return_value=0
+        with patch.object(m.importlib.util,'module_from_spec',side_effect=load), patch.object(m,'sha',return_value='pinned'), patch.object(m,'ipc',side_effect=response), patch.object(m.subprocess,'Popen',return_value=process), patch.object(m.shutil,'disk_usage',return_value=Mock(free=2*1024**3)), patch.object(m.time,'sleep'):
+            status=m.main()
+        result=json.loads((m.ROOT/'combined-summary.json').read_text())
+        return status,result
+`;
+
+test('production observer accepts independently pinned app and helper versions', () => python(versionRun + `
+status,result=run_versions('1.32.8','1.32.7','1.32.7','1.32.8')
+assert status==0 and result['passed'] and result['samples']==3,result
+assert result['automatic_update_verified']=={'last_success_unix':101,'next_check_unix':21701},result
+`));
+
+test('production observer preserves legacy same-version baselines', () => python(versionRun + `
+status,result=run_versions('1.32.7',None,'1.32.7','1.32.7')
+assert status==0 and result['passed'] and result['samples']==3,result
+`));
+
+test('production observer rejects wrong helper health, periodic helper version and app update version', () => python(versionRun + `
+for actual,log,health,expected in [
+    ('1.32.8','1.32.8',None,'helper health/automatic'),
+    ('1.32.8','1.32.8',['1.32.7'],'helper version/status'),
+    ('1.32.7','1.32.8',['1.32.7','1.32.8'],'helper health/automatic'),
+    ('1.32.7','1.32.7',None,'native automatic update log/history/deadline mismatch'),
+]:
+    status,result=run_versions('1.32.8','1.32.7',actual,log,health)
+    assert status==1 and not result['passed'] and any(expected in error for error in result['errors']),result
+`));
+
+test('installed launcher freezes explicit helper version and defaults legacy baselines to app version', () => python(`
+spec=importlib.util.spec_from_file_location('launcher',Path(sys.argv[1]).with_name('start-installed-soak.py'))
+launcher=importlib.util.module_from_spec(spec);spec.loader.exec_module(launcher)
+from datetime import timezone
+for daemon_version,expected in [('1.32.7','1.32.7'),(None,'1.32.8')]:
+    with tempfile.TemporaryDirectory() as d:
+        home=Path(d)
+        (home/'Library/Application Support').mkdir(parents=True)
+        config=home/'config.json';config.write_text('{}')
+        config.with_name('update-check-history.json').write_text('{}')
+        log=home/'Library/Logs/PeterFan/menubar.log';log.parent.mkdir(parents=True);log.write_text('prior log')
+        baseline={'version':'1.32.8','app_pid':123,'daemon_pid':456,'app_started':'pinned-start','daemon_started':'pinned-start','app_executable':'/Applications/PeterFan.app/Contents/MacOS/PeterFan','config_path':str(config),'app_sha256':'pinned','daemon_sha256':'pinned','config_sha256':'pinned'}
+        if daemon_version is not None: baseline['daemon_version']=daemon_version
+        source=home/'baseline.json';source.write_text(json.dumps(baseline))
+        with patch.object(launcher.sys,'argv',['launcher','--baseline',str(source)]), patch.object(launcher.sys,'platform','darwin'), patch.object(launcher.os,'getuid',return_value=home.stat().st_uid,create=True), patch.object(launcher,'ZoneInfo',return_value=timezone.utc), patch.object(launcher.Path,'home',return_value=home), patch.object(launcher,'sha',return_value='pinned'), patch.object(launcher,'identity',return_value='pinned-start'), patch.object(launcher.subprocess,'check_output',return_value='source-commit'), patch.object(launcher.subprocess,'run'), patch.object(launcher.shutil,'disk_usage',return_value=Mock(free=2*1024**3)):
+            launcher.main()
+        launches=list((home/'Library/Application Support/PeterFan QA').glob('production-six-hour-*/launch.json'))
+        assert len(launches)==1,launches
+        plan=json.loads(launches[0].read_text())
+        assert plan['version']=='1.32.8' and plan['daemon_version']==expected,plan
+        assert plan['daemon_sha256']=='pinned' and plan['daemon_pid']==456 and plan['daemon_started']=='pinned-start',plan
+        assert plan['require_scheduled_update'] and plan['requested_seconds']==21600 and plan['sample_interval_seconds']==10,plan
+        assert json.loads(source.read_text())==baseline
+`));

@@ -115,6 +115,8 @@ def main():
             raise RuntimeError('less than 1 GiB free before observation')
         if sha(ROOT / 'observer-source.py') != plan['observer_sha256'] or sha(__file__) != plan['supervisor_sha256']:
             raise RuntimeError('frozen observer source changed')
+        # Older baselines used the app version for both binaries.
+        daemon_version = plan.get('daemon_version', plan['version'])
         sampler = observer.PsSampler(plan['daemon_pid'])
         identity = sampler.identity()
         if identity != observer.Identity('/usr/local/bin/peterfand', plan['daemon_started']):
@@ -127,7 +129,7 @@ def main():
                             ('config_sha256', plan['config_path'])]:
             if sha(path) != plan[field]:
                 raise RuntimeError(field + ' baseline mismatch')
-        initial = healthy_cache(plan['version'])
+        initial = healthy_cache(daemon_version)
         result['initial_control_health'] = initial['control_health']
         assertion = subprocess.Popen(['/usr/bin/caffeinate', '-i', '-w', str(os.getpid()),
                                       '-t', str(duration + 180)], stdin=subprocess.DEVNULL,
@@ -165,9 +167,9 @@ def main():
                     raise RuntimeError('suspend/stall sample gap exceeded')
                 cpu = observer.cpu_percent(previous.cpu_seconds, current.cpu_seconds, gap)
                 version, status = ipc('version'), ipc('status')
-                if version != 'ok peterfand ' + plan['version'] or status != 'ok auto (macos)':
+                if version != 'ok peterfand ' + daemon_version or status != 'ok auto (macos)':
                     raise RuntimeError('helper version/status changed')
-                cache = healthy_cache(plan['version'])
+                cache = healthy_cache(daemon_version)
                 result['last_control_health'] = cache['control_health']
                 health_log.write(json.dumps({'elapsed_seconds': current.clock - first.clock, **cache}) + '\n')
                 health_log.flush()

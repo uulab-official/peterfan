@@ -72,7 +72,8 @@ def main():
     shutil.copyfile(config.with_name('update-check-history.json'), run / 'update-history-baseline.json')
     shutil.copyfile(args.baseline, run / 'previous-verified-baseline.json')
     label = 'kr.co.uulab.peterfan.qa-soak.' + stamp.lower()
-    plan = {**baseline, 'started_at': now.isoformat(), 'started_unix': int(now.timestamp()),
+    plan = {**baseline, 'daemon_version': baseline.get('daemon_version', baseline['version']),
+            'started_at': now.isoformat(), 'started_unix': int(now.timestamp()),
             'expected_end_at': (now + timedelta(seconds=args.seconds)).isoformat(),
             'expected_end_kst': (now + timedelta(seconds=args.seconds)).astimezone(ZoneInfo('Asia/Seoul')).isoformat(),
             'requested_seconds': args.seconds, 'sample_interval_seconds': args.interval,
