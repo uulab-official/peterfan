@@ -142,7 +142,11 @@ mod tests {
     use super::*;
 
     fn filled(rgba: &[u8]) -> usize {
-        rgba.chunks_exact(4).filter(|p| p[3] == 255).count()
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] == 255)
+            .count()
     }
 
     #[test]
@@ -157,7 +161,11 @@ mod tests {
                     pixels.len(),
                     (WIDGET_PIXEL_WIDTH * WIDGET_PIXEL_HEIGHT * 4) as usize
                 );
-                assert!(pixels.chunks_exact(4).all(|p| p[0] == p[1] && p[1] == p[2]));
+                assert!(pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|p| p[0] == p[1] && p[1] == p[2]));
                 filled(&pixels)
             })
             .collect();
