@@ -588,6 +588,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
 name = "dirs-sys"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2075,7 +2084,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
- "dirs",
+ "dirs 7.0.0",
  "libc",
  "owo-colors",
  "peterfan-core",
@@ -2113,7 +2122,7 @@ name = "peterfan-menubar"
 version = "1.32.8"
 dependencies = [
  "block2",
- "dirs",
+ "dirs 7.0.0",
  "libc",
  "objc2",
  "objc2-app-kit",
@@ -2136,7 +2145,7 @@ version = "1.32.8"
 dependencies = [
  "core-foundation",
  "core-foundation-sys",
- "dirs",
+ "dirs 7.0.0",
  "libc",
  "macsmc",
  "peterfan-core",
@@ -3069,7 +3078,7 @@ name = "tray-icon"
 version = "0.24.1"
 dependencies = [
  "crossbeam-channel",
- "dirs",
+ "dirs 6.0.0",
  "libappindicator",
  "muda",
  "objc2",
@@ -3618,7 +3627,7 @@ dependencies = [
  "block2",
  "cookie",
  "crossbeam-channel",
- "dirs",
+ "dirs 6.0.0",
  "dom_query",
  "dpi",
  "dunce",
