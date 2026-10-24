@@ -1,6 +1,6 @@
 # Long-run daemon safety and six-hour acceptance — 2026-10-24
 
-Scope: v1.32.7 candidate, one physical Mac. A six-hour run is a separate runtime
+Scope: public v1.32.7, one physical Apple M5 Max Mac (`Mac17,7`). A six-hour run is a separate runtime
 gate; source tests, prior process uptime and the previous ten-minute run do not
 complete it. The current release remains beta until the documented remaining
 hardware and recovery gates have evidence.
@@ -63,6 +63,53 @@ configuration. Wall-clock adjustments cannot create a false elapsed interval.
    may sleep normally. This run does not prove physical sleep/wake or power-loss
    recovery, forced update interruption, Windows runtime or other Mac models.
 
-Run state and measured results will be recorded after the final installed build
-starts and completes observation. A scheduled follow-up or an active process is
-not a passing six-hour result.
+## Signed release and installed-Mac acceptance
+
+[Public v1.32.7](https://github.com/uulab-official/peterfan/releases/tag/v1.32.7)
+was published at 2026-10-24T01:53:18Z. Immutable source tag points to
+`4a9114f9b74ae54aa028df9ca2bb5499f9fa87de`.
+[Source main CI](https://github.com/uulab-official/peterfan/actions/runs/40050902718)
+and [Windows main CI](https://github.com/uulab-official/peterfan/actions/runs/40050902713)
+pass all six checks. The [native Windows release run](https://github.com/uulab-official/peterfan/actions/runs/40051218206)
+builds, installs, verifies and attaches the exact tag's Windows archive.
+
+Both Mac architectures, app/DMG code signatures, Apple notarization tickets and
+Gatekeeper acceptance pass. Complete release-directory integrity, all four
+provider asset digests and all three manifest hashes match:
+
+```text
+97702c1da0e78f230fc4c05cc341a4036ef86515e56ab4806d8358116095cd6c  PeterFan-v1.32.7.dmg
+7205a1a40c21825b827556fbbe1adf4a6eee19494ade3ca2380c1928cab260b0  peterfan-v1.32.7-universal-apple-darwin.tar.gz
+aa081960d512eeced80ccfbc6a4cbcd24a14e6e7e169aca334ece301ae305289  peterfan-v1.32.7-x86_64-pc-windows-msvc.zip
+```
+
+The installed v1.32.6 CLI uses the public feed to download, verify, replace and
+relaunch v1.32.7. A fresh per-launch native tray/WebView readiness acknowledgement
+and one new surviving installed process confirm delivery. Installed app/helper
+bytes match the public package, and native strict signature, staple and Gatekeeper
+checks pass. The secure v1.32.6 resident helper automatically becomes v1.32.7
+without another administrator prompt; root ownership, mode 0755 and a root-owned
+mode 0644 service plist without quarantine are verified. User configuration stays
+byte-identical.
+
+The real fans reach 7599 RPM, 7781 RPM (reported maximum 7,826 RPM) in
+9.22 seconds. A `finally` restores automatic control. The daemon confirms matching
+requested/applied revisions, no manual fan targets or overrides, and no sensor,
+fan-write or fan-readback failures. Fresh automatic update discovery succeeds on
+the final installed app, with persisted success history and a 21,600-second next
+check. These results apply to this one Mac.
+
+## Six-hour observation — in progress
+
+The final installed app and resident helper began fresh measurement at
+**2026-10-24 10:55:13 KST**; expected finish is **16:55:13 KST**. Both observers are
+running detached, ten-second samples are present and initial helper health is
+valid. Neither measured process will be replaced during this window.
+
+Frozen scripts, SHA-256/identity baseline, live CSV, control-health samples and
+final receipts are retained locally in
+`target/production-six-hour-20261024T015512Z/`. An hourly thread follow-up stays
+quiet on unchanged progress and reports completion, failure or required action.
+Six hours have not yet elapsed; no long-run pass or final metrics are claimed.
+Physical sleep/wake, forced Mac installation interruption, Windows runtime soak
+and other Mac models remain unverified.

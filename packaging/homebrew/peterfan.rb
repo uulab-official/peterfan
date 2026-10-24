@@ -16,8 +16,8 @@
 class Peterfan < Formula
   desc "Tiny hardware monitor & fan controller for developers"
   homepage "https://github.com/uulab-official/peterfan"
-  url "https://github.com/uulab-official/peterfan/releases/download/v1.32.6/peterfan-v1.32.6-universal-apple-darwin.tar.gz"
-  sha256 "dd92c9d9310578220136c332838b41e6fe5f3d1144c6468c00fc7d418a2a70c3"
+  url "https://github.com/uulab-official/peterfan/releases/download/v1.32.7/peterfan-v1.32.7-universal-apple-darwin.tar.gz"
+  sha256 "7205a1a40c21825b827556fbbe1adf4a6eee19494ade3ca2380c1928cab260b0"
   license "MIT"
 
   depends_on :macos
