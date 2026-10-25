@@ -3326,7 +3326,7 @@ fn main() {
                         let mut config = app.cpu_widget_config;
                         match preference {
                             CpuWidgetAction::Enabled(enabled) => config.enabled = enabled,
-                            CpuWidgetAction::Style(style) => config.style = style,
+                            CpuWidgetAction::Style(style) => config = config.select_style(style),
                             CpuWidgetAction::Percentage(show) => config.show_percentage = show,
                             CpuWidgetAction::OpenDashboard => unreachable!(),
                         }
@@ -4993,7 +4993,7 @@ fn update(app: &mut App) {
 
     push_hist(&mut app.fan_hist, fastest_pct);
     app.cpu_h.push(cpu.usage_percent);
-    cpu_widget_app::refresh(app, cpu.usage_percent);
+    cpu_widget_app::refresh(app, cpu.usage_percent, &cpu.per_core);
     if app.per_core_h.len() != cpu.per_core.len() {
         app.per_core_h = (0..cpu.per_core.len())
             .map(|_| RangedHistory::new())
@@ -5472,6 +5472,7 @@ fn update(app: &mut App) {
     payload["cpu_widget_supported"] = serde_json::json!(cfg!(target_os = "macos"));
     payload["cpu_widget_error"] = serde_json::json!(app.cpu_widget_error);
     payload["cpu_widget_history"] = serde_json::json!(app.cpu_widget_history.values());
+    payload["cpu_widget_cores"] = serde_json::json!(app.cpu_widget_history.core_values());
     payload["menubar_display"] = serde_json::json!(app.display.as_str());
     payload["runner_character"] = serde_json::json!(app.runner_character.as_str());
     payload["runner_random"] = serde_json::json!(app.random_runner.enabled());
@@ -13256,7 +13257,7 @@ mod tests {
     fn render_cpu_widget_settings_for_visual_qa() {
         let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("target/cpu-widget-qa");
+            .join("target/cpu-per-core-qa/exported");
         std::fs::create_dir_all(&directory).unwrap();
         for language in [ResolvedLanguage::En, ResolvedLanguage::Ko] {
             let lang = if language == ResolvedLanguage::Ko {
@@ -13266,7 +13267,7 @@ mod tests {
             };
             let html = dashboard_html(language, false);
             let bootstrap = r#"<script>
-window.__pf_pending={menubar_display:'both',runner_character:'cat',runner_random:false,runner_cpu_pct:45,runner_interval_ms:81,runner_reduce_motion:true,cpu_pct:45,cpu_widget_supported:true,cpu_widget:{enabled:true,style:'bar',show_percentage:true},cpu_widget_history:Array.from({length:60},function(_,i){return Math.max(0,Math.min(100,45+35*Math.sin(i*.3)));}),settings_results:[]};
+window.__pf_pending={menubar_display:'both',runner_character:'cat',runner_random:false,runner_cpu_pct:45,runner_interval_ms:81,runner_reduce_motion:true,cpu_pct:45,cpu_widget_supported:true,cpu_widget:{enabled:true,style:'cores',show_percentage:false},cpu_widget_cores:[0,15,30,50,75,100,25,65,40,85],cpu_widget_history:Array.from({length:60},function(_,i){return Math.max(0,Math.min(100,45+35*Math.sin(i*.3)));}),settings_results:[]};
 window.ipc={postMessage:function(message){document.body.dataset.lastCommand=message;if(message.indexOf('settingsrequest:')===0){var r=JSON.parse(message.slice(16));setTimeout(function(){var d=window.__pf_pending;d.cpu_widget=JSON.parse(r.payload);d.settings_results=[{id:r.id,operation:r.operation,ok:true}];renderCpuWidget(d);},80);}}};
 document.body.classList.add('data-ready');var loading=document.getElementById('data-loading');if(loading)loading.hidden=true;
 setRailView('settings');updateMenubarDisplay(window.__pf_pending);renderCpuWidget(window.__pf_pending);

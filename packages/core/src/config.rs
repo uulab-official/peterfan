@@ -227,6 +227,7 @@ pub enum CpuWidgetStyle {
     Bar,
     History,
     Number,
+    Cores,
 }
 
 impl CpuWidgetStyle {
@@ -235,6 +236,7 @@ impl CpuWidgetStyle {
             "bar" => Some(Self::Bar),
             "history" => Some(Self::History),
             "number" => Some(Self::Number),
+            "cores" => Some(Self::Cores),
             _ => None,
         }
     }
@@ -244,6 +246,7 @@ impl CpuWidgetStyle {
             Self::Bar => "bar",
             Self::History => "history",
             Self::Number => "number",
+            Self::Cores => "cores",
         }
     }
 }
@@ -268,6 +271,14 @@ impl Default for CpuWidgetConfig {
 }
 
 impl CpuWidgetConfig {
+    pub fn select_style(mut self, style: CpuWidgetStyle) -> Self {
+        if style == CpuWidgetStyle::Cores && self.style != style {
+            self.show_percentage = false;
+        }
+        self.style = style;
+        self
+    }
+
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
@@ -720,12 +731,44 @@ impl Config {
 
     /// Parse a config from TOML text.
     pub fn from_toml(s: &str) -> Result<Self, String> {
-        toml::from_str(s).map_err(|e| e.to_string())
+        let mut value: toml::Value = toml::from_str(s).map_err(|e| e.to_string())?;
+        if let Some(widget) = value
+            .get_mut("menubar")
+            .and_then(|v| v.get_mut("cpu_widget"))
+            .and_then(toml::Value::as_table_mut)
+        {
+            if let Some(flag) = widget.get("per_core_bars") {
+                let enabled = flag
+                    .as_bool()
+                    .ok_or("menubar.cpu_widget.per_core_bars must be a boolean")?;
+                if enabled
+                    && widget
+                        .get("style")
+                        .is_none_or(|v| v.as_str() == Some("bar"))
+                {
+                    widget.insert("style".into(), toml::Value::String("cores".into()));
+                }
+            }
+        }
+        value.try_into().map_err(|e: toml::de::Error| e.to_string())
     }
 
     /// Render this config as pretty TOML (with a header comment).
     pub fn to_toml(&self) -> String {
-        let body = toml::to_string_pretty(self).unwrap_or_default();
+        let body = if self.menubar.cpu_widget.style == CpuWidgetStyle::Cores {
+            // Helpers from v1.32.8 deserialize the full Config. Keep their
+            // known enum value on disk and use an additive UI-only flag; JSON
+            // settings requests/payloads continue to use the `cores` mode.
+            let mut value = toml::Value::try_from(self).expect("valid configuration serializes");
+            let widget = value["menubar"]["cpu_widget"]
+                .as_table_mut()
+                .expect("non-default CPU widget is serialized");
+            widget.insert("style".into(), toml::Value::String("bar".into()));
+            widget.insert("per_core_bars".into(), toml::Value::Boolean(true));
+            toml::to_string_pretty(&value).unwrap_or_default()
+        } else {
+            toml::to_string_pretty(self).unwrap_or_default()
+        };
         let example = if self.rules.is_empty() {
             "\n# Automation rules (evaluated in order; first match wins). Examples:\n\
              # [[rules]]\n# when = \"cpu_above:85\"   # on_battery | on_ac | cpu_above:N | time:22-7\n\
@@ -863,7 +906,7 @@ mod tests {
         assert_eq!(value["cpu_widget"]["enabled"], false);
         assert_eq!(value["cpu_widget"]["style"], "bar");
         assert_eq!(value["cpu_widget"]["show_percentage"], true);
-        for style in ["bar", "history", "number"] {
+        for style in ["bar", "history", "number", "cores"] {
             let original = format!("interval_secs = 7\n[menubar]\ncharacter = \"fox\"\n[menubar.cpu_widget]\nenabled = true\nstyle = \"{style}\"\nshow_percentage = false\n");
             let cfg = Config::from_toml(&original).unwrap();
             let saved = cfg.to_toml();
@@ -881,6 +924,93 @@ mod tests {
         assert_eq!(
             serde_json::to_value(partial.menubar).unwrap()["cpu_widget"]["style"],
             "bar"
+        );
+    }
+
+    #[test]
+    fn cpu_widget_core_mode_hides_number_only_when_entering() {
+        let config = CpuWidgetConfig::default().select_style(CpuWidgetStyle::Cores);
+        assert_eq!(CpuWidgetStyle::parse("cores"), Some(CpuWidgetStyle::Cores));
+        assert_eq!(CpuWidgetStyle::Cores.as_str(), "cores");
+        assert!(!config.show_percentage);
+        let with_number = CpuWidgetConfig {
+            show_percentage: true,
+            ..config
+        };
+        assert!(
+            with_number
+                .select_style(CpuWidgetStyle::Cores)
+                .show_percentage
+        );
+        assert!(
+            with_number
+                .select_style(CpuWidgetStyle::History)
+                .show_percentage
+        );
+    }
+
+    #[test]
+    fn cpu_widget_core_mode_disk_format_remains_readable_by_v1328_helpers() {
+        // Frozen widget enum/schema from the immutable v1.32.8 release. Older
+        // helpers deserialize the entire user Config, including this UI block.
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[serde(rename_all = "lowercase")]
+        enum LegacyStyle {
+            Bar,
+            History,
+            Number,
+        }
+        #[derive(Deserialize)]
+        struct LegacyWidget {
+            enabled: bool,
+            style: LegacyStyle,
+            show_percentage: bool,
+        }
+        for enabled in [false, true] {
+            for show_percentage in [false, true] {
+                let config = Config {
+                    interval_secs: 7,
+                    profile: Profile::Gaming,
+                    menubar: MenubarConfig {
+                        cpu_widget: CpuWidgetConfig {
+                            enabled,
+                            style: CpuWidgetStyle::Cores,
+                            show_percentage,
+                        },
+                        ..MenubarConfig::default()
+                    },
+                    ..Config::default()
+                };
+                let stored = config.to_toml();
+                let value: toml::Value = toml::from_str(&stored).unwrap();
+                let widget = value["menubar"]["cpu_widget"].clone();
+                let old: LegacyWidget = widget
+                    .try_into()
+                    .expect("existing helpers must still parse UI preferences");
+                assert_eq!(old.style, LegacyStyle::Bar);
+                assert_eq!(old.enabled, enabled);
+                assert_eq!(old.show_percentage, show_percentage);
+                let restored = Config::from_toml(&stored).unwrap();
+                assert_eq!(restored.menubar.cpu_widget.style, CpuWidgetStyle::Cores);
+                assert_eq!(restored.interval_secs, 7);
+                assert_eq!(restored.profile, Profile::Gaming);
+                assert_eq!(
+                    serde_json::to_value(restored.menubar.cpu_widget).unwrap()["style"],
+                    "cores"
+                );
+            }
+        }
+        assert!(Config::from_toml(
+            "[menubar.cpu_widget]\nstyle=\"bar\"\nper_core_bars=\"invalid\"\n"
+        )
+        .is_err());
+        assert_eq!(
+            Config::from_toml("[menubar.cpu_widget]\nstyle=\"history\"\nper_core_bars=true\n")
+                .unwrap()
+                .menubar
+                .cpu_widget
+                .style,
+            CpuWidgetStyle::History
         );
     }
 

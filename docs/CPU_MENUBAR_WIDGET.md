@@ -52,3 +52,33 @@ unit evidence described above.
 
 Reference: [iStat Menus CPU settings](https://register.bjango.com/help/istatmenus7/cpugpu/).
 PeterFan uses original raster rendering and its existing CPU samples.
+
+## Per-core bars (v1.32.9 source; publication pending)
+
+The new **Per-core bars / 코어별 바** mode shows one vertical bar for each
+logical CPU in the existing monitor samples. Each bar has its own fixed 0–100%
+scale: eight logical CPUs produce eight bars and ten produce ten. These are
+simultaneous individual readings, rather than columns of aggregate history.
+Intel Hyper-Threading CPUs are included as separate logical CPUs.
+
+The JSON/UI style is `cores`. On disk, the compatible representation is
+`style = "bar"` plus `per_core_bars = true` inside `[menubar.cpu_widget]`.
+Existing helpers can therefore read the full shared fan configuration without
+a new enum value or a helper upgrade. New apps resolve the flag to per-core mode.
+
+Entering this mode hides the aggregate percentage. You can enable it again;
+selecting the already active mode retains that choice. Existing modes keep
+their preferences. The native graph expands for the reported topology, while
+its width stays fixed as utilization changes. Settings previews scale to fit
+narrow windows. Missing values have unavailable markers and never reuse an old
+load. The mode uses the existing widget cadence and creates no sampling worker.
+
+This section describes source functionality beyond public v1.32.8. Development
+does not replace the installed app or alter its fan/helper settings. Release,
+installed visual acceptance, actual OTA and a final-build six-hour observation
+for this mode require separate evidence; no earlier run covers it.
+
+![Per-core settings preview with fixture readings](images/peterfan-cpu-cores-settings-qa.png)
+
+The settings image uses test data; it is not installed-client or OTA evidence.
+See [per-core release acceptance](CPU_PER_CORE_RELEASE_2026-10-25.md).

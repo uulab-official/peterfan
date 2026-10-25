@@ -82,12 +82,12 @@ pub(super) fn apply(
     Ok(())
 }
 
-pub(super) fn refresh(app: &mut App, usage: f32) {
+pub(super) fn refresh(app: &mut App, usage: f32, per_core: &[f32]) {
     if !app.cpu_widget_config.enabled {
         return;
     }
     app.cpu_widget_history
-        .sample_at(usage, std::time::Instant::now());
+        .sample_cpu_at(usage, per_core, std::time::Instant::now());
     #[cfg(target_os = "macos")]
     if let Some(widget) = &mut app.cpu_widget_native {
         match widget.update(

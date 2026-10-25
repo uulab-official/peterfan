@@ -53,6 +53,10 @@ is released in v1.32.8 with verified public-feed OTA on one Mac. Actual installe
 widget visual/click checks and the new six-hour result are tracked separately in
 [CPU widget release acceptance](docs/CPU_WIDGET_RELEASE_2026-10-24.md).
 
+Source v1.32.9 adds **Per-core bars**, one 0–100% bar per logical CPU, with
+percentage hidden on entry. See [per-core release acceptance](docs/CPU_PER_CORE_RELEASE_2026-10-25.md);
+publication, installed OTA and final-build six-hour acceptance are tracked separately.
+
 ## Repository Map
 
 - `packages/cli`: CLI (`peterfan`)
