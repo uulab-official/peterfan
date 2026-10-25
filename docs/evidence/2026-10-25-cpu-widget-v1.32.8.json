@@ -1,0 +1,131 @@
+{
+  "version": "1.32.8",
+  "source_commit": "e923ec9754513d6bc3eae05e3cb41d90d427c79d",
+  "source_pr": 20,
+  "source_ci_runs": [
+    40100337273,
+    40100337357
+  ],
+  "source_ci_passed": 6,
+  "release_url": "https://github.com/uulab-official/peterfan/releases/tag/v1.32.8",
+  "published_at": "2026-10-25T02:45:03Z",
+  "unauthenticated_public_feed_verified": true,
+  "prior_v1327_artifacts_preserved": true,
+  "assets": [
+    {
+      "name": "checksums.txt",
+      "size": 310,
+      "digest": "sha256:c33a64346fd79970728c2bc19298b887ed45a68b6089153efaf25d3c3e8096c8",
+      "browser_download_url": "https://github.com/uulab-official/peterfan/releases/download/v1.32.8/checksums.txt"
+    },
+    {
+      "name": "peterfan-v1.32.8-universal-apple-darwin.tar.gz",
+      "size": 20740738,
+      "digest": "sha256:5a7f892708e429063dd3dab71a02717421559ae9791fb499fd1e7a551bc6cade",
+      "browser_download_url": "https://github.com/uulab-official/peterfan/releases/download/v1.32.8/peterfan-v1.32.8-universal-apple-darwin.tar.gz"
+    },
+    {
+      "name": "peterfan-v1.32.8-x86_64-pc-windows-msvc.zip",
+      "size": 6071500,
+      "digest": "sha256:dea858c73844b43b156fcdf2abd4bfc91a92ace75983b1fbebcae05194ef3440",
+      "browser_download_url": "https://github.com/uulab-official/peterfan/releases/download/v1.32.8/peterfan-v1.32.8-x86_64-pc-windows-msvc.zip"
+    },
+    {
+      "name": "PeterFan-v1.32.8.dmg",
+      "size": 10632069,
+      "digest": "sha256:c59189fde969a8e15e8ee46d68e9503a693330ea754c7d4c6338abaad40df3f6",
+      "browser_download_url": "https://github.com/uulab-official/peterfan/releases/download/v1.32.8/PeterFan-v1.32.8.dmg"
+    }
+  ],
+  "mac_native_checks_passed": 6,
+  "mac_architectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "windows_native_release_run": {
+    "conclusion": "success",
+    "databaseId": 40154956336,
+    "displayTitle": "Windows v1.32.8",
+    "headSha": "e923ec9754513d6bc3eae05e3cb41d90d427c79d",
+    "status": "completed"
+  },
+  "public_ota": {
+    "from": "1.32.7",
+    "to": "1.32.8",
+    "old_app_pid": 278,
+    "new_app_pid": 65859,
+    "new_app_started": "Sun Oct 25 11:45:55 2026",
+    "native_readiness_verified": true,
+    "installed_artifact_hashes": {
+      "Contents/MacOS/PeterFan": "f58d873170b62468bd3adc737f436f3fe7b397a784efeec150597fafb953de9e",
+      "Contents/MacOS/peterfand": "9dd7e98bdb848b2488305d067dbd66692303f7cb7fcfa3bc8ab6175e144a15c2",
+      "Contents/Info.plist": "bb017bb344a4c48fef5af3fc204f050ef795440059bd99410392bef7754a2510"
+    },
+    "trust_check_exit_codes": [
+      0,
+      0,
+      0
+    ],
+    "settings_sha256_before_and_after_ota": "41ff0d5f438be90c05afd92d1f6e40e204ee568aa514601d49bda2682ba2a1c9",
+    "helper_version": "1.32.7",
+    "helper_pid": 324,
+    "helper_sha256": "41d67fa635dc6914a43a6ee411cdd33042f18ac4d7144880f78814da2f8460f1",
+    "helper_preserved": true,
+    "automatic_update_history": {
+      "schema_version": 1,
+      "channel": "stable",
+      "last_attempt_unix": 1792896375,
+      "last_success_unix": 1792896376,
+      "check_error": null
+    }
+  },
+  "helper_control_health": {
+    "daemon_version": "1.32.7",
+    "mode": "auto",
+    "desired_revision": 4,
+    "applied_revision": 4,
+    "temps_stale": false,
+    "fan_targets": {},
+    "fan_overrides": {},
+    "control_health": {
+      "consecutive_fan_readback_failures": 0,
+      "consecutive_fan_write_failures": 0,
+      "consecutive_sensor_failures": 0,
+      "failsafe_active": false,
+      "fan_readback_failure_count": 0,
+      "fan_write_failure_count": 0,
+      "last_error": null,
+      "last_fan_readback_ok_unix": 1792806868,
+      "last_sensor_ok_unix": 1792896531,
+      "retry_after_unix": null,
+      "sensor_failure_count": 0,
+      "stale_fan_ids": []
+    }
+  },
+  "doctor": {
+    "health": "ok",
+    "issues": [],
+    "checks": {
+      "fan_control_readiness": "daemon_ready",
+      "metrics_ready": true,
+      "thermal_ready": true
+    },
+    "minimum_helper_version": "1.32.7",
+    "helper_compatible": true
+  },
+  "cpu_widget_configuration": {
+    "requested": {
+      "enabled": true,
+      "style": "bar",
+      "show_percentage": true
+    },
+    "sha256": "b3495d26a94ffc2aeb8693a69709c50116f8b01285fb60fc0a14d9e247f39775",
+    "unrelated_values_preserved": true,
+    "actual_ui_visual_style_click_acceptance": "pending native dashboard access"
+  },
+  "new_six_hour": {
+    "state": "not started; installed widget UI acceptance pending",
+    "previous_v1327_time_counted": 0
+  },
+  "scope": "one Apple M5 Max Mac17,7; physical sleep/wake, forced macOS installation interruption, other hardware and final-build six-hour result remain unverified"
+}

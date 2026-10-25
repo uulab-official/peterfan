@@ -5,6 +5,31 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 The first section summarizes the current release; lower sections retain earlier
 evidence and gaps at those checkpoints.
 
+## CPU-widget public release and OTA — 2026-10-25
+
+- [x] Immutable v1.32.8 source `e923ec9` and six passing exact-main CI jobs.
+- [x] Developer ID signed/notarized/stapled universal Mac app and DMG, strict
+      signatures and Gatekeeper; native Windows package/install/real-metrics/
+      tray/WebView2/startup/uninstall gates and all provider/manifest hashes pass.
+- [x] Public latest release identified as `v1.32.8`; all four assets verified; prior
+      v1.32.7 public artifacts are preserved. Homebrew pins the actual release hashes.
+- [x] Public OTA v1.32.7 → v1.32.8 produces a new surviving app, fresh matching
+      native readiness, exact installed bytes and valid trust. Settings remain
+      unchanged through OTA; the compatible resident helper stays v1.32.7 in Auto.
+      Doctor is healthy; fresh sensors, matching control revision, empty manual
+      targets/overrides and cumulative error counters zero are verified.
+- [x] New app automatically checks successfully at 11:46:16 KST and persists the
+      next six-hour deadline. Only the requested CPU Bar/percentage preferences
+      are subsequently enabled; all unrelated TOML values are preserved.
+- [ ] Actual installed CPU-widget visual/style/settings/click acceptance: native
+      automation needs the user to open the hidden dashboard once.
+- [ ] New strict-limit calibration, full 21,600-second installed-build run and
+      independent final result audit. The old v1.32.7 run contributes no time.
+
+See [release and installed acceptance](CPU_WIDGET_RELEASE_2026-10-24.md) and
+[sanitized release/OTA evidence](evidence/2026-10-25-cpu-widget-v1.32.8.json).
+Beta status and the separate physical sleep/interruption/additional-hardware gates remain.
+
 ## Long-run safety release and completed acceptance — 2026-10-24
 
 - [x] Final v1.32.7 contributor gate: 536 Rust tests plus the explicit canonical
@@ -37,8 +62,8 @@ evidence and gaps at those checkpoints.
 - [ ] Physical sleep/wake, forced macOS interruption and additional Mac models.
       Beta status is retained; elapsed uptime is not an observation result.
 - [x] Optional CPU-widget source is merged through PR18 with six passing CI jobs.
-      It remains unreleased and is not covered by the installed v1.32.7 soak.
-      Native release/OTA adoption and a new final-build long run are separate gates.
+      It was released in v1.32.8 on 2026-10-25 and is not covered by the v1.32.7 soak.
+      See the current release section for OTA and pending final-build gates.
 
 See [failure paths and acceptance protocol](LONG_RUN_SAFETY_2026-10-24.md).
 
