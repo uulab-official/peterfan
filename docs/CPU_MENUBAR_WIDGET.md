@@ -1,10 +1,11 @@
 # CPU menu-bar widget
 
-Status: released in v1.32.8 (2026-10-25). See [release and installed acceptance](CPU_WIDGET_RELEASE_2026-10-24.md)
-for publication, actual OTA and the new final-build observation.
+Status: initially released in v1.32.8; v1.32.9 adds Per-core bars (2026-10-26).
+See [per-core release and installed acceptance](CPU_PER_CORE_RELEASE_2026-10-25.md)
+for current publication, actual OTA and the pending final-build observation.
 
 In macOS Settings, enable **CPU widget** to add a separate menu-bar item alongside
-the runner. Choose **Bar**, **History** or **Number**. Graphs can also show a numeric
+the runner. Choose **Bar**, **Per-core bars**, **History** or **Number**. Graphs can also show a numeric
 percentage; Number always shows one. Existing configurations default to off.
 The original runner/temperature display remains independently configurable.
 
@@ -53,7 +54,7 @@ unit evidence described above.
 Reference: [iStat Menus CPU settings](https://register.bjango.com/help/istatmenus7/cpugpu/).
 PeterFan uses original raster rendering and its existing CPU samples.
 
-## Per-core bars (v1.32.9 source; publication pending)
+## Per-core bars (released in v1.32.9)
 
 The new **Per-core bars / 코어별 바** mode shows one vertical bar for each
 logical CPU in the existing monitor samples. Each bar has its own fixed 0–100%
@@ -73,10 +74,12 @@ its width stays fixed as utilization changes. Settings previews scale to fit
 narrow windows. Missing values have unavailable markers and never reuse an old
 load. The mode uses the existing widget cadence and creates no sampling worker.
 
-This section describes source functionality beyond public v1.32.8. Development
-does not replace the installed app or alter its fan/helper settings. Release,
-installed visual acceptance, actual OTA and a final-build six-hour observation
-for this mode require separate evidence; no earlier run covers it.
+Signed/notarized v1.32.9 publication and actual public-feed 8→9 OTA are verified
+on one Mac. Per-core mode with percentage off is configured; unrelated settings
+and the compatible resident helper are preserved. Actual installed visual/click
+acceptance awaits native dashboard access, and the new six-hour run has not
+started. See [per-core release acceptance](CPU_PER_CORE_RELEASE_2026-10-25.md).
+No earlier run covers this mode.
 
 ![Per-core settings preview with fixture readings](images/peterfan-cpu-cores-settings-qa.png)
 

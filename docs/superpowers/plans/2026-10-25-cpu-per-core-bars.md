@@ -77,13 +77,18 @@ includes sampled `cpu_widget_cores`; `cores` is selectable in HTML and native me
 **Files:** `docs/CPU_MENUBAR_WIDGET.md`, approved spec/this plan; fixtures in
 `packages/menubar/src/main.rs` only if needed to export per-core settings QA.
 
-- [ ] Export real production settings with per-core fixture data; inspect
+- [x] Export real production settings with per-core fixture data; inspect
   Korean/English 320/390px light/dark and keyboard/save flow through CUA.
-- [ ] Run isolated native lifecycle QA, all workspace Rust/Node tests, strict
+- [x] Run isolated native lifecycle QA, all workspace Rust/Node tests, strict
   Clippy, docs/OSS/Homebrew checks and diff checks. Record exact evidence limits.
-- [ ] Fresh whole-branch reviewer checks the spec and review-focus cases.
+- [x] Fresh whole-branch reviewer checks the spec and review-focus cases.
   Resolve material findings with failing regression then green suite.
-- [ ] Update feature docs and completed checklist; preserve source/release
+- [x] Update feature docs and completed checklist; preserve source/release
   distinctions. Commit, push branch, attach PR; integrate main only after CI.
-- [ ] Keep public v1.32.8 and installed app/helper/config unchanged. Report
-  per-core mode release/installed QA/new six-hour status explicitly as pending.
+- [x] Preserve public v1.32.8 and installed app/helper/config during development.
+  Then complete separately authorized v1.32.9 release/OTA and record pending
+  installed UI/new six-hour gates explicitly in the release ledger.
+
+Implementation/integration completed through PR22 and exact CI. Release/OTA pass;
+installed visual acceptance and the new six-hour run remain open in
+`docs/CPU_PER_CORE_RELEASE_2026-10-25.md`.

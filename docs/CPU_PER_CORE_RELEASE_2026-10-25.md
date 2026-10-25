@@ -1,7 +1,8 @@
 # Per-core CPU widget release and installed acceptance
 
-Status: v1.32.9 source prepared. Public release remains v1.32.8. The per-core
-mode is not yet published, installed through OTA or observed for six hours.
+Status (2026-10-26): v1.32.9 is public and actual 8→9 OTA is verified on one Mac.
+Per-core mode with percentage off is configured. Actual installed visual/click
+acceptance is pending native dashboard access; the new six-hour run has not started.
 
 ## Requested behavior
 
@@ -34,7 +35,7 @@ and [implementation plan](superpowers/plans/2026-10-25-cpu-per-core-bars.md).
   targeted widget tests pass 14 Rust tests and 10 Node tests. Current config
   module tests pass 18 cases, including the frozen v1.32.8 reader schema.
   Strict workspace Clippy, docs/OSS/dashboard checks and native Homebrew audit
-  pass. Exact v1.32.9 source CI remains a separate gate below.
+  pass. Exact v1.32.9 main CI also passes all six required jobs.
 - Initial Node runs retained three unchanged launcher-fixture 10-second timeout
   failures during high host load. A later unchanged-limit serial run passes all
   97 tests. No test timeout, resource threshold or product safety rule changed.
@@ -51,18 +52,70 @@ The image is a settings fixture, not the installed app or live hardware data.
 ## Delivery gates
 
 - [x] Approved source implementation, compatibility regression and scoped QA.
-- [ ] Exact feature/release-source CI, main integration and immutable v1.32.9 tag.
-- [ ] Signed/notarized/stapled universal Mac app/DMG, strict trust checks, native
+- [x] Exact feature/release-source CI, main integration and immutable v1.32.9 tag.
+- [x] Signed/notarized/stapled universal Mac app/DMG, strict trust checks, native
       Windows acceptance and complete provider/download/checksum verification.
-- [ ] Public publication and actual v1.32.8 → v1.32.9 OTA with fresh matching
+- [x] Public publication and actual v1.32.8 → v1.32.9 OTA with fresh matching
       native readiness, exact installed bytes and preserved configuration.
 - [ ] Actual installed per-core UI/style/click acceptance; final per-core mode
       enabled, percentage off, all non-CPU preferences preserved.
 - [ ] Fresh strict calibration and full 21,600-second final-installed-build
       observation, independent audit, documentation and main result integration.
 
-The installed v1.32.8 app, compatible v1.32.7 helper and current settings remain
+The installed v1.32.8 app, compatible v1.32.7 helper and current settings remained
 unchanged during development. Its historical app re-execution and prior v1.32.7
 six-hour result contribute no observation time to this feature. Keep all prior
 release artifacts and raw results. A single-Mac result cannot establish physical
 sleep/forced-install interruption or other-model acceptance.
+
+## Public release and actual OTA — 2026-10-26
+
+PR22 merged to immutable release source `178acb6952121206a456d9ceedaa7cdee92d9616`.
+PR head and main trees match. Exact PR CI 40201976935/40201976937 and main CI
+40202506708/40202506569 pass six required jobs; code/security reviews report no
+findings. The annotated v1.32.9 tag is unchanged after publication.
+
+[Public v1.32.9](https://github.com/uulab-official/peterfan/releases/tag/v1.32.9)
+was published at 00:34:05 KST (release 423471632). Universal arm64/x86_64 binaries,
+Developer ID signatures, app/DMG notarization and stapling, six strict trust
+checks, and native Windows run 40205012140 pass. Windows verifies real metrics,
+Microsoft WebView2 signature, installation, tray readiness, startup and uninstall.
+All four provider sizes/digests and actual downloads, three checksum entries and
+local Mac bytes match. Public unauthenticated latest/checksum readback succeeds.
+The earlier v1.32.8/v1.32.7 asset identities and hashes remain unchanged.
+
+| Public asset | SHA-256 |
+| --- | --- |
+| DMG | `53452533321b2b86b93f0b6fb0dd83e2965ac674a4125598bef3b4d496f1510b` |
+| Universal archive | `e27b21defe2f73ed1cb1eae667164975323101356aecbfc5237f84b245da998a` |
+| Windows archive | `ee88393b8521c70751d8e0301bcf76e0756b9a6d9fae468da25a3d22494f3712` |
+| Checksums | `681d3f0c70b91064a5ce8ccc9df665af718eebb86dc6441b9c54f3c60eb754d7` |
+
+The released v1.32.8 CLI used the public feed and queued installation before only
+its pinned app PID85808 was terminated. New v1.32.9 PID22034 started at
+00:38:39 KST with fresh matching nonce/readiness and an installed result.
+Three installed bundle files match the published artifact; signature, stapling,
+Gatekeeper and surviving identity pass. OTA preserves configuration SHA
+`b3495d26a94ffc2aeb8693a69709c50116f8b01285fb60fc0a14d9e247f39775`.
+The app automatically checks successfully at 00:39:00 KST, persists history, and
+logs its next check at 06:39:00 KST (exactly 21,600 seconds later). This startup
+event is not an in-window six-hour acceptance event.
+
+The resident v1.32.7 helper PID324 and bytes remain unchanged; bundled helper9
+differs intentionally and does not require privileged replacement. Doctor reports
+healthy metrics/thermal/fan readiness, no issues and compatible helper7. Auto
+desired/applied revision6 matches, sensors are fresh, manual targets/overrides
+are empty, and cumulative sensor/write/readback failures are zero.
+
+After OTA, only CPU preferences were atomically changed to enabled Cores with
+percentage off (disk `style="bar"`, `per_core_bars=true`). Non-CPU TOML values
+and file mode are preserved; final configuration SHA is
+`51fcf01e1c33e0c22b601967520c99f1109ec3018b5f9db8954ea19d7484a382`.
+CUA still cannot bind the installed dashboard (five-second timeout). The existing
+user dashboard-open request remains pending. Configuration, native readiness,
+browser fixtures and isolated AppKit snapshots do not establish actual installed
+visual/style/click acceptance. Calibration and full six-hour observation remain
+NOT STARTED; no elapsed uptime or earlier result is counted.
+
+See [sanitized release/OTA evidence](evidence/2026-10-26-cpu-per-core-v1.32.9.json).
+Raw receipts remain in the ignored `target/cpu-per-core-release-v1329` directory.

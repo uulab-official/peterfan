@@ -53,9 +53,9 @@ is released in v1.32.8 with verified public-feed OTA on one Mac. Actual installe
 widget visual/click checks and the new six-hour result are tracked separately in
 [CPU widget release acceptance](docs/CPU_WIDGET_RELEASE_2026-10-24.md).
 
-Source v1.32.9 adds **Per-core bars**, one 0–100% bar per logical CPU, with
+Released v1.32.9 adds **Per-core bars**, one 0–100% bar per logical CPU, with
 percentage hidden on entry. See [per-core release acceptance](docs/CPU_PER_CORE_RELEASE_2026-10-25.md);
-publication, installed OTA and final-build six-hour acceptance are tracked separately.
+public-feed OTA is verified; installed visual/click and final-build six-hour acceptance remain pending.
 
 ## Repository Map
 
@@ -102,8 +102,8 @@ login, or a license key.
 
 ## Install
 
-The latest published release verified on 2026-10-25 is **v1.32.8**, including
-public-feed OTA from v1.32.7 on one Mac. The new installed-build six-hour result
+The latest published release verified on 2026-10-26 is **v1.32.9**, including
+public-feed OTA from v1.32.8 on one Mac. The new installed-build six-hour result
 remains pending. Check [Releases](https://github.com/uulab-official/peterfan/releases/latest)
 for published assets and [the production checklist](docs/PRODUCTION_CHECKLIST.md)
 for the evidence behind each version.
