@@ -68,6 +68,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Validate release tags against main, pin source commits and restrict write tokens
   to artifact publication jobs; cover rejection paths with offline tests.
 
+## [1.32.9] — 2026-10-25 · Per-core CPU menu-bar bars
+
+- Add an optional per-core CPU menu-bar graph with one fixed-scale vertical bar
+  per logical CPU. Reuse existing samples, hide the aggregate percentage on
+  entering the mode, and preserve existing runner and fan-control settings.
+- Keep the shared TOML readable by existing helpers with a legacy display
+  value and an additive per-core flag, without replacing healthy fan helpers.
+
 ## [1.32.8] — 2026-10-24 · Independent CPU menu-bar widget
 
 - Add an optional, independent macOS CPU menu-bar widget beside the runner:

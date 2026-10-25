@@ -5,6 +5,18 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 The first section summarizes the current release; lower sections retain earlier
 evidence and gaps at those checkpoints.
 
+## Per-core CPU mode source preparation — 2026-10-25
+
+- [x] Approved additional mode with one fixed-scale bar per logical CPU,
+      existing sampling, optional percentage and preserved runner/fan behavior.
+- [x] Source behavior, native lifecycle, narrow bilingual settings and frozen
+      legacy-helper config compatibility checks pass; independent source review.
+- [ ] Exact v1.32.9 main CI/tag, signed complete public release, actual OTA,
+      installed UI acceptance and a fresh strict six-hour observation.
+
+See [per-core release acceptance](CPU_PER_CORE_RELEASE_2026-10-25.md).
+Public v1.32.8 and its Homebrew pins below remain unchanged until new publication.
+
 ## CPU-widget public release and OTA — 2026-10-25
 
 - [x] Immutable v1.32.8 source `e923ec9` and six passing exact-main CI jobs.

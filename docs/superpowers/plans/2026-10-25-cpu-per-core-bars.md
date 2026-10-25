@@ -36,10 +36,13 @@ with the settings preview. Preserve the installed app during development.
 
 **Files:** `packages/core/src/config.rs`, `packages/menubar/src/cpu_widget.rs`.
 
-**Interfaces:** Add serialized style `cores` / `CpuWidgetStyle::Cores` and a
+**Interfaces:** Add JSON/UI style `cores` / `CpuWidgetStyle::Cores` and a
 `select_style` preference transition. `CpuWidgetHistory` accepts aggregate plus
 per-core samples, exposes current core readings, raster pixel width, and native
-point width. Keep aggregate-only sampling for existing QA/tests.
+point width. Keep aggregate-only sampling for existing QA/tests. Persist TOML with legacy
+`style="bar"` plus `per_core_bars=true`; restore it on read and validate the flag.
+A frozen v1.32.8 widget-schema test must accept the disk format and retain fan
+preferences, including when the CPU widget is disabled.
 
 - [x] Add failing config roundtrip/selection tests and raster tests: distinct
   0/50/100 heights, 1/8/10/18/32/64 bars, invalid/missing, cadence/topology/width.

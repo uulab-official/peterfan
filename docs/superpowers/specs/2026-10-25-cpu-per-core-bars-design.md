@@ -27,6 +27,9 @@ own CPU. This is current utilization, not a sequence of aggregate history sample
 - Detect the bar count from `CpuMetrics.per_core`, without hard-coding eight or
   ten. Allocate enough native image width for separate bars and gaps. Width is
   stable as load changes and updates only for topology or preference changes.
+- Persist the mode as legacy `style = "bar"` plus an additive
+  `per_core_bars = true` flag so existing helpers can still parse the shared
+  config. UI/JSON continue to name the mode `cores`.
 - Reuse the existing samples and the widget's one-second cadence. Do not add a
   monitor, background thread or animation timer. Missing or invalid samples show
   an unavailable marker instead of an invented zero or an old reading.
