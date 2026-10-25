@@ -2,7 +2,12 @@
 
 **v1.32.8 was published on 2026-10-25 at 11:45:03 KST.** Public-feed OTA from
 v1.32.7 completed on this Mac. Installed widget visual/click acceptance and the
-new final-build six-hour result remain pending.
+new final-build six-hour result were not completed for this version.
+
+This is the historical v1.32.8 delivery record. The user subsequently approved
+Per-core bars, and [v1.32.9 release acceptance](CPU_PER_CORE_RELEASE_2026-10-25.md)
+now tracks the current installed app and remaining UI/six-hour gates. No v1.32.8
+observation was started or counted toward the new version.
 
 The previous [v1.32.7 six-hour acceptance](LONG_RUN_SAFETY_2026-10-24.md) remains
 historical evidence. None of its elapsed time counts toward the new build.

@@ -1,6 +1,8 @@
 # CPU menu-bar bars per core
 
-Status: design approved by the user on 2026-10-25; implementation in progress.
+Status: design approved on 2026-10-25; implemented through PR22 and released as
+v1.32.9. Actual installed visual acceptance and the new six-hour run remain open
+in `docs/CPU_PER_CORE_RELEASE_2026-10-25.md`.
 
 ## Intent
 

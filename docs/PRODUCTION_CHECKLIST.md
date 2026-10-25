@@ -5,17 +5,32 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 The first section summarizes the current release; lower sections retain earlier
 evidence and gaps at those checkpoints.
 
-## Per-core CPU mode source preparation — 2026-10-25
+## Per-core CPU mode public release and OTA — 2026-10-26
 
 - [x] Approved additional mode with one fixed-scale bar per logical CPU,
       existing sampling, optional percentage and preserved runner/fan behavior.
-- [x] Source behavior, native lifecycle, narrow bilingual settings and frozen
-      legacy-helper config compatibility checks pass; independent source review.
-- [ ] Exact v1.32.9 main CI/tag, signed complete public release, actual OTA,
-      installed UI acceptance and a fresh strict six-hour observation.
+- [x] Source, native lifecycle, narrow bilingual settings and frozen helper
+      compatibility regressions pass; independent source and remote reviews.
+- [x] Immutable v1.32.9 source `178acb6`, matching PR/main trees and six passing
+      exact-main CI jobs; signed/notarized/stapled universal Mac assets, strict
+      trust gates, native Windows acceptance and complete checksum verification.
+- [x] Public latest release identified as `v1.32.9`; four assets verified with
+      provider/download readback. Prior v1.32.8/v1.32.7 artifacts are preserved;
+      Homebrew pins the actual public DMG/archive hashes.
+- [x] Actual public-feed v1.32.8 → v1.32.9 OTA, fresh matching native readiness,
+      new surviving app, exact installed bytes, trust and settings preservation.
+      Resident helper7 remains compatible in Auto with fresh sensors, matching
+      revision, empty manual targets/overrides and zero cumulative errors.
+- [x] New app's natural 00:39:00 KST startup check/history and next 06:39:00
+      deadline match. Cores enabled/percentage off is configured atomically;
+      all non-CPU TOML values and file mode are preserved.
+- [ ] Actual installed UI/style/settings/click acceptance: CUA cannot bind the
+      dashboard; the previous user dashboard-open request remains pending.
+- [ ] New strict calibration and full 21,600-second final-build observation:
+      NOT STARTED. Older uptime, fixtures and the v1.32.7 run contribute no time.
 
-See [per-core release acceptance](CPU_PER_CORE_RELEASE_2026-10-25.md).
-Public v1.32.8 and its Homebrew pins below remain unchanged until new publication.
+See [per-core release acceptance](CPU_PER_CORE_RELEASE_2026-10-25.md) and
+[sanitized evidence](evidence/2026-10-26-cpu-per-core-v1.32.9.json).
 
 ## CPU-widget public release and OTA — 2026-10-25
 
