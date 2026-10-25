@@ -1,6 +1,6 @@
 # CPU menu-bar bars per core
 
-Status: approach selected by the user; awaiting approval of this short design.
+Status: design approved by the user on 2026-10-25; implementation in progress.
 
 ## Intent
 

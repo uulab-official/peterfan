@@ -227,6 +227,7 @@ pub enum CpuWidgetStyle {
     Bar,
     History,
     Number,
+    Cores,
 }
 
 impl CpuWidgetStyle {
@@ -235,6 +236,7 @@ impl CpuWidgetStyle {
             "bar" => Some(Self::Bar),
             "history" => Some(Self::History),
             "number" => Some(Self::Number),
+            "cores" => Some(Self::Cores),
             _ => None,
         }
     }
@@ -244,6 +246,7 @@ impl CpuWidgetStyle {
             Self::Bar => "bar",
             Self::History => "history",
             Self::Number => "number",
+            Self::Cores => "cores",
         }
     }
 }
@@ -268,6 +271,14 @@ impl Default for CpuWidgetConfig {
 }
 
 impl CpuWidgetConfig {
+    pub fn select_style(mut self, style: CpuWidgetStyle) -> Self {
+        if style == CpuWidgetStyle::Cores && self.style != style {
+            self.show_percentage = false;
+        }
+        self.style = style;
+        self
+    }
+
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
@@ -863,7 +874,7 @@ mod tests {
         assert_eq!(value["cpu_widget"]["enabled"], false);
         assert_eq!(value["cpu_widget"]["style"], "bar");
         assert_eq!(value["cpu_widget"]["show_percentage"], true);
-        for style in ["bar", "history", "number"] {
+        for style in ["bar", "history", "number", "cores"] {
             let original = format!("interval_secs = 7\n[menubar]\ncharacter = \"fox\"\n[menubar.cpu_widget]\nenabled = true\nstyle = \"{style}\"\nshow_percentage = false\n");
             let cfg = Config::from_toml(&original).unwrap();
             let saved = cfg.to_toml();
@@ -881,6 +892,28 @@ mod tests {
         assert_eq!(
             serde_json::to_value(partial.menubar).unwrap()["cpu_widget"]["style"],
             "bar"
+        );
+    }
+
+    #[test]
+    fn cpu_widget_core_mode_hides_number_only_when_entering() {
+        let config = CpuWidgetConfig::default().select_style(CpuWidgetStyle::Cores);
+        assert_eq!(CpuWidgetStyle::parse("cores"), Some(CpuWidgetStyle::Cores));
+        assert_eq!(CpuWidgetStyle::Cores.as_str(), "cores");
+        assert!(!config.show_percentage);
+        let with_number = CpuWidgetConfig {
+            show_percentage: true,
+            ..config
+        };
+        assert!(
+            with_number
+                .select_style(CpuWidgetStyle::Cores)
+                .show_percentage
+        );
+        assert!(
+            with_number
+                .select_style(CpuWidgetStyle::History)
+                .show_percentage
         );
     }
 
