@@ -49,8 +49,9 @@ separately from live performance, public release and OTA delivery.
 
 [Long-run safety and native OTA acceptance](docs/LONG_RUN_SAFETY_2026-10-24.md)
 records the completed v1.32.7 one-Mac six-hour result. The optional CPU widget
-is included in v1.32.8 source; its release and new installed-build acceptance
-are tracked separately in [CPU widget release acceptance](docs/CPU_WIDGET_RELEASE_2026-10-24.md).
+is released in v1.32.8 with verified public-feed OTA on one Mac. Actual installed
+widget visual/click checks and the new six-hour result are tracked separately in
+[CPU widget release acceptance](docs/CPU_WIDGET_RELEASE_2026-10-24.md).
 
 ## Repository Map
 
@@ -97,9 +98,9 @@ login, or a license key.
 
 ## Install
 
-Published downloads and the current source branch may differ. The latest
-published release verified on 2026-10-24 is **v1.32.7**; this source prepares
-v1.32.8. Check [Releases](https://github.com/uulab-official/peterfan/releases/latest)
+The latest published release verified on 2026-10-25 is **v1.32.8**, including
+public-feed OTA from v1.32.7 on one Mac. The new installed-build six-hour result
+remains pending. Check [Releases](https://github.com/uulab-official/peterfan/releases/latest)
 for published assets and [the production checklist](docs/PRODUCTION_CHECKLIST.md)
 for the evidence behind each version.
 

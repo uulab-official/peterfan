@@ -1,6 +1,6 @@
 # CPU menu-bar widget
 
-Status: included in v1.32.8 source. See [release and installed acceptance](CPU_WIDGET_RELEASE_2026-10-24.md)
+Status: released in v1.32.8 (2026-10-25). See [release and installed acceptance](CPU_WIDGET_RELEASE_2026-10-24.md)
 for publication, actual OTA and the new final-build observation.
 
 In macOS Settings, enable **CPU widget** to add a separate menu-bar item alongside
@@ -37,8 +37,10 @@ CPU-widget path. Windows hides these Mac-only controls.
   use fixture data and simulated acknowledgements; they do not perform disk saves.
 
 The completed six-hour observation covers the unchanged installed **v1.32.7**
-app and helper. It does not validate this new native feature. Native release,
-signed-artifact OTA adoption and a final-build long run remain separate gates.
+app and helper. It does not validate this new native feature. Signed/notarized
+v1.32.8 release and public-feed OTA are verified on one Mac. Actual installed
+widget visual/click acceptance and the new final-build long run remain pending;
+see the linked release record for the current boundary.
 
 On 2026-10-24, local macOS validation passed 549 workspace Rust tests and 89 Node
 behavior tests, strict workspace Clippy, documentation/OSS checks and the explicit

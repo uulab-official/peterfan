@@ -21,13 +21,13 @@ request to deploy, verify real OTA and observe the new installed build.
 
 ## Tasks
 
-- [ ] Prepare v1.32.8 metadata, current documentation and mixed-version QA tests.
+- [x] Prepare v1.32.8 metadata, current documentation and mixed-version QA tests.
       Verify Node, docs/OSS, reviewed source and CI; merge through a PR and tag
       the clean exact release commit without moving an existing tag.
-- [ ] Build universal Mac assets, Developer ID sign, notarize and verify them;
+- [x] Build universal Mac assets, Developer ID sign, notarize and verify them;
       stage private release and attach the independently verified Windows asset.
       Compare provider digests and all manifest entries, then publish once.
-- [ ] Use the signed v1.32.7 release CLI against the public feed. Verify queue,
+- [x] Use the signed v1.32.7 release CLI against the public feed. Verify queue,
       actual replacement/relaunch, native readiness, artifact bytes/trust and
       preserved configuration. Confirm the compatible helper and Auto health.
 - [ ] Exercise actual installed CPU settings/styles, enable Bar with percentage,
@@ -41,3 +41,13 @@ request to deploy, verify real OTA and observe the new installed build.
 Publication is not installation. A short calibration is not six-hour acceptance.
 The completed v1.32.7 run is historical. The new result applies only to the exact
 new app, actual compatible helper and selected CPU-widget mode on this Mac.
+
+## Execution record — 2026-10-25
+
+Release source/CI, signed/notarized universal Mac assets, native Windows acceptance,
+complete draft/public provider verification and actual public-feed OTA pass. The
+compatible helper is unchanged and healthy; Bar with percentage is configured
+without changing unrelated TOML values. Actual installed UI acceptance awaits one
+user dashboard-open action because the hidden menu-bar app cannot be bound by
+native automation. The new six-hour run has not started. See the release ledger
+and sanitized evidence for exact hashes, process/readiness and remaining gates.
