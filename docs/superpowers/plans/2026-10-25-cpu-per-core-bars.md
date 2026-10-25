@@ -1,6 +1,6 @@
 # CPU Per-core Bars Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add a real logical-core-per-bar CPU menu-bar mode.
 
@@ -41,13 +41,13 @@ with the settings preview. Preserve the installed app during development.
 per-core samples, exposes current core readings, raster pixel width, and native
 point width. Keep aggregate-only sampling for existing QA/tests.
 
-- [ ] Add failing config roundtrip/selection tests and raster tests: distinct
+- [x] Add failing config roundtrip/selection tests and raster tests: distinct
   0/50/100 heights, 1/8/10/18/32/64 bars, invalid/missing, cadence/topology/width.
-- [ ] Run `cargo test -p peterfan-core cpu_widget` and
+- [x] Run `cargo test -p peterfan-core cpu_widget` and
   `cargo test -p peterfan-menubar cpu_widget` and observe missing-feature failures.
-- [ ] Implement the enum/transition and sampled core raster with fixed scale.
-- [ ] Run those tests to green; verify old raster tests remain green.
-- [ ] Commit config/raster and record results in the plan ledger.
+- [x] Implement the enum/transition and sampled core raster with fixed scale.
+- [x] Run those tests to green; verify old raster tests remain green.
+- [x] Commit config/raster and record results in the plan ledger.
 
 ### Task 2: Native, runtime and settings integration
 
@@ -59,15 +59,15 @@ cpu_widget.html,cpu_widget.js}`, `scripts/check-cpu-widget.test.mjs`,
 creation consumes checked `width: u32` and RGBA data from Task 1. Settings payload
 includes sampled `cpu_widget_cores`; `cores` is selectable in HTML and native menu.
 
-- [ ] Add failing JS tests for mode transition/reselection, real per-core SVG,
+- [x] Add failing JS tests for mode transition/reselection, real per-core SVG,
   invalid data and topology, save failure/retry; add native variable-image tests.
-- [ ] Run `node --test scripts/check-cpu-widget.test.mjs` and targeted Rust tests
+- [x] Run `node --test scripts/check-cpu-widget.test.mjs` and targeted Rust tests
   and observe the new-feature failures before integration.
-- [ ] Connect existing per-core samples, native image/layout/menu and settings;
+- [x] Connect existing per-core samples, native image/layout/menu and settings;
   preserve the existing transaction path, tooltip language and click anchoring.
-- [ ] Extend isolated native lifecycle QA to cores with/without percentage and
+- [x] Extend isolated native lifecycle QA to cores with/without percentage and
   topology resize; validate item/image/button widths and owned storage.
-- [ ] Run targeted Rust/Node tests to green; commit and ledger results.
+- [x] Run targeted Rust/Node tests to green; commit and ledger results.
 
 ### Task 3: Product QA, documentation and integration
 

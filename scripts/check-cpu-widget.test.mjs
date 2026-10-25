@@ -5,7 +5,7 @@ import test from 'node:test';
 
 const path = new URL('../packages/menubar/src/cpu_widget.js', import.meta.url);
 function ui() {
-  const nodes = Object.fromEntries(['cpu-widget-setting','cpu-widget-enabled','cpu-widget-style','cpu-widget-percentage','cpu-widget-status','cpu-widget-preview','cpu-widget-preview-number','cpu-widget-preview-bar'].map(id=>[id,{checked:false,disabled:false,hidden:false,value:'',textContent:'',style:{},dataset:{},setAttribute(k,v){this[k]=v;}}]));
+  const nodes = Object.fromEntries(['cpu-widget-setting','cpu-widget-enabled','cpu-widget-style','cpu-widget-percentage','cpu-widget-status','cpu-widget-preview','cpu-widget-preview-number','cpu-widget-preview-bar','cpu-widget-preview-svg','cpu-widget-core-tracks','cpu-widget-core-load','cpu-widget-core-missing','cpu-widget-core-help'].map(id=>[id,{checked:false,disabled:false,hidden:false,value:'',textContent:'',style:{},dataset:{},setAttribute(k,v){this[k]=v;}}]));
   const messages=[];
   let sequence=0,now=1000;
   const context=vm.createContext({LANG:'en',Date:{now:()=>now},document:{getElementById:id=>nodes[id]||null},window:{ipc:{postMessage:m=>messages.push(m)}},settingsRequest:(operation,payload)=>({id:'cpu-test-'+(++sequence),operation,payload}),settingsResult:(d,r)=>d.settings_results?.find(v=>v.id===r.id&&v.operation===r.operation)||null});
@@ -77,4 +77,55 @@ test('CPU widget reload and external menu changes use the native confirmed confi
   assert.equal(u.nodes['cpu-widget-enabled'].checked,false);
   assert.equal(u.nodes['cpu-widget-style'].disabled,true);
   assert.match(u.nodes['cpu-widget-preview-number'].textContent,/CPU/);
+});
+
+test('per-core mode defaults to graph only and reselect preserves an enabled percentage',()=>{
+  const u=ui();u.context.renderCpuWidget(u.data({enabled:true}));
+  u.context.setCpuWidget('style','cores');
+  let r=u.request();assert.deepEqual(JSON.parse(r.payload),{enabled:true,style:'cores',show_percentage:false});
+  u.context.renderCpuWidget(u.data({enabled:true,style:'cores',show_percentage:false},[{...r,ok:true}]));
+  assert.equal(u.nodes['cpu-widget-preview-number'].hidden,true);
+  u.context.setCpuWidget('show_percentage',true);r=u.request();
+  u.context.renderCpuWidget(u.data({enabled:true,style:'cores',show_percentage:true},[{...r,ok:true}]));
+  u.context.setCpuWidget('style','cores');
+  assert.equal(JSON.parse(u.request().payload).show_percentage,true);
+});
+
+test('core preview retains every logical CPU and distinct fixed-scale heights',()=>{
+  const u=ui();
+  let p=u.context.cpuWidgetCorePaths([0,50,100]);
+  assert.equal(p.width,28);assert.equal(p.load,'M5 33V33M13 33V18M21 33V3');
+  assert.equal(p.missing,'');
+  p=u.context.cpuWidgetCorePaths([NaN,null,Infinity,-1,101]);
+  assert.equal(p.load,'');assert.equal((p.missing.match(/M/g)||[]).length,5);
+  for(const count of [1,8,10,18,32,64]){
+    p=u.context.cpuWidgetCorePaths(Array(count).fill(50));
+    assert.equal(p.width,4+8*count);
+    assert.equal((p.load.match(/M/g)||[]).length,count);
+  }
+  assert.equal(u.context.cpuWidgetCorePaths([]).load,'');
+});
+
+test('per-core failed save restores confirmed style and percentage and retry remains possible',()=>{
+  const u=ui();u.context.renderCpuWidget(u.data({enabled:true,style:'history',show_percentage:true}));
+  u.context.setCpuWidget('style','cores');const r=u.request();
+  u.context.renderCpuWidget(u.data({enabled:true,style:'history',show_percentage:true},[{...r,ok:false,message:'disk full'}]));
+  assert.equal(u.nodes['cpu-widget-style'].value,'history');
+  assert.equal(u.nodes['cpu-widget-percentage'].checked,true);
+  u.context.setCpuWidget('style','cores');assert.notEqual(u.request().id,r.id);
+});
+
+
+test('confirmed core samples drive the rendered SVG and topology width',()=>{
+  const u=ui();
+  u.context.renderCpuWidget({...u.data({enabled:true,style:'cores',show_percentage:false}),cpu_widget_cores:[0,50,100]});
+  assert.equal(u.nodes['cpu-widget-core-load'].d,'M5 33V33M13 33V18M21 33V3');
+  assert.equal(u.nodes['cpu-widget-preview-svg'].viewBox,'0 0 28 36');
+  assert.equal(u.nodes['cpu-widget-core-help'].hidden,false);
+  u.context.renderCpuWidget({...u.data({enabled:true,style:'cores'}),cpu_widget_cores:[null,null]});
+  assert.equal(u.nodes['cpu-widget-core-load'].d,'');
+  assert.equal(u.nodes['cpu-widget-preview-svg'].viewBox,'0 0 20 36');
+  u.context.renderCpuWidget(u.data({enabled:true,style:'bar'}));
+  assert.equal(u.nodes['cpu-widget-preview-svg'].viewBox,'0 0 64 36');
+  assert.equal(u.nodes['cpu-widget-core-help'].hidden,true);
 });

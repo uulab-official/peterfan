@@ -1,5 +1,5 @@
 //! Owned macOS CPU status item. No sampling or animation timer lives here.
-use crate::cpu_widget::{self, CpuWidgetHistory, WIDGET_PIXEL_HEIGHT, WIDGET_PIXEL_WIDTH};
+use crate::cpu_widget::{self, CpuWidgetHistory, WIDGET_PIXEL_HEIGHT};
 use objc2::rc::Retained;
 use objc2::AllocAnyThread;
 use objc2_app_kit::{
@@ -27,17 +27,19 @@ pub(crate) struct NativeCpuWidget {
     config: CpuWidgetConfig,
     language: ResolvedLanguage,
     last_pixels: Vec<u8>,
+    last_image_width: u32,
     last_title: Option<String>,
     last_tooltip: String,
 }
 
-fn labels(language: ResolvedLanguage) -> [&'static str; 6] {
+fn labels(language: ResolvedLanguage) -> [&'static str; 7] {
     if language == ResolvedLanguage::Ko {
         [
             "대시보드 열기",
             "CPU 바",
             "히스토리",
             "숫자",
+            "코어별 바",
             "사용률 숫자 표시",
             "CPU 위젯 숨기기",
         ]
@@ -47,6 +49,7 @@ fn labels(language: ResolvedLanguage) -> [&'static str; 6] {
             "CPU Bar",
             "History",
             "Number",
+            "Per-core bars",
             "Show Percentage",
             "Hide CPU Widget",
         ]
@@ -67,6 +70,7 @@ impl NativeCpuWidget {
             CpuWidgetStyle::Bar,
             CpuWidgetStyle::History,
             CpuWidgetStyle::Number,
+            CpuWidgetStyle::Cores,
         ]
         .into_iter()
         .enumerate()
@@ -76,12 +80,12 @@ impl NativeCpuWidget {
             styles.push((style, item));
         }
         let percentage = CheckMenuItem::new(
-            text[4],
+            text[5],
             config.style != CpuWidgetStyle::Number,
             config.show_percentage,
             None,
         );
-        let hide = MenuItem::new(text[5], true, None);
+        let hide = MenuItem::new(text[6], true, None);
         menu.append(&percentage).map_err(|e| e.to_string())?;
         menu.append(&PredefinedMenuItem::separator())
             .map_err(|e| e.to_string())?;
@@ -113,6 +117,7 @@ impl NativeCpuWidget {
             config,
             language,
             last_pixels: Vec::new(),
+            last_image_width: 0,
             last_title: None,
             last_tooltip: String::new(),
         })
@@ -176,8 +181,9 @@ impl NativeCpuWidget {
             .ok_or("CPU status item is missing")?;
         let button = item.button(marker).ok_or("CPU status button is missing")?;
         let text = cpu_widget::title(config, history.current());
-        if self.config != config || self.last_title.is_none() {
-            item.setLength(cpu_widget::point_width(config));
+        let width = history.pixel_width(config.style);
+        if self.config != config || self.last_title.is_none() || self.last_image_width != width {
+            item.setLength(history.point_width(config));
             button.setImagePosition(image_position(config));
             button.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
                 11., 0.,
@@ -191,8 +197,8 @@ impl NativeCpuWidget {
             for (index, (_, entry)) in self.styles.iter().enumerate() {
                 entry.set_text(names[index + 1]);
             }
-            self.percentage.set_text(names[4]);
-            self.hide.set_text(names[5]);
+            self.percentage.set_text(names[5]);
+            self.hide.set_text(names[6]);
         }
         if self.last_title.as_deref() != Some(text.as_str()) {
             button.setTitle(&NSString::from_str(&text));
@@ -203,19 +209,35 @@ impl NativeCpuWidget {
             self.last_pixels.clear();
         } else {
             let pixels = history.render_rgba(config.style);
-            if self.last_pixels != pixels {
-                let image = image_from_rgba(&pixels)?;
+            if self.last_pixels != pixels || self.last_image_width != width {
+                let image = image_from_rgba(&pixels, width)?;
                 button.setImage(Some(&image));
                 self.last_pixels = pixels;
             }
         }
+        self.last_image_width = width;
         let value = history
             .current()
             .map_or_else(|| "--%".to_string(), |v| format!("{v:.0}%"));
-        let tip = if language == ResolvedLanguage::Ko {
-            format!("CPU {value} · 0–100%\n클릭하여 대시보드 열기 · 우클릭하여 표시 설정")
+        let core_tip = if config.style == CpuWidgetStyle::Cores {
+            if language == ResolvedLanguage::Ko {
+                format!(
+                    "{}개 논리 코어 · 코어마다 0–100%\n",
+                    history.core_values().len()
+                )
+            } else {
+                format!(
+                    "{} logical CPUs · 0–100% per CPU\n",
+                    history.core_values().len()
+                )
+            }
         } else {
-            format!("CPU {value} · 0–100%\nClick for dashboard · Right-click for display options")
+            String::new()
+        };
+        let tip = if language == ResolvedLanguage::Ko {
+            format!("{core_tip}CPU {value} · 0–100%\n클릭하여 대시보드 열기 · 우클릭하여 표시 설정")
+        } else {
+            format!("{core_tip}CPU {value} · 0–100%\nClick for dashboard · Right-click for display options")
         };
         if tip != self.last_tooltip {
             self.tray
@@ -238,24 +260,24 @@ fn image_position(config: CpuWidgetConfig) -> NSCellImagePosition {
     }
 }
 
-fn image_from_rgba(rgba: &[u8]) -> Result<Retained<NSImage>, String> {
-    if rgba.len() != (WIDGET_PIXEL_WIDTH * WIDGET_PIXEL_HEIGHT * 4) as usize {
+fn image_from_rgba(rgba: &[u8], width: u32) -> Result<Retained<NSImage>, String> {
+    if width == 0 || rgba.len() != width as usize * WIDGET_PIXEL_HEIGHT as usize * 4 {
         return Err("invalid CPU widget raster size".into());
     }
     let bitmap = unsafe { NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
-        NSBitmapImageRep::alloc(), std::ptr::null_mut(), WIDGET_PIXEL_WIDTH as isize, WIDGET_PIXEL_HEIGHT as isize,
-        8, 4, true, false, NSDeviceRGBColorSpace, NSBitmapFormat::AlphaNonpremultiplied, (WIDGET_PIXEL_WIDTH * 4) as isize, 32) }
+        NSBitmapImageRep::alloc(), std::ptr::null_mut(), width as isize, WIDGET_PIXEL_HEIGHT as isize,
+        8, 4, true, false, NSDeviceRGBColorSpace, NSBitmapFormat::AlphaNonpremultiplied, (width * 4) as isize, 32) }
         .ok_or("CPU widget bitmap allocation failed")?;
     let pixels = bitmap.bitmapData();
     if pixels.is_null()
-        || bitmap.bytesPerRow() != (WIDGET_PIXEL_WIDTH * 4) as isize
+        || bitmap.bytesPerRow() != (width * 4) as isize
         || bitmap.pixelsHigh() != WIDGET_PIXEL_HEIGHT as isize
     {
         return Err("invalid CPU widget bitmap storage".into());
     }
     // AppKit owns the checked RGBA8 allocation. No borrowed pointer escapes.
     unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), pixels, rgba.len()) };
-    let size = NSSize::new(32., 18.);
+    let size = NSSize::new(f64::from(width) / 2., 18.);
     bitmap.setSize(size);
     let image = NSImage::initWithSize(NSImage::alloc(), size);
     image.addRepresentation(&bitmap);
@@ -278,11 +300,32 @@ mod tests {
     }
     #[test]
     fn native_cpu_image_has_owned_retina_storage_and_template_appearance() {
-        assert!(image_from_rgba(&[0; 4]).is_err());
+        assert!(image_from_rgba(&[0; 4], 64).is_err());
         let mut h = CpuWidgetHistory::default();
         h.push(50.);
-        let image = image_from_rgba(&h.render_rgba(CpuWidgetStyle::Bar)).unwrap();
+        let image = image_from_rgba(&h.render_rgba(CpuWidgetStyle::Bar), 64).unwrap();
         assert_eq!(image.size(), NSSize::new(32., 18.));
         assert!(image.isTemplate());
+    }
+
+    #[test]
+    fn native_core_images_preserve_all_columns_and_validate_storage() {
+        let mut history = CpuWidgetHistory::default();
+        let now = std::time::Instant::now();
+        for count in [1, 8, 10, 18, 32, 64] {
+            history.sample_cpu_at(
+                50.,
+                &vec![50.; count],
+                now + std::time::Duration::from_secs(count as u64),
+            );
+            let width = history.pixel_width(CpuWidgetStyle::Cores);
+            let image =
+                image_from_rgba(&history.render_rgba(CpuWidgetStyle::Cores), width).unwrap();
+            assert_eq!(image.size(), NSSize::new(f64::from(width) / 2., 18.));
+            assert!(image.isTemplate());
+            assert!(image_from_rgba(&[0; 4], width).is_err());
+        }
+        assert!(image_from_rgba(&[], 0).is_err());
+        assert!(image_from_rgba(&[], u32::MAX).is_err());
     }
 }
