@@ -9060,7 +9060,8 @@ function renderBattery(d){
   var states=LANG==='ko'?{charging:'충전 중',discharging:'배터리 사용 중',full:'충전 완료',empty:'방전됨',unknown:'확인 불가'}:{charging:'Charging',discharging:'On battery',full:'Fully charged',empty:'Empty',unknown:'Unavailable'};
   setText('batt-sub',present?(states[rawState]||rawState||unavailable):'');
   var health=unavailable;
-  if(present&&number(b.health_percent,false,100)&&(b.health_source==='reported'||b.health_source==='estimated')){
+  var healthMax=b.health_source==='estimated'?120:100;
+  if(present&&number(b.health_percent,false,healthMax)&&(b.health_source==='reported'||b.health_source==='estimated')){
     health=Math.round(b.health_percent)+'%';
     if(b.health_source==='estimated')health+=LANG==='ko'?' (추정)':' (estimated)';
   }

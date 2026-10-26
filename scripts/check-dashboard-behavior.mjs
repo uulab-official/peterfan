@@ -181,6 +181,35 @@ test('battery capacity-derived health is explicitly estimated in both languages'
   assert.equal(ui.nodes['batt-health'].textContent,label);
  }
 });
+for(const [lang,estimated,unavailable] of [['en','estimated','Unavailable'],['ko','추정','확인 불가']]){
+ for(const [source,health,want] of [
+  ['estimated',105,'105% ('+estimated+')'],
+  ['estimated',120,'120% ('+estimated+')'],
+  ['estimated',121,unavailable],
+  ['reported',105,unavailable]
+ ]){
+  test('battery '+lang+' '+source+' health '+health+' respects its source range',()=>{
+   const ui=batteryHarness(lang);
+   ui.render(batterySnapshot({health_percent:health,health_source:source,design_capacity_mah:null,full_charge_capacity_mah:null}));
+   assert.equal(ui.nodes['batt-health'].textContent,want);
+   assert.equal(ui.nodes['batt-val'].textContent,'76%');
+   assert.equal(ui.nodes['batt-bar'].style.width,'76%');
+   assert.equal(ui.nodes['batt-source-note'].style.display,'none');
+  });
+ }
+ test('battery '+lang+' estimated health does not widen the charge range',()=>{
+  const ui=batteryHarness(lang);
+  for(const charge of [105,120,121]){
+   ui.render({...batterySnapshot({health_percent:120,health_source:'estimated'}),batt_pct:charge});
+   assert.equal(ui.nodes['batt-val'].textContent,unavailable);
+   assert.equal(ui.nodes['batt-bar'].style.width,'0%');
+   assert.equal(ui.nodes['batt-health'].textContent,'120% ('+estimated+')');
+  }
+  ui.render({...batterySnapshot({health_percent:120,health_source:'estimated'}),batt_pct:0});
+  assert.equal(ui.nodes['batt-val'].textContent,'0%');
+  assert.equal(ui.nodes['batt-cycles'].textContent,'0');
+ });
+}
 test('missing or invalid battery details stay unavailable per field',()=>{
  const ui=batteryHarness();
  for(const invalid of [null,undefined,0,NaN,Infinity,'96',true,-1]){
