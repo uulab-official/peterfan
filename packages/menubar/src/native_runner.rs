@@ -9,8 +9,14 @@ use objc2_foundation::{NSPoint, NSRect};
 use objc2_quartz_core::{CALayer, CATransaction};
 use peterfan_core::config::MenubarDisplay;
 
-pub(crate) fn eligible(display: MenubarDisplay, reduce_motion: bool, screens: usize) -> bool {
-    screens == 1
+pub(crate) fn eligible(
+    display: MenubarDisplay,
+    primary_visible: bool,
+    reduce_motion: bool,
+    screens: usize,
+) -> bool {
+    primary_visible
+        && screens == 1
         && !reduce_motion
         && matches!(display, MenubarDisplay::Graph | MenubarDisplay::Both)
 }
@@ -43,6 +49,32 @@ impl NativeRunnerPainter {
         self.detach();
         self.button = Some(button.clone());
         true
+    }
+
+    /// Own the attachment only while the primary runner can be displayed.
+    /// Reattaching reinstalls the layout image before synchronizing geometry.
+    pub(crate) fn reconcile(
+        &mut self,
+        button: &Retained<NSStatusBarButton>,
+        display: MenubarDisplay,
+        primary_visible: bool,
+        reduce_motion: bool,
+        screens: usize,
+        placeholder: impl FnOnce() -> Option<Retained<NSImage>>,
+    ) -> bool {
+        let was_active = self.active();
+        let button_changed = self.bind(button);
+        if eligible(display, primary_visible, reduce_motion, screens) {
+            if !self.active() {
+                if let Some(image) = placeholder() {
+                    self.attach(&image);
+                }
+            }
+        } else {
+            self.detach();
+        }
+        self.sync();
+        button_changed || was_active != self.active()
     }
 
     pub(crate) fn attach(&mut self, placeholder: &NSImage) -> bool {
@@ -322,10 +354,12 @@ mod tests {
         ] {
             for screens in [0, 1, 2, 3] {
                 for reduce in [false, true] {
-                    assert_eq!(
-                        eligible(display, reduce, screens),
-                        screens == 1 && !reduce && display != MenubarDisplay::Number
-                    );
+                    for visible in [false, true] {
+                        assert_eq!(
+                            eligible(display, visible, reduce, screens),
+                            visible && screens == 1 && !reduce && display != MenubarDisplay::Number
+                        );
+                    }
                 }
             }
         }

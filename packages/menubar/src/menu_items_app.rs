@@ -18,6 +18,23 @@ impl ItemState {
         }
     }
 
+    fn from_config(config: &MenubarConfig) -> Self {
+        Self {
+            display: config.display,
+            primary_visible: config.primary_visible,
+            cpu: config.cpu_widget,
+        }
+    }
+
+    fn config(self) -> MenubarConfig {
+        MenubarConfig {
+            display: self.display,
+            primary_visible: self.primary_visible,
+            cpu_widget: self.cpu,
+            ..Default::default()
+        }
+    }
+
     fn visibility(self) -> MenuItemsVisibility {
         MenuItemsVisibility {
             cpu: self.cpu.enabled,
@@ -70,21 +87,51 @@ pub(super) fn parse_visibility(payload: &str) -> Result<MenuItemsVisibility, Str
     Ok(value)
 }
 
-// All fallible native work precedes persistence. The returned prepared handles
-// own the native items through the following infallible event-loop commit.
+#[derive(Clone, Copy)]
+enum ItemEdit {
+    Visibility(MenuItemsVisibility),
+    Cpu(CpuWidgetConfig),
+    Display(MenubarDisplay),
+    Reload(ItemState),
+}
+
+impl ItemEdit {
+    fn resolve(self, latest: ItemState) -> Result<ItemState, String> {
+        match self {
+            Self::Visibility(value) => latest.with_visibility(value),
+            Self::Cpu(value) => latest.with_cpu(value),
+            Self::Display(value) => Ok(latest.with_display(value)),
+            Self::Reload(value) => Ok(value),
+        }
+    }
+}
+
+// Resolve intent and prepare native resources inside the existing configuration
+// transaction. A newer cooperating writer's unedited fields therefore feed both
+// the saved configuration and the native/live commit, from the same snapshot.
 fn commit_staged<T>(
     current: &mut ItemState,
-    requested: ItemState,
-    stage: impl FnOnce() -> Result<T, String>,
-    save: impl FnOnce(ItemState) -> Result<(), String>,
+    edit: ItemEdit,
+    stage: impl FnOnce(ItemState) -> Result<T, String>,
+    transaction: impl FnOnce(
+        &mut dyn FnMut(&mut MenubarConfig) -> Result<(), String>,
+    ) -> Result<(), String>,
 ) -> Result<T, String> {
-    if !requested.visibility().any() {
-        return Err("Keep at least one menu-bar item visible".into());
-    }
-    let prepared = stage()?;
-    save(requested)?;
-    *current = requested;
-    Ok(prepared)
+    let mut stage = Some(stage);
+    let mut prepared = None;
+    let mut committed = None;
+    transaction(&mut |config| {
+        let requested = edit.resolve(ItemState::from_config(config))?;
+        if !requested.visibility().any() {
+            return Err("Keep at least one menu-bar item visible".into());
+        }
+        prepared = Some(stage.take().expect("one configuration edit")(requested)?);
+        write_state(config, requested);
+        committed = Some(requested);
+        Ok(())
+    })?;
+    *current = committed.expect("successful configuration edit");
+    Ok(prepared.expect("successful native preparation"))
 }
 
 #[cfg(target_os = "macos")]
@@ -127,26 +174,36 @@ fn prepare(app: &App, requested: ItemState) -> Result<PreparedItems, String> {
     })
 }
 
-fn apply_state(app: &mut App, requested: ItemState, persist: bool) -> Result<(), String> {
-    #[cfg(not(target_os = "macos"))]
-    if requested.cpu.enabled || !requested.primary_visible {
-        return Err("Menu item visibility is supported on macOS".into());
-    }
+fn apply_state(app: &mut App, edit: ItemEdit, persist: bool) -> Result<(), String> {
     let mut live = ItemState::from_app(app);
+    let mut fallback = live.config();
+    let transaction = |edit: &mut dyn FnMut(&mut MenubarConfig) -> Result<(), String>| {
+        if persist {
+            peterfan_platform::config::update(|config| {
+                edit(&mut config.menubar).map_err(std::io::Error::other)
+            })
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        } else {
+            edit(&mut fallback)
+        }
+    };
     #[cfg(target_os = "macos")]
-    let staged = commit_staged(
-        &mut live,
-        requested,
-        || prepare(app, requested),
-        |state| save_state(state, persist),
-    )?;
+    let staged = commit_staged(&mut live, edit, |state| prepare(app, state), transaction)?;
     #[cfg(not(target_os = "macos"))]
     commit_staged(
         &mut live,
-        requested,
-        || Ok(()),
-        |state| save_state(state, persist),
+        edit,
+        |requested| {
+            if requested.cpu.enabled || !requested.primary_visible {
+                Err("Menu item visibility is supported on macOS".into())
+            } else {
+                Ok(())
+            }
+        },
+        transaction,
     )?;
+    let requested = live;
     // No fallible native operations after save. Never remove the primary item:
     // native visibility preserves its identity, button and click target.
     #[cfg(target_os = "macos")]
@@ -186,21 +243,19 @@ fn apply_state(app: &mut App, requested: ItemState, persist: bool) -> Result<(),
                 .update(visibility(app), app.language.resolve());
         }
     }
+    if let Some(menu) = &app.tray_menu {
+        for (display, item) in &menu.display_items {
+            item.set_checked(*display == app.display);
+        }
+    }
     app.cpu_widget_error = None;
     Ok(())
 }
 
-fn save_state(state: ItemState, persist: bool) -> Result<(), String> {
-    if persist {
-        peterfan_platform::config::update(|config| {
-            config.menubar.display = state.display;
-            config.menubar.primary_visible = state.primary_visible;
-            config.menubar.cpu_widget = state.cpu;
-            Ok(())
-        })
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+fn write_state(config: &mut MenubarConfig, state: ItemState) {
+    config.display = state.display;
+    config.primary_visible = state.primary_visible;
+    config.cpu_widget = state.cpu;
 }
 
 pub(super) fn apply(
@@ -208,11 +263,7 @@ pub(super) fn apply(
     requested: MenuItemsVisibility,
     persist: bool,
 ) -> Result<(), String> {
-    apply_state(
-        app,
-        ItemState::from_app(app).with_visibility(requested)?,
-        persist,
-    )
+    apply_state(app, ItemEdit::Visibility(requested), persist)
 }
 
 pub(super) fn apply_cpu(
@@ -220,11 +271,15 @@ pub(super) fn apply_cpu(
     requested: CpuWidgetConfig,
     persist: bool,
 ) -> Result<(), String> {
-    apply_state(app, ItemState::from_app(app).with_cpu(requested)?, persist)
+    apply_state(app, ItemEdit::Cpu(requested), persist)
 }
 
-pub(super) fn apply_display(app: &mut App, display: MenubarDisplay) -> Result<(), String> {
-    apply_state(app, ItemState::from_app(app).with_display(display), true)
+pub(super) fn apply_display(
+    app: &mut App,
+    display: MenubarDisplay,
+    persist: bool,
+) -> Result<(), String> {
+    apply_state(app, ItemEdit::Display(display), persist)
 }
 
 fn external_state(config: &MenubarConfig, macos: bool) -> ItemState {
@@ -249,7 +304,7 @@ pub(super) fn reload(app: &mut App, config: &MenubarConfig) {
     if requested == ItemState::from_app(app) {
         return;
     }
-    if let Err(error) = apply_state(app, requested, false) {
+    if let Err(error) = apply_state(app, ItemEdit::Reload(requested), false) {
         // Native preparation failed: recover an accessible primary using the
         // same owned item; never rewrite the external or fan configuration.
         #[cfg(target_os = "macos")]
@@ -304,6 +359,70 @@ mod tests {
     }
 
     #[test]
+    fn visibility_save_rebases_external_cpu_appearance_and_commits_matching_live_state() {
+        assert_external_cpu_appearance_survives(false);
+    }
+
+    #[test]
+    fn legacy_display_save_rebases_external_cpu_appearance_and_commits_matching_live_state() {
+        assert_external_cpu_appearance_survives(true);
+    }
+
+    fn assert_external_cpu_appearance_survives(legacy_display: bool) {
+        let mut live = original();
+        let mut latest = MenubarConfig {
+            display: MenubarDisplay::Graph,
+            cpu_widget: CpuWidgetConfig {
+                enabled: true,
+                style: CpuWidgetStyle::History,
+                show_percentage: false,
+            },
+            ..Default::default()
+        };
+        let edit = if legacy_display {
+            ItemEdit::Display(MenubarDisplay::Both)
+        } else {
+            ItemEdit::Visibility(MenuItemsVisibility {
+                cpu: true,
+                runner: false,
+                metric: true,
+            })
+        };
+        let staged = commit_staged(
+            &mut live,
+            edit,
+            |state| Ok(state.cpu),
+            |change| change(&mut latest),
+        )
+        .unwrap();
+        assert_eq!(
+            staged, latest.cpu_widget,
+            "native preparation used stale appearance"
+        );
+        assert_eq!(
+            latest.cpu_widget.style,
+            CpuWidgetStyle::History,
+            "new external CPU style was overwritten"
+        );
+        assert!(
+            !latest.cpu_widget.show_percentage,
+            "new external percentage was overwritten"
+        );
+        assert_eq!(
+            live.cpu, latest.cpu_widget,
+            "live/native state must match the committed rebase"
+        );
+        assert_eq!(
+            latest.display,
+            if legacy_display {
+                MenubarDisplay::Both
+            } else {
+                MenubarDisplay::Number
+            }
+        );
+    }
+
+    #[test]
     fn strict_visibility_payload_rejects_missing_unknown_duplicates_types_and_all_off() {
         for value in [
             "{}",
@@ -329,19 +448,19 @@ mod tests {
     #[test]
     fn staged_failure_never_saves_or_changes_live_state() {
         let mut live = original();
-        let desired = live
-            .with_visibility(MenuItemsVisibility {
-                cpu: true,
-                runner: false,
-                metric: false,
-            })
-            .unwrap();
+        let edit = ItemEdit::Visibility(MenuItemsVisibility {
+            cpu: true,
+            runner: false,
+            metric: false,
+        });
+        let mut config = live.config();
         let saved = Cell::new(false);
         let outcome = commit_staged(
             &mut live,
-            desired,
-            || Err::<(), _>("native unavailable".into()),
-            |_| {
+            edit,
+            |_| Err::<(), _>("native unavailable".into()),
+            |change| {
+                change(&mut config)?;
                 saved.set(true);
                 Ok(())
             },
@@ -354,22 +473,23 @@ mod tests {
     #[test]
     fn failed_save_keeps_live_items_and_retry_commits_prepared_state() {
         let mut live = original();
-        let desired = live
-            .with_visibility(MenuItemsVisibility {
-                cpu: true,
-                runner: false,
-                metric: false,
-            })
-            .unwrap();
+        let edit = ItemEdit::Visibility(MenuItemsVisibility {
+            cpu: true,
+            runner: false,
+            metric: false,
+        });
+        let desired = edit.resolve(live).unwrap();
+        let mut config = live.config();
         let staged = Cell::new(false);
         assert!(commit_staged(
             &mut live,
-            desired,
-            || {
+            edit,
+            |_| {
                 staged.set(true);
                 Ok(42)
             },
-            |_| {
+            |change| {
+                change(&mut config)?;
                 assert!(staged.get());
                 Err("disk full".into())
             }
@@ -377,7 +497,7 @@ mod tests {
         .is_err());
         assert_eq!(live, original());
         assert_eq!(
-            commit_staged(&mut live, desired, || Ok(42), |_| Ok(())).unwrap(),
+            commit_staged(&mut live, edit, |_| Ok(42), |change| change(&mut config)).unwrap(),
             42
         );
         assert_eq!(live, desired);

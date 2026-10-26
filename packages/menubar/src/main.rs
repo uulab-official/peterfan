@@ -3171,7 +3171,7 @@ fn main() {
                     refresh_after_pending = true;
                 } else if let Some(value) = c.strip_prefix("display:") {
                     if let Some(display) = MenubarDisplay::parse(value) {
-                        if let Err(error) = menu_items_app::apply_display(&mut app, display) { report_preference_failure("menu bar display", error); }
+                        if let Err(error) = menu_items_app::apply_display(&mut app, display, true) { report_preference_failure("menu bar display", error); }
                         next_runner_at = now;
                         refresh_after_pending = true;
                     }
@@ -3398,8 +3398,10 @@ fn main() {
                 open_menubar_log();
             }
             if let Some(d) = matched_display {
-                if let Err(error) = menu_items_app::apply_display(&mut app, d) { report_preference_failure("menu bar display", error); }
+                if let Err(error) = menu_items_app::apply_display(&mut app, d, true) { report_preference_failure("menu bar display", error); }
                 next_runner_at = Instant::now();
+                // Native check items may toggle before a failed save; restore
+                // their last committed state as well as the successful path.
                 if let Some(ref tm) = app.tray_menu {
                     for (candidate, item) in &tm.display_items { item.set_checked(*candidate == app.display); }
                 }
@@ -7506,22 +7508,19 @@ fn sync_native_runner_painter(app: &mut App) {
         return;
     };
     let screens = NSScreen::screens(mtm).len();
-    let eligible = native_runner::eligible(app.display, app.reduce_motion, screens);
     let mut painter = app.runner_native_painter.borrow_mut();
-    let was_active = painter.active();
-    let button_changed = painter.bind(&button);
-    if eligible && !painter.active() {
-        let transparent = vec![0; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize];
-        if let Ok(placeholder) =
-            make_runner_native_image_from_rgba(app.runner_character, 0, &transparent)
-        {
-            painter.attach(&placeholder);
-        }
-    } else if !eligible && was_active {
-        painter.detach();
-    }
-    painter.sync();
-    if button_changed || was_active != painter.active() {
+    let changed = painter.reconcile(
+        &button,
+        app.display,
+        app.primary_visible,
+        app.reduce_motion,
+        screens,
+        || {
+            let transparent = vec![0; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize];
+            make_runner_native_image_from_rgba(app.runner_character, 0, &transparent).ok()
+        },
+    );
+    if changed {
         // The timer observes this shared painter on its next tick, so monitor
         // attachment does not restart the current pose, phase or CPU easing.
         app.runner_native_applied_icon
