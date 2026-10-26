@@ -9,7 +9,8 @@ function cpuWidgetConfig(value){
   return {enabled:value.enabled===true,style:/^(bar|history|number|cores)$/.test(value.style)?value.style:'bar',show_percentage:value.show_percentage!==false};
 }
 function setCpuWidget(field,value){
-  if(!CPU_WIDGET_SUPPORTED||CPU_WIDGET_PENDING||!window.ipc)return;
+  if(field==='enabled'&&typeof MENU_ITEMS_SUPPORTED!=='undefined'&&MENU_ITEMS_SUPPORTED){setMenuItem('cpu',value);return;}
+  if(!CPU_WIDGET_SUPPORTED||CPU_WIDGET_PENDING||(typeof MENU_ITEMS_PENDING!=='undefined'&&MENU_ITEMS_PENDING)||!window.ipc)return;
   if(field==='style'&&!/^(bar|history|number|cores)$/.test(value))return;
   if(field!=='enabled'&&field!=='style'&&field!=='show_percentage')return;
   if(field!=='style'&&typeof value!=='boolean')return;
@@ -48,8 +49,8 @@ function cpuWidgetCorePaths(values){
 function renderCpuWidget(d){
   d=d||{};CPU_WIDGET_LAST_DATA=d;
   var names=LANG==='ko'
-    ?{'cpu-widget-title':'CPU 위젯','cpu-widget-copy':'러너와 별도로 상단에 CPU 사용률을 표시합니다.','cpu-widget-on-label':'표시','cpu-widget-style-label':'스타일','cpu-widget-style-bar':'바','cpu-widget-style-history':'히스토리','cpu-widget-style-number':'숫자','cpu-widget-percent-label':'사용률 숫자 표시'}
-    :{'cpu-widget-title':'CPU widget','cpu-widget-copy':'A separate CPU item alongside your runner.','cpu-widget-on-label':'Show','cpu-widget-style-label':'Display','cpu-widget-style-bar':'Bar','cpu-widget-style-history':'History','cpu-widget-style-number':'Number','cpu-widget-percent-label':'Show percentage'};
+    ?{'cpu-widget-title':'CPU 위젯 모양','cpu-widget-copy':'숨겨도 스타일과 사용률 표시 설정은 유지됩니다.','cpu-widget-on-label':'표시','cpu-widget-style-label':'스타일','cpu-widget-style-bar':'바','cpu-widget-style-history':'히스토리','cpu-widget-style-number':'숫자','cpu-widget-percent-label':'사용률 숫자 표시'}
+    :{'cpu-widget-title':'CPU widget appearance','cpu-widget-copy':'Style and percentage preferences are kept while hidden.','cpu-widget-on-label':'Show','cpu-widget-style-label':'Display','cpu-widget-style-bar':'Bar','cpu-widget-style-history':'History','cpu-widget-style-number':'Number','cpu-widget-percent-label':'Show percentage'};
   names['cpu-widget-style-cores']=LANG==='ko'?'코어별 바':'Per-core bars';
   Object.keys(names).forEach(function(id){var node=document.getElementById(id);if(node)node.textContent=names[id];});
   CPU_WIDGET_SUPPORTED=d.cpu_widget_supported===true;
@@ -68,7 +69,7 @@ function renderCpuWidget(d){
   var corePaths=cpuWidgetCorePaths(d.cpu_widget_cores);
   var help=document.getElementById('cpu-widget-core-help');
   if(help){help.hidden=config.style!=='cores';help.textContent=LANG==='ko'?'논리 코어마다 막대 하나 · 각 0–100%. Intel에서는 가상 코어도 포함합니다.':'One bar per logical CPU · 0–100% each. Includes Intel Hyper-Threading CPUs.';}
-  var pending=!!CPU_WIDGET_PENDING;
+  var pending=!!CPU_WIDGET_PENDING||(typeof MENU_ITEMS_PENDING!=='undefined'&&!!MENU_ITEMS_PENDING);
   var row=document.getElementById('cpu-widget-setting');
   if(row)row.hidden=!CPU_WIDGET_SUPPORTED;
   var enabled=document.getElementById('cpu-widget-enabled');
@@ -93,4 +94,5 @@ function renderCpuWidget(d){
   var svg=document.getElementById('cpu-widget-preview-svg');
   if(svg){svg.setAttribute('viewBox','0 0 '+(config.style==='cores'?corePaths.width:64)+' 36');svg.style.width=(config.style==='cores'?corePaths.width/2:32)+'px';}
   ['tracks','load','missing'].forEach(function(key){var node=document.getElementById('cpu-widget-core-'+key);if(node)node.setAttribute('d',corePaths[key]);});
+  if(typeof renderMenuItems==='function')renderMenuItems(d);
 }

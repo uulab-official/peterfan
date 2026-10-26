@@ -4,10 +4,17 @@ Status: initially released in v1.32.8; v1.32.9 adds Per-core bars (2026-10-26).
 See [per-core release and installed acceptance](CPU_PER_CORE_RELEASE_2026-10-25.md)
 for current publication, actual OTA and the pending final-build observation.
 
-In macOS Settings, enable **CPU widget** to add a separate menu-bar item alongside
-the runner. Choose **Bar**, **Per-core bars**, **History** or **Number**. Graphs can also show a numeric
-percentage; Number always shows one. Existing configurations default to off.
-The original runner/temperature display remains independently configurable.
+The current development source groups **CPU widget**, **Runner character** and
+**Metric text** under **Menu-bar items / 메뉴 막대 표시 항목** in macOS Settings.
+Each checkbox is independent: all seven non-empty combinations are supported.
+The last visible item stays enabled so dashboard/settings access remains available.
+Existing installations retain their CPU and Number/Runner/Both selections.
+
+Choose **Bar**, **Per-core bars**, **History** or **Number** in the subordinate
+CPU appearance controls. Graphs can also show a numeric percentage; Number always
+shows one. Hiding an item retains its CPU style, percentage, character and selected
+metric preferences. The native right-click menus offer the same visibility choices.
+Windows retains its existing display selector and primary tray item.
 
 The graph uses a fixed 0–100% axis and retains at most 60 samples from the existing
 CPU refresh. Invalid readings appear as gaps or `--%`. Native template images
@@ -53,6 +60,34 @@ unit evidence described above.
 
 Reference: [iStat Menus CPU settings](https://register.bjango.com/help/istatmenus7/cpugpu/).
 PeterFan uses original raster rendering and its existing CPU samples.
+
+## Independent visibility (development source; delivery pending)
+
+The app stores one default-on `menubar.primary_visible` flag together with the
+existing Number/Runner/Both enum and CPU-enabled flag. No shared enum gains a new
+value. CPU-only mode keeps the previous primary display selection on disk, and
+older helpers can still deserialize the full shared fan configuration.
+
+Visibility requests contain exactly three booleans: `cpu`, `runner`, and `metric`.
+The GUI prepares native resources before its atomic configuration update, then
+applies the visible set after persistence succeeds. Failed preparation or saves
+retain the prior visible set. Settings wait for the exact request ID and operation;
+failed or timed-out saves allow manual retry. Appearance and visibility changes
+are serialized in each settings host, and appearance requests preserve the current
+native CPU visibility even when another window changed it.
+
+External all-off configuration recovers a visible metric item without rewriting
+the configuration or fan preferences. Native preparation failure during external
+reload restores primary access. Hidden primary items stop runner animation and
+its timer; showing them restores the retained native button, width and image.
+No new sampler, worker or animation timer is added. Existing dashboard geometry
+and same-item close/cross-item reanchor handling remain in use.
+
+Unit/behavioral checks and isolated native fixtures are development evidence.
+They do not prove installed-client execution, actual release OTA, or six-hour
+acceptance. Installed v1.32.9, its resident helper and live configuration remain
+outside this implementation task. Independent visibility requires a subsequent
+immutable signed/notarized release, real OTA and a fresh final-build observation.
 
 ## Per-core bars (released in v1.32.9)
 

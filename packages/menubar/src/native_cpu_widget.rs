@@ -4,16 +4,88 @@ use objc2::rc::Retained;
 use objc2::AllocAnyThread;
 use objc2_app_kit::{
     NSBitmapFormat, NSBitmapImageRep, NSCellImagePosition, NSDeviceRGBColorSpace, NSFont, NSImage,
-    NSImageCacheMode,
+    NSImageCacheMode, NSStatusBarButton, NSStatusItem,
 };
 use objc2_foundation::{MainThreadMarker, NSSize, NSString};
-use peterfan_core::config::{CpuWidgetConfig, CpuWidgetStyle, ResolvedLanguage};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem};
+use peterfan_core::config::{
+    CpuWidgetConfig, CpuWidgetStyle, MenuItemsVisibility, MenubarDisplay, ResolvedLanguage,
+};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{TrayIcon, TrayIconAttributes};
+
+/// A validated retained native primary button; committing visibility cannot
+/// remove its NSStatusItem or fail after a successful configuration save.
+pub(crate) struct PreparedPrimaryItem {
+    item: Retained<NSStatusItem>,
+    button: Retained<NSStatusBarButton>,
+}
+
+impl PreparedPrimaryItem {
+    pub(crate) fn new(tray: &TrayIcon) -> Result<Self, String> {
+        let marker = MainThreadMarker::new().ok_or("Menu items require the GUI thread")?;
+        let item = tray
+            .ns_status_item()
+            .ok_or("Primary status item is unavailable")?;
+        let button = item
+            .button(marker)
+            .ok_or("Primary status button is unavailable")?;
+        Ok(Self { item, button })
+    }
+
+    pub(crate) fn configure(&self, tray: &TrayIcon, display: MenubarDisplay) {
+        self.item.setLength(primary_width(display));
+        self.button
+            .setImagePosition(primary_image_position(display));
+        // Refresh tray-icon's click surface after installing the fixed width.
+        tray.set_title(Some(if display == MenubarDisplay::Graph {
+            ""
+        } else {
+            " --°C"
+        }));
+    }
+
+    pub(crate) fn set_visible(&self, visible: bool) {
+        self.item.setVisible(visible);
+    }
+
+    pub(crate) fn apply(&self, tray: &TrayIcon, display: MenubarDisplay, visible: bool) {
+        self.configure(tray, display);
+        self.set_visible(visible);
+    }
+}
+
+pub(crate) fn primary_width(display: MenubarDisplay) -> f64 {
+    match display {
+        MenubarDisplay::Number => 50.,
+        MenubarDisplay::Graph => 36.,
+        MenubarDisplay::Both => 84.,
+    }
+}
+
+pub(crate) fn primary_image_position(display: MenubarDisplay) -> NSCellImagePosition {
+    match display {
+        MenubarDisplay::Number => NSCellImagePosition::NoImage,
+        MenubarDisplay::Graph => NSCellImagePosition::ImageOnly,
+        MenubarDisplay::Both => NSCellImagePosition::ImageLeft,
+    }
+}
+
+pub(crate) struct PreparedCpuWidgetUpdate {
+    button: Retained<NSStatusBarButton>,
+    config: CpuWidgetConfig,
+    language: ResolvedLanguage,
+    title: String,
+    tooltip: String,
+    width: u32,
+    point_width: f64,
+    pixels: Vec<u8>,
+    image: Option<Retained<NSImage>>,
+    image_changed: bool,
+}
 
 pub(crate) enum CpuWidgetAction {
     OpenDashboard,
-    Enabled(bool),
+    Visibility(MenuItemsVisibility),
     Style(CpuWidgetStyle),
     Percentage(bool),
 }
@@ -23,7 +95,8 @@ pub(crate) struct NativeCpuWidget {
     open: MenuItem,
     styles: Vec<(CpuWidgetStyle, CheckMenuItem)>,
     percentage: CheckMenuItem,
-    hide: MenuItem,
+    menu_items: MenuItemsMenu,
+    item: Retained<NSStatusItem>,
     config: CpuWidgetConfig,
     language: ResolvedLanguage,
     last_pixels: Vec<u8>,
@@ -41,7 +114,7 @@ fn labels(language: ResolvedLanguage) -> [&'static str; 7] {
             "숫자",
             "코어별 바",
             "사용률 숫자 표시",
-            "CPU 위젯 숨기기",
+            "메뉴 막대 표시 항목",
         ]
     } else {
         [
@@ -51,14 +124,78 @@ fn labels(language: ResolvedLanguage) -> [&'static str; 7] {
             "Number",
             "Per-core bars",
             "Show Percentage",
-            "Hide CPU Widget",
+            "Menu-bar items",
         ]
+    }
+}
+
+/// Identical independent controls on both native item menus.
+pub(crate) struct MenuItemsMenu {
+    submenu: Submenu,
+    entries: Vec<CheckMenuItem>,
+    visibility: std::cell::Cell<MenuItemsVisibility>,
+}
+
+impl MenuItemsMenu {
+    pub(crate) fn new(language: ResolvedLanguage, visibility: MenuItemsVisibility) -> Self {
+        let submenu = Submenu::new(labels(language)[6], true);
+        let entries = (0..3)
+            .map(|_| {
+                let item = CheckMenuItem::new("", true, false, None);
+                let _ = submenu.append(&item);
+                item
+            })
+            .collect();
+        let result = Self {
+            submenu,
+            entries,
+            visibility: std::cell::Cell::new(visibility),
+        };
+        result.update(visibility, language);
+        result
+    }
+    pub(crate) fn submenu(&self) -> &Submenu {
+        &self.submenu
+    }
+    pub(crate) fn update(&self, visibility: MenuItemsVisibility, language: ResolvedLanguage) {
+        self.visibility.set(visibility);
+        self.submenu.set_text(labels(language)[6]);
+        let names = if language == ResolvedLanguage::Ko {
+            ["CPU 위젯", "러너 캐릭터", "측정값 텍스트"]
+        } else {
+            ["CPU widget", "Runner character", "Metric text"]
+        };
+        for (entry, name) in self.entries.iter().zip(names) {
+            entry.set_text(name);
+        }
+        self.reconcile();
+    }
+    fn reconcile(&self) {
+        let v = self.visibility.get();
+        let values = [v.cpu, v.runner, v.metric];
+        let count = values.iter().filter(|&&value| value).count();
+        for (entry, checked) in self.entries.iter().zip(values) {
+            entry.set_checked(checked);
+            entry.set_enabled(!checked || count > 1);
+        }
+    }
+    pub(crate) fn action(&self, id: &MenuId) -> Option<MenuItemsVisibility> {
+        self.reconcile();
+        let index = self.entries.iter().position(|entry| entry.id() == id)?;
+        let mut v = self.visibility.get();
+        match index {
+            0 => v.cpu = !v.cpu,
+            1 => v.runner = !v.runner,
+            _ => v.metric = !v.metric,
+        }
+        Some(v)
     }
 }
 
 impl NativeCpuWidget {
     pub(crate) fn new(config: CpuWidgetConfig, language: ResolvedLanguage) -> Result<Self, String> {
-        MainThreadMarker::new().ok_or("CPU status item must be created on the main thread")?;
+        let marker =
+            MainThreadMarker::new().ok_or("CPU status item must be created on the main thread")?;
         let text = labels(language);
         let menu = Menu::new();
         let open = MenuItem::new(text[0], true, None);
@@ -85,11 +222,19 @@ impl NativeCpuWidget {
             config.show_percentage,
             None,
         );
-        let hide = MenuItem::new(text[6], true, None);
+        let menu_items = MenuItemsMenu::new(
+            language,
+            MenuItemsVisibility {
+                cpu: config.enabled,
+                runner: true,
+                metric: true,
+            },
+        );
         menu.append(&percentage).map_err(|e| e.to_string())?;
         menu.append(&PredefinedMenuItem::separator())
             .map_err(|e| e.to_string())?;
-        menu.append(&hide).map_err(|e| e.to_string())?;
+        menu.append(menu_items.submenu())
+            .map_err(|e| e.to_string())?;
         let tray = TrayIcon::new(TrayIconAttributes {
             menu: Some(Box::new(menu)),
             menu_on_left_click: false,
@@ -99,21 +244,21 @@ impl NativeCpuWidget {
             ..Default::default()
         })
         .map_err(|e| e.to_string())?;
-        // Stage creation inside the same event-loop turn. A failed preference
-        // save drops this hidden owned item without changing the live layout.
         let item = tray
             .ns_status_item()
             .ok_or("CPU status item creation failed")?;
+        item.button(marker)
+            .ok_or("CPU status button creation failed")?;
         item.setAutosaveName(Some(&NSString::from_str("PeterFan.CPUWidget")));
-        // tray-icon::set_visible(false) removes its NSStatusItem entirely.
-        // Native visibility preserves the owned button while staging a save.
+        // Native visibility retains the button; tray-icon's setter removes it.
         item.setVisible(false);
         Ok(Self {
             tray,
             open,
             styles,
             percentage,
-            hide,
+            menu_items,
+            item,
             config,
             language,
             last_pixels: Vec::new(),
@@ -122,30 +267,28 @@ impl NativeCpuWidget {
             last_tooltip: String::new(),
         })
     }
-
     pub(crate) fn tray(&self) -> &TrayIcon {
         &self.tray
     }
-    pub(crate) fn set_visible(&self, visible: bool) -> Result<(), String> {
-        let item = self
-            .tray
-            .ns_status_item()
-            .ok_or("CPU status item is missing")?;
-        item.setVisible(visible);
+    pub(crate) fn set_visible(&self, visible: bool) {
+        self.item.setVisible(visible);
         if visible {
             self.tray.set_title(self.last_title.as_deref());
         }
-        Ok(())
     }
-
+    pub(crate) fn set_item_visibility(
+        &self,
+        visibility: MenuItemsVisibility,
+        language: ResolvedLanguage,
+    ) {
+        self.menu_items.update(visibility, language);
+    }
     pub(crate) fn menu_action(&self, id: &MenuId) -> Option<CpuWidgetAction> {
-        // Muda toggles check items before delivering their event. Restore the
-        // persisted state even for a no-op selection or a subsequent save error.
         self.reconcile_menu();
         if self.open.id() == id {
             Some(CpuWidgetAction::OpenDashboard)
-        } else if self.hide.id() == id {
-            Some(CpuWidgetAction::Enabled(false))
+        } else if let Some(visibility) = self.menu_items.action(id) {
+            Some(CpuWidgetAction::Visibility(visibility))
         } else if self.percentage.id() == id {
             Some(CpuWidgetAction::Percentage(!self.config.show_percentage))
         } else {
@@ -155,7 +298,6 @@ impl NativeCpuWidget {
                 .map(|(style, _)| CpuWidgetAction::Style(*style))
         }
     }
-
     fn reconcile_menu(&self) {
         for (style, entry) in &self.styles {
             entry.set_checked(*style == self.config.style);
@@ -167,55 +309,35 @@ impl NativeCpuWidget {
             .set_enabled(self.config.style != CpuWidgetStyle::Number);
     }
 
-    pub(crate) fn update(
-        &mut self,
+    /// Allocate images and validate the native button without touching the live
+    /// presentation. Dropping this value rolls back a failed save naturally.
+    pub(crate) fn prepare_update(
+        &self,
         config: CpuWidgetConfig,
         language: ResolvedLanguage,
         history: &CpuWidgetHistory,
-    ) -> Result<(), String> {
+    ) -> Result<PreparedCpuWidgetUpdate, String> {
         let marker =
             MainThreadMarker::new().ok_or("CPU status item update requires the main thread")?;
-        let item = self
-            .tray
-            .ns_status_item()
-            .ok_or("CPU status item is missing")?;
-        let button = item.button(marker).ok_or("CPU status button is missing")?;
-        let text = cpu_widget::title(config, history.current());
+        let button = self
+            .item
+            .button(marker)
+            .ok_or("CPU status button is missing")?;
+        let title = cpu_widget::title(config, history.current());
         let width = history.pixel_width(config.style);
-        if self.config != config || self.last_title.is_none() || self.last_image_width != width {
-            item.setLength(history.point_width(config));
-            button.setImagePosition(image_position(config));
-            button.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-                11., 0.,
-            )));
-            // Resize tray-icon's own click surface only when layout changes.
-            self.tray.set_title(Some(&text));
-        }
-        if self.language != language {
-            let names = labels(language);
-            self.open.set_text(names[0]);
-            for (index, (_, entry)) in self.styles.iter().enumerate() {
-                entry.set_text(names[index + 1]);
-            }
-            self.percentage.set_text(names[5]);
-            self.hide.set_text(names[6]);
-        }
-        if self.last_title.as_deref() != Some(text.as_str()) {
-            button.setTitle(&NSString::from_str(&text));
-            self.last_title = Some(text);
-        }
-        if config.style == CpuWidgetStyle::Number {
-            button.setImage(None);
-            self.last_pixels.clear();
+        let pixels = if config.style == CpuWidgetStyle::Number {
+            Vec::new()
         } else {
-            let pixels = history.render_rgba(config.style);
-            if self.last_pixels != pixels || self.last_image_width != width {
-                let image = image_from_rgba(&pixels, width)?;
-                button.setImage(Some(&image));
-                self.last_pixels = pixels;
-            }
-        }
-        self.last_image_width = width;
+            history.render_rgba(config.style)
+        };
+        let image_changed = config.style == CpuWidgetStyle::Number
+            || self.last_pixels != pixels
+            || self.last_image_width != width;
+        let image = if image_changed && config.style != CpuWidgetStyle::Number {
+            Some(image_from_rgba(&pixels, width)?)
+        } else {
+            None
+        };
         let value = history
             .current()
             .map_or_else(|| "--%".to_string(), |v| format!("{v:.0}%"));
@@ -234,20 +356,82 @@ impl NativeCpuWidget {
         } else {
             String::new()
         };
-        let tip = if language == ResolvedLanguage::Ko {
+        let tooltip = if language == ResolvedLanguage::Ko {
             format!("{core_tip}CPU {value} · 0–100%\n클릭하여 대시보드 열기 · 우클릭하여 표시 설정")
         } else {
             format!("{core_tip}CPU {value} · 0–100%\nClick for dashboard · Right-click for display options")
         };
-        if tip != self.last_tooltip {
-            self.tray
-                .set_tooltip(Some(&tip))
-                .map_err(|e| e.to_string())?;
-            self.last_tooltip = tip;
+        Ok(PreparedCpuWidgetUpdate {
+            button,
+            config,
+            language,
+            title,
+            tooltip,
+            width,
+            point_width: history.point_width(config),
+            pixels,
+            image,
+            image_changed,
+        })
+    }
+
+    pub(crate) fn commit_update(&mut self, prepared: PreparedCpuWidgetUpdate) {
+        let PreparedCpuWidgetUpdate {
+            button,
+            config,
+            language,
+            title,
+            tooltip,
+            width,
+            point_width,
+            pixels,
+            image,
+            image_changed,
+        } = prepared;
+        if self.config != config || self.last_title.is_none() || self.last_image_width != width {
+            self.item.setLength(point_width);
+            button.setImagePosition(image_position(config));
+            button.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
+                11., 0.,
+            )));
+            self.tray.set_title(Some(&title));
         }
+        if self.language != language {
+            let names = labels(language);
+            self.open.set_text(names[0]);
+            for (index, (_, entry)) in self.styles.iter().enumerate() {
+                entry.set_text(names[index + 1]);
+            }
+            self.percentage.set_text(names[5]);
+            self.menu_items
+                .update(self.menu_items.visibility.get(), language);
+        }
+        if self.last_title.as_deref() != Some(title.as_str()) {
+            button.setTitle(&NSString::from_str(&title));
+            self.last_title = Some(title);
+        }
+        if image_changed {
+            button.setImage(image.as_deref());
+            self.last_pixels = pixels;
+        }
+        if tooltip != self.last_tooltip {
+            button.setToolTip(Some(&NSString::from_str(&tooltip)));
+            self.last_tooltip = tooltip;
+        }
+        self.last_image_width = width;
         self.config = config;
-        self.reconcile_menu();
         self.language = language;
+        self.reconcile_menu();
+    }
+
+    pub(crate) fn update(
+        &mut self,
+        config: CpuWidgetConfig,
+        language: ResolvedLanguage,
+        history: &CpuWidgetHistory,
+    ) -> Result<(), String> {
+        let prepared = self.prepare_update(config, language, history)?;
+        self.commit_update(prepared);
         Ok(())
     }
 }

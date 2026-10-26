@@ -47,6 +47,7 @@ use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
 mod cpu_widget;
 mod cpu_widget_app;
+mod menu_items_app;
 #[cfg(target_os = "macos")]
 mod native_cpu_widget;
 #[cfg(target_os = "macos")]
@@ -133,12 +134,6 @@ const FAN_STALE_AFTER: Duration = Duration::from_secs(8);
 const FAN_EMPTY_CONFIRMATIONS: u8 = 3;
 const RUNNER_PREVIEW_BAND: usize = 1;
 const RUNNER_PREVIEW_POSE: u8 = 1;
-#[cfg(target_os = "macos")]
-const MENUBAR_GRAPH_WIDTH: f64 = 36.0;
-#[cfg(target_os = "macos")]
-const MENUBAR_NUMBER_WIDTH: f64 = 50.0;
-#[cfg(target_os = "macos")]
-const MENUBAR_BOTH_WIDTH: f64 = 84.0;
 const POPOVER_PREWARM_DELAY: Duration = Duration::from_millis(1200);
 const POPOVER_SHOW_DELAY: Duration = Duration::from_millis(35);
 const DASHBOARD_OPEN_GRACE: Duration = Duration::from_millis(900);
@@ -722,6 +717,8 @@ struct TrayMenu {
     quit: tray_icon::menu::MenuId,
     /// "Display" submenu — number / cat / both.
     display_items: Vec<(MenubarDisplay, tray_icon::menu::CheckMenuItem)>,
+    #[cfg(target_os = "macos")]
+    menu_items: native_cpu_widget::MenuItemsMenu,
     /// CPU runner character, independent of number/runner display mode.
     character_items: Vec<(RunnerCharacter, tray_icon::menu::CheckMenuItem)>,
     random_character_item: tray_icon::menu::CheckMenuItem,
@@ -878,6 +875,7 @@ struct App {
     /// ms, especially when they're failing (no daemon, no root).
     provider: std::sync::Arc<dyn HardwareProvider>,
     display: MenubarDisplay,
+    primary_visible: bool,
     runner_character: RunnerCharacter,
     random_runner: RandomRunner,
     temperature_source: TemperatureSource,
@@ -1129,15 +1127,6 @@ impl Default for DashboardSlowCache {
     }
 }
 
-/// Persist the menu-bar appearance. The metric itself is intentionally fixed
-/// to CPU Core Average so every surface reports the same number.
-fn save_menubar_display(display: MenubarDisplay) -> std::io::Result<PathBuf> {
-    peterfan_platform::config::update(|cfg| {
-        cfg.menubar.display = display;
-        Ok(())
-    })
-}
-
 fn save_cpu_core_graph(show: bool) -> std::io::Result<PathBuf> {
     peterfan_platform::config::update(|cfg| {
         cfg.menubar.show_cpu_core_graph = show;
@@ -1373,6 +1362,7 @@ enum SettingsOperation {
     Rules,
     ImportConfig,
     CpuWidget,
+    MenuItems,
 }
 
 #[derive(serde::Deserialize)]
@@ -1495,7 +1485,7 @@ fn run_settings_request(request_json: &str) -> Option<String> {
     let result = match request.operation {
         SettingsOperation::Rules => save_automation_rules(&request.payload),
         SettingsOperation::ImportConfig => import_config(&request.payload),
-        SettingsOperation::CpuWidget => {
+        SettingsOperation::CpuWidget | SettingsOperation::MenuItems => {
             SettingsSaveResult::failed("CPU widget requires the GUI event loop".into())
         }
     };
@@ -2748,6 +2738,7 @@ fn main() {
         monitor,
         provider,
         display,
+        primary_visible: true,
         runner_character,
         random_runner: RandomRunner::new(random_character, Instant::now()),
         temperature_source,
@@ -2875,7 +2866,7 @@ fn main() {
             Event::NewEvents(StartCause::Init) => {
                 build_tray(&mut app);
                 #[cfg(target_os = "macos")]
-                if let Err(error) = cpu_widget_app::apply(&mut app, cpu_widget_config, false) {
+                if let Err(error) = menu_items_app::apply(&mut app, saved.item_visibility(), false) {
                     app.cpu_widget_error = Some(error.clone());report_preference_failure("CPU widget", error);
                 }
                 #[cfg(target_os = "macos")]
@@ -3022,7 +3013,7 @@ fn main() {
                 } else {
                     REFRESH
                 };
-            if runner_uses_event_loop_timer(app.display, app.reduce_motion) {
+            if app.primary_visible && runner_uses_event_loop_timer(app.display, app.reduce_motion) {
                 // A CPU spike must accelerate the runner immediately instead
                 // of waiting for the old idle-speed deadline to expire.
                 next_runner_at = next_runner_at.min(
@@ -3031,13 +3022,13 @@ fn main() {
             }
         }
         if let Some(character) = app.random_runner.next_due(
-            now, app.runner_character, runner_should_animate(app.display, app.reduce_motion),
+            now, app.runner_character, runner_visibility_should_animate(app.primary_visible, app.display, app.reduce_motion),
         ) {
             switch_runner_character(&mut app, character);
             next_runner_at = now;
             next_metric_at = now;
         }
-        if runner_should_animate(app.display, app.reduce_motion) && now >= next_runner_cpu_at {
+        if runner_visibility_should_animate(app.primary_visible, app.display, app.reduce_motion) && now >= next_runner_cpu_at {
             let cpu = app.monitor.sample_cpu_usage();
             app.runner_cpu_pct = smooth_runner_cpu(app.runner_cpu_pct, cpu, app.runner_has_sample);
             app.runner_has_sample = true;
@@ -3051,7 +3042,7 @@ fn main() {
                 );
             }
         }
-        if runner_uses_event_loop_timer(app.display, app.reduce_motion) && now >= next_runner_at {
+        if (app.primary_visible && runner_uses_event_loop_timer(app.display, app.reduce_motion)) && now >= next_runner_at {
             animate_runner(&mut app);
             next_runner_at =
                 now + runner_frame_interval_for_pose(app.runner_character, app.runner_cpu_pct, app.runner_frame);
@@ -3068,9 +3059,9 @@ fn main() {
         }
         let next_tick = [
             Some(next_metric_at),
-            app.random_runner.deadline(runner_should_animate(app.display, app.reduce_motion)),
-            runner_should_animate(app.display, app.reduce_motion).then_some(next_runner_cpu_at),
-            runner_uses_event_loop_timer(app.display, app.reduce_motion).then_some(next_runner_at),
+            app.random_runner.deadline(runner_visibility_should_animate(app.primary_visible, app.display, app.reduce_motion)),
+            runner_visibility_should_animate(app.primary_visible, app.display, app.reduce_motion).then_some(next_runner_cpu_at),
+            (app.primary_visible && runner_uses_event_loop_timer(app.display, app.reduce_motion)).then_some(next_runner_at),
             prewarm_popover_at,
             app.popover_show_at,
         ]
@@ -3180,23 +3171,8 @@ fn main() {
                     refresh_after_pending = true;
                 } else if let Some(value) = c.strip_prefix("display:") {
                     if let Some(display) = MenubarDisplay::parse(value) {
-                      if preference_saved("menu bar display", save_menubar_display(display)) {
-                        app.display = display;
-                        invalidate_runner_icon(&mut app.last_runner_icon);
+                        if let Err(error) = menu_items_app::apply_display(&mut app, display) { report_preference_failure("menu bar display", error); }
                         next_runner_at = now;
-                        #[cfg(target_os = "macos")]
-                        if let Some(tray) = &app.tray {
-                            configure_native_status_item(tray, app.display);
-                        }
-                        app.last_menubar_text = None;
-                        #[cfg(target_os = "macos")]
-                        sync_native_runner_timer(&mut app);
-                        if let Some(ref tm) = app.tray_menu {
-                            for (candidate, item) in &tm.display_items {
-                                item.set_checked(*candidate == display);
-                            }
-                        }
-                      }
                         refresh_after_pending = true;
                     }
                 } else if let Some(value) = c.strip_prefix("cpu-core-graph:") {
@@ -3222,14 +3198,12 @@ fn main() {
                     let operation = parsed.as_ref().map(|r| r.operation);
                     let status = if operation == Some(SettingsOperation::CpuWidget) {
                         parsed.map(|request| cpu_widget_app::request(&mut app, request))
+                    } else if operation == Some(SettingsOperation::MenuItems) {
+                        parsed.map(|request| menu_items_app::request(&mut app, request))
                     } else { run_settings_request(request) };
                     if let Some(status) = status { *STATUS.lock().expect("status poisoned") = status; }
                     if operation == Some(SettingsOperation::ImportConfig) {
-                        #[cfg(target_os = "macos")]
-                        {
-                            let config = peterfan_platform::config::load().menubar.cpu_widget;
-                            if let Err(error) = cpu_widget_app::apply(&mut app, config, false) { app.cpu_widget_error = Some(error); }
-                        }
+                        menu_items_app::reload(&mut app, &peterfan_platform::config::load().menubar);
                     }
                     refresh_after_pending = true;
                 } else if let Some(json) = c.strip_prefix("rules:") {
@@ -3322,13 +3296,16 @@ fn main() {
                             toggle_popover(&mut app, target, &tray_id, rect, &event_proxy);
                         }
                     }
+                    CpuWidgetAction::Visibility(visibility) => {
+                        if let Err(error) = menu_items_app::apply(&mut app, visibility, true) { report_preference_failure("Menu items", error); }
+                    }
                     preference => {
                         let mut config = app.cpu_widget_config;
                         match preference {
-                            CpuWidgetAction::Enabled(enabled) => config.enabled = enabled,
+
                             CpuWidgetAction::Style(style) => config = config.select_style(style),
                             CpuWidgetAction::Percentage(show) => config.show_percentage = show,
-                            CpuWidgetAction::OpenDashboard => unreachable!(),
+                            CpuWidgetAction::OpenDashboard | CpuWidgetAction::Visibility(_) => unreachable!(),
                         }
                         if let Err(error) = cpu_widget_app::apply(&mut app, config, true) {
                             report_preference_failure("CPU widget", error);
@@ -3336,6 +3313,12 @@ fn main() {
                     }
                 }
                 next_metric_at = now;*control_flow = ControlFlow::WaitUntil(now);
+                continue;
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(visibility) = app.tray_menu.as_ref().and_then(|menu| menu.menu_items.action(id)) {
+                if let Err(error) = menu_items_app::apply(&mut app, visibility, true) { report_preference_failure("Menu items", error); }
+                next_metric_at = now;
                 continue;
             }
             let mut matched_display: Option<MenubarDisplay> = None;
@@ -3415,22 +3398,10 @@ fn main() {
                 open_menubar_log();
             }
             if let Some(d) = matched_display {
-              if preference_saved("menu bar display", save_menubar_display(d)) {
-                app.display = d;
-                invalidate_runner_icon(&mut app.last_runner_icon);
+                if let Err(error) = menu_items_app::apply_display(&mut app, d) { report_preference_failure("menu bar display", error); }
                 next_runner_at = Instant::now();
-                #[cfg(target_os = "macos")]
-                if let Some(tray) = &app.tray {
-                    configure_native_status_item(tray, app.display);
-                }
-                app.last_menubar_text = None;
-                #[cfg(target_os = "macos")]
-                sync_native_runner_timer(&mut app);
-              }
                 if let Some(ref tm) = app.tray_menu {
-                    for (candidate, item) in &tm.display_items {
-                        item.set_checked(*candidate == app.display);
-                    }
+                    for (candidate, item) in &tm.display_items { item.set_checked(*candidate == app.display); }
                 }
                 update(&mut app);
             }
@@ -3787,7 +3758,15 @@ fn build_tray(app: &mut App) {
         let _ = menu.append(item);
     }
     let _ = menu.append(&PredefinedMenuItem::separator());
+    #[cfg(not(target_os = "macos"))]
     let _ = menu.append(&display_submenu);
+    #[cfg(target_os = "macos")]
+    let menu_items = native_cpu_widget::MenuItemsMenu::new(
+        app.language.resolve(),
+        menu_items_app::visibility(app),
+    );
+    #[cfg(target_os = "macos")]
+    let _ = menu.append(menu_items.submenu());
     let _ = menu.append(&character_submenu);
     let _ = menu.append(&temperature_source_submenu);
     let _ = menu.append(&language_submenu);
@@ -3807,6 +3786,8 @@ fn build_tray(app: &mut App) {
             .collect(),
         quit: quit_item.id().clone(),
         display_items,
+        #[cfg(target_os = "macos")]
+        menu_items,
         character_items,
         random_character_item,
         temperature_source_items,
@@ -3819,7 +3800,7 @@ fn build_tray(app: &mut App) {
         language_items,
     };
 
-    let initial_runner_icon = runner_enabled(app.display)
+    let initial_runner_icon = (app.primary_visible && runner_enabled(app.display))
         .then(|| runner_icon_index(app.runner_cpu_pct, app.runner_frame));
     let initial_icon =
         initial_runner_icon.and_then(|index| app.runner_assets.icons.get(index).cloned());
@@ -4898,16 +4879,7 @@ fn update(app: &mut App) {
     // validates the same file before applying rules.
     let config = peterfan_platform::config::load();
     app.update_channel = config.menubar.update_channel;
-    if app.cpu_widget_config != config.menubar.cpu_widget {
-        #[cfg(target_os = "macos")]
-        if let Err(error) = cpu_widget_app::apply(app, config.menubar.cpu_widget, false) {
-            app.cpu_widget_error = Some(error);
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            app.cpu_widget_config = config.menubar.cpu_widget;
-        }
-    }
+    menu_items_app::reload(app, &config.menubar);
     app.monitor.refresh_quick();
     let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
     let popover_scheduled = app.popover_show_at.is_some();
@@ -5468,6 +5440,8 @@ fn update(app: &mut App) {
         "settings_results": SETTINGS_RESULTS.lock().expect("settings results poisoned").clone(),
     });
     payload["config_toml"] = serde_json::json!(config.to_toml());
+    payload["menu_items"] = serde_json::json!(menu_items_app::visibility(app));
+    payload["menu_items_supported"] = serde_json::json!(cfg!(target_os = "macos"));
     payload["cpu_widget"] = serde_json::json!(app.cpu_widget_config);
     payload["cpu_widget_supported"] = serde_json::json!(cfg!(target_os = "macos"));
     payload["cpu_widget_error"] = serde_json::json!(app.cpu_widget_error);
@@ -5538,7 +5512,7 @@ fn update(app: &mut App) {
 }
 
 fn animate_runner(app: &mut App) {
-    if !runner_enabled(app.display) {
+    if !(app.primary_visible && runner_enabled(app.display)) {
         return;
     }
     app.runner_frame = app.runner_frame.wrapping_add(1);
@@ -7188,44 +7162,29 @@ fn validate_runner_rgba_frame(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn native_status_item_width(display: MenubarDisplay) -> f64 {
-    match display {
-        MenubarDisplay::Number => MENUBAR_NUMBER_WIDTH,
-        MenubarDisplay::Graph => MENUBAR_GRAPH_WIDTH,
-        MenubarDisplay::Both => MENUBAR_BOTH_WIDTH,
-    }
+    native_cpu_widget::primary_width(display)
 }
 
 #[cfg(target_os = "macos")]
 fn configure_native_status_item(tray: &TrayIcon, display: MenubarDisplay) {
-    let Some(status_item) = tray.ns_status_item() else {
-        return;
-    };
-    status_item.setLength(native_status_item_width(display));
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    if let Some(button) = status_item.button(mtm) {
-        button.setImagePosition(native_status_item_image_position(display));
+    if let Ok(primary) = native_cpu_widget::PreparedPrimaryItem::new(tray) {
+        primary.configure(tray, display);
     }
-    // Let tray-icon resize its click target once after the fixed native width
-    // is installed. Subsequent title and frame updates bypass its expensive
-    // variable-width relayout path.
-    tray.set_title(Some(
-        if matches!(display, MenubarDisplay::Number | MenubarDisplay::Both) {
-            " --°C"
-        } else {
-            ""
-        },
-    ));
 }
 
 #[cfg(target_os = "macos")]
 fn native_status_item_image_position(display: MenubarDisplay) -> NSCellImagePosition {
-    match display {
-        MenubarDisplay::Number => NSCellImagePosition::NoImage,
-        MenubarDisplay::Graph => NSCellImagePosition::ImageOnly,
-        MenubarDisplay::Both => NSCellImagePosition::ImageLeft,
-    }
+    native_cpu_widget::primary_image_position(display)
+}
+
+fn runner_visibility_should_animate(
+    primary_visible: bool,
+    display: MenubarDisplay,
+    reduce_motion: bool,
+) -> bool {
+    primary_visible && runner_should_animate(display, reduce_motion)
 }
 
 fn invalidate_runner_icon(last_runner_icon: &mut Option<usize>) {
@@ -7249,7 +7208,7 @@ fn stop_native_runner_timer(app: &mut App) {
 fn sync_native_runner_timer(app: &mut App) {
     app.runner_native_cpu_bits
         .store(app.runner_cpu_pct.to_bits(), Ordering::Relaxed);
-    if !runner_should_animate(app.display, app.reduce_motion) {
+    if !runner_visibility_should_animate(app.primary_visible, app.display, app.reduce_motion) {
         stop_native_runner_timer(app);
         return;
     }
@@ -7385,7 +7344,7 @@ fn set_runner_random(app: &mut App) -> bool {
         .next_due(
             now,
             app.runner_character,
-            runner_should_animate(app.display, app.reduce_motion),
+            runner_visibility_should_animate(app.primary_visible, app.display, app.reduce_motion),
         )
         .unwrap_or(app.runner_character);
     if select_runner_preference(app, character, true) {
@@ -7481,13 +7440,13 @@ fn apply_runner_icon(app: &mut App) {
     #[cfg(target_os = "macos")]
     sync_native_runner_painter(app);
     #[cfg(target_os = "macos")]
-    let desired = runner_enabled(app.display).then(|| {
+    let desired = (app.primary_visible && runner_enabled(app.display)).then(|| {
         app.runner_native_band.load(Ordering::Relaxed) * usize::from(RUNNER_FRAME_COUNT)
             + app.runner_native_frame.load(Ordering::Relaxed) as usize
                 % usize::from(RUNNER_FRAME_COUNT)
     });
     #[cfg(not(target_os = "macos"))]
-    let desired = runner_enabled(app.display).then(|| {
+    let desired = (app.primary_visible && runner_enabled(app.display)).then(|| {
         runner_icon_index_with_hysteresis(
             app.runner_cpu_pct,
             app.runner_frame,
@@ -8190,7 +8149,9 @@ fn dashboard_html_with_runner_pack(
             );
         }
     }
-    html.replace("__CPU_WIDGET_SETTINGS__", include_str!("cpu_widget.html"))
+    html.replace("__MENU_ITEMS_SETTINGS__", include_str!("menu_items.html"))
+        .replace("__MENU_ITEMS_SCRIPT__", include_str!("menu_items.js"))
+        .replace("__CPU_WIDGET_SETTINGS__", include_str!("cpu_widget.html"))
         .replace("__CPU_WIDGET_SCRIPT__", include_str!("cpu_widget.js"))
         .replace("__RUNNER_OPTIONS__", &runner_picker_options(lang))
         .replace("__RUNNER_CHARACTERS__", &runner_character_values_json())
@@ -8699,6 +8660,7 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
 <div class="runner-pace" id="runner-pace">CPU runner · waiting</div>
 </div>
 </div>
+__MENU_ITEMS_SETTINGS__
 __CPU_WIDGET_SETTINGS__
 <div class="settings-item" id="show-core-graph-setting">
 <div><div class="settings-item-title">CPU core graph</div><div class="settings-item-copy">Show live per-core CPU activity in the overview.</div></div>
@@ -9489,7 +9451,7 @@ window.__pf={
    if(d.temp_present)drawChart('temp-chart', d.temp_stale?[]:d.temp_hist, cssColor('--y','#f4c95d'), null, function(v){return v.toFixed(0)+'°C';});
    document.querySelectorAll('.range-tabs .range-tab').forEach(function(b){var active=b.dataset.range===d.chart_range;b.classList.toggle('active',active);b.setAttribute('aria-pressed',active?'true':'false');});
  } else if(view==='settings'||view==='system'){
-   if(view==='settings'){updateSetup(d);updateMenubarDisplay(d);renderCpuWidget(d);}
+   if(view==='settings'){updateSetup(d);updateMenubarDisplay(d);renderMenuItems(d);renderCpuWidget(d);}
    else {
      updateHardwareAvailability(d);
      set('system-load',d.load_avg_text||'—');
@@ -10737,6 +10699,7 @@ function setProcSort(s){
   window.ipc.postMessage('procsort:'+s);
 }
 __CPU_WIDGET_SCRIPT__
+__MENU_ITEMS_SCRIPT__
 function setMenubarDisplay(style){
   if(!/^(number|cat|both)$/.test(style))return;
   var data=window.__pf_pending||{};
@@ -10997,6 +10960,7 @@ function setRunnerCharacter(character){
   if(window.ipc)window.ipc.postMessage('character:'+character);
 }
 function updateMenubarDisplay(d){
+  var legacy=document.getElementById("menubar-display-setting");if(legacy)legacy.hidden=d.menu_items_supported===true;
   var style=/^(number|cat|both)$/.test(d.menubar_display)?d.menubar_display:'both';
   document.querySelectorAll('.display-segment button').forEach(function(button){
     var active=button.dataset.display===style;
@@ -13267,10 +13231,10 @@ mod tests {
             };
             let html = dashboard_html(language, false);
             let bootstrap = r#"<script>
-window.__pf_pending={menubar_display:'both',runner_character:'cat',runner_random:false,runner_cpu_pct:45,runner_interval_ms:81,runner_reduce_motion:true,cpu_pct:45,cpu_widget_supported:true,cpu_widget:{enabled:true,style:'cores',show_percentage:false},cpu_widget_cores:[0,15,30,50,75,100,25,65,40,85],cpu_widget_history:Array.from({length:60},function(_,i){return Math.max(0,Math.min(100,45+35*Math.sin(i*.3)));}),settings_results:[]};
-window.ipc={postMessage:function(message){document.body.dataset.lastCommand=message;if(message.indexOf('settingsrequest:')===0){var r=JSON.parse(message.slice(16));setTimeout(function(){var d=window.__pf_pending;d.cpu_widget=JSON.parse(r.payload);d.settings_results=[{id:r.id,operation:r.operation,ok:true}];renderCpuWidget(d);},80);}}};
+window.__pf_pending={menubar_display:'both',runner_character:'cat',runner_random:false,runner_cpu_pct:45,runner_interval_ms:81,runner_reduce_motion:true,cpu_pct:45,menu_items_supported:true,menu_items:{cpu:true,runner:true,metric:true},cpu_widget_supported:true,cpu_widget:{enabled:true,style:'cores',show_percentage:false},cpu_widget_cores:[0,15,30,50,75,100,25,65,40,85],cpu_widget_history:Array.from({length:60},function(_,i){return Math.max(0,Math.min(100,45+35*Math.sin(i*.3)));}),settings_results:[]};
+window.ipc={postMessage:function(message){document.body.dataset.lastCommand=message;if(message.indexOf('settingsrequest:')===0){var r=JSON.parse(message.slice(16));setTimeout(function(){var d=window.__pf_pending;if(window.__pf_fail_next){window.__pf_fail_next=false;d.settings_results=[{id:r.id,operation:r.operation,ok:false,message:'Fixture save failed. Please retry.'}];}else{var value=JSON.parse(r.payload);if(r.operation==='menu_items'){d.menu_items=value;d.cpu_widget.enabled=value.cpu;}else if(r.operation==='cpu_widget'){value.enabled=d.cpu_widget.enabled;d.cpu_widget=value;}d.settings_results=[{id:r.id,operation:r.operation,ok:true}];}renderMenuItems(d);renderCpuWidget(d);},80);}}};
 document.body.classList.add('data-ready');var loading=document.getElementById('data-loading');if(loading)loading.hidden=true;
-setRailView('settings');updateMenubarDisplay(window.__pf_pending);renderCpuWidget(window.__pf_pending);
+setRailView('settings');updateMenubarDisplay(window.__pf_pending);renderMenuItems(window.__pf_pending);renderCpuWidget(window.__pf_pending);
 </script>"#;
             std::fs::write(
                 directory.join(format!("settings-{lang}.html")),
@@ -13278,6 +13242,28 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);renderCpuWidge
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn hidden_primary_disables_runner_animation_in_all_display_modes() {
+        for display in [
+            MenubarDisplay::Graph,
+            MenubarDisplay::Both,
+            MenubarDisplay::Number,
+        ] {
+            assert!(!runner_visibility_should_animate(false, display, false));
+            assert!(!runner_visibility_should_animate(false, display, true));
+        }
+        assert!(runner_visibility_should_animate(
+            true,
+            MenubarDisplay::Graph,
+            false
+        ));
+        assert!(!runner_visibility_should_animate(
+            true,
+            MenubarDisplay::Both,
+            true
+        ));
     }
 
     #[test]
