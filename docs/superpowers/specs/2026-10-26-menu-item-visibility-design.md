@@ -1,6 +1,6 @@
 # Menu-bar item visibility
 
-Status: design and implementation approved by the user on 2026-10-26; implementation in progress.
+Status: design and implementation approved by the user on 2026-10-26; implemented and locally verified; final review and delivery pending.
 
 ## Intent and selected approach
 

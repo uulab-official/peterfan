@@ -54,17 +54,17 @@
 - Settings operation `menu_items` uses one complete typed visibility payload and returns native acknowledgement through existing settings results. Payload key `menu_items` carries confirmed effective state, key `menu_items_supported` gates macOS controls.
 - Both hosts consume one shared HTML/JS group. CPU appearance remains separate; remove competing primary display chooser from macOS settings while retaining Windows behavior.
 
-- [ ] **Step 1:** Add failing Rust tests for all seven combinations, all-off rejection, default migration, hiding/re-enabling preference retention, external all-off recovery and legacy-helper parsing of resulting TOML with unrelated fan settings.
-- [ ] **Step 2:** Run focused core tests and record the expected missing-feature failure; implement the typed mapping and repeat until green.
-- [ ] **Step 3:** Add failing transaction/parser tests for strict payload, failed save preserving prior live state, retry and last-item protection through CPU and legacy entry points. Implement staged native transaction and routing; prepare CPU-only before hiding primary; restore primary on external/native failure.
-- [ ] **Step 4:** Add failing Node behavioral tests for all seven checkbox states, last active disabled guard, macOS gating, exact acknowledgement IDs, save failure/retry/timeout/stale response, simultaneous CPU-style vs visibility edits, and reload preserving hidden preferences. Implement the shared group and subordinate CPU controls.
-- [ ] **Step 5:** Run focused Rust/Node tests and compare expected green outputs. Extend native QA to show/hide primary, CPU-only dashboard anchor, runner-only/metric-only, last-item protection and restore lifecycle where the harness supports it. Do not call fixture evidence installed-app evidence.
-- [ ] **Step 6:** Run `cargo fmt --all -- --check`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `node --test scripts/*.test.mjs`, docs/OSS checks and `git diff --check`; capture output and report exact failures without relaxing limits.
-- [ ] **Step 7:** Commit only feature files and mark the implementation report complete with commands/results and UI evidence limitations. Do not change version, publish, install or start a soak as part of this task.
+- [x] **Step 1:** Add failing Rust tests for all seven combinations, all-off rejection, default migration, hiding/re-enabling preference retention, external all-off recovery and legacy-helper parsing of resulting TOML with unrelated fan settings.
+- [x] **Step 2:** Run focused core tests and record the expected missing-feature failure; implement the typed mapping and repeat until green.
+- [x] **Step 3:** Add failing transaction/parser tests for strict payload, failed save preserving prior live state, retry and last-item protection through CPU and legacy entry points. Implement staged native transaction and routing; prepare CPU-only before hiding primary; restore primary on external/native failure.
+- [x] **Step 4:** Add failing Node behavioral tests for all seven checkbox states, last active disabled guard, macOS gating, exact acknowledgement IDs, save failure/retry/timeout/stale response, simultaneous CPU-style vs visibility edits, and reload preserving hidden preferences. Implement the shared group and subordinate CPU controls.
+- [x] **Step 5:** Run focused Rust/Node tests and compare expected green outputs. Extend native QA to show/hide primary, CPU-only dashboard anchor, runner-only/metric-only, last-item protection and restore lifecycle where the harness supports it. Do not call fixture evidence installed-app evidence.
+- [x] **Step 6:** Run `cargo fmt --all -- --check`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `node --test scripts/*.test.mjs`, docs/OSS checks and `git diff --check`; capture output and report exact failures without relaxing limits.
+- [x] **Step 7:** Commit only feature files and mark the implementation report complete with commands/results and UI evidence limitations. Do not change version, publish, install or start a soak as part of this task.
 
 ### Integration and final review
 
 - [ ] Review the task diff for spec compliance and code quality with an independent reader; reproduce and fix material findings with failing tests first.
-- [ ] Verify real rendered settings through CUA at 320/390px, Korean/English, light/dark, keyboard and retry. Native fixture QA remains distinct from installed-client acceptance.
+- [x] Verify real rendered settings through CUA at 320/390px, Korean/English, light/dark, keyboard and retry. Native fixture QA remains distinct from installed-client acceptance.
 - [ ] Update source docs and progress ledger with exact observed results and pending release/installed-UI/six-hour stages.
 - [ ] Continue the previously authorized release workflow only after implementation/CI gates pass, using a fresh immutable version and preserved resident helper. Keep existing heartbeat updated with the actual stage; no duplicate automation.
