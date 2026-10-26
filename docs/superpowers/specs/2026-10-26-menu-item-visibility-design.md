@@ -1,6 +1,6 @@
 # Menu-bar item visibility
 
-Status: approach selected by the user; short design awaiting approval.
+Status: design and implementation approved by the user on 2026-10-26; implementation in progress.
 
 ## Intent and selected approach
 
