@@ -23,7 +23,7 @@ and [implementation plan](superpowers/plans/2026-10-26-menu-item-visibility.md).
 - Core/transaction tests cover all combinations, minimum-one protection, strict
   request payloads, migration, old-helper parsing, persistence failure/retry,
   external invalid configurations and unsupported-platform recovery.
-- Development verification passes 563 Rust workspace tests and 104 Node tests,
+- Development verification passes 565 Rust workspace tests and 104 Node tests,
   strict workspace Clippy, formatting and docs/OSS checks. These counts precede
   the final independent review and release-source CI.
 - Isolated AppKit QA passes eight CPU presentation snapshots and seven visibility

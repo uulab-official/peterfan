@@ -68,6 +68,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Validate release tags against main, pin source commits and restrict write tokens
   to artifact publication jobs; cover rejection paths with offline tests.
 
+## [1.32.10] — 2026-10-26 · Independent menu-bar item visibility
+
+- Choose CPU widget, runner character and metric text independently in macOS
+  Settings and native menus. Support all seven non-empty combinations and keep
+  at least one item available for dashboard access.
+- Preserve hidden items' styles, percentages, characters and chosen metric.
+  Prepare native resources before atomic saves, preserve click identities and
+  recover the runner layer when showing it after CPU-only mode.
+- Keep legacy display values readable by compatible resident helpers, retain
+  Windows display-menu selection and rebase independent preferences under the
+  configuration lock when another writer edits CPU appearance.
+- Track signing, public OTA, installed-client UI and fresh six-hour acceptance
+  separately in the [visibility release ledger](docs/MENU_ITEM_VISIBILITY_RELEASE_2026-10-26.md).
+
 ## [1.32.9] — 2026-10-25 · Per-core CPU menu-bar bars
 
 - Add an optional per-core CPU menu-bar graph with one fixed-scale vertical bar
