@@ -1,10 +1,11 @@
 # CPU menu-bar widget
 
-Status: initially released in v1.32.8; v1.32.9 adds Per-core bars (2026-10-26).
-See [per-core release and installed acceptance](CPU_PER_CORE_RELEASE_2026-10-25.md)
+Status: initially released in v1.32.8; v1.32.9 adds Per-core bars and v1.32.10
+adds independent item visibility (2026-10-26). See
+[visibility release and installed acceptance](MENU_ITEM_VISIBILITY_RELEASE_2026-10-26.md)
 for current publication, actual OTA and the pending final-build observation.
 
-The current development source groups **CPU widget**, **Runner character** and
+Released v1.32.10 groups **CPU widget**, **Runner character** and
 **Metric text** under **Menu-bar items / 메뉴 막대 표시 항목** in macOS Settings.
 Each checkbox is independent: all seven non-empty combinations are supported.
 The last visible item stays enabled so dashboard/settings access remains available.
@@ -61,7 +62,7 @@ unit evidence described above.
 Reference: [iStat Menus CPU settings](https://register.bjango.com/help/istatmenus7/cpugpu/).
 PeterFan uses original raster rendering and its existing CPU samples.
 
-## Independent visibility (development source; delivery pending)
+## Independent visibility (released in v1.32.10)
 
 The app stores one default-on `menubar.primary_visible` flag together with the
 existing Number/Runner/Both enum and CPU-enabled flag. No shared enum gains a new
@@ -84,10 +85,13 @@ No new sampler, worker or animation timer is added. Existing dashboard geometry
 and same-item close/cross-item reanchor handling remain in use.
 
 Unit/behavioral checks and isolated native fixtures are development evidence.
-They do not prove installed-client execution, actual release OTA, or six-hour
-acceptance. Installed v1.32.9, its resident helper and live configuration remain
-outside this implementation task. Independent visibility requires a subsequent
-immutable signed/notarized release, real OTA and a fresh final-build observation.
+Signed/notarized v1.32.10 publication and actual public-feed 9→10 OTA are now
+verified separately on one Mac: fresh native readiness, exact installed artifact
+bytes, strict trust, compatible resident helper7 and configuration preservation.
+Actual installed visibility/settings/click acceptance remains pending native
+dashboard access. The fresh final-build six-hour observation has not started.
+See the [visibility release ledger](MENU_ITEM_VISIBILITY_RELEASE_2026-10-26.md);
+no earlier run or elapsed uptime is counted.
 
 ## Per-core bars (released in v1.32.9)
 

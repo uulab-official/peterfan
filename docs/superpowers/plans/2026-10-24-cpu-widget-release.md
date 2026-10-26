@@ -51,3 +51,21 @@ without changing unrelated TOML values. Actual installed UI acceptance awaits on
 user dashboard-open action because the hidden menu-bar app cannot be bound by
 native automation. The new six-hour run has not started. See the release ledger
 and sanitized evidence for exact hashes, process/readiness and remaining gates.
+
+
+## Subsequent delivery record — 2026-10-26
+
+The user subsequently approved per-core bars (v1.32.9) and independent CPU,
+runner and metric visibility (v1.32.10). Both are immutable signed/notarized
+public releases with actual public-feed OTA verified on this Mac. v1.32.10 source
+is `d82e095`; the compatible resident helper remains v1.32.7. Current configuration
+is Cores/no percentage plus the existing three items. See the
+[visibility release ledger](../../MENU_ITEM_VISIBILITY_RELEASE_2026-10-26.md)
+for exact release/CI/artifact/installed-byte receipts.
+
+The original Bar/percentage target above is a historical plan checkpoint. Actual
+installed UI acceptance, calibration and the new continuous six-hour observation
+have not started. No older result or uptime is counted. A newly requested battery
+detail feature remains at design approval and does not belong to published
+v1.32.10; if implemented, use a subsequent immutable release and a new final-build
+observation. Preserve every historical run and source tag.

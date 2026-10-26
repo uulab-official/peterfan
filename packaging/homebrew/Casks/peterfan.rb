@@ -1,6 +1,6 @@
 cask "peterfan" do
-  version "1.32.9"
-  sha256 "53452533321b2b86b93f0b6fb0dd83e2965ac674a4125598bef3b4d496f1510b"
+  version "1.32.10"
+  sha256 "b70c6d144aef11fbcf2e806fc37f4fad86df00361b43dc22870fbeffb0b07148"
 
   url "https://github.com/uulab-official/peterfan/releases/download/v#{version}/PeterFan-v#{version}.dmg"
   name "PeterFan"

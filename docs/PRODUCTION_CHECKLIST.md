@@ -5,6 +5,34 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 The first section summarizes the current release; lower sections retain earlier
 evidence and gaps at those checkpoints.
 
+## Independent visibility public release and OTA — 2026-10-26
+
+- [x] Three independent items, seven non-empty combinations, last-item guard,
+      preserved preferences and compatible helper7/8 shared configuration.
+- [x] Five final review findings resolved with RED→GREEN regressions; 570 Rust,
+      104 Node, strict Clippy, docs/OSS and isolated native/CUA checks pass.
+- [x] Immutable v1.32.10 source `d82e095`, reviewed PR/main matching trees and
+      all six exact-main CI jobs pass. Universal Mac signing/notarization/stapling,
+      six trust checks and native tagged Windows acceptance pass.
+- [x] Public latest release identified as `v1.32.10`; four provider/download
+      assets and all three manifest entries match. Prior v1.32.9/8/7 assets are
+      preserved; Homebrew pins actual public DMG/archive hashes.
+- [x] Actual public-feed v1.32.9 → v1.32.10 OTA with fresh matching native
+      readiness, exact installed bytes/trust and configuration preservation.
+      Compatible resident helper7 PID604/start/hash is preserved; Auto revision3
+      matches, sensors are fresh, manual controls empty and cumulative errors zero.
+- [x] Natural app10 13:45:13 KST startup check/history matches the next
+      19:45:13 KST deadline. Cores/no percentage and the existing three items
+      remain configured; no unrelated preference or fan mode is changed.
+- [ ] Actual installed visibility/style/settings/click acceptance: native
+      dashboard access remains pending; isolated fixture success is separate.
+- [ ] Strict calibration and continuous final-build 21,600-second observation:
+      NOT STARTED. Earlier versions, elapsed uptime and calibration add no time.
+
+See [visibility release ledger](MENU_ITEM_VISIBILITY_RELEASE_2026-10-26.md) and
+[sanitized evidence](evidence/2026-10-26-menu-item-visibility-v1.32.10.json).
+The later requested battery details are not part of this published release.
+
 ## Per-core CPU mode public release and OTA — 2026-10-26
 
 - [x] Approved additional mode with one fixed-scale bar per logical CPU,
