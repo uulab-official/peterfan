@@ -49,6 +49,14 @@ core/platform all-target cross-compilation passes; this is not native Windows
 execution. The read-only native implementation probe reports 96% OS health,
 5653/6249mAh full/design capacity and 110 cycles on this Mac.
 
+Final-review fix `4a107df` shares the existing suspend-inclusive Darwin clock
+with the battery probe. Cache expiry, pending deadlines and request throttling
+include sleep time; unavailable clock readings fail closed. Focused checks pass
+19 battery tests (one explicit native probe ignored), six existing clock tests,
+the cheap-monitor no-spawn test, targeted Clippy/fmt and Windows platform
+cross-compilation. Injected suspend and clock-loss regressions failed before
+the fix. Actual physical sleep remains unverified.
+
 CUA runs the actual exported production template with isolated fixture readings:
 eight Korean/English320/390px light/dark layouts have no horizontal overflow.
 Normal fixture controls verify reported→estimated→absent→partial→zero→reported
