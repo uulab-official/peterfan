@@ -1,9 +1,9 @@
 # Battery health and capacity acceptance
 
-Status (2026-10-26): design and implementation are user approved. The implementation candidate is locally verified and accepted by independent task review. The current public and installed release is
-v1.32.10, which does **not** include these battery details. Final branch review, exact-source CI,
-signed publication, real OTA, installed UI acceptance and a fresh final-build
-six-hour observation are pending.
+Status (2026-10-27): v1.32.11 is publicly released and installed by real 10→11
+public-feed OTA on one Mac. Source review, exact PR/main CI, signing/notarization,
+native Windows and provider/download/checksum gates pass. Actual installed
+battery-screen readback and a fresh final-build six-hour observation are pending.
 
 See the [approved design](superpowers/specs/2026-10-26-battery-health-details-design.md)
 and [implementation plan](superpowers/plans/2026-10-26-battery-health-details.md).
@@ -36,7 +36,8 @@ macOS health is requested separately, with a bounded nonblocking System Profiler
 probe, long cache interval and cleanup of its own child only. There is no new
 worker, timer or sampling thread. Fan control and compatible helper7 stay intact.
 
-The development source version is 1.32.11; immutable public v1.32.10 is preserved.
+The immutable v1.32.11 source is `8b44dc1`; v1.32.10 and all earlier public
+tags/assets are preserved.
 
 ## Development verification
 
@@ -44,7 +45,7 @@ Feature candidate `7457e8a` passes 589 workspace Rust tests (10 existing/explici
 ignored checks), 104 Node tests and 18 standalone dashboard behavior checks,
 strict workspace Clippy, formatting and documentation/OSS checks. The reviewed
 portable range fix at `f70b7c7` passes 28 focused dashboard checks after six
-observed regression failures. Exact final-source CI remains pending. Windows
+observed regression failures. Final PR and main each pass all six required CI jobs. Windows
 core/platform all-target cross-compilation passes; this is not native Windows
 execution. The read-only native implementation probe reports 96% OS health,
 5653/6249mAh full/design capacity and 110 cycles on this Mac.
@@ -67,6 +68,46 @@ charge/cycle visibility. These are fixture checks, not installed-client evidence
 
 This image is a test fixture, not the installed app or live battery readback.
 
+## Public release and installed readback
+
+Source PR26 merges the reviewed head `191fa43` as main/tag `8b44dc1`; their trees
+match. PR CI40285818083/40285818041 and main CI40288288355/40288288369 each pass
+all six required jobs. All final-review findings are addressed, including the
+suspend-inclusive clock fix and corrected evidence attribution.
+
+Public release424008941 was published at 2026-10-27 04:49:04 KST. Four provider
+assets, actual downloads, all three manifest entries and local Mac bytes match.
+The app/DMG pass six signature/staple/Gatekeeper checks; four binaries contain
+arm64 and x86_64. Native Windows run40293602651 passes actual metrics,
+WebView2 signature, install, tray readiness, startup, uninstall and smoke checks.
+Unauthenticated public latest/checksum download and prior10/9/8/7 asset identity,
+size and digest preservation pass.
+
+The genuine released v1.32.10 CLI queues the public update. Only pinned old app
+PID76256 is stopped. Fresh nonce/readiness and installed result identify app11
+PID60010, started 2026-10-27 08:49:22 KST; installed app/helper-bundle/Info bytes
+match the verified public package and strict installed trust checks pass.
+Compatible resident helper7 PID604/start/hash is retained. Doctor reports
+healthy, no issues, and ready metrics/thermal/fan control. Auto revisions match,
+sensors are fresh, manual targets/overrides are empty and cumulative errors zero.
+Natural app11 startup check succeeds at 08:49:42 KST, with persisted history and
+next deadline14:49:42 KST (21,600 seconds later).
+
+Before OTA, the only observed configuration byte change was explicit
+`primary_visible=true`, equivalent to its prior omitted default. All prior TOML
+values and mode0644 match. The original backup is retained separately; OTA
+preserves the newly verified raw configuration hash `2ee79feb…17dc1900`.
+No writer is inferred from nearby click logs, and no preference is restored.
+
+Read-only native reference at 08:50:07 KST reports macOS health96%, design6249mAh,
+full5487mAh and111cycles. This later snapshot differs from the earlier source
+probe; readings can vary. These are OS/native reference values, **not verified
+installed UI readings**. CUA's current inventory does not expose PeterFan, so
+actual battery/style/visibility/click gates stay pending. Calibration/full run
+are **NOT STARTED**; no elapsed uptime is counted.
+
+See [sanitized delivery evidence](evidence/2026-10-27-battery-health-v1.32.11.json).
+
 ## Acceptance gates
 
 - [x] User-approved inline all-details design and implementation request.
@@ -76,12 +117,12 @@ This image is a test fixture, not the installed app or live battery readback.
       local workspace/Clippy/Node/documentation checks.
 - [x] Independent task review and scoped re-review: portable estimated-health
       display regression fixed with RED6→GREEN28; no remaining material findings.
-- [ ] Final whole-branch review, exact-source CI and release metadata.
+- [x] Final whole-branch review, exact-source CI and release metadata.
 - [x] CUA fixture checks for Korean/English320/390px and light/dark, including
       estimated, missing, zero cycles, no battery and presence changes.
-- [ ] New immutable source PR/CI/main/tag and complete signed/notarized Mac plus
+- [x] New immutable source PR/CI/main/tag and complete signed/notarized Mac plus
       native Windows release; provider, downloads and checksum verification.
-- [ ] Actual public-feed OTA into the installed app; matching readiness, artifact
+- [x] Actual public-feed OTA into the installed app; matching readiness, artifact
       bytes/trust, preserved compatible helper and unrelated configuration.
 - [ ] Actual installed hardware battery UI readback against macOS reported
       health and the contemporaneous physical full/design capacities.
