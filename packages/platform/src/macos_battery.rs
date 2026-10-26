@@ -182,37 +182,64 @@ trait ProbeChild {
     fn poll(&mut self) -> ProbePoll;
     fn kill(&mut self);
 }
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProbeTime {
+    awake: Instant,
+    continuous: Option<Duration>,
+}
+
+impl ProbeTime {
+    fn now() -> Self {
+        Self {
+            awake: Instant::now(),
+            continuous: crate::suspend_inclusive_time(),
+        }
+    }
+
+    fn elapsed_since(self, previous: Self) -> Option<Duration> {
+        // Instant is only a monotonic-order sanity check. Every elapsed
+        // deadline/throttle/TTL uses the native clock that includes suspend.
+        self.awake.checked_duration_since(previous.awake)?;
+        self.continuous?.checked_sub(previous.continuous?)
+    }
+}
+
 struct PendingProbe {
     child: Box<dyn ProbeChild>,
-    started_at: Instant,
+    started_at: ProbeTime,
     cancelled: bool,
 }
 
 #[derive(Default)]
 pub(crate) struct ProfilerCache {
     // Every explicit attempt, including a failed spawn, consumes the throttle.
-    pub(crate) last_attempt: Option<Instant>,
+    pub(crate) last_attempt: Option<ProbeTime>,
     pending: Option<PendingProbe>,
-    health: Option<(Instant, f32)>,
+    health: Option<(ProbeTime, f32)>,
 }
 
 impl ProfilerCache {
-    pub(crate) fn request_native(&mut self, now: Instant) -> Option<f32> {
-        self.request(now, || {
+    pub(crate) fn request_native(&mut self) -> Option<f32> {
+        self.request(ProbeTime::now(), || {
             OwnedProfiler::spawn().map(|child| Box::new(child) as Box<dyn ProbeChild>)
         })
     }
 
     fn request(
         &mut self,
-        now: Instant,
+        now: ProbeTime,
         spawn: impl FnOnce() -> io::Result<Box<dyn ProbeChild>>,
     ) -> Option<f32> {
         self.poll(now);
+        if now.continuous.is_none() {
+            self.health = None;
+            return None;
+        }
         if self.pending.is_none()
-            && self
-                .last_attempt
-                .is_none_or(|at| now.saturating_duration_since(at) >= PROBE_INTERVAL)
+            && self.last_attempt.is_none_or(|at| {
+                now.elapsed_since(at)
+                    .is_some_and(|elapsed| elapsed >= PROBE_INTERVAL)
+            })
         {
             // Failed spawn/exit/parse attempts consume the same throttle.
             self.last_attempt = Some(now);
@@ -227,11 +254,23 @@ impl ProfilerCache {
         self.cached(now)
     }
 
-    pub(crate) fn poll(&mut self, now: Instant) {
+    pub(crate) fn poll_native(&mut self) {
+        if self.pending.is_some() {
+            self.poll(ProbeTime::now());
+        }
+    }
+
+    fn poll(&mut self, now: ProbeTime) {
+        if now.continuous.is_none() {
+            self.health = None;
+        }
         let Some(pending) = self.pending.as_mut() else {
             return;
         };
-        if !pending.cancelled && now.saturating_duration_since(pending.started_at) >= PROBE_TIMEOUT
+        if !pending.cancelled
+            && now
+                .elapsed_since(pending.started_at)
+                .is_none_or(|elapsed| elapsed >= PROBE_TIMEOUT)
         {
             pending.child.kill();
             pending.cancelled = true;
@@ -248,9 +287,12 @@ impl ProfilerCache {
         }
     }
 
-    fn cached(&self, now: Instant) -> Option<f32> {
+    fn cached(&self, now: ProbeTime) -> Option<f32> {
         self.health
-            .filter(|(at, _)| now.saturating_duration_since(*at) < HEALTH_CACHE_TTL)
+            .filter(|(at, _)| {
+                now.elapsed_since(*at)
+                    .is_some_and(|elapsed| elapsed < HEALTH_CACHE_TTL)
+            })
             .map(|(_, health)| health)
     }
 }
@@ -536,9 +578,157 @@ mod tests {
         })
     }
 
+    fn timestamp() -> ProbeTime {
+        ProbeTime {
+            awake: Instant::now(),
+            continuous: Some(Duration::from_secs(100)),
+        }
+    }
+
+    fn advance(time: ProbeTime, elapsed: Duration) -> ProbeTime {
+        ProbeTime {
+            awake: time.awake + elapsed,
+            continuous: time.continuous.map(|at| at + elapsed),
+        }
+    }
+
+    fn after_suspend(time: ProbeTime, awake: Duration, suspended: Duration) -> ProbeTime {
+        ProbeTime {
+            awake: time.awake + awake,
+            continuous: time.continuous.map(|at| at + awake + suspended),
+        }
+    }
+
+    #[test]
+    fn cached_health_expires_across_suspend_even_if_instant_barely_advances() {
+        let start = timestamp();
+        let mut cache = ProfilerCache::default();
+        cache.request(start, || {
+            Ok(fake(
+                vec![ProbePoll::Complete {
+                    success: true,
+                    output: profiler(json!("96%")),
+                }],
+                Rc::new(Cell::new(0)),
+            ))
+        });
+        cache.poll(advance(start, Duration::from_secs(1)));
+        assert_eq!(
+            cache.cached(advance(start, Duration::from_secs(20))),
+            Some(96.0)
+        );
+        let resumed = after_suspend(start, Duration::from_secs(20), Duration::from_secs(3600));
+        assert_eq!(cache.cached(resumed), None);
+    }
+
+    #[test]
+    fn resumed_tick_cancels_pre_suspend_output_before_accepting_it() {
+        let start = timestamp();
+        let kills = Rc::new(Cell::new(0));
+        let mut cache = ProfilerCache::default();
+        cache.request(start, || {
+            Ok(fake(
+                vec![ProbePoll::Complete {
+                    success: true,
+                    output: profiler(json!("96%")),
+                }],
+                kills.clone(),
+            ))
+        });
+        let resumed = after_suspend(start, Duration::from_millis(20), Duration::from_secs(3600));
+        cache.poll(resumed);
+        assert_eq!(kills.get(), 1);
+        assert!(
+            cache.pending.is_some(),
+            "cancelled child must remain owned until later reaping"
+        );
+        assert_eq!(cache.cached(resumed), None);
+        cache.poll(advance(resumed, Duration::from_millis(20)));
+        assert!(cache.pending.is_none());
+        assert_eq!(
+            cache.cached(advance(resumed, Duration::from_millis(20))),
+            None
+        );
+        assert_eq!(kills.get(), 1);
+    }
+
+    #[test]
+    fn request_throttle_counts_suspend_time() {
+        let start = timestamp();
+        let starts = Cell::new(0);
+        let mut cache = ProfilerCache::default();
+        cache.request(start, || {
+            starts.set(starts.get() + 1);
+            Err(std::io::Error::other("controlled failure"))
+        });
+        let resumed = after_suspend(start, Duration::from_secs(20), Duration::from_secs(280));
+        cache.request(resumed, || {
+            starts.set(starts.get() + 1);
+            Err(std::io::Error::other("controlled failure"))
+        });
+        assert_eq!(starts.get(), 2);
+    }
+
+    #[test]
+    fn unavailable_continuous_clock_cannot_start_a_probe() {
+        let mut cache = ProfilerCache::default();
+        let unavailable = ProbeTime {
+            awake: Instant::now(),
+            continuous: None,
+        };
+        let starts = Cell::new(0);
+        cache.request(unavailable, || {
+            starts.set(starts.get() + 1);
+            Err(std::io::Error::other("must not spawn without a clock"))
+        });
+        assert_eq!(starts.get(), 0);
+        assert_eq!(cache.cached(unavailable), None);
+    }
+
+    #[test]
+    fn unavailable_clock_cancels_pending_and_clears_previous_health_until_reaped() {
+        let start = timestamp();
+        let kills = Rc::new(Cell::new(0));
+        let mut cache = ProfilerCache::default();
+        cache.request(start, || {
+            Ok(fake(
+                vec![ProbePoll::Complete {
+                    success: true,
+                    output: profiler(json!("96%")),
+                }],
+                Rc::new(Cell::new(0)),
+            ))
+        });
+        cache.poll(advance(start, Duration::from_secs(1)));
+        cache.request(advance(start, Duration::from_secs(300)), || {
+            Ok(fake(
+                vec![ProbePoll::Complete {
+                    success: true,
+                    output: profiler(json!("95%")),
+                }],
+                kills.clone(),
+            ))
+        });
+        let missing = ProbeTime {
+            awake: start.awake + Duration::from_secs(301),
+            continuous: None,
+        };
+        cache.poll(missing);
+        assert_eq!(kills.get(), 1);
+        assert!(cache.pending.is_some());
+        assert_eq!(cache.cached(missing), None);
+        cache.poll(ProbeTime {
+            awake: missing.awake + Duration::from_secs(1),
+            continuous: None,
+        });
+        assert!(cache.pending.is_none());
+        assert_eq!(cache.cached(advance(start, Duration::from_secs(303))), None);
+        assert_eq!(kills.get(), 1);
+    }
+
     #[test]
     fn pending_profiler_is_pollable_and_never_restarted_before_300_seconds() {
-        let start = Instant::now();
+        let start = timestamp();
         let starts = Cell::new(0);
         let kills = Rc::new(Cell::new(0));
         let mut cache = ProfilerCache::default();
@@ -558,19 +748,22 @@ mod tests {
             }),
             None
         );
-        cache.poll(start + Duration::from_secs(1));
-        assert_eq!(cache.cached(start + Duration::from_secs(1)), None);
-        cache.poll(start + Duration::from_secs(2));
-        assert_eq!(cache.cached(start + Duration::from_secs(2)), Some(96.0));
+        cache.poll(advance(start, Duration::from_secs(1)));
+        assert_eq!(cache.cached(advance(start, Duration::from_secs(1))), None);
+        cache.poll(advance(start, Duration::from_secs(2)));
         assert_eq!(
-            cache.request(start + Duration::from_secs(299), || {
+            cache.cached(advance(start, Duration::from_secs(2))),
+            Some(96.0)
+        );
+        assert_eq!(
+            cache.request(advance(start, Duration::from_secs(299)), || {
                 starts.set(starts.get() + 1);
                 Err(std::io::Error::other("unexpected spawn"))
             }),
             Some(96.0)
         );
         assert_eq!(starts.get(), 1);
-        cache.request(start + Duration::from_secs(300), || {
+        cache.request(advance(start, Duration::from_secs(300)), || {
             starts.set(starts.get() + 1);
             Err(std::io::Error::other("controlled start failure"))
         });
@@ -585,7 +778,7 @@ mod tests {
             (true, b"invalid JSON".to_vec()),
             (true, vec![b' '; MAX_PROFILER_OUTPUT + 1]),
         ] {
-            let start = Instant::now();
+            let start = timestamp();
             let starts = Cell::new(0);
             let mut cache = ProfilerCache::default();
             cache.request(start, || {
@@ -595,9 +788,9 @@ mod tests {
                     Rc::new(Cell::new(0)),
                 ))
             });
-            cache.poll(start + Duration::from_secs(1));
-            assert_eq!(cache.cached(start + Duration::from_secs(1)), None);
-            cache.request(start + Duration::from_secs(299), || {
+            cache.poll(advance(start, Duration::from_secs(1)));
+            assert_eq!(cache.cached(advance(start, Duration::from_secs(1))), None);
+            cache.request(advance(start, Duration::from_secs(299)), || {
                 starts.set(starts.get() + 1);
                 Err(std::io::Error::other("unexpected spawn"))
             });
@@ -607,7 +800,7 @@ mod tests {
 
     #[test]
     fn successful_cache_expires_at_600_seconds_even_after_a_refresh_failure() {
-        let start = Instant::now();
+        let start = timestamp();
         let mut cache = ProfilerCache::default();
         cache.request(start, || {
             Ok(fake(
@@ -618,17 +811,20 @@ mod tests {
                 Rc::new(Cell::new(0)),
             ))
         });
-        cache.poll(start + Duration::from_secs(1));
-        cache.request(start + Duration::from_secs(301), || {
+        cache.poll(advance(start, Duration::from_secs(1)));
+        cache.request(advance(start, Duration::from_secs(301)), || {
             Err(std::io::Error::other("controlled failure"))
         });
-        assert_eq!(cache.cached(start + Duration::from_secs(600)), Some(96.0));
-        assert_eq!(cache.cached(start + Duration::from_secs(601)), None);
+        assert_eq!(
+            cache.cached(advance(start, Duration::from_secs(600))),
+            Some(96.0)
+        );
+        assert_eq!(cache.cached(advance(start, Duration::from_secs(601))), None);
     }
 
     #[test]
     fn timeout_kills_once_and_keeps_ownership_until_a_later_poll_reaps() {
-        let start = Instant::now();
+        let start = timestamp();
         let kills = Rc::new(Cell::new(0));
         let events = Rc::new(RefCell::new(VecDeque::new()));
         struct PendingChild {
@@ -653,29 +849,29 @@ mod tests {
                 kills: kills.clone(),
             }))
         });
-        cache.poll(start + Duration::from_millis(9999));
+        cache.poll(advance(start, Duration::from_millis(9999)));
         assert_eq!(kills.get(), 0);
-        cache.poll(start + Duration::from_secs(10));
-        cache.poll(start + Duration::from_secs(11));
+        cache.poll(advance(start, Duration::from_secs(10)));
+        cache.poll(advance(start, Duration::from_secs(11)));
         assert_eq!(kills.get(), 1);
         // A still-owned child prevents a second spawn even after the throttle.
-        cache.request(start + Duration::from_secs(300), || {
+        cache.request(advance(start, Duration::from_secs(300)), || {
             panic!("must retain the unreaped child")
         });
         events.borrow_mut().push_back(ProbePoll::Complete {
             success: true,
             output: profiler(json!("96%")),
         });
-        cache.poll(start + Duration::from_secs(301));
-        assert_eq!(cache.cached(start + Duration::from_secs(301)), None);
+        cache.poll(advance(start, Duration::from_secs(301)));
+        assert_eq!(cache.cached(advance(start, Duration::from_secs(301))), None);
     }
 
     #[test]
     fn polling_without_an_explicit_request_cannot_create_a_process() {
         let mut cache = ProfilerCache::default();
         for seconds in [0, 10, 300, 600, 900] {
-            cache.poll(Instant::now() + Duration::from_secs(seconds));
-            assert_eq!(cache.cached(Instant::now()), None);
+            cache.poll(advance(timestamp(), Duration::from_secs(seconds)));
+            assert_eq!(cache.cached(timestamp()), None);
         }
     }
 
@@ -788,12 +984,13 @@ mod tests {
             start.elapsed() < Duration::from_millis(100),
             "empty live pipe blocked the caller"
         );
+        let cache_start = timestamp();
         let mut cache = ProfilerCache::default();
-        cache.request(start, || Ok(Box::new(probe)));
-        cache.poll(start + Duration::from_secs(10));
+        cache.request(cache_start, || Ok(Box::new(probe)));
+        cache.poll(advance(cache_start, Duration::from_secs(10)));
         // Tick polling, rather than timeout handling, must reap the killed child.
         for _ in 0..200 {
-            cache.poll(start + Duration::from_secs(11));
+            cache.poll(advance(cache_start, Duration::from_secs(11)));
             if unsafe { libc::kill(pid, 0) } == -1 {
                 break;
             }
@@ -810,21 +1007,24 @@ mod tests {
         }
         assert_eq!(wait, -1);
         assert_eq!(errno, Some(libc::ECHILD));
-        assert_eq!(cache.cached(start + Duration::from_secs(11)), None);
+        assert_eq!(
+            cache.cached(advance(cache_start, Duration::from_secs(11))),
+            None
+        );
     }
 
     #[test]
     #[ignore = "explicit read-only Mac probe; prints only physical capacities, cycles, and health"]
     fn read_only_native_battery_source_readback() {
         let capacities = read_native_capacities();
-        let start = Instant::now();
+        let start = ProbeTime::now();
         let mut cache = ProfilerCache::default();
         cache.request(start, || {
             OwnedProfiler::spawn().map(|child| Box::new(child) as Box<dyn ProbeChild>)
         });
         for _ in 0..120 {
-            cache.poll(Instant::now());
-            if let Some(health) = cache.cached(Instant::now()) {
+            cache.poll(ProbeTime::now());
+            if let Some(health) = cache.cached(ProbeTime::now()) {
                 println!("selected native mAh/cycle fields: {capacities:?}; OS reported health: {health}%");
                 return;
             }

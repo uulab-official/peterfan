@@ -153,7 +153,7 @@ impl SystemMonitor for SysinfoMonitor {
 
     fn refresh_quick(&mut self) {
         #[cfg(target_os = "macos")]
-        self.battery_probe.borrow_mut().poll(Instant::now());
+        self.battery_probe.borrow_mut().poll_native();
         self.sys.refresh_cpu_all();
         self.sys
             .refresh_memory_specifics(MemoryRefreshKind::everything());
@@ -161,7 +161,7 @@ impl SystemMonitor for SysinfoMonitor {
 
     fn refresh_slow(&mut self) {
         #[cfg(target_os = "macos")]
-        self.battery_probe.borrow_mut().poll(Instant::now());
+        self.battery_probe.borrow_mut().poll_native();
         if self.quick {
             return;
         }
@@ -362,10 +362,7 @@ impl SystemMonitor for SysinfoMonitor {
     fn battery_details(&self) -> Option<BatteryInfo> {
         let mut battery = self.battery()?;
         let capacities = crate::macos_battery::read_native_capacities();
-        let reported = self
-            .battery_probe
-            .borrow_mut()
-            .request_native(Instant::now());
+        let reported = self.battery_probe.borrow_mut().request_native();
         crate::macos_battery::apply_details(&mut battery, capacities, reported);
         Some(battery)
     }

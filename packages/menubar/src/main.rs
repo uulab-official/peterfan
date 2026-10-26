@@ -2339,28 +2339,8 @@ fn sample_is_stale(sampled_at: Option<Instant>, now: Instant, limit: Duration) -
         .unwrap_or(true)
 }
 
-#[cfg(target_os = "macos")]
 fn suspend_inclusive_time() -> Option<Duration> {
-    // Darwin Instant uses uptime, which pauses during suspend. This public
-    // clock includes sleep and is unaffected by wall-clock/NTP adjustments.
-    let mut time = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: the fixed supported clock ID writes into one valid timespec.
-    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, &mut time) } != 0 {
-        return None;
-    }
-    let seconds = u64::try_from(time.tv_sec).ok()?;
-    let nanos = u32::try_from(time.tv_nsec)
-        .ok()
-        .filter(|nanos| *nanos < 1_000_000_000)?;
-    Some(Duration::new(seconds, nanos))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn suspend_inclusive_time() -> Option<Duration> {
-    None
+    peterfan_platform::suspend_inclusive_time()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
