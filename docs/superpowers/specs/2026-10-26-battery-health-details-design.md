@@ -1,7 +1,7 @@
 # Battery health and capacity in hardware information
 
 Date: 2026-10-26
-Status: Proposed design; implementation approval pending
+Status: User approved design and implementation on 2026-10-26
 
 ## Intent and chosen approach
 
@@ -56,6 +56,6 @@ release acceptance; older uptime does not validate this feature.
 
 ## Approval boundary
 
-The user selected the inline all-details approach. This document requests
-approval of the concrete presentation and data rules before product changes.
-Implementation planning follows approval. No product source has been changed.
+The user selected the inline all-details approach and explicitly approved
+implementation of this document. Implementation planning and execution follow;
+the installed client and immutable v1.32.10 release remain preserved during work.
