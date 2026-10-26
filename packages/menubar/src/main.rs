@@ -89,7 +89,7 @@ use peterfan_core::config::{
     ResolvedLanguage, Rule, RunnerCharacter, TemperatureSource, UpdateChannel,
 };
 use peterfan_core::error::CoreError;
-use peterfan_core::metrics::{DiskInfo, ProcSort, ProcessInfo};
+use peterfan_core::metrics::{BatteryInfo, DiskInfo, ProcSort, ProcessInfo};
 use peterfan_core::profile::Profile;
 use peterfan_core::thermals::{representative_temperature_c, safety_temperature_c};
 #[cfg(test)]
@@ -1101,6 +1101,7 @@ struct DashboardSlowCache {
     batt_pct: f32,
     batt_text: String,
     batt_sub: String,
+    batt_details: Option<BatteryInfo>,
     curve_points: Vec<[f32; 2]>,
 }
 
@@ -1122,6 +1123,7 @@ impl Default for DashboardSlowCache {
             batt_pct: 0.0,
             batt_text: String::new(),
             batt_sub: String::new(),
+            batt_details: None,
             curve_points: default_curve_points(),
         }
     }
@@ -2337,28 +2339,8 @@ fn sample_is_stale(sampled_at: Option<Instant>, now: Instant, limit: Duration) -
         .unwrap_or(true)
 }
 
-#[cfg(target_os = "macos")]
 fn suspend_inclusive_time() -> Option<Duration> {
-    // Darwin Instant uses uptime, which pauses during suspend. This public
-    // clock includes sleep and is unaffected by wall-clock/NTP adjustments.
-    let mut time = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: the fixed supported clock ID writes into one valid timespec.
-    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, &mut time) } != 0 {
-        return None;
-    }
-    let seconds = u64::try_from(time.tv_sec).ok()?;
-    let nanos = u32::try_from(time.tv_nsec)
-        .ok()
-        .filter(|nanos| *nanos < 1_000_000_000)?;
-    Some(Duration::new(seconds, nanos))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn suspend_inclusive_time() -> Option<Duration> {
-    None
+    peterfan_platform::suspend_inclusive_time()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4648,7 +4630,7 @@ fn process_action_log_entry(state: &ProcessActionState) -> String {
     )
 }
 
-fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
+fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort, request_battery_details: bool) {
     let config = peterfan_platform::config::load();
     let disks = app.monitor.disks();
     let disk = primary_disk(&disks);
@@ -4676,17 +4658,15 @@ fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
 
     // Discovery can transiently fail at launch after sleep or during a Windows
     // power-state transition. Retry with each slow dashboard sample.
-    let battery = app.monitor.battery();
+    let battery = if request_battery_details {
+        app.monitor.battery_details()
+    } else {
+        app.monitor.battery()
+    };
     let (batt_present, batt_pct, batt_text, batt_sub) = battery
         .as_ref()
         .map(|b| {
-            let mut sub = b.state.clone();
-            if let Some(c) = b.cycle_count {
-                sub.push_str(&format!("   {c} cycles"));
-            }
-            if let Some(h) = b.health_percent {
-                sub.push_str(&format!("   health {h:.0}%"));
-            }
+            let sub = b.state.clone();
             (
                 true,
                 b.charge_percent,
@@ -4729,6 +4709,7 @@ fn refresh_dashboard_slow_cache(app: &mut App, proc_sort: ProcSort) {
         batt_pct,
         batt_text,
         batt_sub,
+        batt_details: battery,
         curve_points,
     };
 }
@@ -5067,7 +5048,7 @@ fn update(app: &mut App) {
     }
 
     if refresh_slow_metrics {
-        refresh_dashboard_slow_cache(app, proc_sort);
+        refresh_dashboard_slow_cache(app, proc_sort, system_visible);
         app.next_dashboard_slow_refresh = now + DASHBOARD_SLOW_REFRESH;
     }
     let system_info = app.monitor.system_info();
@@ -5377,6 +5358,7 @@ fn update(app: &mut App) {
         "batt_pct": app.dashboard_slow_cache.batt_pct,
         "batt_text": &app.dashboard_slow_cache.batt_text,
         "batt_sub": &app.dashboard_slow_cache.batt_sub,
+        "batt_details": &app.dashboard_slow_cache.batt_details,
         "network_count": nets.len(),
         "network_active": nets.iter().any(|n| n.ip.is_some() || n.rx_rate > 0.0 || n.tx_rate > 0.0),
         "net_sub": format!("↓ {}/s     ↑ {}/s", bytes(rx as u64), bytes(tx as u64)),
@@ -7915,6 +7897,10 @@ fn dashboard_html_with_runner_pack(
             .replace(">Fan<", ">팬<")
             .replace(">Fans<", ">팬<")
             .replace(">Battery<", ">배터리<")
+            .replace(">Battery health<", ">배터리 성능<")
+            .replace(">Design capacity<", ">설계 용량<")
+            .replace(">Full charge capacity<", ">완전 충전 용량<")
+            .replace(">Cycle count<", ">사이클 수<")
             .replace(">Network<", ">네트워크<")
             .replace(">Top Processes<", ">실행 중 프로세스<")
             .replace(">MEM<", ">메모리<")
@@ -8234,6 +8220,11 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .name{font-size:11.5px;font-weight:650;color:var(--text);}
 .val{font-size:15px;font-weight:650;white-space:nowrap;font-variant-numeric:tabular-nums;}
 .sub{font-size:10.5px;color:var(--dim);margin-top:2px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;}
+.battery-details{display:grid;gap:5px;margin-top:10px;font-size:10.5px;line-height:1.45;}
+.battery-source-note{margin-top:8px;color:var(--dim);font-size:10px;line-height:1.45;overflow-wrap:anywhere;}
+.battery-detail{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:8px;}
+.battery-detail>span:first-child{color:var(--dim);overflow-wrap:anywhere;}
+.battery-detail>span:last-child{color:var(--text);text-align:right;font-variant-numeric:tabular-nums;}
 .bar{height:3px;background:var(--track);border-radius:99px;margin-top:7px;overflow:hidden;}
 .bar-fill{height:100%;border-radius:99px;width:0;transition:width .35s ease;}
 .bar-fill.g{background:var(--g);}.bar-fill.y{background:var(--y);}.bar-fill.r{background:var(--r);}.bar-fill.b{background:var(--accent);}
@@ -8835,7 +8826,13 @@ __CPU_WIDGET_SETTINGS__
 
 <div class="row compact-extra" id="sec-batt" data-compact-extra="battery"><span class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="18" height="9" rx="2"/><path d="M22 11v3"/></svg></span>
 <div class="content"><div class="head"><span class="name">Battery</span><span class="val" id="batt-val">—</span></div>
-<div class="sub" id="batt-sub"></div><div class="bar"><div class="bar-fill" id="batt-bar"></div></div></div></div>
+<div class="sub" id="batt-sub"></div><div class="bar" id="batt-meter"><div class="bar-fill" id="batt-bar"></div></div>
+<div class="battery-details" id="batt-details" style="display:none">
+<div class="battery-detail"><span>Battery health</span><span id="batt-health">—</span></div>
+<div class="battery-detail"><span>Design capacity</span><span id="batt-design">—</span></div>
+<div class="battery-detail"><span>Full charge capacity</span><span id="batt-full">—</span></div>
+<div class="battery-detail"><span>Cycle count</span><span id="batt-cycles">—</span></div>
+</div><div class="battery-source-note" id="batt-source-note" style="display:none"></div></div></div>
 
 <div class="row compact-extra" id="sec-network" data-compact-extra="network"><span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg></span>
 <div class="content"><div class="head"><span class="name">Network</span><span class="val"></span></div>
@@ -9030,6 +9027,36 @@ function setText(id,text){
   var el=document.getElementById(id);
   var value=String(text||'—');
   if(el&&el.textContent!==value)el.textContent=value;
+}
+function renderBattery(d){
+  var present=d.batt_present===true;
+  var b=present&&d.batt_details&&typeof d.batt_details==='object'?d.batt_details:{};
+  var unavailable=LANG==='ko'?'확인 불가':'Unavailable';
+  function number(v,zero,max){return typeof v==='number'&&Number.isFinite(v)&&v>=(zero?0:Number.MIN_VALUE)&&v<=max;}
+  function capacity(v){return present&&number(v,false,4294967295)&&Number.isInteger(v)?v.toLocaleString('en-US')+' mAh':unavailable;}
+  var charge=present&&number(d.batt_pct,true,100)?d.batt_pct:null;
+  setText('batt-val',present?(charge===null?unavailable:Math.round(charge)+'%'):(LANG==='ko'?'배터리 없음':'No battery'));
+  var rawState=typeof b.state==='string'?b.state:(typeof d.batt_sub==='string'?d.batt_sub:'');
+  var states=LANG==='ko'?{charging:'충전 중',discharging:'배터리 사용 중',full:'충전 완료',empty:'방전됨',unknown:'확인 불가'}:{charging:'Charging',discharging:'On battery',full:'Fully charged',empty:'Empty',unknown:'Unavailable'};
+  setText('batt-sub',present?(states[rawState]||rawState||unavailable):'');
+  var health=unavailable;
+  var healthMax=b.health_source==='estimated'?120:100;
+  if(present&&number(b.health_percent,false,healthMax)&&(b.health_source==='reported'||b.health_source==='estimated')){
+    health=Math.round(b.health_percent)+'%';
+    if(b.health_source==='estimated')health+=LANG==='ko'?' (추정)':' (estimated)';
+  }
+  var reported=present&&health!==unavailable&&b.health_source==='reported';
+  setText('batt-source-note',reported?(LANG==='ko'?'건강도는 macOS 보고값이며 용량의 단순 비율과 다를 수 있습니다.':'Health is reported by macOS and may differ from the capacity ratio.'):'');
+  setVisible('batt-source-note',reported);
+  setText('batt-health',health);
+  setText('batt-design',capacity(b.design_capacity_mah));
+  setText('batt-full',capacity(b.full_charge_capacity_mah));
+  setText('batt-cycles',present&&number(b.cycle_count,true,4294967295)&&Number.isInteger(b.cycle_count)?String(b.cycle_count):unavailable);
+  setVisible('batt-details',present);
+  setVisible('batt-meter',present);
+  var meter=document.getElementById('batt-bar');
+  if(meter){meter.style.width=(charge===null?0:charge)+'%';meter.className='bar-fill '+(charge>50?'g':charge>20?'y':'r');}
+  var section=document.getElementById('sec-batt');if(section)section.dataset.present=present?'1':'0';
 }
 function compareVersions(a,b){
   function numeric(a,b){return a.length===b.length?(a===b?0:(a<b?-1:1)):(a.length<b.length?-1:1);}
@@ -9459,8 +9486,7 @@ window.__pf={
    show('disk-io-sub',d.disk_io_present);if(d.disk_io_present)set('disk-io-sub',d.disk_io_sub);
    show('disk-io-chart',d.disk_io_present);show('disk-io-chart-stats',d.disk_io_present);
    if(d.disk_io_present)drawChart('disk-io-chart', d.disk_io_hist, cssColor('--y','#f4c95d'), null, fmtBytesPerSec);
-   show('sec-batt',d.batt_present);if(d.batt_present){set('batt-val',d.batt_text);set('batt-sub',d.batt_sub);bar('batt-bar',d.batt_pct,d.batt_pct>50?'g':d.batt_pct>20?'y':'r');}
-   var battSec=document.getElementById('sec-batt');if(battSec)battSec.dataset.present=d.batt_present?'1':'0';
+   renderBattery(d);
    set('net-sub',d.net_sub);show('net-ip',!!d.net_ip);if(d.net_ip)set('net-ip',d.net_ip);
    var psCpu=document.getElementById('ps-cpu'),psMem=document.getElementById('ps-mem');
    if(psCpu){var cpuSort=d.proc_sort!=='mem';psCpu.classList.toggle('active',cpuSort);psCpu.setAttribute('aria-pressed',cpuSort?'true':'false');}
@@ -12349,6 +12375,35 @@ mod tests {
     }
 
     #[test]
+    fn battery_details_inline_labels_are_localized() {
+        let en = dashboard_html(ResolvedLanguage::En, false);
+        let ko = dashboard_html(ResolvedLanguage::Ko, false);
+        for label in [
+            ">Battery health<",
+            ">Design capacity<",
+            ">Full charge capacity<",
+            ">Cycle count<",
+        ] {
+            assert!(en.contains(label), "{label}");
+        }
+        for label in [
+            ">배터리 성능<",
+            ">설계 용량<",
+            ">완전 충전 용량<",
+            ">사이클 수<",
+        ] {
+            assert!(ko.contains(label), "{label}");
+        }
+        for html in [&en, &ko] {
+            assert!(html.contains("id=\"batt-details\""));
+            assert!(html.contains("id=\"batt-health\""));
+            assert!(html.contains("id=\"batt-design\""));
+            assert!(html.contains("id=\"batt-full\""));
+            assert!(html.contains("id=\"batt-cycles\""));
+        }
+    }
+
+    #[test]
     fn dashboard_html_translates_known_labels() {
         let en = dashboard_html(ResolvedLanguage::En, true);
         assert!(en.contains(">Fan control<"));
@@ -13288,6 +13343,71 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);renderMenuItem
             true
         ));
         assert!(!tray_press_closes_popover(None, "cpu", false, false));
+    }
+
+    #[test]
+    #[ignore = "exports target-only actual hardware templates with isolated QA controls"]
+    fn render_battery_hardware_for_visual_qa() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target/battery-details-qa/exported");
+        std::fs::create_dir_all(&directory).unwrap();
+        let bootstrap = r#"<style>
+.battery-qa-toolbar{position:fixed;bottom:7px;left:8px;right:8px;z-index:50;padding:5px;background:var(--panel-bg);border:1px solid var(--accent-border);border-radius:6px;font-size:9px;display:flex;gap:4px;flex-wrap:wrap;align-items:center;}
+.battery-qa-toolbar button{font:inherit;padding:3px;border:1px solid var(--line);border-radius:3px;color:var(--text);background:var(--chip-bg);cursor:pointer;}
+.battery-qa-toolbar button[aria-pressed=true]{border-color:var(--accent);color:var(--accent);}
+</style><script>
+(function(){
+  window.ipc={postMessage:function(message){document.body.dataset.lastCommand=message;}};
+  document.body.dataset.qaFixture='battery-details';
+  var toolbar=document.createElement('nav');toolbar.className='battery-qa-toolbar';toolbar.setAttribute('aria-label','Isolated battery QA cases');
+  var label=document.createElement('span');label.textContent='QA fixture · not installed app';toolbar.appendChild(label);
+  var cases=['reported','estimated','partial','none','zero'];
+  var details={charge_percent:76,state:'discharging',health_percent:96,health_source:'reported',design_capacity_mah:6249,full_charge_capacity_mah:5655,cycle_count:110};
+  function applyCase(name){
+    if(cases.indexOf(name)<0)name='reported';
+    var b=Object.assign({},details);
+    if(name==='estimated'){b.health_percent=90.49448;b.health_source='estimated';}
+    if(name==='partial'){b.health_percent=null;b.health_source=null;b.full_charge_capacity_mah=null;b.cycle_count=null;}
+    if(name==='zero'){b.charge_percent=0;b.cycle_count=0;}
+    var d={slow_data_ready:true,batt_present:name!=='none',batt_pct:b.charge_percent,batt_text:b.charge_percent+'%',batt_sub:b.state,batt_details:name==='none'?null:b,
+      fan_control_state_ready:true,fans:[],procs:[],net_hist:[],disk_io_hist:[],disk_pct:48,disk_text:'48%',disk_sub:'Fixture storage',net_sub:'Fixture network',
+      load_avg_text:'0.5 · 0.5 · 0.5',power_text:'11 W',network_rate_text:'0 B/s',uptime_text:'Fixture',menu_items:{cpu:true,runner:true,metric:true}};
+    window.__pf_pending=d;setRailView('system');window.__pf.update(d);
+    toolbar.querySelectorAll('button').forEach(function(button){button.setAttribute('aria-pressed',button.dataset.case===name?'true':'false');});
+    var url=new URL(location.href);url.searchParams.set('case',name);history.replaceState(null,'',url.href);
+    document.body.dataset.qaCase=name;
+  }
+  cases.forEach(function(name){var button=document.createElement('button');button.type='button';button.textContent=name;button.dataset.case=name;button.onclick=function(){applyCase(name);};toolbar.appendChild(button);});
+  document.body.appendChild(toolbar);
+  applyCase(new URLSearchParams(location.search).get('case')||'reported');
+})();
+</script>"#;
+        for language in [ResolvedLanguage::En, ResolvedLanguage::Ko] {
+            let lang = if language == ResolvedLanguage::Ko {
+                "ko"
+            } else {
+                "en"
+            };
+            for theme in ["light", "dark"] {
+                // Both light-media blocks come from the actual product
+                // template. Only this target-only fixture forces the theme.
+                let html = dashboard_html(language, false).replace(
+                    "@media (prefers-color-scheme: light)",
+                    if theme == "light" {
+                        "@media all"
+                    } else {
+                        "@media not all"
+                    },
+                );
+                std::fs::write(
+                    directory.join(format!("battery-{lang}-{theme}.html")),
+                    html.replace("</body>", &format!("{bootstrap}</body>")),
+                )
+                .unwrap();
+            }
+        }
+        println!("battery QA fixtures: {}", directory.display());
     }
 
     #[test]

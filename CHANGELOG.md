@@ -68,6 +68,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Validate release tags against main, pin source commits and restrict write tokens
   to artifact publication jobs; cover rejection paths with offline tests.
 
+## [1.32.11] — Battery health and capacity
+
+- Show charge, battery health, design/full-charge capacity in mAh and cycles
+  together in the hardware battery area, with Korean/English labels.
+- Prefer reported macOS health; explicitly label full/design estimates and keep
+  unavailable readings distinct from real zero charge/cycles. Never use normalized
+  capacity percentages as physical mAh values.
+- Read native capacities without changing fan settings. Request numeric macOS
+  health on demand with a bounded nonblocking cached probe and owned-child cleanup;
+  preserve the cheap daemon battery path and compatible helper1.32.7.
+- Preserve existing portable estimated-health readings through120% while retaining
+  stricter reported-health and charge validation. New signed delivery/installed
+  acceptance is recorded separately from development tests.
+
 ## [1.32.10] — 2026-10-26 · Independent menu-bar item visibility
 
 - Choose CPU widget, runner character and metric text independently in macOS

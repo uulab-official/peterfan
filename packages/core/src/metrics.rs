@@ -140,6 +140,14 @@ pub enum ProcSort {
     Memory,
 }
 
+/// Whether health is OS reported or derived from compatible physical capacities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BatteryHealthSource {
+    Reported,
+    Estimated,
+}
+
 /// Battery state. Absent on desktops without a battery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatteryInfo {
@@ -149,6 +157,14 @@ pub struct BatteryInfo {
     pub state: String,
     /// State of health `0..=100`, if reported.
     pub health_percent: Option<f32>,
+    #[serde(default)]
+    pub health_source: Option<BatteryHealthSource>,
+    /// Original rated physical capacity, in mAh. Unknown provenance stays absent.
+    #[serde(default)]
+    pub design_capacity_mah: Option<u32>,
+    /// Physical capacity when fully charged, in the same mAh unit as design.
+    #[serde(default)]
+    pub full_charge_capacity_mah: Option<u32>,
     pub cycle_count: Option<u32>,
     pub time_to_full_secs: Option<u64>,
     pub time_to_empty_secs: Option<u64>,
@@ -156,4 +172,48 @@ pub struct BatteryInfo {
     pub model: Option<String>,
     /// Instantaneous energy flow in watts (positive = charging), if reported.
     pub energy_rate_w: Option<f32>,
+}
+
+#[cfg(test)]
+mod battery_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_battery_json_defaults_new_details_to_unavailable() {
+        let battery: BatteryInfo = serde_json::from_value(serde_json::json!({
+            "charge_percent": 76.0, "state": "discharging",
+            "health_percent": 94.0, "cycle_count": 0
+        }))
+        .unwrap();
+        let serialized = serde_json::to_value(battery).unwrap();
+        for field in [
+            "health_source",
+            "design_capacity_mah",
+            "full_charge_capacity_mah",
+        ] {
+            assert_eq!(
+                serialized.get(field),
+                Some(&serde_json::Value::Null),
+                "{field}"
+            );
+        }
+        assert_eq!(serialized["cycle_count"], 0);
+    }
+
+    #[test]
+    fn battery_health_source_roundtrips_reported_and_estimated() {
+        for source in ["reported", "estimated"] {
+            let battery: BatteryInfo = serde_json::from_value(serde_json::json!({
+                "charge_percent": 76.0, "state": "discharging",
+                "health_percent": 96.0, "health_source": source,
+                "design_capacity_mah": 6249, "full_charge_capacity_mah": 5655
+            }))
+            .unwrap();
+            let serialized = serde_json::to_value(battery).unwrap();
+            assert_eq!(serialized["health_source"], source);
+            assert_eq!(serialized["design_capacity_mah"], 6249);
+            assert_eq!(serialized["full_charge_capacity_mah"], 5655);
+            assert_eq!(serialized["charge_percent"], 76.0);
+        }
+    }
 }

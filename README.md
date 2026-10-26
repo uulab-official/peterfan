@@ -53,6 +53,12 @@ is released in v1.32.8 with verified public-feed OTA on one Mac. Actual installe
 widget visual/click checks and the new six-hour result are tracked separately in
 [CPU widget release acceptance](docs/CPU_WIDGET_RELEASE_2026-10-24.md).
 
+The current source prepares **v1.32.11** with inline battery health, design and
+full-charge capacity, and cycle details. Reported macOS health is kept separate
+from charge and labeled estimates. Local native/data/UI verification passes;
+new signed delivery and installed acceptance are pending. See the
+[battery acceptance ledger](docs/BATTERY_HEALTH_RELEASE_2026-10-26.md).
+
 Released **v1.32.10** adds independent CPU widget, runner and metric-text
 visibility. Signed/notarized publication and actual public-feed 9→10 OTA are
 verified on one Mac. Installed visual/click acceptance and a fresh final-build

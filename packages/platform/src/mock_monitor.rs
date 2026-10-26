@@ -195,6 +195,9 @@ impl SystemMonitor for MockMonitor {
             charge_percent: 76.0,
             state: "discharging".into(),
             health_percent: Some(94.0),
+            health_source: Some(peterfan_core::metrics::BatteryHealthSource::Estimated),
+            design_capacity_mah: Some(6000),
+            full_charge_capacity_mah: Some(5640),
             cycle_count: Some(212),
             time_to_full_secs: None,
             time_to_empty_secs: Some(3 * 3600 + 20 * 60),
@@ -202,5 +205,19 @@ impl SystemMonitor for MockMonitor {
             model: Some("MB-1000".into()),
             energy_rate_w: Some(-11.4),
         })
+    }
+}
+
+#[cfg(test)]
+mod battery_tests {
+    use super::*;
+    #[test]
+    fn mock_battery_details_are_explicitly_estimated_from_fixture_capacities() {
+        let monitor = MockMonitor::new();
+        let info = serde_json::to_value(monitor.battery_details().unwrap()).unwrap();
+        assert_eq!(info["health_source"], "estimated");
+        assert_eq!(info["design_capacity_mah"], 6000);
+        assert_eq!(info["full_charge_capacity_mah"], 5640);
+        assert_eq!(info["health_percent"], 94.0);
     }
 }

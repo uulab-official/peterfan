@@ -38,6 +38,8 @@ pub struct SysinfoMonitor {
     disk_rates: HashMap<String, (f64, f64)>,
     last_slow_refresh: Option<Instant>,
     battery_mgr: Option<battery::Manager>,
+    #[cfg(target_os = "macos")]
+    battery_probe: std::cell::RefCell<crate::macos_battery::ProfilerCache>,
     /// When true, `refresh()` skips processes, disks, and network I/O — used by
     /// commands that only need CPU% or memory (saves ~150 ms on macOS).
     quick: bool,
@@ -83,6 +85,8 @@ impl SysinfoMonitor {
             disk_rates: HashMap::new(),
             last_slow_refresh: None,
             battery_mgr,
+            #[cfg(target_os = "macos")]
+            battery_probe: std::cell::RefCell::default(),
             quick,
         }
     }
@@ -148,12 +152,16 @@ impl SystemMonitor for SysinfoMonitor {
     }
 
     fn refresh_quick(&mut self) {
+        #[cfg(target_os = "macos")]
+        self.battery_probe.borrow_mut().poll_native();
         self.sys.refresh_cpu_all();
         self.sys
             .refresh_memory_specifics(MemoryRefreshKind::everything());
     }
 
     fn refresh_slow(&mut self) {
+        #[cfg(target_os = "macos")]
+        self.battery_probe.borrow_mut().poll_native();
         if self.quick {
             return;
         }
@@ -320,17 +328,27 @@ impl SystemMonitor for SysinfoMonitor {
         let mgr = self.battery_mgr.as_ref()?;
         let batt = mgr.batteries().ok()?.next()?.ok()?;
 
-        // The `battery` crate's state-of-health is unreliable on Apple Silicon
-        // (a unit mismatch between reported max/design capacity can yield values
-        // like 2%). Rather than present an obviously-wrong number as real, drop
-        // implausible readings. A native SMC-based SoH is on the roadmap.
-        let soh = batt.state_of_health().value * 100.0;
-        let health_percent = (40.0..=120.0).contains(&soh).then_some(soh);
+        // On macOS the crate can divide normalized MaxCapacity by physical
+        // design mAh. Only the explicit native details path can prove health.
+        #[cfg(target_os = "macos")]
+        let (health_percent, health_source) = (None, None);
+        #[cfg(not(target_os = "macos"))]
+        let (health_percent, health_source) = {
+            let soh = batt.state_of_health().value * 100.0;
+            let health = (40.0..=120.0).contains(&soh).then_some(soh);
+            (
+                health,
+                health.map(|_| peterfan_core::metrics::BatteryHealthSource::Estimated),
+            )
+        };
 
         Some(BatteryInfo {
             charge_percent: batt.state_of_charge().value * 100.0,
             state: format!("{:?}", batt.state()).to_lowercase(),
             health_percent,
+            health_source,
+            design_capacity_mah: None,
+            full_charge_capacity_mah: None,
             cycle_count: batt.cycle_count(),
             time_to_full_secs: batt.time_to_full().map(|t| t.value as u64),
             time_to_empty_secs: batt.time_to_empty().map(|t| t.value as u64),
@@ -338,6 +356,15 @@ impl SystemMonitor for SysinfoMonitor {
             model: batt.model().map(|s| s.to_string()),
             energy_rate_w: Some(batt.energy_rate().value),
         })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn battery_details(&self) -> Option<BatteryInfo> {
+        let mut battery = self.battery()?;
+        let capacities = crate::macos_battery::read_native_capacities();
+        let reported = self.battery_probe.borrow_mut().request_native();
+        crate::macos_battery::apply_details(&mut battery, capacities, reported);
+        Some(battery)
     }
 }
 
@@ -429,6 +456,17 @@ fn memory_breakdown() -> Option<MemoryBreakdown> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn basic_battery_and_cpu_paths_never_request_a_profiler_child() {
+        let mut monitor = SysinfoMonitor::new_quick();
+        monitor.battery();
+        monitor.refresh_quick();
+        monitor.sample_cpu_usage();
+        monitor.refresh_slow();
+        assert!(monitor.battery_probe.borrow().last_attempt.is_none());
+    }
 
     fn proc(pid: u32, cpu: f32, mem: u64) -> ProcessInfo {
         ProcessInfo {

@@ -93,4 +93,10 @@ pub trait SystemMonitor {
 
     /// Battery state, or `None` on a machine without one.
     fn battery(&self) -> Option<BatteryInfo>;
+
+    /// Explicit battery-detail request. Backends may enrich this path with
+    /// bounded cached native work; ordinary battery sampling stays cheap.
+    fn battery_details(&self) -> Option<BatteryInfo> {
+        self.battery()
+    }
 }
