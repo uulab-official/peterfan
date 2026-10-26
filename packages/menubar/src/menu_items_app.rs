@@ -90,7 +90,7 @@ pub(super) fn parse_visibility(payload: &str) -> Result<MenuItemsVisibility, Str
 #[derive(Clone, Copy)]
 enum ItemEdit {
     Visibility(MenuItemsVisibility),
-    Cpu(CpuWidgetConfig),
+    CpuAppearance(CpuWidgetConfig),
     Display(MenubarDisplay),
     Reload(ItemState),
 }
@@ -99,19 +99,33 @@ impl ItemEdit {
     fn resolve(self, latest: ItemState) -> Result<ItemState, String> {
         match self {
             Self::Visibility(value) => latest.with_visibility(value),
-            Self::Cpu(value) => latest.with_cpu(value),
+            Self::CpuAppearance(mut value) => {
+                // Appearance requests never own the independent visibility flag.
+                value.enabled = latest.cpu.enabled;
+                latest.with_cpu(value)
+            }
             Self::Display(value) => Ok(latest.with_display(value)),
             Self::Reload(value) => Ok(value),
         }
     }
 }
 
-// Resolve intent and prepare native resources inside the existing configuration
-// transaction. A newer cooperating writer's unedited fields therefore feed both
-// the saved configuration and the native/live commit, from the same snapshot.
+fn platform_state(state: ItemState, edit: ItemEdit, macos: bool) -> Result<ItemState, String> {
+    if !macos && matches!(edit, ItemEdit::Visibility(value) if value.cpu || !value.primary()) {
+        return Err("Menu item visibility is supported on macOS".into());
+    }
+    // Keep imported preferences on disk while staging only supported native
+    // items. A Windows legacy Display edit must not erase Mac CPU preferences.
+    Ok(external_state(&state.config(), macos))
+}
+
+// Resolve intent under the existing configuration lock. Persist raw preferences
+// and stage/commit the platform-effective state from that same latest snapshot;
+// normalization must not erase preferences for another supported platform.
 fn commit_staged<T>(
     current: &mut ItemState,
     edit: ItemEdit,
+    macos: bool,
     stage: impl FnOnce(ItemState) -> Result<T, String>,
     transaction: impl FnOnce(
         &mut dyn FnMut(&mut MenubarConfig) -> Result<(), String>,
@@ -125,9 +139,10 @@ fn commit_staged<T>(
         if !requested.visibility().any() {
             return Err("Keep at least one menu-bar item visible".into());
         }
-        prepared = Some(stage.take().expect("one configuration edit")(requested)?);
+        let effective = platform_state(requested, edit, macos)?;
+        prepared = Some(stage.take().expect("one configuration edit")(effective)?);
         write_state(config, requested);
-        committed = Some(requested);
+        committed = Some(effective);
         Ok(())
     })?;
     *current = committed.expect("successful configuration edit");
@@ -189,20 +204,15 @@ fn apply_state(app: &mut App, edit: ItemEdit, persist: bool) -> Result<(), Strin
         }
     };
     #[cfg(target_os = "macos")]
-    let staged = commit_staged(&mut live, edit, |state| prepare(app, state), transaction)?;
-    #[cfg(not(target_os = "macos"))]
-    commit_staged(
+    let staged = commit_staged(
         &mut live,
         edit,
-        |requested| {
-            if requested.cpu.enabled || !requested.primary_visible {
-                Err("Menu item visibility is supported on macOS".into())
-            } else {
-                Ok(())
-            }
-        },
+        true,
+        |state| prepare(app, state),
         transaction,
     )?;
+    #[cfg(not(target_os = "macos"))]
+    commit_staged(&mut live, edit, false, |_| Ok(()), transaction)?;
     let requested = live;
     // No fallible native operations after save. Never remove the primary item:
     // native visibility preserves its identity, button and click target.
@@ -271,7 +281,7 @@ pub(super) fn apply_cpu(
     requested: CpuWidgetConfig,
     persist: bool,
 ) -> Result<(), String> {
-    apply_state(app, ItemEdit::Cpu(requested), persist)
+    apply_state(app, ItemEdit::CpuAppearance(requested), persist)
 }
 
 pub(super) fn apply_display(
@@ -359,6 +369,194 @@ mod tests {
     }
 
     #[test]
+    fn windows_display_rebases_imported_raw_cpu_preferences_into_effective_primary_only_state() {
+        let mut disk = MenubarConfig {
+            display: MenubarDisplay::Graph,
+            primary_visible: false,
+            cpu_widget: CpuWidgetConfig {
+                enabled: true,
+                style: CpuWidgetStyle::History,
+                show_percentage: false,
+            },
+            ..Default::default()
+        };
+        let mut live = external_state(&disk, false);
+        assert!(!live.cpu.enabled);
+        for display in [
+            MenubarDisplay::Number,
+            MenubarDisplay::Graph,
+            MenubarDisplay::Both,
+        ] {
+            let edit = ItemEdit::Display(display);
+            let staged =
+                commit_staged(&mut live, edit, false, Ok, |change| change(&mut disk)).unwrap();
+            assert_eq!(disk.display, display);
+            assert!(disk.primary_visible);
+            assert!(
+                disk.cpu_widget.enabled,
+                "Windows display must retain unedited Mac CPU preference"
+            );
+            assert_eq!(disk.cpu_widget.style, CpuWidgetStyle::History);
+            assert!(!disk.cpu_widget.show_percentage);
+            assert_eq!(live, staged);
+            assert!(live.primary_visible);
+            assert!(
+                !live.cpu.enabled,
+                "Windows stages primary-only effective state"
+            );
+            assert_eq!(live.display, display);
+        }
+        for visibility in [
+            MenuItemsVisibility {
+                cpu: true,
+                runner: false,
+                metric: false,
+            },
+            MenuItemsVisibility {
+                cpu: true,
+                runner: true,
+                metric: true,
+            },
+        ] {
+            let before_live = live;
+            let before_disk = ItemState::from_config(&disk);
+            let staged = Cell::new(false);
+            assert!(commit_staged(
+                &mut live,
+                ItemEdit::Visibility(visibility),
+                false,
+                |_| {
+                    staged.set(true);
+                    Ok(())
+                },
+                |change| change(&mut disk)
+            )
+            .is_err());
+            assert!(
+                !staged.get(),
+                "unsupported CPU visibility must fail before preparation"
+            );
+            assert_eq!(live, before_live);
+            assert_eq!(ItemState::from_config(&disk), before_disk);
+        }
+    }
+
+    #[test]
+    fn settings_appearance_ack_preserves_external_cpu_off() {
+        assert_settings_appearance(false, true);
+    }
+
+    #[test]
+    fn settings_appearance_ack_preserves_external_cpu_only_on() {
+        assert_settings_appearance(true, false);
+    }
+
+    fn assert_settings_appearance(latest_enabled: bool, primary_visible: bool) {
+        let mut disk = MenubarConfig {
+            primary_visible,
+            cpu_widget: CpuWidgetConfig {
+                enabled: latest_enabled,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut live = ItemState::from_config(&disk);
+        live.primary_visible = true;
+        live.cpu.enabled = !latest_enabled;
+        // A host still carries the stale enabled value when editing appearance.
+        let request = SettingsRequest {
+            id: format!("round2-appearance-{latest_enabled}"),
+            operation: SettingsOperation::CpuWidget,
+            payload: serde_json::to_string(&CpuWidgetConfig {
+                enabled: !latest_enabled,
+                style: CpuWidgetStyle::History,
+                show_percentage: false,
+            })
+            .unwrap(),
+        };
+        let id = request.id.clone();
+        let mut prepared = None;
+        super::super::cpu_widget_app::complete_request(request, |requested| {
+            prepared = Some(commit_staged(
+                &mut live,
+                ItemEdit::CpuAppearance(requested),
+                true,
+                Ok,
+                |change| change(&mut disk),
+            )?);
+            Ok(())
+        });
+        let ack = SETTINGS_RESULTS
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|result| result["id"] == id)
+            .cloned()
+            .expect("matching acknowledgement");
+        assert_eq!(ack["operation"], "cpu_widget");
+        assert_eq!(
+            ack["ok"], true,
+            "appearance must succeed without changing visibility: {ack}"
+        );
+        assert_eq!(disk.cpu_widget.enabled, latest_enabled);
+        assert_eq!(disk.cpu_widget.style, CpuWidgetStyle::History);
+        assert!(!disk.cpu_widget.show_percentage);
+        assert_eq!(live, prepared.unwrap());
+        assert_eq!(live.cpu, disk.cpu_widget);
+        assert_eq!(live.primary_visible, primary_visible);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn queued_native_appearance_preserves_external_cpu_off() {
+        assert_queued_native_appearance(false, true);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn queued_native_appearance_preserves_external_cpu_only_on() {
+        assert_queued_native_appearance(true, false);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn assert_queued_native_appearance(latest_enabled: bool, primary_visible: bool) {
+        use crate::native_cpu_widget::CpuWidgetAction;
+        let mut disk = MenubarConfig {
+            primary_visible,
+            cpu_widget: CpuWidgetConfig {
+                enabled: latest_enabled,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut live = ItemState::from_config(&disk);
+        live.primary_visible = true;
+        live.cpu.enabled = !latest_enabled;
+        for action in [
+            CpuWidgetAction::Style(CpuWidgetStyle::History),
+            CpuWidgetAction::Percentage(false),
+        ] {
+            // This is the production queued-native action-to-request conversion.
+            let requested =
+                super::super::cpu_widget_app::native_appearance(live.cpu, action).unwrap();
+            let staged = commit_staged(
+                &mut live,
+                ItemEdit::CpuAppearance(requested),
+                true,
+                Ok,
+                |change| change(&mut disk),
+            )
+            .unwrap();
+            assert_eq!(disk.cpu_widget.enabled, latest_enabled);
+            assert_eq!(live, staged);
+            assert_eq!(live.cpu, disk.cpu_widget);
+            assert_eq!(live.primary_visible, primary_visible);
+        }
+        assert_eq!(disk.cpu_widget.style, CpuWidgetStyle::History);
+        assert!(!disk.cpu_widget.show_percentage);
+    }
+
+    #[test]
     fn visibility_save_rebases_external_cpu_appearance_and_commits_matching_live_state() {
         assert_external_cpu_appearance_survives(false);
     }
@@ -391,6 +589,7 @@ mod tests {
         let staged = commit_staged(
             &mut live,
             edit,
+            true,
             |state| Ok(state.cpu),
             |change| change(&mut latest),
         )
@@ -458,6 +657,7 @@ mod tests {
         let outcome = commit_staged(
             &mut live,
             edit,
+            true,
             |_| Err::<(), _>("native unavailable".into()),
             |change| {
                 change(&mut config)?;
@@ -484,6 +684,7 @@ mod tests {
         assert!(commit_staged(
             &mut live,
             edit,
+            true,
             |_| {
                 staged.set(true);
                 Ok(42)
@@ -497,7 +698,14 @@ mod tests {
         .is_err());
         assert_eq!(live, original());
         assert_eq!(
-            commit_staged(&mut live, edit, |_| Ok(42), |change| change(&mut config)).unwrap(),
+            commit_staged(
+                &mut live,
+                edit,
+                true,
+                |_| Ok(42),
+                |change| change(&mut config)
+            )
+            .unwrap(),
             42
         );
         assert_eq!(live, desired);

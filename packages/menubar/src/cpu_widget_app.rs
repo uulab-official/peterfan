@@ -49,11 +49,29 @@ pub(super) fn refresh(app: &mut App, usage: f32, per_core: &[f32]) {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub(super) fn native_appearance(
+    mut config: CpuWidgetConfig,
+    action: crate::native_cpu_widget::CpuWidgetAction,
+) -> Option<CpuWidgetConfig> {
+    use crate::native_cpu_widget::CpuWidgetAction;
+    match action {
+        CpuWidgetAction::Style(style) => config = config.select_style(style),
+        CpuWidgetAction::Percentage(show) => config.show_percentage = show,
+        CpuWidgetAction::OpenDashboard | CpuWidgetAction::Visibility(_) => return None,
+    }
+    Some(config)
+}
+
 pub(super) fn request(app: &mut App, request: SettingsRequest) -> String {
-    let result = parse_config(&request.payload).and_then(|mut config| {
-        config.enabled = app.cpu_widget_config.enabled;
-        apply(app, config, true)
-    });
+    complete_request(request, |config| apply(app, config, true))
+}
+
+pub(super) fn complete_request(
+    request: SettingsRequest,
+    apply: impl FnOnce(CpuWidgetConfig) -> Result<(), String>,
+) -> String {
+    let result = parse_config(&request.payload).and_then(apply);
     let (ok, message) = match result {
         Ok(()) => (true, "CPU widget settings saved".to_string()),
         Err(error) => (false, format!("CPU widget: {error}")),

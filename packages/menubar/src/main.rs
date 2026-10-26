@@ -3300,13 +3300,8 @@ fn main() {
                         if let Err(error) = menu_items_app::apply(&mut app, visibility, true) { report_preference_failure("Menu items", error); }
                     }
                     preference => {
-                        let mut config = app.cpu_widget_config;
-                        match preference {
-
-                            CpuWidgetAction::Style(style) => config = config.select_style(style),
-                            CpuWidgetAction::Percentage(show) => config.show_percentage = show,
-                            CpuWidgetAction::OpenDashboard | CpuWidgetAction::Visibility(_) => unreachable!(),
-                        }
+                        let config = cpu_widget_app::native_appearance(app.cpu_widget_config, preference)
+                            .expect("CPU appearance action");
                         if let Err(error) = cpu_widget_app::apply(&mut app, config, true) {
                             report_preference_failure("CPU widget", error);
                         }

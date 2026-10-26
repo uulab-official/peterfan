@@ -5,6 +5,9 @@
 #[path = "../src/cpu_widget.rs"]
 mod cpu_widget;
 #[cfg(target_os = "macos")]
+#[path = "../src/cpu_widget_app.rs"]
+mod cpu_widget_app;
+#[cfg(target_os = "macos")]
 #[path = "../src/menu_items_app.rs"]
 mod menu_items_app;
 #[cfg(target_os = "macos")]
@@ -24,12 +27,15 @@ static SETTINGS_RESULTS: Mutex<VecDeque<serde_json::Value>> = Mutex::new(VecDequ
 const SETTINGS_RESULTS_MAX: usize = 32;
 #[cfg(target_os = "macos")]
 #[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 enum SettingsOperation {
     MenuItems,
+    CpuWidget,
 }
 #[cfg(target_os = "macos")]
 struct SettingsRequest {
     id: String,
+    operation: SettingsOperation,
     payload: String,
 }
 #[cfg(target_os = "macos")]
