@@ -53,9 +53,10 @@ is released in v1.32.8 with verified public-feed OTA on one Mac. Actual installe
 widget visual/click checks and the new six-hour result are tracked separately in
 [CPU widget release acceptance](docs/CPU_WIDGET_RELEASE_2026-10-24.md).
 
-The current source prepares **v1.32.10** with independent CPU widget, runner and
-metric-text visibility. Signed publication, actual OTA and final installed
-six-hour acceptance for these controls are pending. See the
+Released **v1.32.10** adds independent CPU widget, runner and metric-text
+visibility. Signed/notarized publication and actual public-feed 9→10 OTA are
+verified on one Mac. Installed visual/click acceptance and a fresh final-build
+six-hour observation remain pending. See the
 [visibility release ledger](docs/MENU_ITEM_VISIBILITY_RELEASE_2026-10-26.md).
 
 Released v1.32.9 adds **Per-core bars**, one 0–100% bar per logical CPU, with
@@ -107,8 +108,8 @@ login, or a license key.
 
 ## Install
 
-The latest published release verified on 2026-10-26 is **v1.32.9**, including
-public-feed OTA from v1.32.8 on one Mac. The new installed-build six-hour result
+The latest published release verified on 2026-10-26 is **v1.32.10**, including
+public-feed OTA from v1.32.9 on one Mac. The new installed-build six-hour result
 remains pending. Check [Releases](https://github.com/uulab-official/peterfan/releases/latest)
 for published assets and [the production checklist](docs/PRODUCTION_CHECKLIST.md)
 for the evidence behind each version.

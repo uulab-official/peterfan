@@ -52,15 +52,16 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 ## 현재 상태
 
-**베타 — 공개 배포 v1.32.9 (2026-10-26).** 아래 표는 현재 소스의 구현 상태입니다. 최신 버전은 [Releases](https://github.com/uulab-official/peterfan/releases/latest)에서 확인하세요:
+**베타 — 공개 배포 v1.32.10 (2026-10-26).** 아래 표는 현재 소스의 구현 상태입니다. 최신 버전은 [Releases](https://github.com/uulab-official/peterfan/releases/latest)에서 확인하세요:
 
 [장시간 안전성·공개 OTA 실물 검증 기록](docs/LONG_RUN_SAFETY_2026-10-24.md)에서
 v1.32.7의 한 대 6시간 검증 통과 결과를 확인할 수 있습니다. v1.32.8에는
 러너와 별도로 켜는 CPU 바·히스토리·숫자 위젯이 포함됩니다. 새 서명·공증 배포와
 v1.32.7 → v1.32.8 실제 OTA를 확인했습니다. 위젯 실화면·새 설치본 6시간 검증의
 진행 상태는 [별도 기록](docs/CPU_WIDGET_RELEASE_2026-10-24.md)으로 구분합니다.
-현재 소스는 CPU 위젯·캐릭터·측정값 텍스트를 각각 켜고 끄는 **v1.32.10**을
-준비합니다. 이 기능의 서명 배포·실제 OTA·최종 설치본 6시간 검증은 아직 대기 중입니다.
+공개 **v1.32.10**에서는 CPU 위젯·캐릭터·측정값 텍스트를 각각 켜고 끕니다.
+서명·공증 배포와 9→10 실제 공개 OTA를 한 대의 Mac에서 확인했습니다.
+실제 설치 화면·클릭 확인과 최종 설치본 전체 6시간 검증은 아직 대기 중입니다.
 [표시 항목 릴리스 기록](docs/MENU_ITEM_VISIBILITY_RELEASE_2026-10-26.md)을 참고하세요.
 
 공개 v1.32.9에는 논리 코어마다 0–100% 세로 막대를 표시하는 **코어별 바**를
