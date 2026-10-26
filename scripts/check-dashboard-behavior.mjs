@@ -151,5 +151,78 @@ test('hidden panels and Reduce Motion cancel frames and show the latest reported
  ui.scope.view='system';ui.scope.refreshSetupProgressMotion();assert.equal(ui.pending(),0);
  ui.scope.renderSetupProgress({phase:'installing',percent:NaN});assert.equal(ui.scope.SETUP_PROGRESS.value,0);assert.equal(ui.pending(),0);
 });
+
+function batteryHarness(lang='en'){
+ const node=()=>({style:{},dataset:{},textContent:'',className:'',classList:{contains:()=>false,toggle(){}},setAttribute(){}});
+ const nodes=Object.fromEntries(['sec-batt','batt-val','batt-sub','batt-bar','batt-details','batt-health','batt-design','batt-full','batt-cycles','batt-source-note'].map(id=>[id,node()]));
+ for(const value of Object.values(nodes))Object.defineProperty(value,'innerHTML',{set(){throw Error('Battery data must use textContent');}});
+ const scope={LANG:lang,document:{getElementById:id=>nodes[id]||null}};
+ vm.createContext(scope);
+ vm.runInContext(['setText','setVisible','renderBattery'].map(definition).join('\n'),scope);
+ return {scope,nodes,render(data){scope.renderBattery(data);}};
+}
+function batterySnapshot(details={}){
+ return {batt_present:true,batt_pct:76,batt_text:'76%',batt_sub:'discharging',batt_details:{
+  charge_percent:76,state:'discharging',health_percent:96,health_source:'reported',
+  design_capacity_mah:6249,full_charge_capacity_mah:5655,cycle_count:0,...details}};
+}
+test('battery reported health96 remains distinct from current charge76',()=>{
+ const ui=batteryHarness();ui.render(batterySnapshot());
+ assert.equal(ui.nodes['batt-val'].textContent,'76%');
+ assert.equal(ui.nodes['batt-health'].textContent,'96%');
+ assert.equal(ui.nodes['batt-design'].textContent,'6,249 mAh');
+ assert.equal(ui.nodes['batt-full'].textContent,'5,655 mAh');
+ assert.equal(ui.nodes['batt-cycles'].textContent,'0');
+ assert.equal(ui.nodes['batt-details'].style.display,'');
+});
+test('battery capacity-derived health is explicitly estimated in both languages',()=>{
+ for(const [lang,label] of [['en','91% (estimated)'],['ko','91% (추정)']]){
+  const ui=batteryHarness(lang);ui.render(batterySnapshot({health_percent:90.5,health_source:'estimated'}));
+  assert.equal(ui.nodes['batt-health'].textContent,label);
+ }
+});
+test('missing or invalid battery details stay unavailable per field',()=>{
+ const ui=batteryHarness();
+ for(const invalid of [null,undefined,0,NaN,Infinity,'96',true,-1]){
+  ui.render(batterySnapshot({health_percent:invalid,design_capacity_mah:invalid,full_charge_capacity_mah:invalid,cycle_count:invalid}));
+  for(const id of ['batt-health','batt-design','batt-full'])assert.equal(ui.nodes[id].textContent,'Unavailable',id+' '+invalid);
+  assert.equal(ui.nodes['batt-cycles'].textContent,invalid===0?'0':'Unavailable');
+ }
+ ui.render(batterySnapshot({health_percent:96,health_source:null,design_capacity_mah:null}));
+ assert.equal(ui.nodes['batt-health'].textContent,'Unavailable');
+ assert.equal(ui.nodes['batt-design'].textContent,'Unavailable');
+ assert.equal(ui.nodes['batt-full'].textContent,'5,655 mAh');
+ const ko=batteryHarness('ko');ko.render(batterySnapshot({health_percent:null}));
+ assert.equal(ko.nodes['batt-health'].textContent,'확인 불가');
+});
+test('battery presence changes clear old data and retain a no-battery label',()=>{
+ const ui=batteryHarness();ui.render(batterySnapshot());
+ ui.render({batt_present:false,batt_details:batterySnapshot().batt_details});
+ assert.equal(ui.nodes['batt-val'].textContent,'No battery');
+ assert.equal(ui.nodes['batt-sub'].textContent,'—');
+ assert.equal(ui.nodes['batt-details'].style.display,'none');
+ for(const id of ['batt-health','batt-design','batt-full','batt-cycles'])assert.equal(ui.nodes[id].textContent,'Unavailable');
+ ui.render(batterySnapshot({health_percent:null,cycle_count:null}));
+ assert.equal(ui.nodes['batt-details'].style.display,'');
+ assert.equal(ui.nodes['batt-health'].textContent,'Unavailable');
+ assert.equal(ui.nodes['batt-cycles'].textContent,'Unavailable');
+ const ko=batteryHarness('ko');ko.render({batt_present:false});assert.equal(ko.nodes['batt-val'].textContent,'배터리 없음');
+});
+test('reported battery health explains the different physical capacity ratio in both languages',()=>{
+ for(const [lang,note] of [['en','Health is reported by macOS and may differ from the capacity ratio.'],['ko','건강도는 macOS 보고값이며 용량의 단순 비율과 다를 수 있습니다.']]){
+  const ui=batteryHarness(lang);ui.render(batterySnapshot());
+  assert.equal(ui.nodes['batt-source-note'].textContent,note);
+  assert.equal(ui.nodes['batt-source-note'].style.display,'');
+  ui.render(batterySnapshot({health_source:'estimated'}));
+  assert.equal(ui.nodes['batt-source-note'].style.display,'none');
+  ui.render({batt_present:false});assert.equal(ui.nodes['batt-source-note'].style.display,'none');
+ }
+});
+test('battery text is inserted as text and never interpreted as HTML',()=>{
+ const ui=batteryHarness();const text='<img src=x onerror=alert(1)>';
+ ui.render({...batterySnapshot({state:text}),batt_sub:text});
+ assert.equal(ui.nodes['batt-sub'].textContent,text);
+});
+
 console.log(`${passed} dashboard behavior checks passed, ${failed} failed`);
 process.exitCode=failed?1:0;

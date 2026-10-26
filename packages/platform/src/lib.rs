@@ -18,6 +18,8 @@ pub mod daemon_install;
 pub mod ipc;
 #[cfg(target_os = "macos")]
 pub mod login_item;
+#[cfg(target_os = "macos")]
+mod macos_battery;
 pub mod mock;
 pub mod mock_monitor;
 pub mod process_control;
