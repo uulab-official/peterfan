@@ -219,6 +219,25 @@ impl MenubarDisplay {
     }
 }
 
+/// Complete independent menu-item selection. Request payloads must be exact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MenuItemsVisibility {
+    pub cpu: bool,
+    pub runner: bool,
+    pub metric: bool,
+}
+
+impl MenuItemsVisibility {
+    pub fn any(self) -> bool {
+        self.cpu || self.runner || self.metric
+    }
+
+    pub fn primary(self) -> bool {
+        self.runner || self.metric
+    }
+}
+
 /// Appearance of the independent CPU menu-bar widget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -503,6 +522,8 @@ fn default_show_cpu_core_graph() -> bool {
 pub struct MenubarConfig {
     pub metric: MenubarMetric,
     pub display: MenubarDisplay,
+    /// Hide the owned primary item while retaining its display preference.
+    pub primary_visible: bool,
     pub character: RunnerCharacter,
     /// Rotate through a shuffled character roster once per minute.
     pub random_character: bool,
@@ -531,6 +552,7 @@ impl Default for MenubarConfig {
         Self {
             metric: MenubarMetric::default(),
             display: MenubarDisplay::default(),
+            primary_visible: true,
             character: RunnerCharacter::default(),
             random_character: false,
             temperature_source: TemperatureSource::default(),
@@ -546,9 +568,42 @@ impl Default for MenubarConfig {
 }
 
 impl MenubarConfig {
+    /// Effective state; malformed external all-off config recovers text access
+    /// without mutating the user's stored display or fan preferences.
+    pub fn item_visibility(&self) -> MenuItemsVisibility {
+        let mut visibility = MenuItemsVisibility {
+            cpu: self.cpu_widget.enabled,
+            runner: self.primary_visible && self.display != MenubarDisplay::Number,
+            metric: self.primary_visible && self.display != MenubarDisplay::Graph,
+        };
+        if !visibility.any() {
+            visibility.metric = true;
+        }
+        visibility
+    }
+
+    pub fn set_item_visibility(
+        &mut self,
+        visibility: MenuItemsVisibility,
+    ) -> Result<(), &'static str> {
+        if !visibility.any() {
+            return Err("Keep at least one menu-bar item visible");
+        }
+        self.cpu_widget.enabled = visibility.cpu;
+        self.primary_visible = visibility.primary();
+        self.display = match (visibility.runner, visibility.metric) {
+            (true, true) => MenubarDisplay::Both,
+            (true, false) => MenubarDisplay::Graph,
+            (false, true) => MenubarDisplay::Number,
+            (false, false) => self.display,
+        };
+        Ok(())
+    }
+
     pub fn is_default(&self) -> bool {
         self.metric == MenubarMetric::Temp
             && self.display == MenubarDisplay::Both
+            && self.primary_visible
             && self.character == RunnerCharacter::Cat
             && !self.random_character
             && self.temperature_source == TemperatureSource::CoreAverage
@@ -1012,6 +1067,137 @@ mod tests {
                 .style,
             CpuWidgetStyle::History
         );
+    }
+
+    #[test]
+    fn menu_items_all_seven_combinations_roundtrip_without_changing_details() {
+        for bits in 1..8 {
+            let visibility = MenuItemsVisibility {
+                cpu: bits & 1 != 0,
+                runner: bits & 2 != 0,
+                metric: bits & 4 != 0,
+            };
+            let mut cfg = Config::default();
+            cfg.menubar.metric = MenubarMetric::Network;
+            cfg.menubar.character = RunnerCharacter::Fox;
+            cfg.menubar.cpu_widget.style = CpuWidgetStyle::History;
+            cfg.menubar.cpu_widget.show_percentage = false;
+            cfg.menubar.set_item_visibility(visibility).unwrap();
+            assert_eq!(cfg.menubar.item_visibility(), visibility);
+            let restored = Config::from_toml(&cfg.to_toml()).unwrap();
+            assert_eq!(restored.menubar.item_visibility(), visibility);
+            assert_eq!(restored.menubar.metric, MenubarMetric::Network);
+            assert_eq!(restored.menubar.character, RunnerCharacter::Fox);
+            assert_eq!(restored.menubar.cpu_widget.style, CpuWidgetStyle::History);
+            assert!(!restored.menubar.cpu_widget.show_percentage);
+        }
+    }
+
+    #[test]
+    fn menu_items_reject_all_off_and_preserve_hidden_primary_selection() {
+        let mut cfg = MenubarConfig {
+            display: MenubarDisplay::Graph,
+            ..Default::default()
+        };
+        assert!(cfg
+            .set_item_visibility(MenuItemsVisibility {
+                cpu: false,
+                runner: false,
+                metric: false
+            })
+            .is_err());
+        assert_eq!(cfg.display, MenubarDisplay::Graph);
+        assert!(cfg.primary_visible);
+        cfg.set_item_visibility(MenuItemsVisibility {
+            cpu: true,
+            runner: false,
+            metric: false,
+        })
+        .unwrap();
+        assert_eq!(cfg.display, MenubarDisplay::Graph);
+        assert!(!cfg.primary_visible);
+        cfg.set_item_visibility(MenuItemsVisibility {
+            cpu: true,
+            runner: true,
+            metric: false,
+        })
+        .unwrap();
+        assert_eq!(cfg.display, MenubarDisplay::Graph);
+        assert!(cfg.primary_visible);
+    }
+
+    #[test]
+    fn menu_items_legacy_defaults_and_external_all_off_recover_without_rewrite() {
+        for (display, runner, metric) in [
+            ("number", false, true),
+            ("cat", true, false),
+            ("both", true, true),
+        ] {
+            for cpu in [false, true] {
+                let cfg = Config::from_toml(&format!(
+                    "[menubar]\ndisplay = \"{display}\"\n[menubar.cpu_widget]\nenabled = {cpu}\n"
+                ))
+                .unwrap();
+                assert_eq!(
+                    cfg.menubar.item_visibility(),
+                    MenuItemsVisibility {
+                        cpu,
+                        runner,
+                        metric
+                    }
+                );
+                assert!(cfg.menubar.primary_visible);
+            }
+        }
+        let cfg = Config::from_toml("profile = \"silent\"\ncritical_temp_c = 96\n[menubar]\nprimary_visible = false\ndisplay = \"cat\"\n").unwrap();
+        assert_eq!(
+            cfg.menubar.item_visibility(),
+            MenuItemsVisibility {
+                cpu: false,
+                runner: false,
+                metric: true
+            }
+        );
+        assert!(!cfg.menubar.primary_visible);
+        assert_eq!(cfg.menubar.display, MenubarDisplay::Graph);
+        assert_eq!(cfg.critical_temp_c, 96.);
+    }
+
+    #[test]
+    fn menu_items_toml_remains_readable_by_legacy_helper_fields() {
+        #[derive(Deserialize)]
+        struct LegacyMenubar {
+            display: MenubarDisplay,
+            character: RunnerCharacter,
+            cpu_widget: CpuWidgetConfig,
+        }
+        #[derive(Deserialize)]
+        struct LegacyHelper {
+            profile: Profile,
+            critical_temp_c: f32,
+            interval_secs: u64,
+            menubar: LegacyMenubar,
+            named_curves: NamedCurves,
+        }
+        let mut cfg = Config::from_toml("profile = \"silent\"\ncritical_temp_c = 96\ninterval_secs = 7\n[named_curves.work]\npoints = [[30, 20], [90, 100]]\n").unwrap();
+        cfg.menubar.character = RunnerCharacter::Fox;
+        for bits in 1..8 {
+            cfg.menubar
+                .set_item_visibility(MenuItemsVisibility {
+                    cpu: bits & 1 != 0,
+                    runner: bits & 2 != 0,
+                    metric: bits & 4 != 0,
+                })
+                .unwrap();
+            let old: LegacyHelper = toml::from_str(&cfg.to_toml()).unwrap();
+            assert_eq!(old.profile, Profile::Silent);
+            assert_eq!(old.critical_temp_c, 96.);
+            assert_eq!(old.interval_secs, 7);
+            assert_eq!(old.menubar.display, cfg.menubar.display);
+            assert_eq!(old.menubar.character, RunnerCharacter::Fox);
+            assert_eq!(old.menubar.cpu_widget.enabled, bits & 1 != 0);
+            assert_eq!(old.named_curves["work"].points.len(), 2);
+        }
     }
 
     #[test]

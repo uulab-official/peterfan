@@ -12,8 +12,10 @@ mod native_cpu_widget;
 #[cfg(target_os = "macos")]
 fn main() {
     use cpu_widget::CpuWidgetHistory;
-    use native_cpu_widget::NativeCpuWidget;
-    use peterfan_core::config::{CpuWidgetConfig, CpuWidgetStyle, ResolvedLanguage};
+    use native_cpu_widget::{NativeCpuWidget, PreparedPrimaryItem};
+    use peterfan_core::config::{
+        CpuWidgetConfig, CpuWidgetStyle, MenuItemsVisibility, MenubarConfig, ResolvedLanguage,
+    };
     use std::{
         path::PathBuf,
         time::{Duration, Instant},
@@ -38,6 +40,16 @@ fn main() {
     };
     let mut history = CpuWidgetHistory::default();
     history.push(50.);
+    let primary_tray = tray_icon::TrayIcon::new(tray_icon::TrayIconAttributes {
+        title: Some("PeterFan QA".into()),
+        menu_on_left_click: false,
+        ..Default::default()
+    })
+    .unwrap();
+    let primary = PreparedPrimaryItem::new(&primary_tray).unwrap();
+    let primary_id = primary_tray.id().clone();
+    let primary_item = primary_tray.ns_status_item().unwrap();
+    let mut visibility_snapshots = Vec::new();
     let mut widget = None;
     let mut phase = 0;
     let mut next = Instant::now();
@@ -62,9 +74,36 @@ fn main() {
                 5=>{config=config.select_style(CpuWidgetStyle::Cores);history.sample_cpu_at(50., &[0.,10.,25.,50.,75.,100.,90.,60.,40.,20.], Instant::now());},
                 6=>{history.sample_cpu_at(50., &vec![50.;64], Instant::now()+Duration::from_secs(2));},
                 7=>{config.show_percentage=true;history.sample_cpu_at(50., &vec![f32::NAN;64], Instant::now()+Duration::from_secs(4));},
-                _=>{active.set_visible(false)?;if active.tray().ns_status_item().is_none(){return Err("hiding destroyed the owned native item".into());}return Ok(());},
+                8..=14=>{
+                    let bits=phase-7;
+                    let visibility=MenuItemsVisibility { cpu:bits&1!=0,runner:bits&2!=0,metric:bits&4!=0 };
+                    let mut menu=MenubarConfig::default();menu.set_item_visibility(visibility).map_err(str::to_string)?;
+                    let previous_id=active.tray().id().clone();
+                    active.set_item_visibility(visibility,ResolvedLanguage::En);
+                    active.set_visible(visibility.cpu);
+                    primary.apply(&primary_tray,menu.display,visibility.primary());
+                    let item=primary_tray.ns_status_item().ok_or("primary removed on hide")?;
+                    if !std::ptr::eq(&*item,&*primary_item) || primary_tray.id()!=&primary_id || active.tray().id()!=&previous_id {return Err("native item identity changed".into());}
+                    if item.isVisible()!=visibility.primary() || active.tray().ns_status_item().unwrap().isVisible()!=visibility.cpu {return Err("seven-state native visibility mismatch".into());}
+                    if item.button(objc2_foundation::MainThreadMarker::new().unwrap()).is_none() || active.tray().rect().is_none() {return Err("retained native click target missing".into());}
+                    if !menu.item_visibility().any() {return Err("no dashboard entry point".into());}
+                    let before=menu.item_visibility();
+                    if menu.set_item_visibility(MenuItemsVisibility {cpu:false,runner:false,metric:false}).is_ok() || menu.item_visibility()!=before {return Err("last item was hidden".into());}
+                    visibility_snapshots.push(serde_json::json!({"visibility":visibility,"primary_visible":item.isVisible(),"cpu_visible":active.tray().ns_status_item().unwrap().isVisible(),"primary_rect":format!("{:?}",primary_tray.rect()),"cpu_rect":format!("{:?}",active.tray().rect()),"primary_width":item.length(),"primary_identity_preserved":true,"last_item_guard":true}));
+                    return Ok(());
+                },
+                _=>{active.set_visible(false);primary.apply(&primary_tray,MenubarConfig::default().display,true);if active.tray().ns_status_item().is_none(){return Err("hiding destroyed the owned native item".into());}return Ok(());},
             }
-            active.update(config,ResolvedLanguage::En,&history)?;active.set_visible(true)?;
+            let previous_id=active.tray().id().clone();
+            let previous_title=active.tray().ns_status_item().unwrap().button(objc2_foundation::MainThreadMarker::new().unwrap()).unwrap().title().to_string();
+            let prepared=active.prepare_update(config,ResolvedLanguage::En,&history)?;
+            let staged_title=active.tray().ns_status_item().unwrap().button(objc2_foundation::MainThreadMarker::new().unwrap()).unwrap().title().to_string();
+            if previous_title!=staged_title {return Err("preparation changed live title before persistence".into());}
+            // Dropping a failed staged update leaves the live presentation.
+            drop(prepared);
+            let prepared=active.prepare_update(config,ResolvedLanguage::En,&history)?;
+            active.commit_update(prepared);active.set_visible(true);
+            if active.tray().id()!=&previous_id {return Err("style update replaced native click identity".into());}
             let item=active.tray().ns_status_item().ok_or("missing active native item")?;
             let marker=objc2_foundation::MainThreadMarker::new().ok_or("not on main thread")?;
             let button=item.button(marker).ok_or("missing native button")?;
@@ -84,11 +123,11 @@ fn main() {
         })();
         if let Err(error)=result {failure=Some(error);*flow=ControlFlow::Exit;return;}
         phase+=1;
-        if phase>8 {*flow=ControlFlow::Exit;}else{next=Instant::now()+Duration::from_millis(600);*flow=ControlFlow::WaitUntil(next);}
+        if phase>15 {*flow=ControlFlow::Exit;}else{next=Instant::now()+Duration::from_millis(600);*flow=ControlFlow::WaitUntil(next);}
     });
     drop(widget);
-    let passed = failure.is_none() && snapshots.len() == 8;
-    std::fs::write(output.join("native-lifecycle.json"),serde_json::to_vec_pretty(&serde_json::json!({"passed":passed,"error":failure,"snapshots":snapshots,"scope":"isolated native item; no installed-app/config/helper operations"})).unwrap()).unwrap();
+    let passed = failure.is_none() && snapshots.len() == 8 && visibility_snapshots.len() == 7;
+    std::fs::write(output.join("native-lifecycle.json"),serde_json::to_vec_pretty(&serde_json::json!({"passed":passed,"error":failure,"snapshots":snapshots,"visibility_snapshots":visibility_snapshots,"primary_restore_verified":primary_item.isVisible(),"scope":"isolated native item; no installed-app/config/helper operations"})).unwrap()).unwrap();
     if !passed {
         std::process::exit(1);
     }

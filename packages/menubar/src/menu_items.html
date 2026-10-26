@@ -1,0 +1,21 @@
+<style>
+#menu-items-setting{display:block;}#menu-items-setting[hidden],#menubar-display-setting[hidden]{display:none;}
+.menu-items-copy{font-size:10px;line-height:1.5;color:var(--dim);margin-top:4px;}
+.menu-items-options{display:flex;flex-wrap:wrap;gap:12px 16px;margin:12px 0;font-size:11px;}
+.menu-items-options label{display:flex;align-items:center;gap:7px;line-height:1.5;}
+.menu-items-options input{accent-color:var(--accent);width:16px;height:16px;margin:0;flex-shrink:0;}
+.menu-items-options input:focus-visible{outline:2px solid var(--accent);outline-offset:3px;}
+.menu-items-help,#menu-items-status{font-size:10px;line-height:1.5;color:var(--dim);overflow-wrap:anywhere;}
+#menu-items-status:empty{display:none;}
+</style>
+<div class="settings-item" id="menu-items-setting" hidden>
+<div class="settings-item-title" id="menu-items-title">Menu-bar items</div>
+<div class="menu-items-copy" id="menu-items-copy">Choose each item independently. Hidden items keep their settings.</div>
+<div class="menu-items-options" role="group" aria-labelledby="menu-items-title" aria-describedby="menu-items-help">
+<label><input id="menu-items-cpu" type="checkbox" disabled onchange="setMenuItem('cpu',this.checked)"><span id="menu-items-cpu-label">CPU widget</span></label>
+<label><input id="menu-items-runner" type="checkbox" disabled onchange="setMenuItem('runner',this.checked)"><span id="menu-items-runner-label">Runner character</span></label>
+<label><input id="menu-items-metric" type="checkbox" disabled onchange="setMenuItem('metric',this.checked)"><span id="menu-items-metric-label">Metric text</span></label>
+</div>
+<div class="menu-items-help" id="menu-items-help">Keep at least one item visible to open the dashboard.</div>
+<div id="menu-items-status" role="status" aria-live="polite"></div>
+</div>

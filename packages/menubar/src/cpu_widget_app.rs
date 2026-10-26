@@ -1,8 +1,5 @@
 //! GUI-owned lifecycle and request acknowledgements for the independent CPU item.
 use super::{App, SettingsOperation, SettingsRequest, SETTINGS_RESULTS, SETTINGS_RESULTS_MAX};
-use crate::cpu_widget::CpuWidgetHistory;
-#[cfg(target_os = "macos")]
-use crate::native_cpu_widget::NativeCpuWidget;
 use peterfan_core::config::CpuWidgetConfig;
 
 pub(super) fn parse_config(payload: &str) -> Result<CpuWidgetConfig, String> {
@@ -20,66 +17,12 @@ pub(super) fn parse_config(payload: &str) -> Result<CpuWidgetConfig, String> {
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
-fn commit_with_save<F>(
-    current: &mut CpuWidgetConfig,
-    requested: CpuWidgetConfig,
-    save: F,
-) -> Result<(), String>
-where
-    F: FnOnce() -> Result<(), String>,
-{
-    save()?;
-    *current = requested;
-    Ok(())
-}
-
 pub(super) fn apply(
     app: &mut App,
     requested: CpuWidgetConfig,
     persist: bool,
 ) -> Result<(), String> {
-    #[cfg(not(target_os = "macos"))]
-    if requested.enabled {
-        return Err("CPU menu-bar widgets are supported on macOS".into());
-    }
-    #[cfg(target_os = "macos")]
-    let candidate = if requested.enabled && app.cpu_widget_native.is_none() {
-        let mut candidate = NativeCpuWidget::new(requested, app.language.resolve())?;
-        candidate.update(requested, app.language.resolve(), &app.cpu_widget_history)?;
-        Some(candidate)
-    } else {
-        None
-    };
-    let was_enabled = app.cpu_widget_config.enabled;
-    commit_with_save(&mut app.cpu_widget_config, requested, || {
-        if persist {
-            peterfan_platform::config::update(|config| {
-                config.menubar.cpu_widget = requested;
-                Ok(())
-            })
-            .map_err(|e| e.to_string())?;
-        }
-        Ok(())
-    })?;
-    if was_enabled != requested.enabled {
-        app.cpu_widget_history = CpuWidgetHistory::default();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if !requested.enabled {
-            app.cpu_widget_native = None;
-        } else {
-            if let Some(candidate) = candidate {
-                app.cpu_widget_native = Some(candidate);
-            }
-            if let Some(widget) = &mut app.cpu_widget_native {
-                widget.update(requested, app.language.resolve(), &app.cpu_widget_history)?;
-                widget.set_visible(true)?;
-            }
-        }
-    }
-    app.cpu_widget_error = None;
-    Ok(())
+    super::menu_items_app::apply_cpu(app, requested, persist)
 }
 
 pub(super) fn refresh(app: &mut App, usage: f32, per_core: &[f32]) {
@@ -106,8 +49,29 @@ pub(super) fn refresh(app: &mut App, usage: f32, per_core: &[f32]) {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub(super) fn native_appearance(
+    mut config: CpuWidgetConfig,
+    action: crate::native_cpu_widget::CpuWidgetAction,
+) -> Option<CpuWidgetConfig> {
+    use crate::native_cpu_widget::CpuWidgetAction;
+    match action {
+        CpuWidgetAction::Style(style) => config = config.select_style(style),
+        CpuWidgetAction::Percentage(show) => config.show_percentage = show,
+        CpuWidgetAction::OpenDashboard | CpuWidgetAction::Visibility(_) => return None,
+    }
+    Some(config)
+}
+
 pub(super) fn request(app: &mut App, request: SettingsRequest) -> String {
-    let result = parse_config(&request.payload).and_then(|config| apply(app, config, true));
+    complete_request(request, |config| apply(app, config, true))
+}
+
+pub(super) fn complete_request(
+    request: SettingsRequest,
+    apply: impl FnOnce(CpuWidgetConfig) -> Result<(), String>,
+) -> String {
+    let result = parse_config(&request.payload).and_then(apply);
     let (ok, message) = match result {
         Ok(()) => (true, "CPU widget settings saved".to_string()),
         Err(error) => (false, format!("CPU widget: {error}")),
@@ -123,21 +87,6 @@ pub(super) fn request(app: &mut App, request: SettingsRequest) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peterfan_core::config::CpuWidgetStyle;
-    #[test]
-    fn failed_persistence_preserves_live_widget_configuration_and_allows_retry() {
-        let original = CpuWidgetConfig::default();
-        let mut current = original;
-        let requested = CpuWidgetConfig {
-            enabled: true,
-            style: CpuWidgetStyle::History,
-            show_percentage: false,
-        };
-        assert!(commit_with_save(&mut current, requested, || Err("disk full".into())).is_err());
-        assert_eq!(current, original);
-        commit_with_save(&mut current, requested, || Ok(())).unwrap();
-        assert_eq!(current, requested);
-    }
     #[test]
     fn cpu_widget_request_rejects_unknown_missing_and_wrong_type_fields() {
         for value in [
