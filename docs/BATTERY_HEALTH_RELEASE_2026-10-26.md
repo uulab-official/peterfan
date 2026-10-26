@@ -41,8 +41,10 @@ The development source version is 1.32.11; immutable public v1.32.10 is preserve
 ## Development verification
 
 Feature candidate `7457e8a` passes 589 workspace Rust tests (10 existing/explicit
-ignored checks), 104 Node tests and 28 standalone dashboard behavior checks (including the reviewed portable range fix),
-strict workspace Clippy, formatting and documentation/OSS checks. Windows
+ignored checks), 104 Node tests and 18 standalone dashboard behavior checks,
+strict workspace Clippy, formatting and documentation/OSS checks. The reviewed
+portable range fix at `f70b7c7` passes 28 focused dashboard checks after six
+observed regression failures. Exact final-source CI remains pending. Windows
 core/platform all-target cross-compilation passes; this is not native Windows
 execution. The read-only native implementation probe reports 96% OS health,
 5653/6249mAh full/design capacity and 110 cycles on this Mac.
