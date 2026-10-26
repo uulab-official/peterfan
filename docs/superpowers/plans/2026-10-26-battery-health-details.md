@@ -1,6 +1,6 @@
 # Battery Health Details Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Show charge, health, design/full-charge capacity and cycles inline in the existing hardware battery area.
 
@@ -43,13 +43,13 @@
 - `SystemMonitor::battery_details(&self) -> Option<BatteryInfo>` defaults to `battery()`; `SysinfoMonitor` enriches only this explicit path. Keep `battery()` free of profiler work.
 - Dashboard slow cache retains an optional detailed battery snapshot and exports `batt_details` with the existing charge/presence payload. UI uses only the five requested measurements, with textContent/null-safe formatting.
 
-- [ ] Write failing core/backend tests: legacy deserialization defaults; raw5655/design6249 is estimated, OS96 overrides it; normalized100 is never a physical fallback; zero/missing/nonfinite/wrong JSON types fail closed; valid low physical capacity is not mistaken for a normalized field solely by magnitude.
-- [ ] Write failing deterministic probe tests: pending/ready/timeout/nonzero/invalid/oversized output, one request per300s, cache expiry600s, drop kills/reaps only its own child. Verify no process creation from basic battery/CPU paths. Use injected time/probe fixtures and an ignored explicit real Mac probe for source readback.
-- [ ] Implement validated native capacity acquisition and pollable bounded System Profiler capture. Reuse existing monitor ticks for completion/timeout; no blocking wait on a live child and no pipeline through shell. Parse only the internal battery health subtree; collect no serials into output/evidence.
-- [ ] Write failing JS tests for reported96 versus charge76, estimated label, unknown per-field, zero cycles, no battery, presence changes and escaped text. Add Rust EN/KO label checks and a target-only real-template hardware export fixture.
-- [ ] Implement the inline hardware rows and structured slow-cache forwarding. Preserve the compact charge meter and all fan/menu actions. Each missing field is unavailable; absent batteries hide detail rows and retain a clear no-battery label.
-- [ ] Run focused tests RED→GREEN, then workspace tests/Clippy/fmt, Node behavior/docs/OSS checks. Export and inspect actual template using CUA at ko/en320/390 in light/dark; preserve screenshots and distinguish fixture from installed evidence.
-- [ ] Commit the completed bounded feature and request an independent read-only review against this spec; fix material findings with regressions before delivery.
+- [x] Write failing core/backend tests: legacy deserialization defaults; raw5655/design6249 is estimated, OS96 overrides it; normalized100 is never a physical fallback; zero/missing/nonfinite/wrong JSON types fail closed; valid low physical capacity is not mistaken for a normalized field solely by magnitude.
+- [x] Write failing deterministic probe tests: pending/ready/timeout/nonzero/invalid/oversized output, one request per300s, cache expiry600s, drop kills/reaps only its own child. Verify no process creation from basic battery/CPU paths. Use injected time/probe fixtures and an ignored explicit real Mac probe for source readback.
+- [x] Implement validated native capacity acquisition and pollable bounded System Profiler capture. Reuse existing monitor ticks for completion/timeout; no blocking wait on a live child and no pipeline through shell. Parse only the internal battery health subtree; collect no serials into output/evidence.
+- [x] Write failing JS tests for reported96 versus charge76, estimated label, unknown per-field, zero cycles, no battery, presence changes and escaped text. Add Rust EN/KO label checks and a target-only real-template hardware export fixture.
+- [x] Implement the inline hardware rows and structured slow-cache forwarding. Preserve the compact charge meter and all fan/menu actions. Each missing field is unavailable; absent batteries hide detail rows and retain a clear no-battery label.
+- [x] Run focused tests RED→GREEN, then workspace tests/Clippy/fmt, Node behavior/docs/OSS checks. Export and inspect actual template using CUA at ko/en320/390 in light/dark; preserve screenshots and distinguish fixture from installed evidence.
+- [x] Commit the completed bounded feature and request an independent read-only review against this spec; fix material findings with regressions before delivery.
 
 ### Task 2: New immutable release and installed acceptance
 
