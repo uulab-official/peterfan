@@ -55,8 +55,8 @@
 
 **Files:** Version metadata/changelog/current docs and new release ledger/evidence; operational scripts under a fresh ignored `target/` release directory.
 
-- [ ] After feature verification/review, prepare next available version, PR/exact-source CI/main/tag. Keep tag10 and public bytes unchanged and retain the compatible resident helper7.
-- [ ] Sign/notarize and verify complete Mac+native Windows assets, provider/download/manifests; publish once and prove real public-feed OTA from the genuine previous released CLI. Preserve non-feature preferences and record new readiness/PID/start/bytes/trust/health.
+- [x] After feature verification/review, prepare next available version, PR/exact-source CI/main/tag. Keep tag10 and public bytes unchanged and retain the compatible resident helper7.
+- [x] Sign/notarize and verify complete Mac+native Windows assets, provider/download/manifests; publish once and prove real public-feed OTA from the genuine previous released CLI. Preserve non-feature preferences and record new readiness/PID/start/bytes/trust/health.
 - [ ] Exercise the actual installed battery UI when CUA can access it. Mark that gate pending if inaccessible; never substitute fixtures or repeat the outstanding dashboard-open question.
 - [ ] After all final installed UI gates, calibrate and start a fresh continuous21,600s observation with the existing strict launcher/limits. No older uptime, fixture or calibration contributes time. Use only the existing peterfan-6 heartbeat; report real results and scope through evidence PR/CI/main.
 

@@ -5,6 +5,36 @@ by an automated test, a release-script check, or a recorded real-Mac result.
 The first section summarizes the current release; lower sections retain earlier
 evidence and gaps at those checkpoints.
 
+## Battery details public release and OTA — 2026-10-27
+
+- [x] Approved inline charge/health/design/full-charge/cycle fields, explicit
+      reported/estimated/unavailable states and bounded on-demand native probe.
+      Whole-feature and scoped reviews pass; portable range and suspend-clock
+      findings have RED→GREEN regressions and no remaining material findings.
+- [x] Immutable v1.32.11 source `8b44dc1`, PR26/main matching trees and all six
+      exact PR/main CI jobs pass. Signed/notarized universal Mac artifacts pass
+      six trust checks; native tagged Windows run40293602651 passes.
+- [x] Public latest release identified as `v1.32.11`; release424008941 has four
+      verified provider/download assets and
+      three matching manifest entries. Unauthenticated latest/checksum download
+      and prior10/9/8/7 asset ID/hash/size preservation pass. Homebrew pins the
+      actual public v1.32.11 DMG/archive hashes.
+- [x] Actual public-feed 10→11 OTA yields app PID60010/start08:49:22 KST,
+      fresh matching nonce/readiness, exact installed bytes and strict trust.
+      Resident helper7 PID604/start/hash and verified configuration are preserved.
+      Doctor is healthy; Auto revision4 matches, sensors are fresh, manual
+      targets/overrides empty and cumulative errors zero.
+- [x] Natural app11 08:49:42 KST startup check/history and next14:49:42 KST
+      deadline agree. Cores/no percentage and the existing three items remain.
+- [ ] Actual installed battery-screen health/full-capacity comparison and
+      visibility/style/settings/click acceptance: CUA dashboard access pending.
+      Native reference96%/6249mAh design/5487mAh full/111cycles is separate.
+- [ ] Strict calibration and continuous final-build21,600-second observation:
+      NOT STARTED. Historical runs, uptime, fixtures and calibration add no time.
+
+See [battery release ledger](BATTERY_HEALTH_RELEASE_2026-10-26.md) and
+[sanitized evidence](evidence/2026-10-27-battery-health-v1.32.11.json).
+
 ## Independent visibility public release and OTA — 2026-10-26
 
 - [x] Three independent items, seven non-empty combinations, last-item guard,

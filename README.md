@@ -53,10 +53,11 @@ is released in v1.32.8 with verified public-feed OTA on one Mac. Actual installe
 widget visual/click checks and the new six-hour result are tracked separately in
 [CPU widget release acceptance](docs/CPU_WIDGET_RELEASE_2026-10-24.md).
 
-The current source prepares **v1.32.11** with inline battery health, design and
+Released **v1.32.11** adds inline battery health, design and
 full-charge capacity, and cycle details. Reported macOS health is kept separate
-from charge and labeled estimates. Local native/data/UI verification passes;
-new signed delivery and installed acceptance are pending. See the
+from charge and labeled estimates. Signed/notarized publication and real public
+10→11 OTA are verified on one Mac. Installed battery-screen readback and the
+fresh final-build six-hour observation remain pending. See the
 [battery acceptance ledger](docs/BATTERY_HEALTH_RELEASE_2026-10-26.md).
 
 Released **v1.32.10** adds independent CPU widget, runner and metric-text
@@ -114,8 +115,8 @@ login, or a license key.
 
 ## Install
 
-The latest published release verified on 2026-10-26 is **v1.32.10**, including
-public-feed OTA from v1.32.9 on one Mac. The new installed-build six-hour result
+The latest published release verified on 2026-10-27 is **v1.32.11**, including
+public-feed OTA from v1.32.10 on one Mac. The new installed-build six-hour result
 remains pending. Check [Releases](https://github.com/uulab-official/peterfan/releases/latest)
 for published assets and [the production checklist](docs/PRODUCTION_CHECKLIST.md)
 for the evidence behind each version.

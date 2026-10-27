@@ -5,6 +5,11 @@ adds independent item visibility (2026-10-26). See
 [visibility release and installed acceptance](MENU_ITEM_VISIBILITY_RELEASE_2026-10-26.md)
 for current publication, actual OTA and the pending final-build observation.
 
+Current v1.32.11 retains these features and adds hardware battery details. Its
+signed public 10→11 OTA is verified; installed visual/click checks and a fresh
+final-build observation remain pending in the
+[battery release ledger](BATTERY_HEALTH_RELEASE_2026-10-26.md).
+
 Released v1.32.10 groups **CPU widget**, **Runner character** and
 **Metric text** under **Menu-bar items / 메뉴 막대 표시 항목** in macOS Settings.
 Each checkbox is independent: all seven non-empty combinations are supported.
