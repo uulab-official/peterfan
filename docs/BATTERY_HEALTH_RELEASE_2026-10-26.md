@@ -93,9 +93,9 @@ sensors are fresh, manual targets/overrides are empty and cumulative errors zero
 Natural app11 startup check succeeds at 08:49:42 KST, with persisted history and
 next deadline14:49:42 KST (21,600 seconds later).
 
-Before OTA, the only observed configuration byte change was explicit
-`primary_visible=true`, equivalent to its prior omitted default. All prior TOML
-values and mode0644 match. The original backup is retained separately; OTA
+Before OTA, TOML reserialization reordered keys/sections. The sole semantic
+field addition was explicit `primary_visible=true`, equivalent to its prior
+omitted default. All prior values and mode0644 match. The original backup is retained separately; OTA
 preserves the newly verified raw configuration hash `2ee79feb…17dc1900`.
 No writer is inferred from nearby click logs, and no preference is restored.
 

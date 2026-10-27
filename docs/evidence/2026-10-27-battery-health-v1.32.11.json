@@ -135,7 +135,7 @@
       "metric": true
     },
     "non_feature_values_preserved": true,
-    "pre_ota_byte_change": "explicit primary_visible=true, equivalent to previous default; prior baseline/backup retained separately",
+    "pre_ota_serialization_change": "TOML keys/sections reordered; sole semantic addition primary_visible=true equals the previous default; prior baseline/backup retained separately",
     "actual_ui_visual_style_click_acceptance": "pending native dashboard access"
   },
   "native_battery_reference": {
