@@ -50,7 +50,9 @@ jobs:
         run: scripts/check-contributor.sh
 
       - name: Homebrew packaging readiness
-        run: scripts/check-homebrew.sh
+        run: |
+          bash scripts/test-check-homebrew-isolation.sh
+          scripts/check-homebrew.sh
 
       - name: Install RustSec audit
         run: command -v cargo-audit >/dev/null || cargo install cargo-audit --locked

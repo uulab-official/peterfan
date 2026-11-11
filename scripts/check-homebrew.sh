@@ -58,19 +58,34 @@ if command -v brew >/dev/null 2>&1; then
   # Copy the definitions into an owned temporary tap without touching any
   # existing tap or installing either package.
   audit_tap="uulab/peterfan-audit-$$"
+  audit_config="$(mktemp -d "${TMPDIR:-/tmp}/peterfan-homebrew-audit.XXXXXXXX")"
+  audit_tap_created=0
+  cleanup_audit_tap() {
+    if [[ "$audit_tap_created" == "1" ]]; then
+      brew untap "$audit_tap" >/dev/null 2>&1 || true
+    fi
+    rm -rf -- "$audit_config"
+  }
+  trap cleanup_audit_tap EXIT
+  # Homebrew 7 requires explicitly trusting non-core taps for cask audits.
+  # Keep that trust in a private temporary configuration, never the user's.
+  export XDG_CONFIG_HOME="$audit_config"
+  # tap-new is a developer command; do not persistently enable developer mode.
+  export HOMEBREW_DEVELOPER=1
   if brew tap | grep -Fxq "$audit_tap"; then
     echo "error: temporary audit tap already exists: $audit_tap" >&2
     exit 1
   fi
   brew tap-new --no-git "$audit_tap"
-  cleanup_audit_tap() {
-    brew untap "$audit_tap" >/dev/null 2>&1 || true
-  }
-  trap cleanup_audit_tap EXIT
+  audit_tap_created=1
   audit_root="$(brew --repository "$audit_tap")"
   mkdir -p "$audit_root/Casks" "$audit_root/Formula"
   cp "$CASK" "$audit_root/Casks/peterfan.rb"
   cp "$FORMULA" "$audit_root/Formula/peterfan.rb"
+  # Older Homebrew versions predate tap trust and do not need this step.
+  if brew help trust >/dev/null 2>&1; then
+    brew trust --tap "$audit_tap"
+  fi
   brew audit --cask --strict "$audit_tap/peterfan"
   brew audit --formula --strict "$audit_tap/peterfan"
 else
