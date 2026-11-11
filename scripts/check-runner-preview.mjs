@@ -27,6 +27,22 @@ context.RUNNER_SELECTED_PREVIEW_CHARACTER = 'cat';
 const canvas = { id: 'runner-character-preview', width: 48, height: 32,
   getContext: () => ({ createImageData(w,h) { allocations++; return { data: new Uint8ClampedArray(w*h*4) }; },
     clearRect() {}, putImageData() { paints++; }, fillRect() {} }) };
+const colorFrames = Array.from({length: 8}, (_, i) => 'rgba:' + [i+1, 20, 30, 255].map(x => x.toString(16).padStart(2, '0')).join('').repeat(48*32));
+assert.equal(context.runnerSelectedPreviewMatchesCharacter({runner_selected_preview:colorFrames,runner_selected_preview_character:'cat'},'cat'),true,'compact color cycles must be accepted');
+assert.equal(context.runnerSelectedPreviewMatchesCharacter({runner_selected_preview:colorFrames.slice(0,7),runner_selected_preview_character:'cat'},'cat'),false,'incomplete compact cycles must be rejected');
+let paintedFirstPixel;
+const colorCanvas = { id:'runner-character-preview', width:48, height:32, getContext:()=>({createImageData(w,h){return {data:new Uint8ClampedArray(w*h*4)};}, clearRect(){}, putImageData(img){paintedFirstPixel=img.data[0];}}) };
+context.RUNNER_SELECTED_PREVIEW=colorFrames;
+context.paintRunnerPreview(colorCanvas,'cat',3,3);
+assert.equal(paintedFirstPixel,4,'compact cycle must select pose in every CPU band');
+assert.equal(context.runnerSelectedPreviewMatchesCurrent({runner_selected_preview:colorFrames,runner_selected_preview_character:'cat'},'cat'),true);
+const legacyFrames=Array.from({length:32},(_,i)=>'rgba:'+ [i+1,20,30,255].map(x=>x.toString(16).padStart(2,'0')).join('').repeat(48*32));
+assert.equal(context.runnerSelectedPreviewMatchesCharacter({runner_selected_preview:legacyFrames,runner_selected_preview_character:'cat'},'cat'),true,'legacy cycles must still be accepted');
+assert.equal(context.runnerSelectedPreviewMatchesCurrent({runner_selected_preview:legacyFrames,runner_selected_preview_character:'cat'},'cat'),false,'different pack lengths must trigger refresh');
+context.RUNNER_SELECTED_PREVIEW=legacyFrames;
+context.paintRunnerPreview(colorCanvas,'cat',3,3);
+assert.equal(paintedFirstPixel,28,'32-frame cycle must preserve CPU band selection');
+context.RUNNER_SELECTED_PREVIEW=Array(32).fill(alpha);
 function advance(ms) {
   const until = now + ms;
   for (let turns = 0; turns < 1000; turns++) {

@@ -68,6 +68,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Validate release tags against main, pin source commits and restrict write tokens
   to artifact publication jobs; cover rejection paths with offline tests.
 
+## [1.32.12] — Color runners
+
+- Add dimensional color animation frames for all 20 existing runner choices,
+  preserving their identities and CPU-dependent animation speed.
+- Improve runner visibility in the macOS menu bar and retain a monochrome
+  fallback when a color asset cannot be loaded.
+
 ## [1.32.11] — Battery health and capacity
 
 - Show charge, battery health, design/full-charge capacity in mAh and cycles

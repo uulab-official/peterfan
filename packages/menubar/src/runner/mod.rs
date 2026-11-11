@@ -1,4 +1,5 @@
 mod assets;
+mod color_assets;
 mod draw;
 mod manifest;
 mod normalize;
@@ -97,11 +98,31 @@ fn bounded_error_text(text: String, limit: usize) -> String {
 pub(crate) struct RunnerPack {
     character: RunnerCharacter,
     frames: Vec<RgbaFrame>,
+    color: bool,
 }
 
 impl RunnerPack {
     pub(crate) fn build(character: RunnerCharacter) -> Result<Self, RunnerBuildError> {
-        Self::build_with(character, build_normalized_cycle)
+        Self::build_with_optional_color(character, color_assets::color_pack(character), || {
+            Self::build_with(character, build_normalized_cycle)
+        })
+    }
+
+    fn build_with_optional_color<F>(
+        character: RunnerCharacter,
+        candidate: Option<Result<Self, RunnerBuildError>>,
+        legacy: F,
+    ) -> Result<Self, RunnerBuildError>
+    where
+        F: FnOnce() -> Result<Self, RunnerBuildError>,
+    {
+        if let Some(result) = candidate {
+            match result {
+                Ok(pack) => return Ok(pack),
+                Err(error) => eprintln!("{error}; using legacy '{}' runner", character.as_str()),
+            }
+        }
+        legacy()
     }
 
     fn build_with<F>(
@@ -125,7 +146,47 @@ impl RunnerPack {
                 detail: format!("expected 32 cached frames, got {}", frames.len()),
             });
         }
-        Ok(Self { character, frames })
+        Ok(Self {
+            character,
+            frames,
+            color: false,
+        })
+    }
+
+    /// Build an opt-in color pack from already normalized RGBA cycles.
+    /// The four cycles correspond to the standard CPU load bands.
+    pub(crate) fn from_color_cycles(
+        character: RunnerCharacter,
+        cycles: [[RgbaFrame; FRAME_COUNT as usize]; LOAD_BANDS],
+    ) -> Result<Self, RunnerBuildError> {
+        let frames = cycles.into_iter().flatten().collect::<Vec<_>>();
+        let expected = (PIXEL_WIDTH * PIXEL_HEIGHT * 4) as usize;
+        for (index, frame) in frames.iter().enumerate() {
+            if frame.len() != expected {
+                return Err(RunnerBuildError::InvalidFrame {
+                    character,
+                    detail: format!(
+                        "color frame {index}: expected {expected} bytes, got {}",
+                        frame.len()
+                    ),
+                });
+            }
+            if !frame.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0) {
+                return Err(RunnerBuildError::InvalidFrame {
+                    character,
+                    detail: format!("color frame {index} is fully transparent"),
+                });
+            }
+        }
+        Ok(Self {
+            character,
+            frames,
+            color: true,
+        })
+    }
+
+    pub(crate) fn is_color(&self) -> bool {
+        self.color
     }
 
     #[cfg(test)]
@@ -151,8 +212,19 @@ impl RunnerPack {
             .then(|| self.frames[band * FRAME_COUNT as usize + pose as usize].as_slice())
     }
 
+    #[cfg(test)]
     pub(crate) fn preview_alpha_hex(&self, band: usize, pose: u8) -> Option<String> {
         self.frame_by_index(band, pose).map(alpha_hex)
+    }
+
+    pub(crate) fn preview_frame_hex(&self, band: usize, pose: u8) -> Option<String> {
+        self.frame_by_index(band, pose).map(|frame| {
+            if self.color {
+                rgba_hex(frame)
+            } else {
+                alpha_hex(frame)
+            }
+        })
     }
 }
 
@@ -182,6 +254,17 @@ pub(crate) fn alpha_hex(rgba: &[u8]) -> String {
         alpha.push(HEX[usize::from(value & 0x0f)] as char);
     }
     alpha
+}
+
+pub(crate) fn rgba_hex(rgba: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(5 + rgba.len() * 2);
+    encoded.push_str("rgba:");
+    for &value in rgba {
+        encoded.push(HEX[usize::from(value >> 4)] as char);
+        encoded.push(HEX[usize::from(value & 0x0f)] as char);
+    }
+    encoded
 }
 
 fn style_template_frame(mut rgba: RgbaFrame) -> RgbaFrame {
@@ -265,6 +348,31 @@ mod tests {
     }
 
     #[test]
+    fn color_pack_preserves_rgba_and_marks_preview_encoding() {
+        let frame = [22_u8, 101, 203, 128].repeat((PIXEL_WIDTH * PIXEL_HEIGHT) as usize);
+        let cycles = std::array::from_fn(|_| std::array::from_fn(|_| frame.clone()));
+        let pack = RunnerPack::from_color_cycles(RunnerCharacter::Cat, cycles).unwrap();
+        assert!(pack.is_color());
+        assert_eq!(pack.frame_by_index(3, 7), Some(frame.as_slice()));
+        let preview = pack.preview_frame_hex(3, 7).unwrap();
+        assert!(preview.starts_with("rgba:1665cb80"));
+        assert_eq!(preview.len(), 5 + frame.len() * 2);
+    }
+
+    #[test]
+    fn color_pack_rejects_invalid_frame_size() {
+        let cycles = std::array::from_fn(|_| std::array::from_fn(|_| vec![0; 4]));
+        assert!(RunnerPack::from_color_cycles(RunnerCharacter::Dog, cycles).is_err());
+    }
+
+    #[test]
+    fn color_pack_rejects_blank_frames() {
+        let blank = vec![0; (PIXEL_WIDTH * PIXEL_HEIGHT * 4) as usize];
+        let cycles = std::array::from_fn(|_| std::array::from_fn(|_| blank.clone()));
+        assert!(RunnerPack::from_color_cycles(RunnerCharacter::Dog, cycles).is_err());
+    }
+
+    #[test]
     fn build_failure_falls_back_to_cat_without_emptying_the_cache() {
         let (pack, error) = build_or_fallback_with(RunnerCharacter::Fox, |character| {
             if character == RunnerCharacter::Fox {
@@ -314,9 +422,10 @@ mod tests {
     }
 
     #[test]
-    fn every_load_band_is_an_intentional_canonical_cycle_variant() {
+    fn legacy_load_bands_are_intentional_canonical_cycle_variants() {
         for character in RunnerCharacter::ALL {
-            let pack = RunnerPack::build(character).expect("runner pack");
+            let pack = RunnerPack::build_with(character, build_normalized_cycle)
+                .expect("legacy runner pack");
             for band in 0..LOAD_BANDS - 1 {
                 let start = band * usize::from(FRAME_COUNT);
                 let next_start = (band + 1) * usize::from(FRAME_COUNT);
@@ -333,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn rendered_direction_has_hand_approved_signatures_for_every_character() {
+    fn legacy_direction_has_hand_approved_signatures_for_every_character() {
         let expected = [
             (RunnerCharacter::Cat, 3894482886008670384_u64),
             (RunnerCharacter::Dog, 6891600725874795260),
@@ -358,7 +467,8 @@ mod tests {
         ];
 
         let actual = expected.map(|(character, _)| {
-            let pack = RunnerPack::build(character).expect("runner pack");
+            let pack = RunnerPack::build_with(character, build_normalized_cycle)
+                .expect("legacy runner pack");
             (character, rendered_direction_signature(pack.frames()))
         });
         assert_eq!(actual, expected, "rendered direction signatures changed");

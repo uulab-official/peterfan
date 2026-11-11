@@ -824,6 +824,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
 struct RunnerAssets {
     pack: RunnerPack,
     icons: Vec<Icon>,
+    selected_preview_frames: serde_json::Value,
     #[cfg(any(target_os = "macos", test))]
     native_images: Vec<NativeRunnerImage>,
 }
@@ -5429,11 +5430,7 @@ fn update(app: &mut App) {
     payload["menubar_display"] = serde_json::json!(app.display.as_str());
     payload["runner_character"] = serde_json::json!(app.runner_character.as_str());
     payload["runner_random"] = serde_json::json!(app.random_runner.enabled());
-    payload["runner_selected_preview"] =
-        serde_json::json!(serde_json::from_str::<serde_json::Value>(
-            &app.runner_assets.selected_preview_frames_json()
-        )
-        .expect("runner preview JSON is serialized from canonical frames"));
+    payload["runner_selected_preview"] = app.runner_assets.selected_preview_frames.clone();
     payload["runner_selected_preview_character"] =
         serde_json::json!(app.runner_assets.pack.character().as_str());
     payload["runner_cpu_pct"] = serde_json::json!(app.runner_cpu_pct);
@@ -6875,10 +6872,13 @@ fn runner_icon_index_with_hysteresis(cpu_pct: f32, frame: u8, band: &mut usize) 
 
 impl RunnerAssets {
     fn from_pack(pack: RunnerPack) -> Result<Self, RunnerBuildError> {
+        let color = pack.is_color();
         Self::from_pack_with(
             pack,
             runner_icon_from_rgba,
-            make_runner_native_image_from_rgba,
+            move |character, index, rgba| {
+                make_runner_native_image_with_color(character, index, rgba, color)
+            },
         )
     }
 
@@ -6907,16 +6907,16 @@ impl RunnerAssets {
             .enumerate()
             .map(|(index, rgba)| native_builder(character, index, rgba))
             .collect::<Result<Vec<_>, _>>()?;
+        let selected_preview_frames =
+            serde_json::from_str(&runner_selected_preview_frames_json(&pack))
+                .expect("runner preview JSON is serialized from canonical frames");
         Ok(Self {
             pack,
             icons,
+            selected_preview_frames,
             #[cfg(any(target_os = "macos", test))]
             native_images,
         })
-    }
-
-    fn selected_preview_frames_json(&self) -> String {
-        runner_selected_preview_frames_json(&self.pack)
     }
 }
 
@@ -7035,6 +7035,16 @@ fn make_runner_native_image_from_rgba(
     frame_index: usize,
     rgba: &[u8],
 ) -> Result<NativeRunnerImage, RunnerBuildError> {
+    make_runner_native_image_with_color(character, frame_index, rgba, false)
+}
+
+#[cfg(target_os = "macos")]
+fn make_runner_native_image_with_color(
+    character: RunnerCharacter,
+    frame_index: usize,
+    rgba: &[u8],
+    color: bool,
+) -> Result<NativeRunnerImage, RunnerBuildError> {
     validate_runner_rgba_frame(
         character,
         &format!("native cache frame {frame_index}"),
@@ -7082,16 +7092,17 @@ fn make_runner_native_image_from_rgba(
     // stride/height were checked above, and validate_runner_rgba_frame checked
     // the source length. No references to the bitmap pixels escape this copy.
     unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), pixels, rgba.len()) };
-    let logical_size = NSSize::new(27.0, 18.0);
+    // Reserve a larger menu-bar image rectangle while keeping the original
+    // 3:2 aspect ratio and leaving AppKit in charge of item layout.
+    let logical_size = NSSize::new(33.0, 22.0);
     bitmap.setSize(logical_size);
     let image = NSImage::initWithSize(NSImage::alloc(), logical_size);
     image.addRepresentation(&bitmap);
     // Keep a raster cache for repeated status-item snapshot draws. The native
     // timer reuses these tiny images without changing the shared CPU cadence.
     image.setCacheMode(NSImageCacheMode::Always);
-    // Template mode keeps every runner as the same white status-item glyph on
-    // both light and dark menu bars.
-    image.setTemplate(true);
+    // Legacy glyphs follow the system appearance; color sprites retain RGB.
+    image.setTemplate(!color);
     Ok(image)
 }
 
@@ -7111,11 +7122,21 @@ fn runner_icon_from_rgba(
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), test))]
 fn make_runner_native_image_from_rgba(
     character: RunnerCharacter,
     frame_index: usize,
     rgba: &[u8],
+) -> Result<NativeRunnerImage, RunnerBuildError> {
+    make_runner_native_image_with_color(character, frame_index, rgba, false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn make_runner_native_image_with_color(
+    character: RunnerCharacter,
+    frame_index: usize,
+    rgba: &[u8],
+    _color: bool,
 ) -> Result<NativeRunnerImage, RunnerBuildError> {
     validate_runner_rgba_frame(
         character,
@@ -7804,7 +7825,7 @@ fn runner_preview_alpha_json_for(packs: &[(RunnerCharacter, RunnerPack)]) -> Str
             format!(
                 r#""{}":"{}""#,
                 character.as_str(),
-                pack.preview_alpha_hex(RUNNER_PREVIEW_BAND, RUNNER_PREVIEW_POSE)
+                pack.preview_frame_hex(RUNNER_PREVIEW_BAND, RUNNER_PREVIEW_POSE)
                     .unwrap_or_default()
             )
         })
@@ -7820,7 +7841,7 @@ fn runner_preview_frames_json_for(packs: &[(RunnerCharacter, RunnerPack)]) -> St
                 .map(|frame| {
                     format!(
                         r#""{}""#,
-                        pack.preview_alpha_hex(RUNNER_PREVIEW_BAND, frame)
+                        pack.preview_frame_hex(RUNNER_PREVIEW_BAND, frame)
                             .unwrap_or_default()
                     )
                 })
@@ -7833,10 +7854,30 @@ fn runner_preview_frames_json_for(packs: &[(RunnerCharacter, RunnerPack)]) -> St
 }
 
 fn runner_selected_preview_frames_json(pack: &RunnerPack) -> String {
+    let frame_count = usize::from(RUNNER_FRAME_COUNT);
+    let compact = pack.is_color()
+        && pack
+            .frames()
+            .chunks_exact(frame_count)
+            .all(|band| band == &pack.frames()[..frame_count]);
     let frames = pack
         .frames()
         .iter()
-        .map(|frame| format!(r#""{}""#, runner::alpha_hex(frame)))
+        .take(if compact {
+            frame_count
+        } else {
+            pack.frames().len()
+        })
+        .map(|frame| {
+            format!(
+                r#""{}""#,
+                if pack.is_color() {
+                    runner::rgba_hex(frame)
+                } else {
+                    runner::alpha_hex(frame)
+                }
+            )
+        })
         .collect::<Vec<_>>();
     format!("[{}]", frames.join(","))
 }
@@ -10769,12 +10810,13 @@ function runnerPreviewBandWithHysteresis(cpu,current){
 }
 function runnerSelectedPreviewMatchesCharacter(payload,character){
   return Array.isArray(payload.runner_selected_preview)
-    &&payload.runner_selected_preview.length===32
+    &&(payload.runner_selected_preview.length===8||payload.runner_selected_preview.length===32)
     &&payload.runner_selected_preview_character===character;
 }
 function runnerSelectedPreviewMatchesCurrent(payload,character){
   return runnerSelectedPreviewMatchesCharacter(payload,character)
     &&RUNNER_SELECTED_PREVIEW_CHARACTER===character
+    &&payload.runner_selected_preview.length===RUNNER_SELECTED_PREVIEW.length
     &&payload.runner_selected_preview.every(function(frame,index){
       return frame===RUNNER_SELECTED_PREVIEW[index];
     });
@@ -10785,7 +10827,7 @@ function paintRunnerPreview(canvas,character,frame,band){
   var canonical=selected&&RUNNER_SELECTED_PREVIEW_CHARACTER===character;
   var frames=canonical?RUNNER_SELECTED_PREVIEW:RUNNER_PREVIEW_FRAMES[character];
   var pose=(Number(frame)||0)%8;
-  var index=canonical?(Math.max(0,Math.min(3,Number(band)||0))*8+pose):pose;
+  var index=canonical&&frames.length===32?(Math.max(0,Math.min(3,Number(band)||0))*8+pose):pose;
   var alpha=frames&&frames.length?frames[index]:RUNNER_PREVIEW_ALPHA[character];
   if(!alpha)return;
   var ctx=canvas.getContext('2d');
@@ -10793,9 +10835,16 @@ function paintRunnerPreview(canvas,character,frame,band){
   var image=RUNNER_PREVIEW_IMAGES.get(alpha);
   if(!image){
     image=ctx.createImageData(canvas.width,canvas.height);
-    for(var i=0;i<alpha.length;i+=2){
-      var offset=i*2,a=parseInt(alpha.slice(i,i+2),16);
-      image.data[offset]=255;image.data[offset+1]=255;image.data[offset+2]=255;image.data[offset+3]=a;
+    if(alpha.startsWith('rgba:')){
+      var encoded=alpha.slice(5);
+      if(encoded.length!==image.data.length*2)return;
+      for(var i=0;i<image.data.length;i++)image.data[i]=parseInt(encoded.slice(i*2,i*2+2),16);
+    }else{
+      if(alpha.length!==canvas.width*canvas.height*2)return;
+      for(var i=0;i<alpha.length;i+=2){
+        var offset=i*2,a=parseInt(alpha.slice(i,i+2),16);
+        image.data[offset]=255;image.data[offset+1]=255;image.data[offset+2]=255;image.data[offset+3]=a;
+      }
     }
     if(RUNNER_PREVIEW_IMAGES.size>=128)RUNNER_PREVIEW_IMAGES.clear();
     RUNNER_PREVIEW_IMAGES.set(alpha,image);
@@ -12695,8 +12744,12 @@ mod tests {
         rgba[..12].copy_from_slice(&[241, 37, 19, 127, 17, 229, 61, 255, 53, 73, 233, 0]);
         let image = make_runner_native_image_from_rgba(RunnerCharacter::Cat, 0, &rgba)
             .expect("native RGBA image");
-        assert_eq!(image.size(), NSSize::new(27.0, 18.0));
+        assert_eq!(image.size(), NSSize::new(33.0, 22.0));
         assert!(image.isTemplate());
+        let color_image = make_runner_native_image_with_color(RunnerCharacter::Cat, 0, &rgba, true)
+            .expect("native color RGBA image");
+        assert_eq!(color_image.size(), image.size());
+        assert!(!color_image.isTemplate());
         let representations = image.representations();
         assert_eq!(representations.len(), 1);
         let bitmap = representations
@@ -13442,9 +13495,11 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
                 .get(character.as_str())
                 .and_then(serde_json::Value::as_str)
                 .expect("character preview");
-            assert_eq!(
-                alpha.len(),
-                (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 2) as usize
+            assert!(
+                alpha.len() == (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 2) as usize
+                    || (alpha.starts_with("rgba:")
+                        && alpha.len()
+                            == 5 + (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 8) as usize)
             );
             assert!(alpha.bytes().any(|byte| byte != b'0'));
             unique.insert(alpha);
@@ -13464,6 +13519,9 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
             assert!(character_frames.iter().all(|frame| {
                 frame.as_str().is_some_and(|alpha| {
                     alpha.len() == (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 2) as usize
+                        || (alpha.starts_with("rgba:")
+                            && alpha.len()
+                                == 5 + (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 8) as usize)
                 })
             }));
         }
@@ -13513,11 +13571,11 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
                 previews
                     .get(character.as_str())
                     .and_then(serde_json::Value::as_str),
-                pack.preview_alpha_hex(1, 1).as_deref()
+                pack.preview_frame_hex(1, 1).as_deref()
             );
 
             let expected = (0..RUNNER_FRAME_COUNT)
-                .map(|frame| pack.preview_alpha_hex(1, frame).expect("preview alpha"))
+                .map(|frame| pack.preview_frame_hex(1, frame).expect("preview frame"))
                 .collect::<Vec<_>>();
             let actual = frames
                 .get(character.as_str())
@@ -13537,17 +13595,18 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
             serde_json::from_str(&runner_selected_preview_frames_json(&pack))
                 .expect("selected preview JSON");
         let frames = frames.as_array().expect("selected preview frame array");
-        assert_eq!(
-            frames.len(),
-            usize::from(RUNNER_FRAME_COUNT) * RUNNER_LOAD_BANDS
-        );
+        assert_eq!(frames.len(), if pack.is_color() { 8 } else { 32 });
 
         for band in 0..RUNNER_LOAD_BANDS {
             for pose in 0..RUNNER_FRAME_COUNT {
-                let index = band * usize::from(RUNNER_FRAME_COUNT) + usize::from(pose);
+                let index = if frames.len() == 8 {
+                    usize::from(pose)
+                } else {
+                    band * usize::from(RUNNER_FRAME_COUNT) + usize::from(pose)
+                };
                 assert_eq!(
                     frames[index].as_str(),
-                    pack.preview_alpha_hex(band, pose).as_deref(),
+                    pack.preview_frame_hex(band, pose).as_deref(),
                     "band {band}, pose {pose} must use the selected canonical pack"
                 );
             }
@@ -13572,7 +13631,7 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
             "var frames=canonical?RUNNER_SELECTED_PREVIEW:RUNNER_PREVIEW_FRAMES[character];"
         ));
         assert!(html.contains(
-            "var index=canonical?(Math.max(0,Math.min(3,Number(band)||0))*8+pose):pose;"
+            "var index=canonical&&frames.length===32?(Math.max(0,Math.min(3,Number(band)||0))*8+pose):pose;"
         ));
         assert!(html.contains("function runnerPreviewBandWithHysteresis(cpu,current)"));
         for threshold in [
@@ -13587,6 +13646,49 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
                 html.contains(threshold),
                 "missing hysteresis threshold {threshold}"
             );
+        }
+    }
+
+    #[test]
+    fn color_runner_preview_serialization_retains_each_rgba_channel() {
+        let frame =
+            [22_u8, 101, 203, 128].repeat((RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT) as usize);
+        let cycles = std::array::from_fn(|_| std::array::from_fn(|_| frame.clone()));
+        let pack = RunnerPack::from_color_cycles(RunnerCharacter::Cat, cycles).unwrap();
+        let selected: Vec<String> =
+            serde_json::from_str(&runner_selected_preview_frames_json(&pack)).unwrap();
+        assert_eq!(selected.len(), 8);
+        assert!(selected
+            .iter()
+            .all(|value| value.starts_with("rgba:1665cb80")));
+        let entries = vec![(RunnerCharacter::Cat, pack)];
+        let picker: serde_json::Value =
+            serde_json::from_str(&runner_preview_frames_json_for(&entries)).unwrap();
+        assert!(picker["cat"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("rgba:1665cb80"));
+    }
+
+    #[test]
+    fn selected_preview_does_not_compact_distinct_color_bands() {
+        let cycles = std::array::from_fn(|band| {
+            std::array::from_fn(|pose| {
+                [band as u8 + 1, pose as u8, 203, 255]
+                    .repeat((RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT) as usize)
+            })
+        });
+        let pack = RunnerPack::from_color_cycles(RunnerCharacter::Cat, cycles).unwrap();
+        let frames: Vec<String> =
+            serde_json::from_str(&runner_selected_preview_frames_json(&pack)).unwrap();
+        assert_eq!(frames.len(), 32);
+        for band in 0..RUNNER_LOAD_BANDS {
+            for pose in 0..RUNNER_FRAME_COUNT {
+                assert_eq!(
+                    Some(frames[band * 8 + usize::from(pose)].as_str()),
+                    pack.preview_frame_hex(band, pose).as_deref()
+                );
+            }
         }
     }
 
@@ -13687,16 +13789,12 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
     #[test]
     fn runner_assets_keep_the_selected_pack_for_preview_payloads() {
         let assets = build_runner_assets(RunnerCharacter::Dog).expect("dog assets");
-        let frames: serde_json::Value =
-            serde_json::from_str(&assets.selected_preview_frames_json()).expect("preview JSON");
+        let frames = &assets.selected_preview_frames;
         let frames = frames.as_array().expect("selected frame array");
+        assert_eq!(frames.len(), if assets.pack.is_color() { 8 } else { 32 });
         assert_eq!(
-            frames.len(),
-            usize::from(RUNNER_FRAME_COUNT) * RUNNER_LOAD_BANDS
-        );
-        assert_eq!(
-            frames[23].as_str(),
-            assets.pack.preview_alpha_hex(2, 7).as_deref(),
+            frames[if frames.len() == 8 { 7 } else { 23 }].as_str(),
+            assets.pack.preview_frame_hex(2, 7).as_deref(),
             "the selected Settings payload must come from the retained pack"
         );
         assert_eq!(

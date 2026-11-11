@@ -212,6 +212,14 @@ fn build_character_report(
     character: RunnerCharacter,
 ) -> Result<RunnerCharacterReport, RunnerBuildError> {
     let pack = RunnerPack::build(character)?;
+    build_pack_report(character, &pack)
+}
+
+#[cfg(test)]
+fn build_pack_report(
+    character: RunnerCharacter,
+    pack: &RunnerPack,
+) -> Result<RunnerCharacterReport, RunnerBuildError> {
     let manifest = manifest(character);
     let bands = LOAD_PRESET_CPUS
         .into_iter()
@@ -396,6 +404,50 @@ fn visible_alpha_frame_delta(left: &[u8], right: &[u8]) -> usize {
 mod tests {
     use super::*;
     use crate::runner::{RgbaFrame, RunnerBuildError, PIXEL_HEIGHT, PIXEL_WIDTH};
+
+    // A full-color runner can animate inside an unchanged silhouette. Count
+    // visible changes after alpha composition on both dark and light surfaces.
+    fn color_frame_delta(left: &[u8], right: &[u8]) -> usize {
+        left.chunks_exact(4)
+            .zip(right.chunks_exact(4))
+            .filter(|(a, b)| {
+                (0..3).any(|channel| {
+                    [0_u32, 255].into_iter().any(|background| {
+                        let composite = |p: &[u8]| {
+                            (u32::from(p[channel]) * u32::from(p[3])
+                                + background * (255 - u32::from(p[3])))
+                                / 255
+                        };
+                        composite(a).abs_diff(composite(b)) > u32::from(DELTA_ALPHA_THRESHOLD)
+                    })
+                })
+            })
+            .count()
+    }
+
+    #[test]
+    fn color_delta_detects_visible_rgb_but_ignores_hidden_rgb() {
+        assert_eq!(color_frame_delta(&[0, 0, 0, 0], &[255, 0, 0, 0]), 0);
+        assert_eq!(color_frame_delta(&[255, 0, 0, 255], &[0, 0, 255, 255]), 1);
+        assert_eq!(color_frame_delta(&[255, 0, 0, 255], &[255, 0, 0, 255]), 0);
+        assert_eq!(color_frame_delta(&[0, 0, 0, 0], &[0, 0, 0, 255]), 1);
+    }
+
+    #[test]
+    fn shipped_color_cycles_change_visibly_at_each_step() {
+        for character in RunnerCharacter::ALL {
+            let pack = RunnerPack::build(character).expect("runner pack");
+            assert!(pack.is_color(), "{character:?} must use color art");
+            for pose in 0..8 {
+                let current = pack.frame_by_index(0, pose).unwrap();
+                let next = pack.frame_by_index(0, (pose + 1) % 8).unwrap();
+                assert!(
+                    color_frame_delta(current, next) > 0,
+                    "{character:?} pose {pose} does not visibly change"
+                );
+            }
+        }
+    }
 
     fn empty_frame() -> RgbaFrame {
         vec![0; (PIXEL_WIDTH * PIXEL_HEIGHT * 4) as usize]
@@ -591,8 +643,16 @@ mod tests {
     }
 
     #[test]
-    fn quality_report_covers_every_character_and_load_band() {
-        let report = build_quality_report().expect("quality report");
+    fn legacy_quality_report_covers_every_character_and_load_band() {
+        let characters = RunnerCharacter::FEATURED
+            .into_iter()
+            .map(|character| {
+                let pack = RunnerPack::build_with(character, super::super::build_normalized_cycle)?;
+                build_pack_report(character, &pack)
+            })
+            .collect::<Result<Vec<_>, RunnerBuildError>>()
+            .expect("legacy quality report");
+        let report = RunnerQualityReport { characters };
         assert_eq!(report.characters.len(), RunnerCharacter::FEATURED.len());
         assert!(report
             .characters

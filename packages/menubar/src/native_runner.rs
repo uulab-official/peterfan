@@ -8,6 +8,7 @@ use objc2_app_kit::{NSAppearanceCustomization, NSColor, NSImage, NSStatusBarButt
 use objc2_foundation::{NSPoint, NSRect};
 use objc2_quartz_core::{CALayer, CATransaction};
 use peterfan_core::config::MenubarDisplay;
+use std::cell::Cell;
 
 pub(crate) fn eligible(
     display: MenubarDisplay,
@@ -138,17 +139,21 @@ impl NativeRunnerPainter {
         layer.mask.setContentsScale(scale);
         // Dynamic NSColors must resolve in this menu bar's actual appearance,
         // which can differ from the application's appearance or system theme.
-        let appearance = button.effectiveAppearance();
-        let resolve = RcBlock::new(|| {
-            let color = if cell.isHighlighted() {
-                NSColor::selectedMenuItemTextColor()
-            } else {
-                NSColor::labelColor()
-            }
-            .CGColor();
-            layer.color.setBackgroundColor(Some(&color));
-        });
-        appearance.performAsCurrentDrawingAppearance(&resolve);
+        if layer.full_color.get() {
+            layer.color.setBackgroundColor(None);
+        } else {
+            let appearance = button.effectiveAppearance();
+            let resolve = RcBlock::new(|| {
+                let color = if cell.isHighlighted() {
+                    NSColor::selectedMenuItemTextColor()
+                } else {
+                    NSColor::labelColor()
+                }
+                .CGColor();
+                layer.color.setBackgroundColor(Some(&color));
+            });
+            appearance.performAsCurrentDrawingAppearance(&resolve);
+        }
         CATransaction::commit();
     }
 
@@ -157,7 +162,9 @@ impl NativeRunnerPainter {
             return;
         };
         if let Some(layer) = &self.layer {
-            layer.paint(image);
+            if layer.paint(image) {
+                self.sync();
+            }
         } else {
             button.setImage(Some(image));
         }
@@ -173,6 +180,7 @@ impl Drop for NativeRunnerPainter {
 struct RunnerLayer {
     color: Retained<CALayer>,
     mask: Retained<CALayer>,
+    full_color: Cell<bool>,
 }
 
 impl RunnerLayer {
@@ -181,16 +189,34 @@ impl RunnerLayer {
         let mask = CALayer::new();
         // Both layers are ours. The mask has no superlayer, as CALayer requires.
         unsafe { color.setMask(Some(&mask)) };
-        Self { color, mask }
+        Self {
+            color,
+            mask,
+            full_color: Cell::new(false),
+        }
     }
 
-    fn paint(&self, image: &NSImage) {
+    fn paint(&self, image: &NSImage) -> bool {
         CATransaction::begin();
         CATransaction::setDisableActions(true);
-        // CALayer.contents explicitly supports NSImage on macOS. It retains
-        // the immutable image; no temporary pixel pointer crosses this call.
-        unsafe { self.mask.setContents(Some(image)) };
+        // CALayer retains the immutable NSImage. Template frames use the
+        // appearance-aware mask; color frames are composited directly.
+        let full_color = !image.isTemplate();
+        let changed = self.full_color.replace(full_color) != full_color;
+        unsafe {
+            if full_color {
+                self.color.setMask(None);
+                self.color.setBackgroundColor(None);
+                self.color.setContents(Some(image));
+                self.mask.setContents(None);
+            } else {
+                self.color.setContents(None);
+                self.color.setMask(Some(&self.mask));
+                self.mask.setContents(Some(image));
+            }
+        }
         CATransaction::commit();
+        changed
     }
 }
 
@@ -297,6 +323,57 @@ mod tests {
     }
 
     #[test]
+    fn native_color_mode_composites_rgb_and_switches_back_to_mask() {
+        let layer = RunnerLayer::new();
+        let rect = NSRect::new(NSPoint::ZERO, NSSize::new(27.0, 18.0));
+        layer.color.setFrame(rect);
+        layer.mask.setFrame(rect);
+        layer.color.setContentsScale(48.0 / 27.0);
+        layer.mask.setContentsScale(48.0 / 27.0);
+        let mut source = vec![0; 48 * 32 * 4];
+        for y in 8..24 {
+            for x in 10..38 {
+                source[(y * 48 + x) * 4..(y * 48 + x) * 4 + 4].copy_from_slice(&[220, 70, 30, 255]);
+            }
+        }
+        let color = crate::make_runner_native_image_with_color(
+            peterfan_core::config::RunnerCharacter::Cat,
+            0,
+            &source,
+            true,
+        )
+        .unwrap();
+        assert!(!color.isTemplate());
+        assert!(layer.paint(&color));
+        assert!(layer.color.mask().is_none());
+        assert!(unsafe { layer.mask.contents() }.is_none());
+        assert!(!layer.paint(&color), "repainting must not change mode");
+        let pixels = composite(&layer.color);
+        let i = (16 * 48 + 24) * 4;
+        assert!(
+            pixels[i] > pixels[i + 1] * 2 && pixels[i + 3] > 240,
+            "RGBA should remain red: {:?}",
+            &pixels[i..i + 4]
+        );
+        assert_eq!(pixels[3], 0, "transparent background must stay transparent");
+        let legacy = crate::make_runner_native_image_from_rgba(
+            peterfan_core::config::RunnerCharacter::Cat,
+            0,
+            &source,
+        )
+        .unwrap();
+        assert!(legacy.isTemplate());
+        assert!(layer.paint(&legacy));
+        assert!(layer.color.mask().is_some());
+        assert!(unsafe { layer.color.contents() }.is_none());
+        layer
+            .color
+            .setBackgroundColor(Some(&NSColor::whiteColor().CGColor()));
+        let pixels = composite(&layer.color);
+        assert!(pixels[i] > 240 && pixels[i + 1] > 240 && pixels[i + 2] > 240);
+    }
+
+    #[test]
     fn scoped_menu_appearance_resolves_contrasting_native_tints() {
         use objc2_app_kit::{NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua};
         let mut tints = Vec::new();
@@ -379,6 +456,25 @@ mod tests {
             image_rect_in_layer(bounds, image, false, true),
             NSRect::new(NSPoint::new(4.0, 4.0), image.size)
         );
+        // The larger image still stays inside a 24-point bar and follows the
+        // cell's allocated rectangle in either layer coordinate direction.
+        let enlarged = NSRect::new(NSPoint::new(4.0, 1.0), NSSize::new(33.0, 22.0));
+        for view_flipped in [false, true] {
+            for layer_flipped in [false, true] {
+                let actual = image_rect_in_layer(bounds, enlarged, view_flipped, layer_flipped);
+                assert_eq!(actual, enlarged);
+                assert!(actual.origin.y >= bounds.origin.y);
+                assert!(
+                    actual.origin.y + actual.size.height <= bounds.origin.y + bounds.size.height
+                );
+            }
+        }
+        let compact_bounds = NSRect::new(NSPoint::ZERO, NSSize::new(84.0, 22.0));
+        let compact_image = NSRect::new(NSPoint::new(4.0, 0.0), enlarged.size);
+        assert_eq!(
+            image_rect_in_layer(compact_bounds, compact_image, true, false),
+            compact_image
+        );
     }
 
     #[test]
@@ -386,14 +482,16 @@ mod tests {
         let layer = RunnerLayer::new();
         let first = NSImage::initWithSize(NSImage::alloc(), NSSize::new(27.0, 18.0));
         let second = NSImage::initWithSize(NSImage::alloc(), NSSize::new(27.0, 18.0));
-        layer.paint(&first);
+        first.setTemplate(true);
+        second.setTemplate(true);
+        assert!(!layer.paint(&first));
         // Only NSImage values created above were assigned to this owned layer.
         let first_contents = unsafe { layer.mask.contents() }.expect("first contents");
         assert!(std::ptr::eq(
             &*first_contents,
             first.as_ref() as &objc2::runtime::AnyObject
         ));
-        layer.paint(&second);
+        assert!(!layer.paint(&second));
         let second_contents = unsafe { layer.mask.contents() }.expect("second contents");
         assert!(std::ptr::eq(
             &*second_contents,
