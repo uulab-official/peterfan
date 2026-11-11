@@ -43,7 +43,7 @@ macsmc = "0.1"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
 toml = "0.8"
-dirs = "6"
+dirs = "7"
 
 [patch.crates-io]
 # Official macOS 27 click fix backported without raising the Rust 1.88 MSRV.
