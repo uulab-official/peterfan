@@ -408,8 +408,10 @@ mod tests {
     // A full-color runner can animate inside an unchanged silhouette. Count
     // visible changes after alpha composition on both dark and light surfaces.
     fn color_frame_delta(left: &[u8], right: &[u8]) -> usize {
-        left.chunks_exact(4)
-            .zip(right.chunks_exact(4))
+        left.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(right.as_chunks::<4>().0.iter())
             .filter(|(a, b)| {
                 (0..3).any(|channel| {
                     [0_u32, 255].into_iter().any(|background| {
@@ -418,7 +420,7 @@ mod tests {
                                 + background * (255 - u32::from(p[3])))
                                 / 255
                         };
-                        composite(a).abs_diff(composite(b)) > u32::from(DELTA_ALPHA_THRESHOLD)
+                        composite(*a).abs_diff(composite(*b)) > u32::from(DELTA_ALPHA_THRESHOLD)
                     })
                 })
             })

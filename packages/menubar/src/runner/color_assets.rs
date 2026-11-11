@@ -97,7 +97,7 @@ mod tests {
         assert!(pack.is_color());
         for pose in 0..8u8 {
             let frame = pack.frame_by_index(0, pose).unwrap();
-            assert!(frame.chunks_exact(4).any(|p| p == [160, 90, 40, 255]));
+            assert!(frame.as_chunks::<4>().0.contains(&[160, 90, 40, 255]));
             for band in 1..LOAD_BANDS {
                 assert_eq!(Some(frame), pack.frame_by_index(band, pose));
             }
