@@ -7825,8 +7825,14 @@ fn runner_preview_alpha_json_for(packs: &[(RunnerCharacter, RunnerPack)]) -> Str
             format!(
                 r#""{}":"{}""#,
                 character.as_str(),
-                pack.preview_frame_hex(RUNNER_PREVIEW_BAND, RUNNER_PREVIEW_POSE)
-                    .unwrap_or_default()
+                if pack.is_color() {
+                    pack.frame_by_index(RUNNER_PREVIEW_BAND, RUNNER_PREVIEW_POSE)
+                        .map(encode_preview_rle)
+                        .unwrap_or_default()
+                } else {
+                    pack.preview_frame_hex(RUNNER_PREVIEW_BAND, RUNNER_PREVIEW_POSE)
+                        .unwrap_or_default()
+                }
             )
         })
         .collect::<Vec<_>>();
@@ -7841,8 +7847,14 @@ fn runner_preview_frames_json_for(packs: &[(RunnerCharacter, RunnerPack)]) -> St
                 .map(|frame| {
                     format!(
                         r#""{}""#,
-                        pack.preview_frame_hex(RUNNER_PREVIEW_BAND, frame)
-                            .unwrap_or_default()
+                        if pack.is_color() {
+                            pack.frame_by_index(RUNNER_PREVIEW_BAND, frame)
+                                .map(encode_preview_rle)
+                                .unwrap_or_default()
+                        } else {
+                            pack.preview_frame_hex(RUNNER_PREVIEW_BAND, frame)
+                                .unwrap_or_default()
+                        }
                     )
                 })
                 .collect::<Vec<_>>()
@@ -7851,6 +7863,35 @@ fn runner_preview_frames_json_for(packs: &[(RunnerCharacter, RunnerPack)]) -> St
         })
         .collect::<Vec<_>>();
     format!("{{{}}}", entries.join(","))
+}
+
+// A compact, synchronous decoder keeps the initial WebView2 NavigateToString
+// document under its size limit while retaining every animated picker frame.
+// Each byte describes 1..128 pixels: a clear run or a literal RGBA run.
+fn encode_preview_rle(rgba: &[u8]) -> String {
+    use base64::Engine as _;
+    let (pixels, remainder) = rgba.as_chunks::<4>();
+    assert!(remainder.is_empty());
+    let mut data = Vec::new();
+    let mut pos = 0;
+    while pos < pixels.len() {
+        let clear = pixels[pos] == [0; 4];
+        let mut end = pos + 1;
+        while end < pixels.len() && end - pos < 128 && (pixels[end] == [0; 4]) == clear {
+            end += 1;
+        }
+        data.push((end - pos - 1) as u8 | if clear { 0 } else { 0x80 });
+        if !clear {
+            for pixel in &pixels[pos..end] {
+                data.extend_from_slice(pixel);
+            }
+        }
+        pos = end;
+    }
+    format!(
+        "rgba-rle:{}",
+        base64::engine::general_purpose::STANDARD.encode(data)
+    )
 }
 
 fn runner_selected_preview_frames_json(pack: &RunnerPack) -> String {
@@ -7872,7 +7913,7 @@ fn runner_selected_preview_frames_json(pack: &RunnerPack) -> String {
             format!(
                 r#""{}""#,
                 if pack.is_color() {
-                    runner::rgba_hex(frame)
+                    encode_preview_rle(frame)
                 } else {
                     runner::alpha_hex(frame)
                 }
@@ -10835,7 +10876,22 @@ function paintRunnerPreview(canvas,character,frame,band){
   var image=RUNNER_PREVIEW_IMAGES.get(alpha);
   if(!image){
     image=ctx.createImageData(canvas.width,canvas.height);
-    if(alpha.startsWith('rgba:')){
+    if(alpha.startsWith('rgba-rle:')){
+      var packed;
+      try{packed=atob(alpha.slice(9));}catch(_){return;}
+      var input=0,output=0;
+      while(input<packed.length){
+        var control=packed.charCodeAt(input++),bytes=((control&127)+1)*4;
+        if(output+bytes>image.data.length)return;
+        if(control&128){
+          if(input+bytes>packed.length)return;
+          for(var j=0;j<bytes;j++)image.data[output+j]=packed.charCodeAt(input+j);
+          input+=bytes;
+        }
+        output+=bytes;
+      }
+      if(output!==image.data.length)return;
+    }else if(alpha.startsWith('rgba:')){
       var encoded=alpha.slice(5);
       if(encoded.length!==image.data.length*2)return;
       for(var i=0;i<image.data.length;i++)image.data[i]=parseInt(encoded.slice(i*2,i*2+2),16);
@@ -13497,6 +13553,7 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
                 .expect("character preview");
             assert!(
                 alpha.len() == (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 2) as usize
+                    || alpha.starts_with("rgba-rle:")
                     || (alpha.starts_with("rgba:")
                         && alpha.len()
                             == 5 + (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 8) as usize)
@@ -13519,6 +13576,7 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
             assert!(character_frames.iter().all(|frame| {
                 frame.as_str().is_some_and(|alpha| {
                     alpha.len() == (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 2) as usize
+                        || alpha.starts_with("rgba-rle:")
                         || (alpha.starts_with("rgba:")
                             && alpha.len()
                                 == 5 + (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 8) as usize)
@@ -13571,11 +13629,22 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
                 previews
                     .get(character.as_str())
                     .and_then(serde_json::Value::as_str),
-                pack.preview_frame_hex(1, 1).as_deref()
+                if pack.is_color() {
+                    Some(encode_preview_rle(pack.frame_by_index(1, 1).unwrap()))
+                } else {
+                    pack.preview_frame_hex(1, 1)
+                }
+                .as_deref()
             );
 
             let expected = (0..RUNNER_FRAME_COUNT)
-                .map(|frame| pack.preview_frame_hex(1, frame).expect("preview frame"))
+                .map(|frame| {
+                    if pack.is_color() {
+                        encode_preview_rle(pack.frame_by_index(1, frame).expect("preview frame"))
+                    } else {
+                        pack.preview_frame_hex(1, frame).expect("preview frame")
+                    }
+                })
                 .collect::<Vec<_>>();
             let actual = frames
                 .get(character.as_str())
@@ -13585,6 +13654,60 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
                 .map(|frame| frame.as_str().expect("frame alpha").to_string())
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn dashboard_html_fits_webview2_navigate_to_string_limit_for_all_runners() {
+        // WebView2 limits NavigateToString HTML to 2 MiB. Count UTF-16 bytes,
+        // not Rust UTF-8 bytes, and leave margin for runtime/platform changes.
+        const SAFE_UTF16_BYTES: usize = 1_900_000;
+        let mut max_bytes = 0;
+        for character in RunnerCharacter::FEATURED {
+            let pack = RunnerPack::build(character).expect("runner pack");
+            for language in [ResolvedLanguage::En, ResolvedLanguage::Ko] {
+                for show_curve in [false, true] {
+                    let html = dashboard_html_with_runner_pack(language, show_curve, &pack);
+                    let bytes = html.encode_utf16().count() * 2;
+                    max_bytes = max_bytes.max(bytes);
+                    assert!(
+                        bytes < SAFE_UTF16_BYTES,
+                        "{character:?}: HTML is {bytes} UTF-16 bytes"
+                    );
+                }
+            }
+        }
+        eprintln!("maximum dashboard HTML: {max_bytes} UTF-16 bytes");
+    }
+
+    #[test]
+    fn compressed_preview_round_trips_every_color_frame_without_loss() {
+        use base64::Engine as _;
+        for character in RunnerCharacter::FEATURED {
+            let pack = RunnerPack::build(character).expect("runner pack");
+            if !pack.is_color() {
+                continue;
+            }
+            for frame in pack.frames() {
+                let encoded = encode_preview_rle(frame);
+                let data = base64::engine::general_purpose::STANDARD
+                    .decode(encoded.strip_prefix("rgba-rle:").unwrap())
+                    .unwrap();
+                let mut decoded = Vec::new();
+                let mut input = data.as_slice();
+                while !input.is_empty() {
+                    let control = input[0];
+                    input = &input[1..];
+                    let bytes = (usize::from(control & 127) + 1) * 4;
+                    if control & 128 != 0 {
+                        decoded.extend_from_slice(&input[..bytes]);
+                        input = &input[bytes..];
+                    } else {
+                        decoded.resize(decoded.len() + bytes, 0);
+                    }
+                }
+                assert_eq!(&decoded, frame, "{character:?}");
+            }
         }
     }
 
@@ -13606,7 +13729,12 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
                 };
                 assert_eq!(
                     frames[index].as_str(),
-                    pack.preview_frame_hex(band, pose).as_deref(),
+                    if pack.is_color() {
+                        Some(encode_preview_rle(pack.frame_by_index(band, pose).unwrap()))
+                    } else {
+                        pack.preview_frame_hex(band, pose)
+                    }
+                    .as_deref(),
                     "band {band}, pose {pose} must use the selected canonical pack"
                 );
             }
@@ -13660,14 +13788,14 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
         assert_eq!(selected.len(), 8);
         assert!(selected
             .iter()
-            .all(|value| value.starts_with("rgba:1665cb80")));
+            .all(|value| value == &encode_preview_rle(&frame)));
         let entries = vec![(RunnerCharacter::Cat, pack)];
         let picker: serde_json::Value =
             serde_json::from_str(&runner_preview_frames_json_for(&entries)).unwrap();
-        assert!(picker["cat"][0]
-            .as_str()
-            .unwrap()
-            .starts_with("rgba:1665cb80"));
+        assert_eq!(
+            picker["cat"][0].as_str(),
+            Some(encode_preview_rle(&frame).as_str())
+        );
     }
 
     #[test]
@@ -13686,7 +13814,7 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
             for pose in 0..RUNNER_FRAME_COUNT {
                 assert_eq!(
                     Some(frames[band * 8 + usize::from(pose)].as_str()),
-                    pack.preview_frame_hex(band, pose).as_deref()
+                    Some(encode_preview_rle(pack.frame_by_index(band, pose).unwrap()).as_str())
                 );
             }
         }
@@ -13794,7 +13922,14 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
         assert_eq!(frames.len(), if assets.pack.is_color() { 8 } else { 32 });
         assert_eq!(
             frames[if frames.len() == 8 { 7 } else { 23 }].as_str(),
-            assets.pack.preview_frame_hex(2, 7).as_deref(),
+            if assets.pack.is_color() {
+                Some(encode_preview_rle(
+                    assets.pack.frame_by_index(2, 7).unwrap(),
+                ))
+            } else {
+                assets.pack.preview_frame_hex(2, 7)
+            }
+            .as_deref(),
             "the selected Settings payload must come from the retained pack"
         );
         assert_eq!(

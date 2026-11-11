@@ -11,7 +11,7 @@ const end = source.indexOf('function positionRunnerCharacterMenu()', start);
 const code = source.slice(start, end).replace(/__[A-Z_]+__/g, (token) => token === '__RUNNER_SELECTED_PREVIEW_CHARACTER__' ? 'cat' : token === '__RUNNER_CHARACTERS__' ? '["cat"]' : token.includes('ALPHA') || token === '__RUNNER_PREVIEWS__' ? '{}' : '[]');
 let now = 0, nextId = 0, allocations = 0, paints = 0, reduced = false, view = 'settings';
 const timers = new Map(), listeners = {};
-const context = { console, Map, WeakMap, Uint8ClampedArray,
+const context = { console, Map, WeakMap, Uint8ClampedArray, atob,
   performance: { now: () => now },
   document: { hidden: false, addEventListener: (event, callback) => { listeners[event] = callback; }, querySelectorAll: () => [], getElementById: () => null },
   window: { matchMedia: () => ({ matches: reduced, addEventListener: (event, callback) => { listeners[`media-${event}`] = callback; } }) },
@@ -32,6 +32,15 @@ assert.equal(context.runnerSelectedPreviewMatchesCharacter({runner_selected_prev
 assert.equal(context.runnerSelectedPreviewMatchesCharacter({runner_selected_preview:colorFrames.slice(0,7),runner_selected_preview_character:'cat'},'cat'),false,'incomplete compact cycles must be rejected');
 let paintedFirstPixel;
 const colorCanvas = { id:'runner-character-preview', width:48, height:32, getContext:()=>({createImageData(w,h){return {data:new Uint8ClampedArray(w*h*4)};}, clearRect(){}, putImageData(img){paintedFirstPixel=img.data[0];}}) };
+const packed = Buffer.from([0x80,77,33,11,255,...Array(11).fill(127),126]);
+context.RUNNER_PREVIEW_FRAMES={cat:['rgba-rle:'+packed.toString('base64')]};
+const pickerCanvas={...colorCanvas,id:'picker-preview'};
+context.paintRunnerPreview(pickerCanvas,'cat',0,0);
+assert.equal(paintedFirstPixel,77,'packed picker frames must decode literal and transparent runs');
+paintedFirstPixel=undefined;
+context.RUNNER_PREVIEW_FRAMES={cat:['rgba-rle:'+Buffer.from([0x80,77]).toString('base64')]};
+context.paintRunnerPreview(pickerCanvas,'cat',0,0);
+assert.equal(paintedFirstPixel,undefined,'truncated packed frames must not paint');
 context.RUNNER_SELECTED_PREVIEW=colorFrames;
 context.paintRunnerPreview(colorCanvas,'cat',3,3);
 assert.equal(paintedFirstPixel,4,'compact cycle must select pose in every CPU band');

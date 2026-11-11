@@ -2112,6 +2112,7 @@ dependencies = [
 name = "peterfan-menubar"
 version = "1.32.12"
 dependencies = [
+ "base64",
  "block2",
  "dirs",
  "libc",

@@ -22,6 +22,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
 png = "0.18.1"
+base64 = "0.22.1"
 
 [dev-dependencies]
 
