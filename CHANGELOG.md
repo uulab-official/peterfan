@@ -70,6 +70,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.32.13] — Menu-bar runner and display refinements
 
+- Clarify OS-default fan control and per-fan overrides, and distinguish a
+  daemon acknowledgement from verification of the actual fan mode.
+- Reject SMC firmware errors and truncated replies rather than treating them
+  as successful fan-control operations.
 - Group the CPU graph, runner and selected metric in one macOS menu-bar item,
   while retaining their independent visibility settings.
 - Enlarge the runner selection controls, support keyboard navigation, animate
