@@ -419,6 +419,8 @@ static STATUS: Mutex<String> = Mutex::new(String::new());
 /// mistake another window's save (or an older status message) for its own.
 static SETTINGS_RESULTS: Mutex<VecDeque<serde_json::Value>> = Mutex::new(VecDeque::new());
 const SETTINGS_RESULTS_MAX: usize = 32;
+/// Correlate explicit OS-default requests across background threads/windows.
+static OS_AUTO_RESULTS: Mutex<VecDeque<serde_json::Value>> = Mutex::new(VecDeque::new());
 /// One native update pipeline shared by the popover, detail window, and
 /// right-click menu. GitHub checks from inside the WebView were unreliable on
 /// some Macs and could race the native installer dialog.
@@ -503,7 +505,7 @@ fn pending_command_key(cmd: &str) -> Option<String> {
     if matches!(cmd, "ready:popover" | "ready:detail") {
         return Some(cmd.to_string());
     }
-    if matches!(cmd, "auto") || cmd.starts_with("profile:") {
+    if matches!(cmd, "auto") || cmd.starts_with("profile:") || cmd.starts_with("osautorequest:") {
         return Some("global-fan-control".to_string());
     }
     if cmd.starts_with("display:") {
@@ -567,6 +569,7 @@ fn is_native_preference_command(command: &str) -> bool {
         || command.starts_with("display:")
         || command.starts_with("character:")
         || command.starts_with("settingsrequest:")
+        || command.starts_with("osautorequest:")
 }
 
 fn is_native_process_command(command: &str) -> bool {
@@ -1418,6 +1421,45 @@ struct SettingsRequest {
     payload: String,
 }
 
+#[derive(serde::Deserialize)]
+struct OsAutoRequest {
+    id: String,
+}
+
+fn parse_os_auto_request(json: &str) -> Option<OsAutoRequest> {
+    let request: OsAutoRequest = serde_json::from_str(json).ok()?;
+    if request.id.is_empty()
+        || request.id.len() > 128
+        || !request
+            .id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        return None;
+    }
+    Some(request)
+}
+
+fn record_os_auto_result(request: &OsAutoRequest, status: &str) {
+    let route = if status.starts_with("daemon:") {
+        "daemon"
+    } else if status.ends_with(" — applied locally") {
+        "local"
+    } else {
+        "unknown"
+    };
+    let mut results = OS_AUTO_RESULTS.lock().expect("OS auto results poisoned");
+    results.push_back(serde_json::json!({
+        "id": request.id,
+        "ok": control_result_is_ok(status),
+        "route": route,
+        "message": status,
+    }));
+    while results.len() > SETTINGS_RESULTS_MAX {
+        results.pop_front();
+    }
+}
+
 fn parse_settings_request(request_json: &str) -> Option<SettingsRequest> {
     let request: SettingsRequest = serde_json::from_str(request_json).ok()?;
     if request.id.is_empty()
@@ -2114,8 +2156,15 @@ fn resolved_active_control_mode(mode: Option<&str>, has_manual_overrides: bool) 
     } else if has_manual_overrides {
         "hold"
     } else {
-        "auto"
+        ""
     }
+}
+
+/// Missing or malformed daemon data is not evidence of an empty override map.
+fn parse_daemon_fan_overrides(
+    value: Option<&serde_json::Value>,
+) -> Option<std::collections::HashMap<String, u8>> {
+    serde_json::from_value(value?.get("fan_overrides")?.clone()).ok()
 }
 
 /// Save a hand-drawn fan curve from the Detail Window's curve editor and
@@ -3247,6 +3296,21 @@ fn main() {
                         }
                         refresh_after_pending = true;
                     }
+                } else if let Some(json) = c.strip_prefix("osautorequest:") {
+                    if let Some(request) = parse_os_auto_request(json) {
+                        *STATUS.lock().expect("status poisoned") = "applying…".into();
+                        let provider = std::sync::Arc::clone(&app.provider);
+                        let proxy = event_proxy.clone();
+                        std::thread::spawn(move || {
+                            let status = execute_control_serial(provider.as_ref(), "auto");
+                            record_os_auto_result(&request, &status);
+                            *STATUS.lock().expect("status poisoned") = status;
+                            let _ = proxy.send_event(());
+                        });
+                        app.control_confirm_until = Some(now + CONTROL_CONFIRM_WINDOW);
+                    }
+                    next_metric_at = now;
+                    refresh_after_pending = true;
                 } else if let Some(request) = c.strip_prefix("settingsrequest:") {
                     let parsed = parse_settings_request(request);
                     let operation = parsed.as_ref().map(|r| r.operation);
@@ -5350,15 +5414,21 @@ fn update(app: &mut App) {
     let daemon_update_needed = app.provider.name() != "mock" && daemon_running && !daemon_usable;
     // Without a daemon to ask, fall back to the local shadow state that
     // `apply_local` maintains for its one-shot direct writes.
-    let fan_overrides = if daemon_usable {
-        daemon_json
-            .as_ref()
-            .and_then(|v| v.get("fan_overrides").cloned())
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default()
+    let known_fan_overrides = if daemon_usable {
+        parse_daemon_fan_overrides(daemon_json.as_ref())
     } else {
-        local_fan_overrides()
+        // Local shadow pins are not a hardware readback. With no trustworthy
+        // daemon snapshot, the complete override state remains unknown.
+        None
     };
+    let fan_override_count = known_fan_overrides.as_ref().map(|value| value.len());
+    let fan_overrides = known_fan_overrides.unwrap_or_else(|| {
+        if daemon_running {
+            Default::default()
+        } else {
+            local_fan_overrides()
+        }
+    });
     let fan_targets: std::collections::HashMap<String, u8> = daemon_json
         .as_ref()
         .and_then(|value| value.get("fan_targets").cloned())
@@ -5412,13 +5482,11 @@ fn update(app: &mut App) {
     let control_revision = daemon_json
         .as_ref()
         .and_then(|value| value.get("control_revision"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+        .and_then(serde_json::Value::as_u64);
     let applied_control_revision = daemon_json
         .as_ref()
         .and_then(|value| value.get("applied_control_revision"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+        .and_then(serde_json::Value::as_u64);
     let fan_rows: Vec<_> = fans
         .iter()
         .map(|f| {
@@ -5593,6 +5661,7 @@ fn update(app: &mut App) {
         "login_item_supported": login_item_supported(),
         "active_profile": active_profile,
         "active_control_mode": active_control_mode,
+        "fan_override_count": fan_override_count,
         "control_revision": control_revision,
         "applied_control_revision": applied_control_revision,
         "fan_setup_needed": fan_control_supported && !can_control,
@@ -5624,6 +5693,7 @@ fn update(app: &mut App) {
         "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, daemon_version.as_deref()),
         "curve_points": &app.dashboard_slow_cache.curve_points,
         "last_cmd_status": STATUS.lock().expect("status poisoned").clone(),
+        "os_auto_results": OS_AUTO_RESULTS.lock().expect("OS auto results poisoned").clone(),
         "settings_results": SETTINGS_RESULTS.lock().expect("settings results poisoned").clone(),
     });
     payload["config_toml"] = serde_json::json!(config.to_toml());
@@ -5722,6 +5792,18 @@ fn daemon_temps_json() -> Option<serde_json::Value> {
 /// running `peterfand` daemon (so the unprivileged app needs no root); falls
 /// back to controlling fans directly if this process happens to have access.
 /// Returns a short human-readable status for the popover.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn control_fallback_on_daemon_uncertainty(cmd: &str, fallback: impl FnOnce() -> String) -> String {
+    if cmd == "auto" {
+        // A missing socket/version/ack does not prove the privileged daemon
+        // is absent: it may still reassert its previous manual fan policy.
+        // Never bypass it with a competing one-shot direct write.
+        "error: daemon state or communication unavailable; OS fan handoff unconfirmed".into()
+    } else {
+        fallback()
+    }
+}
+
 fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
     if provider.name() == "mock" {
         return apply_local(provider, cmd);
@@ -5731,11 +5813,14 @@ fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
         cached_installed_daemon_version().as_deref(),
         peterfan_platform::running_daemon_version().as_deref(),
     ) {
-        if direct_fan_control_allowed() {
-            return apply_local(provider, cmd);
-        }
-        return "error: fan control requires a verified current daemon; reinstall fan control"
-            .into();
+        return control_fallback_on_daemon_uncertainty(cmd, || {
+            if direct_fan_control_allowed() {
+                apply_local(provider, cmd)
+            } else {
+                "error: fan control requires a verified current daemon; reinstall fan control"
+                    .into()
+            }
+        });
     }
     #[cfg(unix)]
     let line = if let Some(name) = cmd.strip_prefix("profile:") {
@@ -5774,7 +5859,14 @@ fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
         }
     }
 
-    apply_local(provider, cmd)
+    #[cfg(unix)]
+    {
+        control_fallback_on_daemon_uncertainty(cmd, || apply_local(provider, cmd))
+    }
+    #[cfg(not(unix))]
+    {
+        apply_local(provider, cmd)
+    }
 }
 
 fn execute_control_logged(provider: &dyn HardwareProvider, cmd: &str) -> String {
@@ -5889,6 +5981,12 @@ fn apply_local(provider: &dyn HardwareProvider, cmd: &str) -> String {
         .filter(|f| f.controllable)
         .map(|f| f.id)
         .collect();
+
+    // An empty iterator would otherwise make try_for_each report a false
+    // successful OS handoff even though no controllable fan was touched.
+    if cmd == "auto" && fans.is_empty() {
+        return "error: no controllable fans reported".into();
+    }
 
     let (result, label) = if cmd == "auto" {
         (
@@ -8544,11 +8642,15 @@ fn dashboard_html_with_runner_pack(
                 "첫 센서 값을 기다리는 중입니다.",
             )
             .replace(
-                "macOS manages fan speed for the current workload.",
-                "현재 작업에 맞춰 macOS가 팬 속도를 관리합니다.",
+                "Request macOS fan control and clear all per-fan overrides.",
+                "macOS 팬 제어 복귀를 요청하고 개별 팬 설정을 해제합니다.",
             )
+            .replace("Restore OS default fan control", "OS 기본 팬 제어로 복귀 요청")
+            .replace(">OS default<", ">OS 기본 제어<")
+            .replace(">Fan state unknown<", ">팬 상태 확인 불가<")
+            .replace("Fan-control state is unavailable.", "팬 제어 상태를 확인할 수 없습니다.")
             .replace(">Release Notes<", ">릴리즈 노트<")
-            .replace(">Auto<", ">자동<")
+            .replace(">OS Default<", ">OS 기본<")
             .replace(">Silent<", ">저소음<")
             .replace(">Quiet<", ">저소음<")
             .replace(">Balanced<", ">균형<")
@@ -8815,7 +8917,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .profile-strip.pending button{cursor:progress;}
 .profile-strip.pending button:not(.active){opacity:.48;}
 .profile-strip.pending button.active{box-shadow:inset 0 -2px 0 var(--accent);}
-.fan-apply-status{min-height:15px;margin:-2px 0 5px;color:var(--dim);font-size:10.5px;line-height:1.45;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fan-apply-status{min-height:15px;margin:-2px 0 5px;color:var(--dim);font-size:10.5px;line-height:1.45;font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere;}
 .fan-apply-status.pending{color:var(--accent);}
 .fan-apply-status.ok{color:var(--g);}
 .fan-apply-status.error{color:var(--r);}
@@ -9296,15 +9398,15 @@ __CPU_WIDGET_SETTINGS__
 <div class="fan-input"><span>Critical Limit</span><b id="fan-critical-limit">—</b></div>
 </div>
 <div class="profile-strip" id="profile-strip">
-<button class="active" disabled data-mode="auto" aria-pressed="true" title="Auto" onclick="setAuto()">Auto</button>
+<button disabled data-mode="auto" aria-pressed="false" title="Restore OS default fan control" onclick="setAuto()">OS Default</button>
 <button disabled data-mode="profile" data-profile="silent" aria-pressed="false" title="Silent" onclick="setProfile('silent')">Quiet</button>
 <button disabled data-mode="profile" data-profile="balanced" aria-pressed="false" title="Balanced" onclick="setProfile('balanced')">Balance</button>
 <button disabled data-mode="profile" data-profile="gaming" aria-pressed="false" title="Gaming" onclick="setProfile('gaming')">Game</button>
 <button disabled data-mode="profile" data-profile="performance" aria-pressed="false" title="Performance" onclick="setProfile('performance')">Fast</button>
 <button disabled data-mode="profile" data-profile="maximum" aria-pressed="false" title="Maximum" onclick="setProfile('maximum')">Max</button>
 </div>
-<div class="profile-guide" id="profile-guide" data-mode="auto" role="status" aria-live="polite" aria-atomic="true">
-<div class="profile-guide-copy"><strong class="profile-guide-title" id="profile-guide-title">macOS Auto</strong><span class="profile-guide-detail" id="profile-guide-detail">macOS manages fan speed for the current workload.</span></div>
+<div class="profile-guide" id="profile-guide" data-mode="unknown" role="status" aria-live="polite" aria-atomic="true">
+<div class="profile-guide-copy"><strong class="profile-guide-title" id="profile-guide-title">Fan state unknown</strong><span class="profile-guide-detail" id="profile-guide-detail">Fan-control state is unavailable.</span></div>
 <div class="profile-preview-bars" id="profile-preview-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
 </div>
 <div class="fan-apply-status" id="fan-apply-status" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -10137,7 +10239,9 @@ function renderFanCards(fans,enabled){
         '<div class="fan-rpm-row inactive"><span class="fa-min"></span><input type="range"><input type="number" class="fa-num" inputmode="numeric"><span class="fa-max"></span></div>';
       var btnAuto=card.querySelector('.fa-auto');
       var btnManual=card.querySelector('.fa-manual');
-      btnAuto.textContent=LANG==='ko'?'자동':'Auto';
+      btnAuto.textContent=LANG==='ko'?'전체 설정 따르기':'Follow global';
+      btnAuto.title=LANG==='ko'?'이 팬의 사용자 지정을 해제하고 전체 팬 설정을 따릅니다':'Clear this fan’s override and follow the global fan setting';
+      btnAuto.setAttribute('aria-label',btnAuto.title);
       btnManual.textContent=LANG==='ko'?'사용자 지정…':'Custom…';
       btnAuto.onclick=function(){
         if(!markFanPending(card,'auto'))return;
@@ -11036,15 +11140,25 @@ function setProfile(profile){
 }
 function setAuto(){
   if(!beginFanControl('auto',''))return;
-  window.ipc.postMessage('cmd:auto');
+  var request=settingsRequest('os_auto','');
+  FAN_CONTROL_PENDING.requestId=request.id;
+  window.ipc.postMessage('osautorequest:'+JSON.stringify({id:request.id}));
+}
+function fanControlRevision(value){
+  return typeof value==='number'&&Number.isSafeInteger(value)&&value>=0?value:null;
 }
 function beginFanControl(mode,profile){
   if(FAN_CONTROL_PENDING)return false;
   var current=window.__pf_pending||{};
   var wantedProfile=profile||'';
-  if(current.active_control_mode===mode&&(mode!=='profile'||current.active_profile===wantedProfile))return false;
+  // OS-default is an explicit restore action, even if the daemon already
+  // reports auto: a per-fan override may still be active or the user may
+  // want to re-request the handoff after an uncertain hardware readback.
+  if(mode==='profile'&&current.active_control_mode===mode&&current.active_profile===wantedProfile)return false;
   FAN_CONTROL_RESULT=null;
-  FAN_CONTROL_PENDING={mode:mode,profile:wantedProfile,startedAt:Date.now(),statusBefore:current.last_cmd_status||'',revisionBefore:Number(current.applied_control_revision||0)};
+  var desired=fanControlRevision(current.control_revision),applied=fanControlRevision(current.applied_control_revision);
+  var revisionBefore=desired===null||applied===null?null:Math.max(desired,applied);
+  FAN_CONTROL_PENDING={mode:mode,profile:wantedProfile,startedAt:Date.now(),statusBefore:current.last_cmd_status||'',revisionBefore:revisionBefore,requestId:null};
   var snapshot=window.__pf_pending||{can_control:true,active_control_mode:'',active_profile:'',last_cmd_status:''};
   updateProfileStrip(snapshot);
   updateFanApplyStatus(snapshot);
@@ -11052,6 +11166,9 @@ function beginFanControl(mode,profile){
 }
 function fanControlStatusFailed(status){
   return /error|failed|invalid|cancel|unavailable|not ready/i.test(status||'');
+}
+function fanOverridesKnown(d){
+  return typeof d.fan_override_count==='number'&&Number.isInteger(d.fan_override_count)&&d.fan_override_count>=0;
 }
 function profileDutyAt(points,temp){
   if(!points||!points.length)return 0;
@@ -11078,14 +11195,17 @@ function renderProfileGuide(mode,profile){
     performance:{en:['Performance','Aggressive cooling for heavy work.'],ko:['고성능','무거운 작업을 위해 적극적으로 냉각합니다.'],curve:[[30,40],[50,60],[75,90],[85,100]]},
     maximum:{en:['Maximum','Fans stay at 100%; loudest and coolest.'],ko:['최대','팬을 100%로 유지합니다. 가장 크고 시원합니다.'],curve:[[0,100],[100,100]]}
   };
-  var isAuto=mode!=='profile'||!guides[profile];
-  var guide=isAuto
-    ?{en:['macOS Auto','macOS manages fan speed for the current workload.'],ko:['macOS 자동','현재 작업에 맞춰 macOS가 팬 속도를 관리합니다.'],curve:null}
-    :guides[profile];
+  var unknown=!mode;
+  var isAuto=mode==='auto';
+  var guide=unknown
+    ?{en:['Fan state unknown','Fan-control state is unavailable.'],ko:['팬 상태 확인 불가','팬 제어 상태를 확인할 수 없습니다.'],curve:null}
+    :isAuto
+    ?{en:['OS default','Request macOS fan control and clear all per-fan overrides.'],ko:['OS 기본 제어','macOS 팬 제어 복귀를 요청하고 개별 팬 설정을 해제합니다.'],curve:null}
+    :(guides[profile]||{en:['Manual','Fan control is active.'],ko:['수동','팬 제어가 활성화되어 있습니다.'],curve:null});
   var copy=LANG==='ko'?guide.ko:guide.en;
   title.textContent=copy[0];
   detail.textContent=copy[1];
-  root.dataset.mode=isAuto?'auto':profile;
+  root.dataset.mode=unknown?'unknown':(isAuto?'auto':profile);
   var temps=[30,50,70,85,90];
   Array.prototype.slice.call(bars).forEach(function(bar,index){
     var duty=isAuto?[18,30,46,68,88][index]:profileDutyAt(guide.curve,temps[index]);
@@ -11101,16 +11221,29 @@ function updateProfileStrip(d){
   var activeMode=d.active_control_mode||'';
   var activeProfile=d.active_profile||'';
   if(FAN_CONTROL_PENDING){
-    var revisionApplied=Number(d.applied_control_revision||0)>FAN_CONTROL_PENDING.revisionBefore;
-    var matches=revisionApplied&&FAN_CONTROL_PENDING.mode===activeMode&&(activeMode!=='profile'||FAN_CONTROL_PENDING.profile===activeProfile);
+    var appliedRevision=fanControlRevision(d.applied_control_revision);
+    var revisionApplied=FAN_CONTROL_PENDING.revisionBefore!==null&&appliedRevision!==null&&appliedRevision>FAN_CONTROL_PENDING.revisionBefore;
+    var autoResult=FAN_CONTROL_PENDING.mode==='auto'&&Array.isArray(d.os_auto_results)
+      ?d.os_auto_results.find(function(result){return result.id===FAN_CONTROL_PENDING.requestId;}):null;
+    var matches=FAN_CONTROL_PENDING.mode==='auto'
+      ?!!autoResult&&autoResult.ok===true&&(autoResult.route==='local'||autoResult.route==='daemon')
+      :revisionApplied&&FAN_CONTROL_PENDING.mode===activeMode&&FAN_CONTROL_PENDING.profile===activeProfile;
     var status=d.last_cmd_status||'';
-    var failed=status!==FAN_CONTROL_PENDING.statusBefore&&status!=='applying…'&&fanControlStatusFailed(status);
+    var failed=FAN_CONTROL_PENDING.mode==='auto'
+      ?!!autoResult&&autoResult.ok===false
+      :status!==FAN_CONTROL_PENDING.statusBefore&&status!=='applying…'&&fanControlStatusFailed(status);
     var expired=Date.now()-FAN_CONTROL_PENDING.startedAt>8000;
-    if(matches){
-      FAN_CONTROL_RESULT={ok:true,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,at:Date.now(),message:''};
+    if(failed){
+      FAN_CONTROL_RESULT={ok:false,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,at:Date.now(),message:FAN_CONTROL_PENDING.mode==='auto'?(autoResult.message||''):status};
       FAN_CONTROL_PENDING=null;
-    } else if(failed||expired){
-      FAN_CONTROL_RESULT={ok:false,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,at:Date.now(),message:failed?status:(LANG==='ko'?'하드웨어 적용 확인 시간 초과':'hardware confirmation timed out')};
+    } else if(matches){
+      FAN_CONTROL_RESULT={ok:true,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,route:autoResult?autoResult.route:'',at:Date.now(),message:''};
+      FAN_CONTROL_PENDING=null;
+    } else if(expired){
+      var timeoutMessage=FAN_CONTROL_PENDING.mode==='auto'
+        ?(LANG==='ko'?'복귀 요청 응답 확인 불가':'restore request acknowledgement unavailable')
+        :(LANG==='ko'?'데몬 적용 확인 시간 초과':'daemon confirmation timed out');
+      FAN_CONTROL_RESULT={ok:false,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,at:Date.now(),message:timeoutMessage};
       FAN_CONTROL_PENDING=null;
     }
   }
@@ -11118,23 +11251,28 @@ function updateProfileStrip(d){
     activeMode=FAN_CONTROL_PENDING.mode;
     activeProfile=FAN_CONTROL_PENDING.profile;
   }
-  if(!activeMode)activeMode='auto';
   var pending=!!FAN_CONTROL_PENDING;
   strip.classList.toggle('disabled',!enabled);
   strip.classList.toggle('pending',pending);
   strip.setAttribute('aria-busy',pending?'true':'false');
   Array.prototype.slice.call(strip.querySelectorAll('button')).forEach(function(b){
     b.disabled=!enabled||pending;
-    var isAuto=b.dataset.mode==='auto'&&activeMode==='auto';
+    var isAuto=b.dataset.mode==='auto'&&activeMode==='auto'&&fanOverridesKnown(d)&&d.fan_override_count===0;
     var isProfile=b.dataset.mode==='profile'&&activeMode==='profile'&&b.dataset.profile===activeProfile;
     var selected=isAuto||isProfile;
     b.classList.toggle('active',selected);
     b.setAttribute('aria-pressed',selected?'true':'false');
   });
   renderProfileGuide(activeMode,activeProfile);
+  if(!pending&&activeMode==='auto'&&(!fanOverridesKnown(d)||d.fan_override_count>0)){
+    var detail=document.getElementById('profile-guide-detail');
+    if(detail)detail.textContent=!fanOverridesKnown(d)
+      ?(LANG==='ko'?'개별 팬 설정 상태를 확인할 수 없습니다.':'Per-fan override state is unavailable.')
+      :(LANG==='ko'?'개별 팬 설정이 남아 있습니다. OS 기본을 눌러 모두 해제하세요.':'Per-fan overrides remain. Select OS Default to clear them.');
+  }
 }
 function fanModeLabel(mode,profile){
-  if(mode==='auto')return LANG==='ko'?'macOS 자동':'macOS Auto';
+  if(mode==='auto')return LANG==='ko'?'OS 기본 제어':'OS default';
   var labels=LANG==='ko'
     ?{silent:'저소음',balanced:'균형',gaming:'게임',performance:'고성능',maximum:'최대'}
     :{silent:'Silent',balanced:'Balanced',gaming:'Gaming',performance:'Performance',maximum:'Maximum'};
@@ -11146,21 +11284,26 @@ function updateFanApplyStatus(d){
   var mode=d.active_control_mode||'',profile=d.active_profile||'';
   var tone='';
   var recentResult=FAN_CONTROL_RESULT&&Date.now()-FAN_CONTROL_RESULT.at<12000;
+  var daemonAccepted=!!recentResult&&FAN_CONTROL_RESULT.ok&&FAN_CONTROL_RESULT.mode==='auto'&&FAN_CONTROL_RESULT.route==='daemon';
   var strip=document.getElementById('profile-strip');
   if(strip){
-    strip.classList.toggle('confirmed',!!recentResult&&!!FAN_CONTROL_RESULT.ok);
+    strip.classList.toggle('confirmed',!!recentResult&&!!FAN_CONTROL_RESULT.ok&&!daemonAccepted);
     strip.classList.toggle('failed',!!recentResult&&!FAN_CONTROL_RESULT.ok);
   }
   if(FAN_CONTROL_PENDING){
     mode=FAN_CONTROL_PENDING.mode;profile=FAN_CONTROL_PENDING.profile;tone='pending';
   } else if(recentResult){
-    mode=FAN_CONTROL_RESULT.mode;profile=FAN_CONTROL_RESULT.profile;tone=FAN_CONTROL_RESULT.ok?'ok':'error';
+    mode=FAN_CONTROL_RESULT.mode;profile=FAN_CONTROL_RESULT.profile;tone=FAN_CONTROL_RESULT.ok?(daemonAccepted?'':'ok'):'error';
   }
   el.style.display=FAN_CONTROL_PENDING||recentResult?'':'none';
   var parts=[fanModeLabel(mode,profile)];
   if(FAN_CONTROL_PENDING)parts.push(LANG==='ko'?'적용 확인 중…':'confirming…');
   else if(recentResult){
-    parts.push(FAN_CONTROL_RESULT.ok?(LANG==='ko'?'적용 완료':'applied'):(LANG==='ko'?'적용 실패':'failed'));
+    parts.push(FAN_CONTROL_RESULT.ok
+      ?(mode==='auto'
+        ?(daemonAccepted?(LANG==='ko'?'요청 접수됨 · 적용 및 실제 팬 모드 확인 불가':'request accepted · application and hardware mode unverified'):(LANG==='ko'?'복귀 요청 수행됨 · 실제 팬 모드 확인 불가':'restore request executed · hardware mode unverified'))
+        :(LANG==='ko'?'적용 완료':'applied'))
+      :(LANG==='ko'?'적용 실패':'failed'));
     if(!FAN_CONTROL_RESULT.ok&&FAN_CONTROL_RESULT.message)parts.push(FAN_CONTROL_RESULT.message);
   }
   if(mode!=='auto'&&typeof d.fan_curve_input_temp_c==='number')parts.push((LANG==='ko'?'입력 ':'input ')+Math.round(d.fan_curve_input_temp_c)+'°C');
@@ -11823,7 +11966,7 @@ function updateHealthPanel(d){
   var lastTone=/error|invalid|unknown|failed|needs root|needs at least/i.test(last)?'warn':'info';
   setHealthValue('health-last-command',last||'—',lastTone);
   setHealthValue('health-safety-state',
-    failsafe?(LANG==='ko'?'OS 자동 제어':'OS automatic'):(LANG==='ko'?'정상':'normal'),
+    failsafe?(LANG==='ko'?'OS 복귀 시도':'OS fallback attempted'):(LANG==='ko'?'정상':'normal'),
     failsafe?'warn':'ok');
   setHealthValue('health-fans',(d.controllable_fan_count||0)+' / '+(d.fan_count||0),d.controllable_fan_count?'ok':'info');
   setHealthValue('health-curve-input',tempValue(d.fan_curve_input_temp_c),'info');
@@ -11836,9 +11979,13 @@ function updateHealthPanel(d){
   var staleFans=health.stale_fan_ids||[],readbackFailures=Number(health.fan_readback_failure_count||0);
   var readbackText=staleFans.length
     ?((LANG==='ko'?'응답 없음: ':'not responding: ')+staleFans.join(', '))
-    :(d.active_control_mode==='auto'?(LANG==='ko'?'macOS 자동':'macOS automatic'):(LANG==='ko'?'정상':'verified'));
+    :(d.active_control_mode==='auto'
+      ?(!fanOverridesKnown(d)
+        ?(LANG==='ko'?'개별 팬 설정 상태 확인 불가':'per-fan override state unavailable')
+        :(LANG==='ko'?'OS 제어 요청됨 · 실제 모드 확인 불가':'OS control requested · hardware mode unverified'))
+      :(d.active_control_mode?(LANG==='ko'?'정상':'verified'):(LANG==='ko'?'팬 제어 상태 확인 불가':'fan-control state unavailable')));
   if(readbackFailures&&!staleFans.length)readbackText+=' · '+readbackFailures;
-  setHealthValue('health-readback',readbackText,staleFans.length?'warn':'ok');
+  setHealthValue('health-readback',readbackText,staleFans.length?'warn':(d.active_control_mode==='auto'||!d.active_control_mode?'info':'ok'));
   var retrySeconds=Math.max(0,Number(health.retry_after_unix||0)-Math.floor(Date.now()/1000));
   setHealthValue('health-control-retry',retrySeconds?(retrySeconds+'s'):(LANG==='ko'?'대기 없음':'ready'),retrySeconds?'warn':'info');
   setHealthValue('health-control-error',health.last_error||'—',health.last_error?'warn':'info');
@@ -13039,12 +13186,12 @@ mod tests {
         assert!(ko.contains(">상세 창 열기<"));
         assert!(ko.contains(">코어 상세<"));
         assert!(ko.contains("저장공간, 배터리, 네트워크"));
-        assert!(ko.contains(">자동<"));
+        assert!(ko.contains(">OS 기본<"));
         assert!(ko.contains(">균형<"));
         // Auto/Manual per-fan card labels are rendered by JS at runtime
         // (LANG==='ko' ? ...), not baked into the static markup — both
         // languages ship the same script, just a different LANG value.
-        assert!(ko.contains("'자동':'Auto'"));
+        assert!(ko.contains("'전체 설정 따르기':'Follow global'"));
         assert!(ko.contains("var LANG='ko';"));
         assert!(!ko.contains("__LANG__"));
         assert!(!ko.contains("__SHOWCURVE__"));
@@ -13078,7 +13225,7 @@ mod tests {
             assert!(html.contains("setProfile"));
             assert!(html.contains("setAuto"));
             assert!(html.contains("updateProfileStrip"));
-            assert!(html.contains("cmd:auto"));
+            assert!(html.contains("osautorequest:"));
             assert!(html.contains("cmd:profile:"));
             assert!(html.contains(r#"id="setup-row""#));
             assert!(html.contains(r#"id="setup-more""#));
@@ -15009,7 +15156,7 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
         assert!(en.contains("controllableCount>0"));
         assert!(en.contains(r#"id="profile-strip""#));
         assert!(en.contains(
-            r#"disabled data-mode="auto" aria-pressed="true" title="Auto" onclick="setAuto()">"#
+            r#"disabled data-mode="auto" aria-pressed="false" title="Restore OS default fan control" onclick="setAuto()">"#
         ));
 
         assert!(ko.contains(">하드웨어 감지 상태<"));
@@ -15592,10 +15739,10 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
         assert!(en.contains("if(!beginFanControl('profile',profile))return;"));
         assert!(en.contains("if(!beginFanControl('auto',''))return;"));
         assert!(en.contains("updateProfileStrip(snapshot);\n  updateFanApplyStatus(snapshot);"));
-        assert!(en.contains("revisionBefore:Number(current.applied_control_revision||0)"));
-        assert!(en.contains("var revisionApplied=Number(d.applied_control_revision||0)>FAN_CONTROL_PENDING.revisionBefore;"));
+        assert!(en.contains("Math.max(desired,applied)"));
+        assert!(en.contains("appliedRevision>FAN_CONTROL_PENDING.revisionBefore"));
         assert!(en.contains("FAN_CONTROL_RESULT={ok:true"));
-        assert!(en.contains("hardware confirmation timed out"));
+        assert!(en.contains("daemon confirmation timed out"));
         assert!(en.contains("Date.now()-FAN_CONTROL_PENDING.startedAt>8000"));
         assert!(en.contains("if(d.fan_control_supported)"));
         assert!(en.contains("renderFanCards(d.fans,d.can_control)"));
@@ -15839,6 +15986,107 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
     }
 
     #[test]
+    fn daemon_override_state_distinguishes_empty_from_missing_or_invalid() {
+        let empty = serde_json::json!({"fan_overrides": {}});
+        let one = serde_json::json!({"fan_overrides": {"fan.0": 40}});
+        assert_eq!(parse_daemon_fan_overrides(Some(&empty)).unwrap().len(), 0);
+        assert_eq!(parse_daemon_fan_overrides(Some(&one)).unwrap().len(), 1);
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"fan_overrides": null}),
+            serde_json::json!({"fan_overrides": []}),
+            serde_json::json!({"fan_overrides": {"fan.0": "bad"}}),
+        ] {
+            assert!(parse_daemon_fan_overrides(Some(&value)).is_none());
+        }
+        assert!(parse_daemon_fan_overrides(None).is_none());
+    }
+
+    #[test]
+    fn os_auto_request_ids_are_validated_and_results_stay_correlated() {
+        let request = parse_os_auto_request(r#"{"id":"os-auto-test-1"}"#).unwrap();
+        for invalid in [r#"{"id":""}"#, r#"{"id":"bad id"}"#, "not json"] {
+            assert!(parse_os_auto_request(invalid).is_none());
+        }
+        record_os_auto_result(&request, "auto — applied locally");
+        let result = OS_AUTO_RESULTS.lock().unwrap().back().unwrap().clone();
+        assert_eq!(result["id"], "os-auto-test-1");
+        assert_eq!(result["route"], "local");
+        assert_eq!(result["ok"], true);
+        record_os_auto_result(&request, "error: denied");
+        let result = OS_AUTO_RESULTS.lock().unwrap().back().unwrap().clone();
+        assert_eq!(result["id"], "os-auto-test-1");
+        assert_eq!(result["ok"], false);
+        assert_eq!(
+            pending_command_key("osautorequest:{\"id\":\"1\"}"),
+            pending_command_key("auto")
+        );
+    }
+
+    #[test]
+    fn local_os_auto_without_controllable_fans_does_not_report_success() {
+        struct NoFans;
+        impl HardwareProvider for NoFans {
+            fn name(&self) -> &str {
+                "mock"
+            }
+            fn capabilities(&self) -> peterfan_core::Capabilities {
+                peterfan_platform::mock().capabilities()
+            }
+            fn hardware_info(
+                &self,
+            ) -> peterfan_core::error::Result<peterfan_core::types::HardwareInfo> {
+                peterfan_platform::mock().hardware_info()
+            }
+            fn temperatures(
+                &self,
+            ) -> peterfan_core::error::Result<Vec<peterfan_core::types::TempSensor>> {
+                Ok(Vec::new())
+            }
+            fn fans(&self) -> peterfan_core::error::Result<Vec<peterfan_core::types::Fan>> {
+                Ok(Vec::new())
+            }
+        }
+        let result = apply_local(&NoFans, "auto");
+        assert!(result.contains("no controllable fans"));
+        assert!(!control_result_is_ok(&result));
+    }
+
+    #[test]
+    fn os_auto_never_falls_back_to_direct_write_when_daemon_state_is_uncertain() {
+        let invoked = std::cell::Cell::new(false);
+        let result = control_fallback_on_daemon_uncertainty("auto", || {
+            invoked.set(true);
+            "applied locally".into()
+        });
+        assert!(
+            !invoked.get(),
+            "OS handoff must not bypass an uncertain daemon"
+        );
+        assert!(!control_result_is_ok(&result));
+        assert!(result.contains("handoff unconfirmed"));
+
+        let profile = control_fallback_on_daemon_uncertainty("profile:balanced", || {
+            invoked.set(true);
+            "profile — applied locally".into()
+        });
+        assert!(
+            invoked.get(),
+            "unrelated profile fallback remains unchanged"
+        );
+        assert!(control_result_is_ok(&profile));
+    }
+
+    #[test]
+    fn mock_os_auto_still_uses_mock_provider_without_a_daemon() {
+        let _guard = FAN_OVERRIDE_TEST_LOCK.lock().unwrap();
+        let provider = peterfan_platform::mock();
+        let result = execute_control(provider.as_ref(), "auto");
+        assert!(result.contains("applied locally"));
+        assert!(control_result_is_ok(&result));
+    }
+
+    #[test]
     fn daemon_config_capability_requires_an_explicit_success_reply() {
         assert!(daemon_supports_user_config(Some(
             "ok logged-in-user (macos)"
@@ -15850,8 +16098,8 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
     #[test]
     fn default_fan_control_selection_is_auto() {
         assert_eq!(resolved_active_control_mode(Some("auto"), false), "auto");
-        assert_eq!(resolved_active_control_mode(None, false), "auto");
-        assert_eq!(resolved_active_control_mode(Some(""), false), "auto");
+        assert_eq!(resolved_active_control_mode(None, false), "");
+        assert_eq!(resolved_active_control_mode(Some(""), false), "");
         assert_eq!(resolved_active_control_mode(None, true), "hold");
         assert_eq!(
             resolved_active_control_mode(Some("manual:balanced"), false),

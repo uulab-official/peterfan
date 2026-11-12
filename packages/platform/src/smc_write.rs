@@ -261,11 +261,7 @@ impl Conn {
                 &mut osize,
             )
         };
-        match rc {
-            KERN_SUCCESS => Ok(()),
-            RETURN_NOT_PRIVILEGED => Err(FanCtlError::NotPrivileged),
-            other => Err(FanCtlError::Smc(other)),
-        }
+        check_smc_response(rc, output.result, osize)
     }
 
     /// Read up to `out.len()` bytes of `key` into `out`; returns the key size.
@@ -331,6 +327,25 @@ impl Conn {
 
         let mut out2 = KeyData::default();
         self.call(&input, &mut out2)
+    }
+}
+
+/// IOKit transport success does not imply that AppleSMC accepted a command.
+/// For example, missing keys can return KERN_SUCCESS with result 132. The
+/// firmware result is preserved as a positive SMC error code; a truncated
+/// reply uses a distinct negative internal error. This is shared by key-info,
+/// read and write requests.
+fn check_smc_response(
+    rc: KernReturn,
+    firmware_result: u8,
+    response_size: usize,
+) -> Result<(), FanCtlError> {
+    match rc {
+        KERN_SUCCESS if response_size < size_of::<KeyData>() => Err(FanCtlError::Smc(-2)),
+        KERN_SUCCESS if firmware_result != 0 => Err(FanCtlError::Smc(i32::from(firmware_result))),
+        KERN_SUCCESS => Ok(()),
+        RETURN_NOT_PRIVILEGED => Err(FanCtlError::NotPrivileged),
+        other => Err(FanCtlError::Smc(other)),
     }
 }
 
@@ -427,5 +442,42 @@ impl Conn {
         self.unlock_tried
             .store(false, std::sync::atomic::Ordering::Relaxed);
         r
+    }
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    #[test]
+    fn firmware_error_is_not_treated_as_a_successful_read_or_write() {
+        // For missing keys, real hardware can return kern_success while the
+        // SMC reports an error in KeyData.result. The same response parser is
+        // used for key-info, reads, and writes.
+        assert!(matches!(
+            check_smc_response(KERN_SUCCESS, 132, size_of::<KeyData>()),
+            Err(FanCtlError::Smc(132))
+        ));
+        assert!(matches!(
+            check_smc_response(KERN_SUCCESS, 1, size_of::<KeyData>()),
+            Err(FanCtlError::Smc(1))
+        ));
+    }
+
+    #[test]
+    fn transport_failures_and_truncated_replies_do_not_claim_success() {
+        assert!(matches!(
+            check_smc_response(RETURN_NOT_PRIVILEGED, 0, size_of::<KeyData>()),
+            Err(FanCtlError::NotPrivileged)
+        ));
+        assert!(matches!(
+            check_smc_response(-42, 0, size_of::<KeyData>()),
+            Err(FanCtlError::Smc(-42))
+        ));
+        assert!(matches!(
+            check_smc_response(KERN_SUCCESS, 0, size_of::<KeyData>() - 1),
+            Err(FanCtlError::Smc(_))
+        ));
+        assert!(check_smc_response(KERN_SUCCESS, 0, size_of::<KeyData>()).is_ok());
     }
 }
