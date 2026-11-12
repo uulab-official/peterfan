@@ -45,9 +45,12 @@ use tao::window::{Window, WindowBuilder};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
+#[cfg(any(target_os = "macos", test))]
+mod composite_status;
 mod cpu_widget;
 mod cpu_widget_app;
 mod menu_items_app;
+mod menu_metric;
 #[cfg(target_os = "macos")]
 mod native_cpu_widget;
 #[cfg(target_os = "macos")]
@@ -67,10 +70,12 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
 use objc2::AllocAnyThread;
+#[cfg(all(target_os = "macos", test))]
+use objc2_app_kit::NSCellImagePosition;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSBitmapFormat, NSBitmapImageRep, NSCellImagePosition, NSDeviceRGBColorSpace, NSEvent, NSImage,
-    NSImageCacheMode, NSScreen, NSWindow, NSWorkspace,
+    NSAppearanceCustomization, NSBitmapFormat, NSBitmapImageRep, NSColor, NSColorSpace,
+    NSDeviceRGBColorSpace, NSEvent, NSImage, NSImageCacheMode, NSScreen, NSWindow, NSWorkspace,
 };
 #[cfg(target_os = "macos")]
 use objc2_foundation::{
@@ -85,8 +90,8 @@ use tray_icon::{
 use wry::{WebView, WebViewBuilder, RGBA};
 
 use peterfan_core::config::{
-    Config, CpuWidgetConfig, CustomCurveConfig, Language, MenubarDisplay, NotificationConfig,
-    ResolvedLanguage, Rule, RunnerCharacter, TemperatureSource, UpdateChannel,
+    Config, CpuWidgetConfig, CustomCurveConfig, Language, MenubarDisplay, MenubarMetric,
+    NotificationConfig, ResolvedLanguage, Rule, RunnerCharacter, TemperatureSource, UpdateChannel,
 };
 use peterfan_core::error::CoreError;
 use peterfan_core::metrics::{BatteryInfo, DiskInfo, ProcSort, ProcessInfo};
@@ -717,8 +722,11 @@ struct TrayMenu {
     quit: tray_icon::menu::MenuId,
     /// "Display" submenu — number / cat / both.
     display_items: Vec<(MenubarDisplay, tray_icon::menu::CheckMenuItem)>,
+    metric_items: Vec<(MenubarMetric, tray_icon::menu::CheckMenuItem)>,
     #[cfg(target_os = "macos")]
     menu_items: native_cpu_widget::MenuItemsMenu,
+    #[cfg(target_os = "macos")]
+    cpu_appearance: native_cpu_widget::CpuAppearanceMenu,
     /// CPU runner character, independent of number/runner display mode.
     character_items: Vec<(RunnerCharacter, tray_icon::menu::CheckMenuItem)>,
     random_character_item: tray_icon::menu::CheckMenuItem,
@@ -760,6 +768,7 @@ struct L10n {
     check_updates: &'static str,
     quit: &'static str,
     menu_bar_style: &'static str,
+    menu_bar_metric: &'static str,
     runner_character: &'static str,
     temperature_source: &'static str,
     fan_speed: &'static str,
@@ -786,6 +795,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             check_updates: "Update Now…",
             quit: "Quit PeterFan",
             menu_bar_style: "Menu Bar Style",
+            menu_bar_metric: "Menu Bar Metric",
             runner_character: "Runner Character",
             temperature_source: "Dashboard Temperature",
             fan_speed: "Fan Speed",
@@ -809,6 +819,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             check_updates: "지금 업데이트…",
             quit: "PeterFan 종료",
             menu_bar_style: "메뉴 막대 스타일",
+            menu_bar_metric: "메뉴 막대 측정값",
             runner_character: "러너 캐릭터",
             temperature_source: "대시보드 온도",
             fan_speed: "팬 속도",
@@ -827,6 +838,24 @@ struct RunnerAssets {
     selected_preview_frames: serde_json::Value,
     #[cfg(any(target_os = "macos", test))]
     native_images: Vec<NativeRunnerImage>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(PartialEq, Eq)]
+struct CompositeKey {
+    visibility: peterfan_core::config::MenuItemsVisibility,
+    metric: Option<MenubarMetric>,
+    style: peterfan_core::config::CpuWidgetStyle,
+    cpu_width: u32,
+    cpu_pixels: Vec<u8>,
+    foreground: [u8; 3],
+    character: RunnerCharacter,
+}
+
+#[cfg(target_os = "macos")]
+struct PreparedComposite {
+    key: CompositeKey,
+    images: Vec<NativeRunnerImage>,
 }
 
 #[cfg(target_os = "macos")]
@@ -876,11 +905,13 @@ struct App {
     /// ms, especially when they're failing (no daemon, no root).
     provider: std::sync::Arc<dyn HardwareProvider>,
     display: MenubarDisplay,
+    metric: menu_metric::MetricSelection,
     primary_visible: bool,
     runner_character: RunnerCharacter,
     random_runner: RandomRunner,
     temperature_source: TemperatureSource,
     update_channel: UpdateChannel,
+    last_good_config: peterfan_core::config::Config,
     critical_temp_c: f32,
     notifications: NotificationConfig,
     notification_runtime: NotificationRuntime,
@@ -929,6 +960,7 @@ struct App {
     process_filter: String,
     dashboard_slow_cache: DashboardSlowCache,
     next_dashboard_slow_refresh: Instant,
+    next_network_refresh: Instant,
     /// Small animation frame for the RunCat-style menu-bar character. It
     /// advances on each refresh, with bigger CPU load taking larger strides.
     runner_frame: u8,
@@ -942,6 +974,10 @@ struct App {
     runner_native_timer: Option<Retained<NSTimer>>,
     #[cfg(target_os = "macos")]
     runner_native_painter: Rc<RefCell<native_runner::NativeRunnerPainter>>,
+    #[cfg(target_os = "macos")]
+    composite_images: Rc<RefCell<Vec<NativeRunnerImage>>>,
+    #[cfg(target_os = "macos")]
+    composite_key: Option<CompositeKey>,
     #[cfg(target_os = "macos")]
     runner_native_cpu_bits: Arc<AtomicU32>,
     #[cfg(target_os = "macos")]
@@ -1249,6 +1285,13 @@ fn runner_character_label(lang: ResolvedLanguage, character: RunnerCharacter) ->
 fn save_temperature_source(source: TemperatureSource) -> std::io::Result<PathBuf> {
     peterfan_platform::config::update(|cfg| {
         cfg.menubar.temperature_source = source;
+        Ok(())
+    })
+}
+
+fn save_menu_metric(metric: MenubarMetric) -> std::io::Result<PathBuf> {
+    peterfan_platform::config::update(|cfg| {
+        cfg.menubar.metric = metric;
         Ok(())
     })
 }
@@ -2638,10 +2681,31 @@ fn main() {
     log_menubar_event(&format!("startup mock={use_mock}"));
     load_fan_action_log();
 
-    let saved_config = peterfan_platform::config::load();
+    let saved_config = peterfan_platform::config::load_valid();
+    let valid_saved_config = saved_config.is_some();
+    let saved_config = saved_config.unwrap_or_default();
+    let last_good_config = saved_config.clone();
     let critical_temp_c = saved_config.critical_temp_c;
     let notifications = saved_config.notifications.clone();
     let saved = saved_config.menubar;
+    let metric_argument = args
+        .iter()
+        .position(|a| a == "--metric")
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str);
+    let service = std::env::var("XPC_SERVICE_NAME").ok();
+    let metric = match menu_metric::MetricSelection::new_for_launch(
+        saved.metric,
+        metric_argument,
+        service.as_deref(),
+        valid_saved_config,
+    ) {
+        Ok(metric) => metric,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+    };
     let display = args
         .iter()
         .position(|a| a == "--display")
@@ -2721,11 +2785,13 @@ fn main() {
         monitor,
         provider,
         display,
+        metric,
         primary_visible: true,
         runner_character,
         random_runner: RandomRunner::new(random_character, Instant::now()),
         temperature_source,
         update_channel,
+        last_good_config,
         critical_temp_c,
         notifications,
         notification_runtime: NotificationRuntime::default(),
@@ -2760,6 +2826,7 @@ fn main() {
         process_filter: String::new(),
         dashboard_slow_cache: DashboardSlowCache::default(),
         next_dashboard_slow_refresh: Instant::now() + DASHBOARD_SLOW_REFRESH,
+        next_network_refresh: Instant::now(),
         runner_frame: 0,
         runner_cpu_pct: 0.0,
         runner_has_sample: false,
@@ -2771,6 +2838,10 @@ fn main() {
         runner_native_timer: None,
         #[cfg(target_os = "macos")]
         runner_native_painter: Rc::new(RefCell::new(native_runner::NativeRunnerPainter::default())),
+        #[cfg(target_os = "macos")]
+        composite_images: Rc::new(RefCell::new(Vec::new())),
+        #[cfg(target_os = "macos")]
+        composite_key: None,
         #[cfg(target_os = "macos")]
         runner_native_cpu_bits: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
         #[cfg(target_os = "macos")]
@@ -3185,9 +3256,6 @@ fn main() {
                         parsed.map(|request| menu_items_app::request(&mut app, request))
                     } else { run_settings_request(request) };
                     if let Some(status) = status { *STATUS.lock().expect("status poisoned") = status; }
-                    if operation == Some(SettingsOperation::ImportConfig) {
-                        menu_items_app::reload(&mut app, &peterfan_platform::config::load().menubar);
-                    }
                     refresh_after_pending = true;
                 } else if let Some(json) = c.strip_prefix("rules:") {
                     let status = save_automation_rules(json).message;
@@ -3270,6 +3338,19 @@ fn main() {
         while let Ok(ev) = menu_events.try_recv() {
             let id = &ev.id;
             #[cfg(target_os = "macos")]
+            if let Some(action) = app.tray_menu.as_ref().and_then(|menu| menu.cpu_appearance.action(id, app.cpu_widget_config)) {
+                let config = cpu_widget_app::native_appearance(app.cpu_widget_config, action)
+                    .expect("CPU appearance menu action");
+                if let Err(error) = cpu_widget_app::apply(&mut app, config, true) {
+                    report_preference_failure("CPU widget", error);
+                }
+                if let Some(menu) = &app.tray_menu {
+                    menu.cpu_appearance.update(app.cpu_widget_config, app.language.resolve());
+                }
+                next_metric_at = now;
+                continue;
+            }
+            #[cfg(target_os = "macos")]
             if let Some(action) = app.cpu_widget_native.as_ref().and_then(|widget| widget.menu_action(id)) {
                 use native_cpu_widget::CpuWidgetAction;
                 match action {
@@ -3300,6 +3381,7 @@ fn main() {
                 continue;
             }
             let mut matched_display: Option<MenubarDisplay> = None;
+            let mut matched_metric: Option<MenubarMetric> = None;
             let mut matched_character: Option<RunnerCharacter> = None;
             let mut matched_random = false;
             let mut matched_temperature_source: Option<TemperatureSource> = None;
@@ -3318,6 +3400,11 @@ fn main() {
                     tm.display_items.iter().find(|(_, item)| item.id() == id)
                 {
                     matched_display = Some(*d);
+                    None
+                } else if let Some((metric, _)) =
+                    tm.metric_items.iter().find(|(_, item)| item.id() == id)
+                {
+                    matched_metric = Some(*metric);
                     None
                 } else if id == tm.random_character_item.id() {
                     matched_random = true;
@@ -3382,6 +3469,17 @@ fn main() {
                 // their last committed state as well as the successful path.
                 if let Some(ref tm) = app.tray_menu {
                     for (candidate, item) in &tm.display_items { item.set_checked(*candidate == app.display); }
+                }
+                update(&mut app);
+            }
+            if let Some(metric) = matched_metric {
+                if preference_saved("menu bar metric", save_menu_metric(metric)) {
+                    app.metric.saved(metric);
+                }
+                if let Some(ref tm) = app.tray_menu {
+                    for (candidate, item) in &tm.metric_items {
+                        item.set_checked(*candidate == app.metric.active);
+                    }
                 }
                 update(&mut app);
             }
@@ -3540,6 +3638,7 @@ fn help_text() -> String {
          USAGE:\n    peterfan-menubar [OPTIONS]\n\n\
          OPTIONS:\n    \
          --mock                Use simulated hardware instead of real sensors\n    \
+        --metric <cpu|memory|temp|fan|network>  Menu-bar measurement\n    \
         --display <number|cat|both>             How it's rendered (cat also accepts legacy graph)\n    \
         --character <name>                      CPU runner character (20 choices)\n    \
          (The flag overrides the saved preference; changing it from the\n    \
@@ -3628,6 +3727,31 @@ fn build_tray(app: &mut App) {
         (d, item)
     })
     .collect();
+
+    let metric_submenu = Submenu::new(s.menu_bar_metric, true);
+    let metric_items = [
+        (MenubarMetric::Cpu, "CPU", "CPU"),
+        (MenubarMetric::Memory, "Memory", "메모리"),
+        (MenubarMetric::Temp, "Temperature", "온도"),
+        (MenubarMetric::Fan, "Fan speed", "팬 속도"),
+        (
+            MenubarMetric::Network,
+            "Network throughput",
+            "네트워크 속도",
+        ),
+    ]
+    .into_iter()
+    .map(|(metric, en, ko)| {
+        let label = if app.language.resolve() == ResolvedLanguage::Ko {
+            ko
+        } else {
+            en
+        };
+        let item = CheckMenuItem::new(label, true, app.metric.active == metric, None);
+        let _ = metric_submenu.append(&item);
+        (metric, item)
+    })
+    .collect::<Vec<_>>();
 
     let character_submenu = Submenu::new(s.runner_character, true);
     let random_character_item = CheckMenuItem::new(
@@ -3747,7 +3871,13 @@ fn build_tray(app: &mut App) {
     );
     #[cfg(target_os = "macos")]
     let _ = menu.append(menu_items.submenu());
+    #[cfg(target_os = "macos")]
+    let cpu_appearance =
+        native_cpu_widget::CpuAppearanceMenu::new(app.cpu_widget_config, app.language.resolve());
+    #[cfg(target_os = "macos")]
+    let _ = menu.append(cpu_appearance.submenu());
     let _ = menu.append(&character_submenu);
+    let _ = menu.append(&metric_submenu);
     let _ = menu.append(&temperature_source_submenu);
     let _ = menu.append(&language_submenu);
     let _ = menu.append(&PredefinedMenuItem::separator());
@@ -3766,8 +3896,11 @@ fn build_tray(app: &mut App) {
             .collect(),
         quit: quit_item.id().clone(),
         display_items,
+        metric_items,
         #[cfg(target_os = "macos")]
         menu_items,
+        #[cfg(target_os = "macos")]
+        cpu_appearance,
         character_items,
         random_character_item,
         temperature_source_items,
@@ -3791,6 +3924,11 @@ fn build_tray(app: &mut App) {
             app.tray = Some(tray);
             app.tray_menu = Some(tray_menu);
             app.last_runner_icon = initial_runner_icon;
+            #[cfg(target_os = "macos")]
+            {
+                app.composite_key = None;
+                app.last_menubar_text = None;
+            }
             #[cfg(target_os = "macos")]
             app.runner_native_applied_icon
                 .store(initial_runner_icon.unwrap_or(usize::MAX), Ordering::Relaxed);
@@ -4851,14 +4989,42 @@ fn dashboard_render_requested(
     popover_visible || popover_scheduled || detail_visible
 }
 
+#[cfg(target_os = "macos")]
+fn cpu_core_tooltip_detail(
+    config: CpuWidgetConfig,
+    core_count: usize,
+    language: ResolvedLanguage,
+) -> Option<String> {
+    if !config.enabled || config.style != peterfan_core::config::CpuWidgetStyle::Cores {
+        return None;
+    }
+    Some(if language == ResolvedLanguage::Ko {
+        format!("{core_count}개 논리 코어 · 코어마다 0–100%")
+    } else {
+        format!("{core_count} logical CPUs · 0–100% per CPU")
+    })
+}
+
 fn update(app: &mut App) {
     let now = Instant::now();
     // Re-read the small user config so CLI edits and the detail-window rule
     // editor converge without an app restart. The privileged daemon still
     // validates the same file before applying rules.
-    let config = peterfan_platform::config::load();
-    app.update_channel = config.menubar.update_channel;
-    menu_items_app::reload(app, &config.menubar);
+    let valid_config = peterfan_platform::config::load_valid();
+    menu_metric::apply_valid_config(valid_config.as_ref(), |config| {
+        app.update_channel = config.menubar.update_channel;
+        let old_metric = app.metric.active;
+        app.metric.reload_if_valid(Some(config.menubar.metric));
+        if old_metric != app.metric.active {
+            if let Some(ref tm) = app.tray_menu {
+                for (metric, item) in &tm.metric_items {
+                    item.set_checked(*metric == app.metric.active);
+                }
+            }
+        }
+        menu_items_app::reload(app, &config.menubar);
+    });
+    let config = menu_metric::last_good_config(&mut app.last_good_config, valid_config);
     app.monitor.refresh_quick();
     let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
     let popover_scheduled = app.popover_show_at.is_some();
@@ -4880,6 +5046,20 @@ fn update(app: &mut App) {
             || app.dashboard_slow_cache.proc_filter != app.process_filter);
     if refresh_slow_metrics {
         app.monitor.refresh_slow();
+        app.next_network_refresh = now + Duration::from_secs(1);
+    }
+    #[cfg(target_os = "macos")]
+    let metric_visible = menu_items_app::visibility(app).metric;
+    #[cfg(not(target_os = "macos"))]
+    let metric_visible = matches!(app.display, MenubarDisplay::Number | MenubarDisplay::Both);
+    if menu_metric::should_refresh_network(
+        app.metric.active,
+        metric_visible,
+        refresh_slow_metrics,
+        now >= app.next_network_refresh,
+    ) {
+        app.monitor.refresh_network();
+        app.next_network_refresh = now + Duration::from_secs(1);
     }
     let cpu = app.monitor.cpu();
     // Gathered unconditionally (cheap — the underlying sysinfo/provider state
@@ -4962,8 +5142,8 @@ fn update(app: &mut App) {
         smooth_runner_cpu(app.runner_cpu_pct, cpu.usage_percent, app.runner_has_sample);
     app.runner_has_sample = true;
 
-    // Menu-bar item: keep it calm and literal. The top bar shows only the CPU
-    // Core Average temperature; richer metrics live inside the popover.
+    // Menu-bar item uses the selected measurement while the runner remains
+    // driven by CPU load, independent of the selected text metric.
     apply_runner_icon(app);
     if let Some(tray) = &app.tray {
         // Fixed-width formatting throughout: a menu-bar item that changes
@@ -4971,14 +5151,33 @@ fn update(app: &mut App) {
         // left back and forth, which reads as the whole menu bar jittering.
         // Padding to a constant character count keeps the item's width
         // (and everything to its left) stable regardless of the value.
-        let title = if let Some(temp) = display_temp.filter(|t| *t > 0.0) {
-            format!("{temp:>3.0}°C")
-        } else {
-            " --°C".to_string()
-        };
+        let title = menu_metric::title(
+            app.metric.active,
+            &menu_metric::MetricReadings {
+                cpu: Some(cpu.usage_percent),
+                memory: Some(mem.used_percent),
+                temperature: display_temp,
+                fan_rpm: (fan_data_ready && !fans.is_empty()).then_some(fastest_rpm),
+                network_bytes_per_sec: (app.monitor.network_rates_ready() && !nets.is_empty())
+                    .then_some(rx + tx),
+            },
+        );
 
-        let show_number = matches!(app.display, MenubarDisplay::Number | MenubarDisplay::Both);
-        let menubar_text = if show_number { &title } else { "" };
+        #[cfg(target_os = "macos")]
+        let group_title = composite_status::title(
+            menu_items_app::visibility(app),
+            app.cpu_widget_config,
+            &cpu_widget::title(app.cpu_widget_config, app.cpu_widget_history.current()),
+            &title,
+        );
+        #[cfg(target_os = "macos")]
+        let menubar_text = group_title.as_str();
+        #[cfg(not(target_os = "macos"))]
+        let menubar_text = if matches!(app.display, MenubarDisplay::Number | MenubarDisplay::Both) {
+            &title
+        } else {
+            ""
+        };
         if app.last_menubar_text.as_deref() != Some(menubar_text) {
             set_menubar_text(tray, menubar_text);
             app.last_menubar_text = Some(menubar_text.to_string());
@@ -4996,6 +5195,14 @@ fn update(app: &mut App) {
             "CPU {:.0}%   {mem_label} {:.0}%",
             cpu.usage_percent, mem.used_percent
         )];
+        #[cfg(target_os = "macos")]
+        if let Some(core_detail) = cpu_core_tooltip_detail(
+            app.cpu_widget_config,
+            app.cpu_widget_history.core_values().len(),
+            app.language.resolve(),
+        ) {
+            tip_parts.push(core_detail);
+        }
         if let Some(temp) = display_temp.filter(|t| *t > 0.0) {
             tip_parts.push(format!("CPU {temp:.0}°C"));
         }
@@ -5891,7 +6098,7 @@ fn toggle_login_item() -> String {
                 Err(e) => format!("login item disable failed: {e}"),
             }
         } else {
-            match peterfan_platform::login_item::install(None, "temp") {
+            match peterfan_platform::login_item::install_preserving_metric(None) {
                 Ok((_bin, _plist)) => "startup enabled".to_string(),
                 Err(e) => format!("login item enable failed: {e}"),
             }
@@ -6924,6 +7131,227 @@ fn build_runner_assets(character: RunnerCharacter) -> Result<RunnerAssets, Runne
     RunnerAssets::from_pack(RunnerPack::build(character)?)
 }
 
+#[cfg(target_os = "macos")]
+fn composite_foreground(app: &App) -> Result<[u8; 3], String> {
+    let marker = MainThreadMarker::new().ok_or("Composite item requires the GUI thread")?;
+    let button = app
+        .tray
+        .as_ref()
+        .and_then(TrayIcon::ns_status_item)
+        .and_then(|item| item.button(marker))
+        .ok_or("Primary status button is unavailable")?;
+    let result = Cell::new([0_u8; 3]);
+    let resolve = RcBlock::new(|| {
+        let highlighted = button.cell().is_some_and(|cell| cell.isHighlighted());
+        let foreground = if highlighted {
+            NSColor::selectedMenuItemTextColor()
+        } else {
+            NSColor::labelColor()
+        };
+        if let Some(color) = foreground.colorUsingColorSpace(&NSColorSpace::deviceRGBColorSpace()) {
+            let channel = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+            result.set([
+                channel(color.redComponent()),
+                channel(color.greenComponent()),
+                channel(color.blueComponent()),
+            ]);
+        }
+    });
+    button
+        .effectiveAppearance()
+        .performAsCurrentDrawingAppearance(&resolve);
+    // A shared status image can be replicated onto displays with different
+    // menu-bar appearances. Preserve the prior neutral-ink fallback there;
+    // a single appearance-specific color can disappear on another display.
+    Ok(if NSScreen::screens(marker).len() > 1 {
+        [118; 3]
+    } else {
+        result.get()
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn make_composite_native_image(
+    frame: &composite_status::CompositeFrame,
+) -> Result<NativeRunnerImage, String> {
+    let bitmap = unsafe { NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
+        NSBitmapImageRep::alloc(), std::ptr::null_mut(), frame.width as isize, frame.height as isize,
+        8, 4, true, false, NSDeviceRGBColorSpace, NSBitmapFormat::AlphaNonpremultiplied,
+        (frame.width * 4) as isize, 32) }.ok_or("Composite bitmap allocation failed")?;
+    let pixels = bitmap.bitmapData();
+    if pixels.is_null()
+        || bitmap.bytesPerRow() != (frame.width * 4) as isize
+        || bitmap.pixelsHigh() != frame.height as isize
+    {
+        return Err("Invalid composite bitmap storage".into());
+    }
+    // The bitmap owns checked RGBA8 storage for the complete frame.
+    unsafe { std::ptr::copy_nonoverlapping(frame.rgba.as_ptr(), pixels, frame.rgba.len()) };
+    let size = NSSize::new(f64::from(frame.width) / 2.0, f64::from(frame.height) / 2.0);
+    bitmap.setSize(size);
+    let image = NSImage::initWithSize(NSImage::alloc(), size);
+    image.addRepresentation(&bitmap);
+    image.setCacheMode(NSImageCacheMode::Always);
+    image.setTemplate(false);
+    Ok(image)
+}
+
+#[cfg(target_os = "macos")]
+fn composite_key(
+    app: &App,
+    visibility: peterfan_core::config::MenuItemsVisibility,
+    config: CpuWidgetConfig,
+    history: &cpu_widget::CpuWidgetHistory,
+) -> Result<CompositeKey, String> {
+    let graph = visibility.cpu && config.style != peterfan_core::config::CpuWidgetStyle::Number;
+    Ok(CompositeKey {
+        visibility,
+        metric: visibility.metric.then_some(app.metric.active),
+        style: config.style,
+        cpu_width: if graph {
+            history.pixel_width(config.style)
+        } else {
+            0
+        },
+        cpu_pixels: if graph {
+            history.render_rgba(config.style)
+        } else {
+            Vec::new()
+        },
+        foreground: composite_foreground(app)?,
+        character: app.runner_character,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_composite(app: &App, key: CompositeKey) -> Result<PreparedComposite, String> {
+    let graph = key.visibility.cpu && key.style != peterfan_core::config::CpuWidgetStyle::Number;
+    let images = if !graph {
+        if key.visibility.runner {
+            app.runner_assets.native_images.clone()
+        } else {
+            Vec::new()
+        }
+    } else {
+        let frames = app.runner_assets.pack.frames();
+        let shared_bands = key.visibility.runner
+            && frames
+                .chunks_exact(usize::from(RUNNER_FRAME_COUNT))
+                .all(|band| band == &frames[..usize::from(RUNNER_FRAME_COUNT)]);
+        let poses = if !key.visibility.runner {
+            1
+        } else if shared_bands {
+            usize::from(RUNNER_FRAME_COUNT)
+        } else {
+            frames.len()
+        };
+        let mut rendered = (0..poses)
+            .map(|index| {
+                let runner = if key.visibility.runner {
+                    app.runner_assets.pack.frames()[index].as_slice()
+                } else {
+                    &[]
+                };
+                let frame = composite_status::compose(
+                    key.visibility,
+                    key.style,
+                    key.cpu_width,
+                    &key.cpu_pixels,
+                    runner,
+                    app.runner_assets.pack.is_color(),
+                    key.foreground,
+                )
+                .ok_or("Composite frame invalid")?;
+                make_composite_native_image(&frame)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if shared_bands {
+            let one_band = rendered.clone();
+            for _ in 1..runner::LOAD_BANDS {
+                rendered.extend(one_band.iter().cloned());
+            }
+        }
+        rendered
+    };
+    Ok(PreparedComposite { key, images })
+}
+
+#[cfg(target_os = "macos")]
+fn configure_composite_status(app: &App, primary: &native_cpu_widget::PreparedPrimaryItem) {
+    let v = menu_items_app::visibility(app);
+    let images = app.composite_images.borrow();
+    let image_width = images.first().map_or(0.0, |image| image.size().width);
+    let cpu_text_width = if v.cpu {
+        if app.cpu_widget_config.style == peterfan_core::config::CpuWidgetStyle::Number {
+            68.0
+        } else if app.cpu_widget_config.show_percentage {
+            38.0
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+    let metric_width = if v.metric {
+        menu_metric::reserved_width(app.metric.active)
+    } else {
+        0.0
+    };
+    primary.configure_composite(
+        image_width,
+        !images.is_empty(),
+        cpu_text_width,
+        metric_width,
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn sync_composite_images(app: &mut App) {
+    let key = match composite_key(
+        app,
+        menu_items_app::visibility(app),
+        app.cpu_widget_config,
+        &app.cpu_widget_history,
+    ) {
+        Ok(key) => key,
+        Err(error) => {
+            app.cpu_widget_error = Some(error);
+            return;
+        }
+    };
+    if app.composite_key.as_ref() == Some(&key) {
+        return;
+    }
+    match prepare_composite(app, key) {
+        Ok(prepared) => {
+            let old_size = app
+                .composite_images
+                .borrow()
+                .first()
+                .map(|image| image.size());
+            let new_size = prepared.images.first().map(|image| image.size());
+            app.runner_native_painter
+                .borrow_mut()
+                .image_size_changed(old_size, new_size);
+            *app.composite_images.borrow_mut() = prepared.images;
+            app.composite_key = Some(prepared.key);
+            app.runner_native_applied_icon
+                .store(usize::MAX - 1, Ordering::Relaxed);
+            if let Some(primary) = app
+                .tray
+                .as_ref()
+                .and_then(|tray| native_cpu_widget::PreparedPrimaryItem::new(tray).ok())
+            {
+                configure_composite_status(app, &primary);
+            }
+            app.cpu_widget_error = None;
+        }
+        Err(error) => {
+            app.cpu_widget_error = Some(error);
+        }
+    }
+}
+
 #[cfg(test)]
 fn build_runner_assets_with<FP, FI, FN>(
     character: RunnerCharacter,
@@ -7029,7 +7457,7 @@ fn runner_icon_from_rgba(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn make_runner_native_image_from_rgba(
     character: RunnerCharacter,
     frame_index: usize,
@@ -7174,7 +7602,7 @@ fn configure_native_status_item(tray: &TrayIcon, display: MenubarDisplay) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn native_status_item_image_position(display: MenubarDisplay) -> NSCellImagePosition {
     native_cpu_widget::primary_image_position(display)
 }
@@ -7244,7 +7672,7 @@ fn sync_native_runner_timer(app: &mut App) {
     }
 
     let character = app.runner_character;
-    let images = app.runner_assets.native_images.clone();
+    let images = Rc::clone(&app.composite_images);
     let frame = Arc::clone(&app.runner_native_frame);
     let cpu_bits = Arc::clone(&app.runner_native_cpu_bits);
     let motion_cpu_bits = Arc::clone(&app.runner_native_motion_cpu_bits);
@@ -7280,7 +7708,7 @@ fn sync_native_runner_timer(app: &mut App) {
             band.store(next_band, Ordering::Relaxed);
             frame.store(u64::from(next_frame), Ordering::Relaxed);
             let index = next_band * usize::from(RUNNER_FRAME_COUNT) + usize::from(next_frame);
-            if let Some(image) = images.get(index) {
+            if let Some(image) = images.borrow().get(index) {
                 painter.borrow().paint(image);
                 applied_icon.store(index, Ordering::Relaxed);
             }
@@ -7438,13 +7866,23 @@ fn finish_runner_switch(app: &mut App) {
 
 fn apply_runner_icon(app: &mut App) {
     #[cfg(target_os = "macos")]
+    sync_composite_images(app);
+    #[cfg(target_os = "macos")]
     sync_native_runner_painter(app);
     #[cfg(target_os = "macos")]
-    let desired = (app.primary_visible && runner_enabled(app.display)).then(|| {
-        app.runner_native_band.load(Ordering::Relaxed) * usize::from(RUNNER_FRAME_COUNT)
-            + app.runner_native_frame.load(Ordering::Relaxed) as usize
-                % usize::from(RUNNER_FRAME_COUNT)
-    });
+    let desired = if app.primary_visible && runner_enabled(app.display) {
+        Some({
+            app.runner_native_band.load(Ordering::Relaxed) * usize::from(RUNNER_FRAME_COUNT)
+                + app.runner_native_frame.load(Ordering::Relaxed) as usize
+                    % usize::from(RUNNER_FRAME_COUNT)
+        })
+    } else if app.cpu_widget_config.enabled
+        && app.cpu_widget_config.style != peterfan_core::config::CpuWidgetStyle::Number
+    {
+        Some(0)
+    } else {
+        None
+    };
     #[cfg(not(target_os = "macos"))]
     let desired = (app.primary_visible && runner_enabled(app.display)).then(|| {
         runner_icon_index_with_hysteresis(
@@ -7472,9 +7910,9 @@ fn apply_runner_icon(app: &mut App) {
             let Some(button) = status_item.button(mtm) else {
                 return;
             };
-            button.setImagePosition(native_status_item_image_position(app.display));
+            let images = app.composite_images.borrow();
             let image = desired
-                .and_then(|index| app.runner_assets.native_images.get(index))
+                .and_then(|index| images.get(index))
                 .map(|image| &**image);
             if let Some(image) = image {
                 app.runner_native_painter.borrow().paint(image);
@@ -7506,6 +7944,11 @@ fn sync_native_runner_painter(app: &mut App) {
         return;
     };
     let screens = NSScreen::screens(mtm).len();
+    let placeholder_size = app
+        .composite_images
+        .borrow()
+        .first()
+        .map(|image| image.size());
     let mut painter = app.runner_native_painter.borrow_mut();
     let changed = painter.reconcile(
         &button,
@@ -7513,10 +7956,7 @@ fn sync_native_runner_painter(app: &mut App) {
         app.primary_visible,
         app.reduce_motion,
         screens,
-        || {
-            let transparent = vec![0; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize];
-            make_runner_native_image_from_rgba(app.runner_character, 0, &transparent).ok()
-        },
+        || placeholder_size.map(|size| NSImage::initWithSize(NSImage::alloc(), size)),
     );
     if changed {
         // The timer observes this shared painter on its next tick, so monitor
@@ -7930,14 +8370,14 @@ fn runner_picker_options(lang: ResolvedLanguage) -> String {
         "Random · every minute"
     };
     let random = format!(
-        r#"<button type="button" class="character-option" role="option" aria-selected="false" data-character="random" onclick="chooseRunnerCharacter('random')" onkeydown="handleRunnerOptionKey(event)"><span class="runner-preview random-runner-icon" aria-hidden="true">⇄</span><span class="character-option-label">{label}</span><span class="character-option-check" aria-hidden="true"></span></button>"#
+        r#"<button type="button" class="character-option" role="option" tabindex="-1" aria-selected="false" data-character="random" onclick="chooseRunnerCharacter('random')" onkeydown="handleRunnerOptionKey(event)"><span class="runner-preview random-runner-icon" aria-hidden="true">⇄</span><span class="character-option-label">{label}</span><span class="character-option-check" aria-hidden="true"></span></button>"#
     );
     random + &RunnerCharacter::FEATURED
         .map(|character| {
             let value = character.as_str();
             let label = runner_character_label(lang, character);
             format!(
-                r#"<button type="button" class="character-option" role="option" aria-selected="false" data-character="{value}" onclick="chooseRunnerCharacter('{value}')" onkeydown="handleRunnerOptionKey(event)"><canvas class="runner-preview" width="{RUNNER_PIXEL_WIDTH}" height="{RUNNER_PIXEL_HEIGHT}" data-runner-preview="{value}" aria-hidden="true"></canvas><span class="character-option-label">{label}</span><span class="character-option-check" aria-hidden="true"></span></button>"#
+                r#"<button type="button" class="character-option" role="option" tabindex="-1" aria-selected="false" data-character="{value}" onclick="chooseRunnerCharacter('{value}')" onkeydown="handleRunnerOptionKey(event)"><canvas class="runner-preview" width="{RUNNER_PIXEL_WIDTH}" height="{RUNNER_PIXEL_HEIGHT}" data-runner-preview="{value}" aria-hidden="true"></canvas><span class="character-option-label">{label}</span><span class="character-option-check" aria-hidden="true"></span></button>"#
             )
         })
         .join("")
@@ -8441,6 +8881,9 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .rail-panel .panel-action{min-height:30px;background:var(--accent-medium);border:1px solid var(--accent-border);color:var(--accent);font:inherit;font-size:11px;font-weight:700;padding:6px 10px;border-radius:7px;cursor:pointer;}
 .rail-panel .panel-action.secondary{background:var(--chip-bg);border-color:transparent;color:var(--text);}
 .rail-panel .panel-action.danger{background:var(--danger-soft);border-color:var(--danger-border);color:var(--r);}
+.rail-panel .panel-action:not(:disabled){transition:background .15s,border-color .15s,transform .1s;}
+.rail-panel .panel-action:not(:disabled):hover{background:var(--chip-hover);border-color:var(--accent-border);}
+.rail-panel .panel-action:disabled{cursor:not-allowed;opacity:.55;}
 .rail-panel .panel-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .release-notes-card{margin-top:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
 .release-notes-title{font-size:11px;font-weight:800;color:var(--text);margin-bottom:5px;}
@@ -8455,24 +8898,29 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .display-segment button{min-width:0;min-height:27px;padding:4px 5px;border:0;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:750;cursor:pointer;white-space:nowrap;}
 .display-segment button:hover{background:var(--track-hover);color:var(--text);}
 .display-segment button.active{background:var(--surface-raised);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.15);}
-.character-picker{position:relative;width:184px;}
-.character-select{display:grid;grid-template-columns:38px minmax(0,1fr) 10px;align-items:center;gap:7px;width:100%;height:40px;padding:3px 8px 3px 5px;border:1px solid var(--line);border-radius:7px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10px;font-weight:700;text-align:left;cursor:pointer;color-scheme:inherit;}
+.character-picker{position:relative;width:200px;max-width:100%;min-width:0;}
+.character-select{display:grid;grid-template-columns:48px minmax(0,1fr) 10px;align-items:center;gap:9px;width:100%;min-height:48px;padding:6px 10px 6px 7px;border:1px solid var(--line);border-radius:9px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:11px;font-weight:700;text-align:left;cursor:pointer;color-scheme:inherit;transition:background .15s,border-color .15s,transform .1s;}
 .character-select:hover,.character-select[aria-expanded="true"]{border-color:var(--accent-border);background-color:var(--track-hover);}
+.character-select:active{transform:scale(.99);}
 .character-select:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
-.runner-preview{display:block;width:27px;height:18px;opacity:.92;image-rendering:auto;pointer-events:none;}
-.character-select .runner-preview{width:27px;height:18px;}
+.runner-preview{display:block;width:48px;height:32px;opacity:1;image-rendering:auto;pointer-events:none;}
+.character-select .runner-preview{width:48px;height:32px;}
+/* A neutral preview tile separates both dark and light sprites from either theme. */
+canvas.runner-preview{background:#8996a5;border-radius:5px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);}
 .character-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .character-chevron{width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);color:var(--dim);transition:transform .12s ease;}
 .character-select[aria-expanded="true"] .character-chevron{transform:translateY(2px) rotate(225deg);}
-.random-runner-icon{font-size:21px;text-align:center;line-height:18px;color:var(--dim)}
-.character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:260px;overflow-y:auto;padding:5px;border:1px solid var(--panel-border);border-radius:8px;background:var(--surface-raised);box-shadow:var(--shadow);scrollbar-width:thin;overscroll-behavior:contain;}
+.random-runner-icon{font-size:25px;text-align:center;line-height:32px;color:var(--dim)}
+.character-menu{display:none;position:fixed;z-index:1000;width:264px;max-height:320px;overflow-y:auto;padding:6px;border:1px solid var(--panel-border);border-radius:10px;background:var(--surface-raised);box-shadow:var(--shadow);scrollbar-width:thin;overscroll-behavior:contain;}
 .character-menu.show{display:block;}
-.character-option{display:grid;grid-template-columns:38px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:34px;padding:1px 7px 1px 4px;border:0;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-size:10.5px;font-weight:650;text-align:left;cursor:pointer;}
-.character-option:hover,.character-option:focus-visible{background:var(--chip-hover);outline:none;}
+.character-option{display:grid;grid-template-columns:48px minmax(0,1fr) 14px;align-items:center;gap:9px;width:100%;min-height:44px;padding:5px 8px;border:0;border-radius:8px;background:transparent;color:var(--text);font:inherit;font-size:11px;font-weight:650;text-align:left;cursor:pointer;transition:background .15s,color .15s;}
+.character-option:hover{background:var(--chip-hover);}
+.character-option:focus-visible{background:var(--chip-hover);outline:2px solid var(--accent);outline-offset:-2px;}
 .character-option[aria-selected="true"]{background:var(--accent-soft);color:var(--accent);}
 .character-option-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .character-option-check{display:none;width:8px;height:5px;border-left:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-1px) rotate(-45deg);}
 .character-option[aria-selected="true"] .character-option-check{display:block;}
+@media(max-width:340px){#runner-character-setting,#menubar-display-setting{align-items:stretch;flex-direction:column;gap:7px;}.character-picker,#menubar-display-setting .settings-control-stack{width:100%;}}
 .runner-pace{color:var(--dim);font-size:9.5px;font-variant-numeric:tabular-nums;text-align:right;}
 .system-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin:0 0 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);}
 .system-fact{min-width:0;padding:8px 10px;}
@@ -11014,14 +11462,31 @@ function positionRunnerCharacterMenu(){
   var menu=document.getElementById('runner-character-menu');
   if(!trigger||!menu||menu.hidden)return;
   var rect=trigger.getBoundingClientRect();
-  var width=Math.min(224,window.innerWidth-16);
+  var width=Math.max(0,Math.min(264,window.innerWidth-16));
   menu.style.width=width+'px';
   var left=Math.max(8,Math.min(window.innerWidth-width-8,rect.right-width));
-  var menuHeight=Math.min(260,menu.scrollHeight);
-  var below=window.innerHeight-rect.bottom-8;
-  var top=below>=Math.min(180,menuHeight)?rect.bottom+5:Math.max(8,rect.top-menuHeight-5);
+  var menuHeight=Math.min(320,Math.max(0,window.innerHeight-16),menu.scrollHeight);
+  var below=Math.max(0,window.innerHeight-rect.bottom-13);
+  var above=Math.max(0,rect.top-13);
+  var openBelow=below>=Math.min(180,menuHeight)||below>=above;
+  menuHeight=Math.min(menuHeight,openBelow?below:above);
+  menu.style.maxHeight=Math.round(menuHeight)+'px';
+  var top=openBelow?rect.bottom+5:Math.max(8,rect.top-menuHeight-5);
   menu.style.left=Math.round(left)+'px';
   menu.style.top=Math.round(top)+'px';
+}
+var RUNNER_OPEN_SCROLL_TOP=0;
+function focusRunnerCharacterOption(option,menu){
+  if(!option||!menu)return;
+  option.focus({preventScroll:true});
+  var bounds=menu.getBoundingClientRect(), item=option.getBoundingClientRect();
+  if(item.top<bounds.top)menu.scrollTop+=item.top-bounds.top;
+  else if(item.bottom>bounds.bottom)menu.scrollTop+=item.bottom-bounds.bottom;
+}
+function handleRunnerPaneScroll(){
+  // A queued scroll event from focusing the trigger can arrive just after
+  // opening. Only close for movement after the menu was positioned.
+  if(runnerScrollPane&&runnerScrollPane.scrollTop!==RUNNER_OPEN_SCROLL_TOP)closeRunnerCharacterMenu(false);
 }
 function closeRunnerCharacterMenu(returnFocus){
   var trigger=document.getElementById('runner-character-select');
@@ -11036,13 +11501,14 @@ function openRunnerCharacterMenu(focusSelected){
   var trigger=document.getElementById('runner-character-select');
   var menu=document.getElementById('runner-character-menu');
   if(!trigger||!menu)return;
+  RUNNER_OPEN_SCROLL_TOP=runnerScrollPane?runnerScrollPane.scrollTop:0;
   menu.hidden=false;
   menu.classList.add('show');
   trigger.setAttribute('aria-expanded','true');
   positionRunnerCharacterMenu();
   if(focusSelected){
     var selected=menu.querySelector('[aria-selected="true"]')||menu.querySelector('.character-option');
-    if(selected)selected.focus();
+    focusRunnerCharacterOption(selected,menu);
   }
 }
 function toggleRunnerCharacterMenu(event){
@@ -11053,19 +11519,33 @@ function toggleRunnerCharacterMenu(event){
 function handleRunnerTriggerKey(event){
   if(event.key==='ArrowDown'||event.key==='ArrowUp'||event.key==='Enter'||event.key===' '){
     event.preventDefault();openRunnerCharacterMenu(true);
-  } else if(event.key==='Escape'){
+  } else if(event.key==='Escape'||event.key==='Tab'){
     closeRunnerCharacterMenu(false);
   }
 }
 function handleRunnerOptionKey(event){
+  if(event.key==='Tab'){
+    // The listbox lives at the end of the document; continue in the trigger's
+    // visual tab order rather than jumping to unrelated end-of-page controls.
+    var trigger=document.getElementById('runner-character-select');
+    closeRunnerCharacterMenu(false);
+    var tabbable=Array.prototype.filter.call(document.querySelectorAll('button, [href], input, select, textarea, summary, [tabindex]'),function(el){
+      return !el.disabled&&el.getAttribute('tabindex')!=='-1'&&el.getClientRects().length>0&&!el.closest('[hidden], [inert], [aria-hidden="true"]');
+    });
+    var index=tabbable.indexOf(trigger);
+    var next=tabbable[index+(event.shiftKey?-1:1)];
+    if(index>=0&&next){event.preventDefault();next.focus();}
+    else if(trigger)trigger.focus();
+    return;
+  }
   var options=Array.prototype.slice.call(document.querySelectorAll('.character-option'));
   var index=options.indexOf(event.currentTarget);
   if(event.key==='ArrowDown'||event.key==='ArrowUp'){
     event.preventDefault();
     var next=event.key==='ArrowDown'?Math.min(options.length-1,index+1):Math.max(0,index-1);
-    options[next].focus();
+    focusRunnerCharacterOption(options[next],document.getElementById('runner-character-menu'));
   } else if(event.key==='Home'||event.key==='End'){
-    event.preventDefault();options[event.key==='Home'?0:options.length-1].focus();
+    event.preventDefault();focusRunnerCharacterOption(options[event.key==='Home'?0:options.length-1],document.getElementById('runner-character-menu'));
   } else if(event.key==='Escape'){
     event.preventDefault();closeRunnerCharacterMenu(true);
   } else if(event.key==='Enter'||event.key===' '){
@@ -11154,7 +11634,7 @@ document.addEventListener('keydown',function(event){
 });
 window.addEventListener('resize',function(){closeRunnerCharacterMenu(false);});
 var runnerScrollPane=document.querySelector('.main-pane');
-if(runnerScrollPane)runnerScrollPane.addEventListener('scroll',function(){closeRunnerCharacterMenu(false);},{passive:true});
+if(runnerScrollPane)runnerScrollPane.addEventListener('scroll',handleRunnerPaneScroll,{passive:true});
 function updateSetup(d){
   renderSetupProgress(d.fan_control_install_progress||{phase:'idle',percent:0});
   var setup=document.getElementById('setup-row');
@@ -11554,6 +12034,35 @@ function reportHeight(){
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn grouped_tooltip_preserves_per_core_count_and_scale_only_when_visible() {
+        use super::*;
+        let mut config = CpuWidgetConfig {
+            enabled: true,
+            style: peterfan_core::config::CpuWidgetStyle::Cores,
+            show_percentage: false,
+        };
+        assert_eq!(
+            cpu_core_tooltip_detail(config, 18, ResolvedLanguage::Ko).as_deref(),
+            Some("18개 논리 코어 · 코어마다 0–100%")
+        );
+        assert_eq!(
+            cpu_core_tooltip_detail(config, 18, ResolvedLanguage::En).as_deref(),
+            Some("18 logical CPUs · 0–100% per CPU")
+        );
+        config.enabled = false;
+        assert_eq!(
+            cpu_core_tooltip_detail(config, 18, ResolvedLanguage::En),
+            None
+        );
+        config.enabled = true;
+        config.style = peterfan_core::config::CpuWidgetStyle::Bar;
+        assert_eq!(
+            cpu_core_tooltip_detail(config, 18, ResolvedLanguage::En),
+            None
+        );
+    }
     use super::*;
 
     const RUNNER_QA_SCALE: u32 = 4;
@@ -12842,7 +13351,7 @@ mod tests {
             "advance_runner_phase(",
             "runner_load_band_with_hysteresis(",
             "let index =",
-            "images.get(index)",
+            "images.borrow().get(index)",
             "painter.borrow().paint(image);",
             "runner_native_next_delay(",
         ] {
@@ -12875,7 +13384,7 @@ mod tests {
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")),
             "fn sync_native_runner_timer(app: &mut App) {",
         );
-        assert!(sync_timer_fn.contains("let images = app.runner_assets.native_images.clone();"));
+        assert!(sync_timer_fn.contains("let images = Rc::clone(&app.composite_images);"));
         assert!(!sync_timer_fn.contains("render_raw_frame("));
         assert!(!sync_timer_fn.contains("RunnerPack::build("));
     }
@@ -13222,7 +13731,7 @@ mod tests {
     }
 
     #[test]
-    fn all_runners_use_a_white_glyph_and_compact_picker_preview() {
+    fn legacy_runners_use_a_white_glyph_and_picker_preview_is_readable() {
         for character in RunnerCharacter::ALL {
             for frame in [0, 3, 7] {
                 let rgba = make_runner_rgba(character, 55.0, frame);
@@ -13233,12 +13742,14 @@ mod tests {
         }
 
         let html = dashboard_html(ResolvedLanguage::En, false);
-        assert!(html.contains(".runner-preview{display:block;width:27px;height:18px"));
-        assert!(html.contains(".character-select .runner-preview{width:27px;height:18px"));
+        assert!(html.contains(".runner-preview{display:block;width:48px;height:32px"));
+        assert!(html.contains(".character-select .runner-preview{width:48px;height:32px"));
+        assert!(html.contains("canvas.runner-preview{background:#8996a5;border-radius:5px"));
         assert!(html.contains(
-            ".character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:260px"
+            ".character-menu{display:none;position:fixed;z-index:1000;width:264px;max-height:320px"
         ));
-        assert!(html.contains(".character-option{display:grid;grid-template-columns:38px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:34px"));
+        assert!(html.contains(".character-option{display:grid;grid-template-columns:48px minmax(0,1fr) 14px;align-items:center;gap:9px;width:100%;min-height:44px"));
+        assert!(html.contains(".character-option:focus-visible{background:var(--chip-hover);outline:2px solid var(--accent)"));
         assert!(html.contains("image-rendering:auto"));
         assert!(html
             .contains("image.data[offset]=255;image.data[offset+1]=255;image.data[offset+2]=255;"));
@@ -15693,7 +16204,7 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
         assert!(help.contains("--character <name>"));
         assert!(help.contains("CPU runner character (20 choices)"));
         assert!(help.contains("cat also accepts legacy graph"));
-        assert!(!help.contains("--metric"));
+        assert!(help.contains("--metric <cpu|memory|temp|fan|network>"));
     }
 
     #[test]
@@ -16089,6 +16600,38 @@ rules = [{ when = "on_ac", profile = "maximum" }]
         )
         .unwrap();
         assert_eq!(imported.operation, SettingsOperation::ImportConfig);
+    }
+
+    #[test]
+    fn imported_settings_use_the_guarded_refresh_instead_of_default_fallback() {
+        let source = include_str!("main.rs");
+        let branch = source
+            .split("else if let Some(request) = c.strip_prefix(\"settingsrequest:\")")
+            .nth(1)
+            .unwrap()
+            .split("else if let Some(json) = c.strip_prefix(\"rules:\")")
+            .next()
+            .unwrap();
+        assert!(!branch.contains("peterfan_platform::config::load()"));
+        assert!(!branch.contains("menu_items_app::reload"));
+        assert!(branch.contains("refresh_after_pending = true"));
+        assert!(source.contains("if refresh_after_pending {\n                update(&mut app);"));
+        assert!(parse_imported_config("[invalid").is_err());
+        let mut kept = Config::default();
+        kept.menubar.primary_visible = false;
+        kept.menubar.metric = MenubarMetric::Fan;
+        let invalid_disk = Config::from_toml("[invalid").ok();
+        let mut applied = false;
+        menu_metric::apply_valid_config(invalid_disk.as_ref(), |_| applied = true);
+        assert!(!applied);
+        let result = menu_metric::last_good_config(&mut kept, invalid_disk);
+        assert!(!result.menubar.primary_visible);
+        assert_eq!(result.menubar.metric, MenubarMetric::Fan);
+        let valid = parse_imported_config("[menubar]\nmetric = 'memory'\nprimary_visible = true\n")
+            .unwrap();
+        let mut active = result.menubar.metric;
+        menu_metric::apply_valid_config(Some(&valid), |config| active = config.menubar.metric);
+        assert_eq!(active, MenubarMetric::Memory);
     }
 
     #[test]

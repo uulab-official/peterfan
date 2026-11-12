@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 mod icon;
+mod target_layout;
 use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
@@ -68,7 +69,7 @@ impl TrayIcon {
         let tray_target = unsafe {
             let button = ns_status_item.button(mtm).unwrap();
 
-            let frame = button.frame();
+            let frame = button.bounds();
 
             let target = mtm.alloc().set_ivars(TrayTargetIvars {
                 id: NSString::from_str(&id.0),
@@ -86,6 +87,7 @@ impl TrayIcon {
             tray_target.setWantsLayer(true);
 
             button.addSubview(&tray_target);
+            target_layout::align_target(&tray_target, &button);
 
             tray_target
         };
@@ -476,7 +478,7 @@ impl TrayTarget {
         let mtm = MainThreadMarker::from(self);
         unsafe {
             let button = self.ivars().status_item.button(mtm).unwrap();
-            self.setFrame(button.frame());
+            target_layout::align_target(self, &button);
         }
     }
 }

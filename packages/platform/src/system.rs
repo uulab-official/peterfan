@@ -37,6 +37,8 @@ pub struct SysinfoMonitor {
     /// Per-disk (read_rate, write_rate) in bytes/sec from the last interval.
     disk_rates: HashMap<String, (f64, f64)>,
     last_slow_refresh: Option<Instant>,
+    last_network_refresh: Option<Instant>,
+    network_ready: bool,
     battery_mgr: Option<battery::Manager>,
     #[cfg(target_os = "macos")]
     battery_probe: std::cell::RefCell<crate::macos_battery::ProfilerCache>,
@@ -84,6 +86,8 @@ impl SysinfoMonitor {
             net_rates: HashMap::new(),
             disk_rates: HashMap::new(),
             last_slow_refresh: None,
+            last_network_refresh: None,
+            network_ready: false,
             battery_mgr,
             #[cfg(target_os = "macos")]
             battery_probe: std::cell::RefCell::default(),
@@ -173,21 +177,9 @@ impl SystemMonitor for SysinfoMonitor {
             .unwrap_or(0.0);
         self.sys.refresh_processes(ProcessesToUpdate::All, true);
         self.disks.refresh(true);
-        self.networks.refresh(true);
+        self.refresh_network();
 
         if elapsed > 0.0 {
-            let mut net = HashMap::new();
-            for (name, data) in self.networks.iter() {
-                net.insert(
-                    name.clone(),
-                    (
-                        data.received() as f64 / elapsed,
-                        data.transmitted() as f64 / elapsed,
-                    ),
-                );
-            }
-            self.net_rates = net;
-
             let mut disk = HashMap::new();
             for d in self.disks.iter() {
                 let u = d.usage();
@@ -202,6 +194,32 @@ impl SystemMonitor for SysinfoMonitor {
             self.disk_rates = disk;
         }
         self.last_slow_refresh = Some(now);
+    }
+
+    fn refresh_network(&mut self) {
+        let now = Instant::now();
+        let elapsed = self
+            .last_network_refresh
+            .map(|t| now.duration_since(t).as_secs_f64());
+        self.networks.refresh(true);
+        self.network_ready = elapsed.is_some_and(|e| e > 0.0 && e <= 5.0);
+        self.net_rates.clear();
+        if let Some(elapsed) = elapsed.filter(|e| *e > 0.0 && *e <= 5.0) {
+            for (name, data) in self.networks.iter() {
+                self.net_rates.insert(
+                    name.clone(),
+                    (
+                        data.received() as f64 / elapsed,
+                        data.transmitted() as f64 / elapsed,
+                    ),
+                );
+            }
+        }
+        self.last_network_refresh = Some(now);
+    }
+
+    fn network_rates_ready(&self) -> bool {
+        self.network_ready
     }
 
     fn system_info(&self) -> SystemInfo {
@@ -576,5 +594,43 @@ mod tests {
 
         monitor.refresh_slow();
         assert!(monitor.last_slow_refresh.is_some());
+    }
+    #[test]
+    fn network_only_refresh_primes_then_reports_rates_without_process_or_disk_refresh() {
+        let mut monitor = SysinfoMonitor::new();
+        assert!(!monitor.network_rates_ready());
+        monitor.refresh_network();
+        assert!(!monitor.network_rates_ready());
+        assert!(monitor.last_slow_refresh.is_none());
+        assert!(monitor.disks.is_empty());
+        monitor.last_network_refresh = Some(Instant::now() - std::time::Duration::from_millis(150));
+        monitor.refresh_network();
+        assert!(monitor.network_rates_ready());
+        assert!(monitor.last_slow_refresh.is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn two_150ms_samples_include_real_loopback_traffic() {
+        use std::net::UdpSocket;
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut monitor = SysinfoMonitor::new();
+        monitor.refresh_network();
+        for _ in 0..16 {
+            sender
+                .send_to(&[0u8; 4096], receiver.local_addr().unwrap())
+                .unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        monitor.refresh_network();
+        assert!(monitor.network_rates_ready());
+        assert!(
+            monitor
+                .networks()
+                .iter()
+                .any(|n| n.rx_rate > 0.0 || n.tx_rate > 0.0),
+            "real loopback traffic must produce a nonzero delta"
+        );
     }
 }

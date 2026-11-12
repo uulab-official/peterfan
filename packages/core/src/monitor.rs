@@ -64,6 +64,14 @@ pub trait SystemMonitor {
     /// `refresh` for backends that do not implement split refreshes.
     fn refresh_slow(&mut self) {}
 
+    /// Refresh network counters independently of process and disk sampling.
+    fn refresh_network(&mut self) {}
+
+    /// Rates require at least two counter samples.
+    fn network_rates_ready(&self) -> bool {
+        false
+    }
+
     fn system_info(&self) -> SystemInfo;
     fn cpu(&self) -> CpuMetrics;
     fn memory(&self) -> MemoryMetrics;

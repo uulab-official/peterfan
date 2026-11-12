@@ -5,7 +5,7 @@
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSAppearanceCustomization, NSColor, NSImage, NSStatusBarButton};
-use objc2_foundation::{NSPoint, NSRect};
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 use objc2_quartz_core::{CALayer, CATransaction};
 use peterfan_core::config::MenubarDisplay;
 use std::cell::Cell;
@@ -29,6 +29,13 @@ pub(crate) struct NativeRunnerPainter {
 }
 
 impl NativeRunnerPainter {
+    /// Reinstall the layout placeholder whenever the composite's size changes.
+    /// The next reconcile attaches the existing animation to the new rect.
+    pub(crate) fn image_size_changed(&mut self, old: Option<NSSize>, new: Option<NSSize>) {
+        if old != new {
+            self.detach();
+        }
+    }
     pub(crate) fn active(&self) -> bool {
         self.layer.is_some()
     }
@@ -241,7 +248,39 @@ mod tests {
     use objc2_core_graphics::{
         CGBitmapContextCreate, CGColorSpace, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo,
     };
-    use objc2_foundation::NSSize;
+    #[test]
+    fn active_painter_detaches_when_group_image_size_changes() {
+        let mut painter = NativeRunnerPainter {
+            layer: Some(RunnerLayer::new()),
+            button: None,
+        };
+        let runner = Some(NSSize::new(33.0, 22.0));
+        let cpu_and_runner = Some(NSSize::new(67.0, 22.0));
+        painter.image_size_changed(runner, runner);
+        assert!(
+            painter.active(),
+            "identical size must preserve the current layer"
+        );
+        painter.image_size_changed(runner, cpu_and_runner);
+        assert!(
+            !painter.active(),
+            "CPU on must detach stale runner-only geometry"
+        );
+        painter.layer = Some(RunnerLayer::new());
+        painter.image_size_changed(cpu_and_runner, runner);
+        assert!(
+            !painter.active(),
+            "CPU off must detach stale group geometry"
+        );
+        painter.layer = Some(RunnerLayer::new());
+        painter.image_size_changed(runner, None);
+        assert!(!painter.active(), "runner off must release its layer");
+        painter.image_size_changed(None, cpu_and_runner);
+        assert!(
+            !painter.active(),
+            "inactive fallback has no layer to detach"
+        );
+    }
 
     fn composite(layer: &CALayer) -> Vec<u8> {
         const WIDTH: usize = 48;

@@ -54,7 +54,7 @@ Tiny · Simple · Beautiful · Safe · Extensible · Cross-platform
 
 **베타 — 공개 배포 v1.32.11 (2026-10-27).** 아래 표는 현재 소스의 구현 상태입니다. 최신 버전은 [Releases](https://github.com/uulab-official/peterfan/releases/latest)에서 확인하세요:
 
-소스 v1.32.12에는 20종 컬러 러너와 더 큰 메뉴 막대 표시가 포함됩니다.
+소스 v1.32.13에는 20종 컬러 러너와 더 큰 메뉴 막대 표시가 포함됩니다.
 
 [장시간 안전성·공개 OTA 실물 검증 기록](docs/LONG_RUN_SAFETY_2026-10-24.md)에서
 v1.32.7의 한 대 6시간 검증 통과 결과를 확인할 수 있습니다. v1.32.8에는

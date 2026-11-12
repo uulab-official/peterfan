@@ -68,6 +68,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Validate release tags against main, pin source commits and restrict write tokens
   to artifact publication jobs; cover rejection paths with offline tests.
 
+## [1.32.13] — Menu-bar runner and display refinements
+
+- Group the CPU graph, runner and selected metric in one macOS menu-bar item,
+  while retaining their independent visibility settings.
+- Enlarge the runner selection controls, support keyboard navigation, animate
+  the bird in flight, and improve contrast for dark runners. Preserve the cat's
+  original frames without adding a bright outline.
+- Keep the selected metric and last valid display settings when configuration
+  cannot be read or imported, and restore network-rate sampling for short CLI
+  intervals while limiting menu-bar refreshes separately.
+- Improve the history graph's contrast and size metric labels for their values.
+
 ## [1.32.12] — Color runners
 
 - Add dimensional color animation frames for all 20 existing runner choices,
