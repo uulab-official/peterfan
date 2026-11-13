@@ -199,6 +199,57 @@ fn ftst_key() -> u32 {
     u32::from_be_bytes(*b"Ftst")
 }
 
+#[cfg(any(target_arch = "aarch64", test))]
+#[derive(Debug)]
+enum AutoProbe {
+    Released,
+    Manual,
+    Legacy,
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+fn safe_auto_handoff(
+    mut probe: impl FnMut() -> Result<AutoProbe, FanCtlError>,
+    mut legacy: impl FnMut() -> Result<(), FanCtlError>,
+) -> Result<(), FanCtlError> {
+    match probe() {
+        Ok(AutoProbe::Released) => Ok(()),
+        Ok(AutoProbe::Manual) => {
+            legacy()?;
+            match probe() {
+                Ok(AutoProbe::Released) => Ok(()),
+                Ok(_) => Err(FanCtlError::Smc(-3)),
+                Err(error) => Err(error),
+            }
+        }
+        Ok(AutoProbe::Legacy) => legacy(),
+        // When observation fails, still attempt the existing safety restore.
+        // Refusing to write here could leave a previously forced fan pinned low.
+        // A successful transport write cannot prove the handoff while the mode
+        // is unreadable: report the observation error so callers retry.
+        Err(error) => {
+            legacy()?;
+            Err(error)
+        }
+    }
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+fn classify_auto_probe(
+    mut key_present: impl FnMut(u32) -> Result<bool, FanCtlError>,
+    mut mode: impl FnMut() -> Result<u8, FanCtlError>,
+) -> Result<AutoProbe, FanCtlError> {
+    // Global force mechanisms require the original cross-fan behavior.
+    if key_present(ftst_key())? || key_present(fs_key())? {
+        return Ok(AutoProbe::Legacy);
+    }
+    match mode()? {
+        0 | 3 => Ok(AutoProbe::Released),
+        1 => Ok(AutoProbe::Manual),
+        _ => Err(FanCtlError::Smc(-1)),
+    }
+}
+
 /// Flip fan `idx`'s bit in the `FS! ` manual-mode bitmask (best-effort; the key
 /// is absent on some machines, in which case we rely on `Fn Md` alone).
 fn set_force_bit(conn: &Conn, idx: u8, manual: bool) {
@@ -249,7 +300,7 @@ impl Conn {
         }
     }
 
-    fn call(&self, input: &KeyData, output: &mut KeyData) -> Result<(), FanCtlError> {
+    fn call_raw(&self, input: &KeyData, output: &mut KeyData) -> (KernReturn, usize) {
         let mut osize = size_of::<KeyData>();
         let rc = unsafe {
             IOConnectCallStructMethod(
@@ -261,6 +312,11 @@ impl Conn {
                 &mut osize,
             )
         };
+        (rc, osize)
+    }
+
+    fn call(&self, input: &KeyData, output: &mut KeyData) -> Result<(), FanCtlError> {
+        let (rc, osize) = self.call_raw(input, output);
         check_smc_response(rc, output.result, osize)
     }
 
@@ -349,6 +405,19 @@ fn check_smc_response(
     }
 }
 
+#[cfg(any(target_arch = "aarch64", test))]
+fn check_optional_key_info(
+    rc: KernReturn,
+    firmware_result: u8,
+    response_size: usize,
+) -> Result<bool, FanCtlError> {
+    if rc == KERN_SUCCESS && response_size >= size_of::<KeyData>() && firmware_result == 132 {
+        return Ok(false);
+    }
+    check_smc_response(rc, firmware_result, response_size)?;
+    Ok(true)
+}
+
 fn decode_temperature(data_type: u32, data: &[u8]) -> Result<f32, FanCtlError> {
     match &data_type.to_be_bytes() {
         b"sp78" if data.len() >= 2 => Ok(i16::from_be_bytes([data[0], data[1]]) as f32 / 256.0),
@@ -376,6 +445,40 @@ impl Conn {
         };
         let mut info = KeyData::default();
         self.call(&input, &mut info).is_ok() && info.key_info.data_size > 0
+    }
+
+    /// Distinguish an absent optional key from a failed or malformed probe.
+    #[cfg(target_arch = "aarch64")]
+    fn optional_key_present(&self, key: u32) -> Result<bool, FanCtlError> {
+        let input = KeyData {
+            key,
+            data8: CMD_READ_KEYINFO,
+            ..Default::default()
+        };
+        let mut info = KeyData::default();
+        let (rc, osize) = self.call_raw(&input, &mut info);
+        if !check_optional_key_info(rc, info.result, osize)? {
+            return Ok(false);
+        }
+        if info.key_info.data_size > 0 && info.key_info.data_size <= 32 {
+            Ok(true)
+        } else {
+            Err(FanCtlError::Smc(-1))
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn auto_probe(&self, idx: u8) -> Result<AutoProbe, FanCtlError> {
+        classify_auto_probe(
+            |key| self.optional_key_present(key),
+            || {
+                let mut mode = [0u8; 1];
+                if self.read_key(self.mode_key(idx), &mut mode)? != mode.len() {
+                    return Err(FanCtlError::Smc(-1));
+                }
+                Ok(mode[0])
+            },
+        )
     }
 
     /// Resolve the mode key for fan `idx`: uppercase `FnMd` on M1–M4, lowercase
@@ -435,6 +538,21 @@ impl Conn {
     /// Return fan `idx` to automatic (OS-managed) control and hand the thermal
     /// servo back by clearing the `Ftst` unlock.
     pub fn auto(&self, idx: u8) -> Result<(), FanCtlError> {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let result = safe_auto_handoff(|| self.auto_probe(idx), || self.auto_legacy(idx));
+            // As on the legacy path, permit a new unlock attempt after auto.
+            self.unlock_tried
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            result
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            self.auto_legacy(idx)
+        }
+    }
+
+    fn auto_legacy(&self, idx: u8) -> Result<(), FanCtlError> {
         set_force_bit(self, idx, false);
         let r = self.write_key(self.mode_key(idx), &[0u8]);
         let _ = self.write_key(ftst_key(), &[0u8]); // best-effort; absent on M5
@@ -450,6 +568,120 @@ mod response_tests {
     use super::*;
 
     #[test]
+    fn automatic_handoff_skips_confirmed_released_mode_without_weakening_fallback() {
+        use std::cell::Cell;
+        let writes = Cell::new(0);
+        safe_auto_handoff(
+            || Ok(AutoProbe::Released),
+            || {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            writes.get(),
+            0,
+            "confirmed released mode must not be rewritten"
+        );
+        safe_auto_handoff(
+            || Ok(AutoProbe::Legacy),
+            || {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(safe_auto_handoff(
+            || Err(FanCtlError::Smc(-1)),
+            || {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+        )
+        .is_err());
+        assert_eq!(
+            writes.get(),
+            2,
+            "unsupported or unreadable states must keep the legacy recovery attempt"
+        );
+    }
+
+    #[test]
+    fn automatic_handoff_verifies_manual_mode_was_released() {
+        let mut probes = [Ok(AutoProbe::Manual), Ok(AutoProbe::Released)].into_iter();
+        safe_auto_handoff(|| probes.next().unwrap(), || Ok(())).unwrap();
+        let mut probes = [Ok(AutoProbe::Manual), Ok(AutoProbe::Manual)].into_iter();
+        assert!(safe_auto_handoff(|| probes.next().unwrap(), || Ok(())).is_err());
+        let mut probes = [Ok(AutoProbe::Manual), Err(FanCtlError::Smc(-1))].into_iter();
+        assert!(safe_auto_handoff(|| probes.next().unwrap(), || Ok(())).is_err());
+        assert!(
+            safe_auto_handoff(|| Ok(AutoProbe::Manual), || Err(FanCtlError::NotPrivileged))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn auto_probe_error_attempts_restore_then_retries_until_readback_succeeds() {
+        use std::cell::Cell;
+        let writes = Cell::new(0);
+        let mut probes = [
+            Err(FanCtlError::Smc(-1)),
+            Ok(AutoProbe::Manual),
+            Ok(AutoProbe::Released),
+        ]
+        .into_iter();
+        let mut probe = || probes.next().unwrap();
+        let mut restore = || {
+            writes.set(writes.get() + 1);
+            Ok(())
+        };
+        assert!(safe_auto_handoff(&mut probe, &mut restore).is_err());
+        assert_eq!(writes.get(), 1);
+        safe_auto_handoff(&mut probe, &mut restore).unwrap();
+        assert_eq!(writes.get(), 2);
+    }
+
+    #[test]
+    fn auto_probe_only_elides_writes_when_global_keys_are_absent_and_mode_is_known() {
+        use std::cell::Cell;
+        for raw_mode in [0, 3] {
+            assert!(matches!(
+                classify_auto_probe(|_| Ok(false), || Ok(raw_mode)),
+                Ok(AutoProbe::Released)
+            ));
+        }
+        assert!(matches!(
+            classify_auto_probe(|_| Ok(false), || Ok(1)),
+            Ok(AutoProbe::Manual)
+        ));
+        assert!(classify_auto_probe(|_| Ok(false), || Ok(2)).is_err());
+        assert!(classify_auto_probe(|_| Ok(false), || Err(FanCtlError::Smc(-1))).is_err());
+        for present_key in [ftst_key(), fs_key()] {
+            assert!(matches!(
+                classify_auto_probe(
+                    |key| Ok(key == present_key),
+                    || panic!("global-key path must remain legacy")
+                ),
+                Ok(AutoProbe::Legacy)
+            ));
+        }
+        let reads = Cell::new(0);
+        assert!(classify_auto_probe(
+            |_| {
+                reads.set(reads.get() + 1);
+                if reads.get() == 2 {
+                    Err(FanCtlError::Smc(-1))
+                } else {
+                    Ok(false)
+                }
+            },
+            || Ok(0)
+        )
+        .is_err());
+    }
+
+    #[test]
     fn firmware_error_is_not_treated_as_a_successful_read_or_write() {
         // For missing keys, real hardware can return kern_success while the
         // SMC reports an error in KeyData.result. The same response parser is
@@ -461,6 +693,21 @@ mod response_tests {
         assert!(matches!(
             check_smc_response(KERN_SUCCESS, 1, size_of::<KeyData>()),
             Err(FanCtlError::Smc(1))
+        ));
+    }
+
+    #[test]
+    fn optional_key_absence_requires_a_complete_successful_transport_response() {
+        assert!(matches!(
+            check_optional_key_info(KERN_SUCCESS, 132, size_of::<KeyData>()),
+            Ok(false)
+        ));
+        assert!(check_optional_key_info(132, 132, size_of::<KeyData>()).is_err());
+        assert!(check_optional_key_info(KERN_SUCCESS, 132, size_of::<KeyData>() - 1).is_err());
+        assert!(check_optional_key_info(KERN_SUCCESS, 1, size_of::<KeyData>()).is_err());
+        assert!(matches!(
+            check_optional_key_info(KERN_SUCCESS, 0, size_of::<KeyData>()),
+            Ok(true)
         ));
     }
 
