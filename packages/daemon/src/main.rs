@@ -1298,12 +1298,18 @@ fn apply_cached_control_request(
         (0.0, 0.0)
     };
     let critical_now = needs_temperature && safety_temp >= state.config.critical_temp_c;
-    let duty = state.held_duty.unwrap_or_else(|| {
-        state
-            .config
-            .curve_for(state.profile)
-            .duty_at(representative_temp)
-    });
+    let duty = if critical_now {
+        // Match the main control loop: cached requests must never bypass the
+        // critical-temperature override, even for a low manual hold.
+        100
+    } else {
+        state.held_duty.unwrap_or_else(|| {
+            state
+                .config
+                .curve_for(state.profile)
+                .duty_at(representative_temp)
+        })
+    };
 
     if shared.lock().expect("state poisoned").control_revision != state.control_revision {
         return;
@@ -3188,6 +3194,35 @@ mod tests {
             state.last_temps_sampled_at_unix_ms = Some(unix_now_ms());
         }
         shared
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_critical_temperature_forces_max_even_for_low_manual_requests() {
+        for per_fan_override in [false, true] {
+            let provider = FaultProvider::new(false, false);
+            let shared = prepared_cached_state();
+            {
+                let mut state = shared.lock().unwrap();
+                state.last_temps[0].value = peterfan_core::types::Celsius(95.0);
+                state.last_temps_sampled_at_unix_ms = Some(unix_now_ms());
+                state.last_control_apply_unix_ms = Some(unix_now_ms());
+                state.fan_targets.insert("fan.test".into(), 20);
+                if per_fan_override {
+                    state.auto = true;
+                    state.fan_overrides.insert("fan.test".into(), 8);
+                } else {
+                    state.auto = false;
+                    state.held_duty = Some(5);
+                }
+            }
+            apply_cached_control_request(&provider, &["fan.test".into()], &shared);
+            assert_eq!(*provider.write_events.lock().unwrap(), ["duty:100"]);
+            assert_eq!(
+                shared.lock().unwrap().fan_targets.get("fan.test"),
+                Some(&100)
+            );
+        }
     }
 
     #[cfg(unix)]

@@ -10445,9 +10445,17 @@ function renderFanCards(fans,enabled){
       slider.value=editRpm;
       numInput.value=editRpm;
       var shownTarget=appliedTarget==null?targetPct:appliedTarget;
-      card.querySelector('.fv').textContent=appliedTarget!=null
-        ?(Math.round(shownTarget)+'% · '+(stale?(LANG==='ko'?'응답 없음':'not responding'):(ramping?(LANG==='ko'?'조정 중':'adjusting'):(LANG==='ko'?'적용됨':'applied'))))
-        :(displayManual?(useRpm?(editRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%'));
+      var requested=f.override_pct==null?null:Number(f.override_pct);
+      var differs=displayManual&&requested!=null&&Number.isFinite(requested)&&appliedTarget!=null&&Number.isFinite(appliedTarget)&&Math.round(requested)!==Math.round(appliedTarget);
+      var readbackText=stale?(LANG==='ko'?'응답 없음':'not responding'):(ramping?(LANG==='ko'?'조정 중':'adjusting'):(daemonReadback==='settled'?(LANG==='ko'?'적용됨':'applied'):(LANG==='ko'?'확인 중':'checking')));
+      if(differs){
+        var differenceText=stale||ramping?readbackText:(LANG==='ko'?'요청과 다름':'differs from request');
+        card.querySelector('.fv').textContent=(LANG==='ko'?'요청 ':'Requested ')+Math.round(requested)+'% · '+(LANG==='ko'?'현재 목표 ':'current target ')+Math.round(appliedTarget)+'% · '+differenceText;
+      } else {
+        card.querySelector('.fv').textContent=appliedTarget!=null
+          ?(Math.round(shownTarget)+'% · '+readbackText)
+          :(displayManual?(useRpm?(editRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%'));
+      }
     }
   });
   Array.prototype.slice.call(container.children).forEach(function(c){
