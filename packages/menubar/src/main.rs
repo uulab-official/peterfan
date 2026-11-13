@@ -4986,6 +4986,64 @@ fn refresh_fan_cache(app: &mut App, now: Instant, dashboard_visible: bool) {
     }
 }
 
+fn daemon_control_temperature_sample(
+    snapshot: Option<&serde_json::Value>,
+    snapshot_age: Option<Duration>,
+    now_ms: u64,
+) -> Option<(f32, f32, Option<f32>, u64)> {
+    if snapshot_age? > DAEMON_STALE_AFTER {
+        return None;
+    }
+    let snapshot = snapshot?;
+    if snapshot.get("temps_stale")?.as_bool()? {
+        return None;
+    }
+    let sampled_ms = snapshot.get("temps_sampled_at_unix_ms")?.as_u64()?;
+    let age_ms = now_ms.checked_sub(sampled_ms)?;
+    if sampled_ms == 0 || age_ms > TEMPERATURE_STALE_AFTER.as_millis() as u64 {
+        return None;
+    }
+    let temps: Vec<TempSensor> = serde_json::from_value(snapshot.get("temps")?.clone()).ok()?;
+    control_temperature_sample(&temps, Duration::from_millis(age_ms))
+}
+
+fn control_temperature_sample(
+    temps: &[TempSensor],
+    age: Duration,
+) -> Option<(f32, f32, Option<f32>, u64)> {
+    if age > TEMPERATURE_STALE_AFTER {
+        return None;
+    }
+    let safety = safety_temperature_c(temps)?;
+    let representative = representative_temperature_c(temps)
+        .filter(|value| peterfan_core::thermals::valid_control_temperature_c(*value))
+        .unwrap_or(safety);
+    let hottest = temps
+        .iter()
+        .find(|temp| temp.id == "cpu.die.hot")
+        .map(|temp| temp.value.0)
+        .filter(|value| peterfan_core::thermals::valid_control_temperature_c(*value));
+    Some((representative, safety, hottest, age.as_secs()))
+}
+
+fn fan_control_temperature_sample(
+    daemon_sample: Option<(f32, f32, Option<f32>, u64)>,
+    provider_temps: &[TempSensor],
+    provider_age: Option<Duration>,
+    allow_provider: bool,
+) -> (Option<(f32, f32, Option<f32>, u64)>, &'static str) {
+    if let Some(sample) = daemon_sample {
+        (Some(sample), "daemon")
+    } else if allow_provider {
+        (
+            provider_age.and_then(|age| control_temperature_sample(provider_temps, age)),
+            "provider",
+        )
+    } else {
+        (None, "daemon")
+    }
+}
+
 fn refresh_daemon_cache(app: &mut App, now: Instant) {
     if let Some(snapshot) = app.daemon_read.take() {
         app.daemon_probe_completed = true;
@@ -5395,6 +5453,26 @@ fn update(app: &mut App) {
     // so opening this view only renders cached values and never waits on SMC
     // or a Unix socket.
     let daemon_json = app.daemon_json_cache.clone();
+    // This is the daemon's latest sampled temperature, not an atomic record
+    // of the sample used for the currently reported fan target.
+    let daemon_fan_temperatures = if app.provider.name() == "mock" {
+        None
+    } else {
+        daemon_control_temperature_sample(
+            daemon_json.as_ref(),
+            sample_age(app.daemon_json_sampled_at, now),
+            now_unix_ms(),
+        )
+    };
+    // Unix real hardware must not silently substitute a different sensor
+    // source when the daemon is missing or stale. Windows and the mock
+    // provider have no controlling Unix daemon and use their own samples.
+    let (fan_temperatures, fan_temp_source) = fan_control_temperature_sample(
+        daemon_fan_temperatures,
+        &temps,
+        sample_age(app.temperature_sampled_at, now),
+        !cfg!(unix) || app.provider.name() == "mock",
+    );
     let daemon_st = daemon_json
         .as_ref()
         .map(|v| {
@@ -5671,9 +5749,11 @@ fn update(app: &mut App) {
         "fan_control_state_ready": !fan_control_supported || (fan_data_ready && app.daemon_probe_completed),
         "fan_count": fans.len(),
         "controllable_fan_count": fans.iter().filter(|f| f.controllable).count(),
-        "fan_curve_input_temp_c": display_temp,
-        "fan_core_hottest_temp_c": core_hottest,
-        "fan_safety_temp_c": safety_temp,
+        "fan_curve_input_temp_c": fan_temperatures.map(|sample| sample.0),
+        "fan_core_hottest_temp_c": fan_temperatures.and_then(|sample| sample.2),
+        "fan_safety_temp_c": fan_temperatures.map(|sample| sample.1),
+        "fan_temp_age_secs": fan_temperatures.map(|sample| sample.3),
+        "fan_temp_source": fan_temp_source,
         "fan_critical_temp_c": app.critical_temp_c,
         "control_health": control_health,
         "fan_action_log": fan_action_log_snapshot(),
@@ -9397,6 +9477,7 @@ __CPU_WIDGET_SETTINGS__
 <div class="fan-input"><span>Safety Hottest</span><b id="fan-safety-hottest">—</b></div>
 <div class="fan-input"><span>Critical Limit</span><b id="fan-critical-limit">—</b></div>
 </div>
+<div id="fan-temperature-source" style="font-size:10px;color:var(--dim);padding:4px 0">Daemon sample unavailable</div>
 <div class="profile-strip" id="profile-strip">
 <button disabled data-mode="auto" aria-pressed="false" title="Restore OS default fan control" onclick="setAuto()">OS Default</button>
 <button disabled data-mode="profile" data-profile="silent" aria-pressed="false" title="Silent" onclick="setProfile('silent')">Quiet</button>
@@ -11869,6 +11950,7 @@ function updateSetup(d){
 }
 var RAIL_NAV_READY=false;
 function updateRail(d){
+  updateFanTemperatures(d);
   if(!RAIL_NAV_READY){
     var detail=document.getElementById('railDetail');
     if(detail){setButtonLabel(detail,LANG==='ko'?'상태':'Status');detail.title=LANG==='ko'?'상태 요약':'Status overview';}
@@ -11941,6 +12023,16 @@ function setHealthValue(id,text,tone){
 function tempValue(value){
   return typeof value==='number'&&isFinite(value)?Math.round(value)+'°C':'—';
 }
+function updateFanTemperatures(d){
+  setText('fan-curve-input',tempValue(d.fan_curve_input_temp_c));
+  setText('fan-safety-hottest',tempValue(d.fan_safety_temp_c));
+  setText('fan-critical-limit',tempValue(d.fan_critical_temp_c));
+  var fanTempAge=d.fan_temp_age_secs;
+  var providerSample=d.fan_temp_source==='provider';
+  setText('fan-temperature-source',typeof fanTempAge==='number'&&isFinite(fanTempAge)
+    ?(LANG==='ko'?(providerSample?'기기 최근 측정':'데몬 최근 측정')+' · '+fanTempAge+'초 전 · 팬 적용 시점과 다를 수 있음':(providerSample?'Latest device sample':'Latest daemon sample')+' · '+fanTempAge+'s ago · may differ from applied fan target')
+    :(LANG==='ko'?(providerSample?'기기 온도 확인 불가':'데몬 온도 확인 불가'):(providerSample?'Device temperature unavailable':'Daemon temperature unavailable')));
+}
 function updateHealthPanel(d){
   var health=d.control_health||{},failsafe=!!health.failsafe_active;
   var tone=failsafe?'warn':(d.daemon_update_needed?'warn':(d.daemon_running?'ok':(d.fan_setup_needed?'warn':'info')));
@@ -11989,9 +12081,6 @@ function updateHealthPanel(d){
   var retrySeconds=Math.max(0,Number(health.retry_after_unix||0)-Math.floor(Date.now()/1000));
   setHealthValue('health-control-retry',retrySeconds?(retrySeconds+'s'):(LANG==='ko'?'대기 없음':'ready'),retrySeconds?'warn':'info');
   setHealthValue('health-control-error',health.last_error||'—',health.last_error?'warn':'info');
-  setText('fan-curve-input',tempValue(d.fan_curve_input_temp_c));
-  setText('fan-safety-hottest',tempValue(d.fan_safety_temp_c));
-  setText('fan-critical-limit',tempValue(d.fan_critical_temp_c));
   var approval=d.daemon_running&&!d.daemon_update_needed
     ?(LANG==='ko'?'추가 승인 없음':'no extra prompt')
     :(d.daemon_update_needed?(LANG==='ko'?'재설치 때 1회':'one prompt to reinstall'):(d.fan_setup_needed?(LANG==='ko'?'최초 설정 때 1회':'one prompt for setup'):(LANG==='ko'?'필요 없음':'not needed')));
@@ -12181,6 +12270,108 @@ function reportHeight(){
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fan_temperatures_only_fall_back_to_fresh_local_samples_when_allowed() {
+        let temps: Vec<peterfan_core::types::TempSensor> =
+            serde_json::from_value(serde_json::json!([
+                {"id":"cpu.die", "label":"CPU", "kind":"cpu", "value":61.0},
+                {"id":"cpu.die.hot", "label":"CPU hottest", "kind":"cpu", "value":63.0}
+            ]))
+            .unwrap();
+        let age = Some(std::time::Duration::from_secs(2));
+        assert_eq!(
+            super::fan_control_temperature_sample(None, &temps, age, false),
+            (None, "daemon")
+        );
+        assert_eq!(
+            super::fan_control_temperature_sample(None, &temps, age, true),
+            (Some((61.0, 63.0, Some(63.0), 2)), "provider")
+        );
+        assert_eq!(
+            super::fan_control_temperature_sample(
+                None,
+                &temps,
+                Some(std::time::Duration::from_secs(9)),
+                true
+            ),
+            (None, "provider")
+        );
+        assert_eq!(
+            super::fan_control_temperature_sample(
+                Some((88.0, 96.0, Some(96.0), 1)),
+                &temps,
+                age,
+                true
+            ),
+            (Some((88.0, 96.0, Some(96.0), 1)), "daemon")
+        );
+    }
+
+    #[test]
+    fn fan_temperature_refresh_is_not_restricted_to_settings_view() {
+        let source = include_str!("main.rs");
+        let rail = source.split("function updateRail(d){").nth(1).unwrap();
+        let before_settings = rail.split("if(view==='settings'){").next().unwrap();
+        assert!(before_settings.contains("updateFanTemperatures(d);"));
+    }
+
+    #[test]
+    fn fan_control_temperatures_use_fresh_daemon_sample() {
+        let data = serde_json::json!({
+            "temps_stale": false,
+            "temps_sampled_at_unix_ms": 100_000,
+            "temps": [
+                {"id":"cpu.die", "label":"CPU", "kind":"cpu", "value":88.0},
+                {"id":"cpu.die.hot", "label":"CPU hottest", "kind":"cpu", "value":96.0}
+            ]
+        });
+        assert_eq!(
+            super::daemon_control_temperature_sample(
+                Some(&data),
+                Some(std::time::Duration::from_secs(1)),
+                102_000
+            ),
+            Some((88.0, 96.0, Some(96.0), 2))
+        );
+        assert_eq!(
+            super::daemon_control_temperature_sample(
+                Some(&data),
+                Some(std::time::Duration::from_secs(9)),
+                102_000
+            ),
+            None
+        );
+        assert_eq!(
+            super::daemon_control_temperature_sample(
+                Some(&data),
+                Some(std::time::Duration::from_secs(1)),
+                109_000
+            ),
+            None
+        );
+        let mut stale = data.clone();
+        stale["temps_stale"] = true.into();
+        assert_eq!(
+            super::daemon_control_temperature_sample(
+                Some(&stale),
+                Some(std::time::Duration::from_secs(1)),
+                102_000
+            ),
+            None
+        );
+        assert_eq!(
+            super::daemon_control_temperature_sample(Some(&data), None, 102_000),
+            None
+        );
+        assert_eq!(
+            super::daemon_control_temperature_sample(
+                Some(&data),
+                Some(std::time::Duration::from_secs(1)),
+                99_000
+            ),
+            None
+        );
+    }
     #[cfg(target_os = "macos")]
     #[test]
     fn grouped_tooltip_preserves_per_core_count_and_scale_only_when_visible() {
