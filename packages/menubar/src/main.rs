@@ -4986,11 +4986,13 @@ fn refresh_fan_cache(app: &mut App, now: Instant, dashboard_visible: bool) {
     }
 }
 
+type FanTemperatureSample = (f32, f32, Option<f32>, u64);
+
 fn daemon_control_temperature_sample(
     snapshot: Option<&serde_json::Value>,
     snapshot_age: Option<Duration>,
     now_ms: u64,
-) -> Option<(f32, f32, Option<f32>, u64)> {
+) -> Option<FanTemperatureSample> {
     if snapshot_age? > DAEMON_STALE_AFTER {
         return None;
     }
@@ -5010,7 +5012,7 @@ fn daemon_control_temperature_sample(
 fn control_temperature_sample(
     temps: &[TempSensor],
     age: Duration,
-) -> Option<(f32, f32, Option<f32>, u64)> {
+) -> Option<FanTemperatureSample> {
     if age > TEMPERATURE_STALE_AFTER {
         return None;
     }
@@ -5027,11 +5029,11 @@ fn control_temperature_sample(
 }
 
 fn fan_control_temperature_sample(
-    daemon_sample: Option<(f32, f32, Option<f32>, u64)>,
+    daemon_sample: Option<FanTemperatureSample>,
     provider_temps: &[TempSensor],
     provider_age: Option<Duration>,
     allow_provider: bool,
-) -> (Option<(f32, f32, Option<f32>, u64)>, &'static str) {
+) -> (Option<FanTemperatureSample>, &'static str) {
     if let Some(sample) = daemon_sample {
         (Some(sample), "daemon")
     } else if allow_provider {
