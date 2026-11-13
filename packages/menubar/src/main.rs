@@ -5009,10 +5009,7 @@ fn daemon_control_temperature_sample(
     control_temperature_sample(&temps, Duration::from_millis(age_ms))
 }
 
-fn control_temperature_sample(
-    temps: &[TempSensor],
-    age: Duration,
-) -> Option<FanTemperatureSample> {
+fn control_temperature_sample(temps: &[TempSensor], age: Duration) -> Option<FanTemperatureSample> {
     if age > TEMPERATURE_STALE_AFTER {
         return None;
     }
