@@ -135,6 +135,10 @@ impl SystemMonitor for MockMonitor {
         }]
     }
 
+    fn network_rates_ready(&self) -> bool {
+        true
+    }
+
     fn processes(&self, limit: usize, sort: ProcSort) -> Vec<ProcessInfo> {
         let mut procs = vec![
             ProcessInfo {

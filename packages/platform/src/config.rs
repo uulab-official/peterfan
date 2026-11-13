@@ -19,10 +19,14 @@ pub fn path() -> Option<PathBuf> {
 
 /// Load the config, falling back to defaults if it's missing or unparseable.
 pub fn load() -> Config {
+    load_valid().unwrap_or_default()
+}
+
+/// Load a valid existing config, preserving the distinction from defaults.
+pub fn load_valid() -> Option<Config> {
     path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| Config::from_toml(&s).ok())
-        .unwrap_or_default()
 }
 
 /// Edit the latest config under a cross-process lock and atomically save it.

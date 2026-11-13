@@ -21,6 +21,27 @@ const context = { console, Map, WeakMap, Uint8ClampedArray, atob,
 };
 vm.createContext(context);
 vm.runInContext(code, context);
+// Verify the picker stays inside short/narrow popovers, in either opening direction.
+const positionStart = source.indexOf('function positionRunnerCharacterMenu()');
+const positionEnd = source.indexOf('function closeRunnerCharacterMenu(', positionStart);
+vm.runInContext(source.slice(positionStart, positionEnd), context);
+function positionPicker(width, height, rect, contentHeight) {
+  const menu = { hidden:false, scrollHeight:contentHeight, style:{} };
+  const trigger = { getBoundingClientRect:()=>rect };
+  context.window.innerWidth=width; context.window.innerHeight=height;
+  context.document.getElementById=id=>id==='runner-character-select'?trigger:menu;
+  context.positionRunnerCharacterMenu();
+  return { left:parseInt(menu.style.left), top:parseInt(menu.style.top),
+    width:parseInt(menu.style.width), height:parseInt(menu.style.maxHeight) };
+}
+for (const [w,h,rect] of [[320,390,{top:300,bottom:348,right:290}],
+  [320,390,{top:45,bottom:93,right:290}], [240,220,{top:80,bottom:128,right:220}]]) {
+  const p=positionPicker(w,h,rect,900);
+  assert.ok(p.left>=8 && p.left+p.width<=w-8,'picker must stay inside viewport width');
+  assert.ok(p.top>=8 && p.top+p.height<=h-8,'picker must stay inside viewport height');
+  assert.ok(p.height>0,'picker must remain accessible');
+}
+context.document.getElementById=()=>null;
 const alpha = 'ff'.repeat(48 * 32);
 context.RUNNER_SELECTED_PREVIEW = Array(32).fill(alpha);
 context.RUNNER_SELECTED_PREVIEW_CHARACTER = 'cat';

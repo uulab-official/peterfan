@@ -45,9 +45,12 @@ use tao::window::{Window, WindowBuilder};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowExtMacOS};
 
+#[cfg(any(target_os = "macos", test))]
+mod composite_status;
 mod cpu_widget;
 mod cpu_widget_app;
 mod menu_items_app;
+mod menu_metric;
 #[cfg(target_os = "macos")]
 mod native_cpu_widget;
 #[cfg(target_os = "macos")]
@@ -67,10 +70,12 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
 use objc2::AllocAnyThread;
+#[cfg(all(target_os = "macos", test))]
+use objc2_app_kit::NSCellImagePosition;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSBitmapFormat, NSBitmapImageRep, NSCellImagePosition, NSDeviceRGBColorSpace, NSEvent, NSImage,
-    NSImageCacheMode, NSScreen, NSWindow, NSWorkspace,
+    NSAppearanceCustomization, NSBitmapFormat, NSBitmapImageRep, NSColor, NSColorSpace,
+    NSDeviceRGBColorSpace, NSEvent, NSImage, NSImageCacheMode, NSScreen, NSWindow, NSWorkspace,
 };
 #[cfg(target_os = "macos")]
 use objc2_foundation::{
@@ -85,8 +90,8 @@ use tray_icon::{
 use wry::{WebView, WebViewBuilder, RGBA};
 
 use peterfan_core::config::{
-    Config, CpuWidgetConfig, CustomCurveConfig, Language, MenubarDisplay, NotificationConfig,
-    ResolvedLanguage, Rule, RunnerCharacter, TemperatureSource, UpdateChannel,
+    Config, CpuWidgetConfig, CustomCurveConfig, Language, MenubarDisplay, MenubarMetric,
+    NotificationConfig, ResolvedLanguage, Rule, RunnerCharacter, TemperatureSource, UpdateChannel,
 };
 use peterfan_core::error::CoreError;
 use peterfan_core::metrics::{BatteryInfo, DiskInfo, ProcSort, ProcessInfo};
@@ -414,6 +419,8 @@ static STATUS: Mutex<String> = Mutex::new(String::new());
 /// mistake another window's save (or an older status message) for its own.
 static SETTINGS_RESULTS: Mutex<VecDeque<serde_json::Value>> = Mutex::new(VecDeque::new());
 const SETTINGS_RESULTS_MAX: usize = 32;
+/// Correlate explicit OS-default requests across background threads/windows.
+static OS_AUTO_RESULTS: Mutex<VecDeque<serde_json::Value>> = Mutex::new(VecDeque::new());
 /// One native update pipeline shared by the popover, detail window, and
 /// right-click menu. GitHub checks from inside the WebView were unreliable on
 /// some Macs and could race the native installer dialog.
@@ -498,7 +505,7 @@ fn pending_command_key(cmd: &str) -> Option<String> {
     if matches!(cmd, "ready:popover" | "ready:detail") {
         return Some(cmd.to_string());
     }
-    if matches!(cmd, "auto") || cmd.starts_with("profile:") {
+    if matches!(cmd, "auto") || cmd.starts_with("profile:") || cmd.starts_with("osautorequest:") {
         return Some("global-fan-control".to_string());
     }
     if cmd.starts_with("display:") {
@@ -562,6 +569,7 @@ fn is_native_preference_command(command: &str) -> bool {
         || command.starts_with("display:")
         || command.starts_with("character:")
         || command.starts_with("settingsrequest:")
+        || command.starts_with("osautorequest:")
 }
 
 fn is_native_process_command(command: &str) -> bool {
@@ -717,8 +725,11 @@ struct TrayMenu {
     quit: tray_icon::menu::MenuId,
     /// "Display" submenu — number / cat / both.
     display_items: Vec<(MenubarDisplay, tray_icon::menu::CheckMenuItem)>,
+    metric_items: Vec<(MenubarMetric, tray_icon::menu::CheckMenuItem)>,
     #[cfg(target_os = "macos")]
     menu_items: native_cpu_widget::MenuItemsMenu,
+    #[cfg(target_os = "macos")]
+    cpu_appearance: native_cpu_widget::CpuAppearanceMenu,
     /// CPU runner character, independent of number/runner display mode.
     character_items: Vec<(RunnerCharacter, tray_icon::menu::CheckMenuItem)>,
     random_character_item: tray_icon::menu::CheckMenuItem,
@@ -760,6 +771,7 @@ struct L10n {
     check_updates: &'static str,
     quit: &'static str,
     menu_bar_style: &'static str,
+    menu_bar_metric: &'static str,
     runner_character: &'static str,
     temperature_source: &'static str,
     fan_speed: &'static str,
@@ -786,6 +798,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             check_updates: "Update Now…",
             quit: "Quit PeterFan",
             menu_bar_style: "Menu Bar Style",
+            menu_bar_metric: "Menu Bar Metric",
             runner_character: "Runner Character",
             temperature_source: "Dashboard Temperature",
             fan_speed: "Fan Speed",
@@ -809,6 +822,7 @@ fn strings(lang: ResolvedLanguage) -> L10n {
             check_updates: "지금 업데이트…",
             quit: "PeterFan 종료",
             menu_bar_style: "메뉴 막대 스타일",
+            menu_bar_metric: "메뉴 막대 측정값",
             runner_character: "러너 캐릭터",
             temperature_source: "대시보드 온도",
             fan_speed: "팬 속도",
@@ -827,6 +841,24 @@ struct RunnerAssets {
     selected_preview_frames: serde_json::Value,
     #[cfg(any(target_os = "macos", test))]
     native_images: Vec<NativeRunnerImage>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(PartialEq, Eq)]
+struct CompositeKey {
+    visibility: peterfan_core::config::MenuItemsVisibility,
+    metric: Option<MenubarMetric>,
+    style: peterfan_core::config::CpuWidgetStyle,
+    cpu_width: u32,
+    cpu_pixels: Vec<u8>,
+    foreground: [u8; 3],
+    character: RunnerCharacter,
+}
+
+#[cfg(target_os = "macos")]
+struct PreparedComposite {
+    key: CompositeKey,
+    images: Vec<NativeRunnerImage>,
 }
 
 #[cfg(target_os = "macos")]
@@ -876,11 +908,13 @@ struct App {
     /// ms, especially when they're failing (no daemon, no root).
     provider: std::sync::Arc<dyn HardwareProvider>,
     display: MenubarDisplay,
+    metric: menu_metric::MetricSelection,
     primary_visible: bool,
     runner_character: RunnerCharacter,
     random_runner: RandomRunner,
     temperature_source: TemperatureSource,
     update_channel: UpdateChannel,
+    last_good_config: peterfan_core::config::Config,
     critical_temp_c: f32,
     notifications: NotificationConfig,
     notification_runtime: NotificationRuntime,
@@ -929,6 +963,7 @@ struct App {
     process_filter: String,
     dashboard_slow_cache: DashboardSlowCache,
     next_dashboard_slow_refresh: Instant,
+    next_network_refresh: Instant,
     /// Small animation frame for the RunCat-style menu-bar character. It
     /// advances on each refresh, with bigger CPU load taking larger strides.
     runner_frame: u8,
@@ -942,6 +977,10 @@ struct App {
     runner_native_timer: Option<Retained<NSTimer>>,
     #[cfg(target_os = "macos")]
     runner_native_painter: Rc<RefCell<native_runner::NativeRunnerPainter>>,
+    #[cfg(target_os = "macos")]
+    composite_images: Rc<RefCell<Vec<NativeRunnerImage>>>,
+    #[cfg(target_os = "macos")]
+    composite_key: Option<CompositeKey>,
     #[cfg(target_os = "macos")]
     runner_native_cpu_bits: Arc<AtomicU32>,
     #[cfg(target_os = "macos")]
@@ -1253,6 +1292,13 @@ fn save_temperature_source(source: TemperatureSource) -> std::io::Result<PathBuf
     })
 }
 
+fn save_menu_metric(metric: MenubarMetric) -> std::io::Result<PathBuf> {
+    peterfan_platform::config::update(|cfg| {
+        cfg.menubar.metric = metric;
+        Ok(())
+    })
+}
+
 fn save_update_channel(channel: UpdateChannel) -> std::io::Result<PathBuf> {
     peterfan_platform::config::update(|cfg| {
         cfg.menubar.update_channel = channel;
@@ -1373,6 +1419,45 @@ struct SettingsRequest {
     id: String,
     operation: SettingsOperation,
     payload: String,
+}
+
+#[derive(serde::Deserialize)]
+struct OsAutoRequest {
+    id: String,
+}
+
+fn parse_os_auto_request(json: &str) -> Option<OsAutoRequest> {
+    let request: OsAutoRequest = serde_json::from_str(json).ok()?;
+    if request.id.is_empty()
+        || request.id.len() > 128
+        || !request
+            .id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        return None;
+    }
+    Some(request)
+}
+
+fn record_os_auto_result(request: &OsAutoRequest, status: &str) {
+    let route = if status.starts_with("daemon:") {
+        "daemon"
+    } else if status.ends_with(" — applied locally") {
+        "local"
+    } else {
+        "unknown"
+    };
+    let mut results = OS_AUTO_RESULTS.lock().expect("OS auto results poisoned");
+    results.push_back(serde_json::json!({
+        "id": request.id,
+        "ok": control_result_is_ok(status),
+        "route": route,
+        "message": status,
+    }));
+    while results.len() > SETTINGS_RESULTS_MAX {
+        results.pop_front();
+    }
 }
 
 fn parse_settings_request(request_json: &str) -> Option<SettingsRequest> {
@@ -2071,8 +2156,15 @@ fn resolved_active_control_mode(mode: Option<&str>, has_manual_overrides: bool) 
     } else if has_manual_overrides {
         "hold"
     } else {
-        "auto"
+        ""
     }
+}
+
+/// Missing or malformed daemon data is not evidence of an empty override map.
+fn parse_daemon_fan_overrides(
+    value: Option<&serde_json::Value>,
+) -> Option<std::collections::HashMap<String, u8>> {
+    serde_json::from_value(value?.get("fan_overrides")?.clone()).ok()
 }
 
 /// Save a hand-drawn fan curve from the Detail Window's curve editor and
@@ -2638,10 +2730,31 @@ fn main() {
     log_menubar_event(&format!("startup mock={use_mock}"));
     load_fan_action_log();
 
-    let saved_config = peterfan_platform::config::load();
+    let saved_config = peterfan_platform::config::load_valid();
+    let valid_saved_config = saved_config.is_some();
+    let saved_config = saved_config.unwrap_or_default();
+    let last_good_config = saved_config.clone();
     let critical_temp_c = saved_config.critical_temp_c;
     let notifications = saved_config.notifications.clone();
     let saved = saved_config.menubar;
+    let metric_argument = args
+        .iter()
+        .position(|a| a == "--metric")
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str);
+    let service = std::env::var("XPC_SERVICE_NAME").ok();
+    let metric = match menu_metric::MetricSelection::new_for_launch(
+        saved.metric,
+        metric_argument,
+        service.as_deref(),
+        valid_saved_config,
+    ) {
+        Ok(metric) => metric,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+    };
     let display = args
         .iter()
         .position(|a| a == "--display")
@@ -2721,11 +2834,13 @@ fn main() {
         monitor,
         provider,
         display,
+        metric,
         primary_visible: true,
         runner_character,
         random_runner: RandomRunner::new(random_character, Instant::now()),
         temperature_source,
         update_channel,
+        last_good_config,
         critical_temp_c,
         notifications,
         notification_runtime: NotificationRuntime::default(),
@@ -2760,6 +2875,7 @@ fn main() {
         process_filter: String::new(),
         dashboard_slow_cache: DashboardSlowCache::default(),
         next_dashboard_slow_refresh: Instant::now() + DASHBOARD_SLOW_REFRESH,
+        next_network_refresh: Instant::now(),
         runner_frame: 0,
         runner_cpu_pct: 0.0,
         runner_has_sample: false,
@@ -2771,6 +2887,10 @@ fn main() {
         runner_native_timer: None,
         #[cfg(target_os = "macos")]
         runner_native_painter: Rc::new(RefCell::new(native_runner::NativeRunnerPainter::default())),
+        #[cfg(target_os = "macos")]
+        composite_images: Rc::new(RefCell::new(Vec::new())),
+        #[cfg(target_os = "macos")]
+        composite_key: None,
         #[cfg(target_os = "macos")]
         runner_native_cpu_bits: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
         #[cfg(target_os = "macos")]
@@ -3176,6 +3296,21 @@ fn main() {
                         }
                         refresh_after_pending = true;
                     }
+                } else if let Some(json) = c.strip_prefix("osautorequest:") {
+                    if let Some(request) = parse_os_auto_request(json) {
+                        *STATUS.lock().expect("status poisoned") = "applying…".into();
+                        let provider = std::sync::Arc::clone(&app.provider);
+                        let proxy = event_proxy.clone();
+                        std::thread::spawn(move || {
+                            let status = execute_control_serial(provider.as_ref(), "auto");
+                            record_os_auto_result(&request, &status);
+                            *STATUS.lock().expect("status poisoned") = status;
+                            let _ = proxy.send_event(());
+                        });
+                        app.control_confirm_until = Some(now + CONTROL_CONFIRM_WINDOW);
+                    }
+                    next_metric_at = now;
+                    refresh_after_pending = true;
                 } else if let Some(request) = c.strip_prefix("settingsrequest:") {
                     let parsed = parse_settings_request(request);
                     let operation = parsed.as_ref().map(|r| r.operation);
@@ -3185,9 +3320,6 @@ fn main() {
                         parsed.map(|request| menu_items_app::request(&mut app, request))
                     } else { run_settings_request(request) };
                     if let Some(status) = status { *STATUS.lock().expect("status poisoned") = status; }
-                    if operation == Some(SettingsOperation::ImportConfig) {
-                        menu_items_app::reload(&mut app, &peterfan_platform::config::load().menubar);
-                    }
                     refresh_after_pending = true;
                 } else if let Some(json) = c.strip_prefix("rules:") {
                     let status = save_automation_rules(json).message;
@@ -3270,6 +3402,19 @@ fn main() {
         while let Ok(ev) = menu_events.try_recv() {
             let id = &ev.id;
             #[cfg(target_os = "macos")]
+            if let Some(action) = app.tray_menu.as_ref().and_then(|menu| menu.cpu_appearance.action(id, app.cpu_widget_config)) {
+                let config = cpu_widget_app::native_appearance(app.cpu_widget_config, action)
+                    .expect("CPU appearance menu action");
+                if let Err(error) = cpu_widget_app::apply(&mut app, config, true) {
+                    report_preference_failure("CPU widget", error);
+                }
+                if let Some(menu) = &app.tray_menu {
+                    menu.cpu_appearance.update(app.cpu_widget_config, app.language.resolve());
+                }
+                next_metric_at = now;
+                continue;
+            }
+            #[cfg(target_os = "macos")]
             if let Some(action) = app.cpu_widget_native.as_ref().and_then(|widget| widget.menu_action(id)) {
                 use native_cpu_widget::CpuWidgetAction;
                 match action {
@@ -3300,6 +3445,7 @@ fn main() {
                 continue;
             }
             let mut matched_display: Option<MenubarDisplay> = None;
+            let mut matched_metric: Option<MenubarMetric> = None;
             let mut matched_character: Option<RunnerCharacter> = None;
             let mut matched_random = false;
             let mut matched_temperature_source: Option<TemperatureSource> = None;
@@ -3318,6 +3464,11 @@ fn main() {
                     tm.display_items.iter().find(|(_, item)| item.id() == id)
                 {
                     matched_display = Some(*d);
+                    None
+                } else if let Some((metric, _)) =
+                    tm.metric_items.iter().find(|(_, item)| item.id() == id)
+                {
+                    matched_metric = Some(*metric);
                     None
                 } else if id == tm.random_character_item.id() {
                     matched_random = true;
@@ -3382,6 +3533,17 @@ fn main() {
                 // their last committed state as well as the successful path.
                 if let Some(ref tm) = app.tray_menu {
                     for (candidate, item) in &tm.display_items { item.set_checked(*candidate == app.display); }
+                }
+                update(&mut app);
+            }
+            if let Some(metric) = matched_metric {
+                if preference_saved("menu bar metric", save_menu_metric(metric)) {
+                    app.metric.saved(metric);
+                }
+                if let Some(ref tm) = app.tray_menu {
+                    for (candidate, item) in &tm.metric_items {
+                        item.set_checked(*candidate == app.metric.active);
+                    }
                 }
                 update(&mut app);
             }
@@ -3540,6 +3702,7 @@ fn help_text() -> String {
          USAGE:\n    peterfan-menubar [OPTIONS]\n\n\
          OPTIONS:\n    \
          --mock                Use simulated hardware instead of real sensors\n    \
+        --metric <cpu|memory|temp|fan|network>  Menu-bar measurement\n    \
         --display <number|cat|both>             How it's rendered (cat also accepts legacy graph)\n    \
         --character <name>                      CPU runner character (20 choices)\n    \
          (The flag overrides the saved preference; changing it from the\n    \
@@ -3628,6 +3791,31 @@ fn build_tray(app: &mut App) {
         (d, item)
     })
     .collect();
+
+    let metric_submenu = Submenu::new(s.menu_bar_metric, true);
+    let metric_items = [
+        (MenubarMetric::Cpu, "CPU", "CPU"),
+        (MenubarMetric::Memory, "Memory", "메모리"),
+        (MenubarMetric::Temp, "Temperature", "온도"),
+        (MenubarMetric::Fan, "Fan speed", "팬 속도"),
+        (
+            MenubarMetric::Network,
+            "Network throughput",
+            "네트워크 속도",
+        ),
+    ]
+    .into_iter()
+    .map(|(metric, en, ko)| {
+        let label = if app.language.resolve() == ResolvedLanguage::Ko {
+            ko
+        } else {
+            en
+        };
+        let item = CheckMenuItem::new(label, true, app.metric.active == metric, None);
+        let _ = metric_submenu.append(&item);
+        (metric, item)
+    })
+    .collect::<Vec<_>>();
 
     let character_submenu = Submenu::new(s.runner_character, true);
     let random_character_item = CheckMenuItem::new(
@@ -3747,7 +3935,13 @@ fn build_tray(app: &mut App) {
     );
     #[cfg(target_os = "macos")]
     let _ = menu.append(menu_items.submenu());
+    #[cfg(target_os = "macos")]
+    let cpu_appearance =
+        native_cpu_widget::CpuAppearanceMenu::new(app.cpu_widget_config, app.language.resolve());
+    #[cfg(target_os = "macos")]
+    let _ = menu.append(cpu_appearance.submenu());
     let _ = menu.append(&character_submenu);
+    let _ = menu.append(&metric_submenu);
     let _ = menu.append(&temperature_source_submenu);
     let _ = menu.append(&language_submenu);
     let _ = menu.append(&PredefinedMenuItem::separator());
@@ -3766,8 +3960,11 @@ fn build_tray(app: &mut App) {
             .collect(),
         quit: quit_item.id().clone(),
         display_items,
+        metric_items,
         #[cfg(target_os = "macos")]
         menu_items,
+        #[cfg(target_os = "macos")]
+        cpu_appearance,
         character_items,
         random_character_item,
         temperature_source_items,
@@ -3791,6 +3988,11 @@ fn build_tray(app: &mut App) {
             app.tray = Some(tray);
             app.tray_menu = Some(tray_menu);
             app.last_runner_icon = initial_runner_icon;
+            #[cfg(target_os = "macos")]
+            {
+                app.composite_key = None;
+                app.last_menubar_text = None;
+            }
             #[cfg(target_os = "macos")]
             app.runner_native_applied_icon
                 .store(initial_runner_icon.unwrap_or(usize::MAX), Ordering::Relaxed);
@@ -4784,6 +4986,63 @@ fn refresh_fan_cache(app: &mut App, now: Instant, dashboard_visible: bool) {
     }
 }
 
+type FanTemperatureSample = (f32, f32, Option<f32>, u64);
+
+fn daemon_control_temperature_sample(
+    snapshot: Option<&serde_json::Value>,
+    snapshot_age: Option<Duration>,
+    now_ms: u64,
+) -> Option<FanTemperatureSample> {
+    if snapshot_age? > DAEMON_STALE_AFTER {
+        return None;
+    }
+    let snapshot = snapshot?;
+    if snapshot.get("temps_stale")?.as_bool()? {
+        return None;
+    }
+    let sampled_ms = snapshot.get("temps_sampled_at_unix_ms")?.as_u64()?;
+    let age_ms = now_ms.checked_sub(sampled_ms)?;
+    if sampled_ms == 0 || age_ms > TEMPERATURE_STALE_AFTER.as_millis() as u64 {
+        return None;
+    }
+    let temps: Vec<TempSensor> = serde_json::from_value(snapshot.get("temps")?.clone()).ok()?;
+    control_temperature_sample(&temps, Duration::from_millis(age_ms))
+}
+
+fn control_temperature_sample(temps: &[TempSensor], age: Duration) -> Option<FanTemperatureSample> {
+    if age > TEMPERATURE_STALE_AFTER {
+        return None;
+    }
+    let safety = safety_temperature_c(temps)?;
+    let representative = representative_temperature_c(temps)
+        .filter(|value| peterfan_core::thermals::valid_control_temperature_c(*value))
+        .unwrap_or(safety);
+    let hottest = temps
+        .iter()
+        .find(|temp| temp.id == "cpu.die.hot")
+        .map(|temp| temp.value.0)
+        .filter(|value| peterfan_core::thermals::valid_control_temperature_c(*value));
+    Some((representative, safety, hottest, age.as_secs()))
+}
+
+fn fan_control_temperature_sample(
+    daemon_sample: Option<FanTemperatureSample>,
+    provider_temps: &[TempSensor],
+    provider_age: Option<Duration>,
+    allow_provider: bool,
+) -> (Option<FanTemperatureSample>, &'static str) {
+    if let Some(sample) = daemon_sample {
+        (Some(sample), "daemon")
+    } else if allow_provider {
+        (
+            provider_age.and_then(|age| control_temperature_sample(provider_temps, age)),
+            "provider",
+        )
+    } else {
+        (None, "daemon")
+    }
+}
+
 fn refresh_daemon_cache(app: &mut App, now: Instant) {
     if let Some(snapshot) = app.daemon_read.take() {
         app.daemon_probe_completed = true;
@@ -4851,14 +5110,42 @@ fn dashboard_render_requested(
     popover_visible || popover_scheduled || detail_visible
 }
 
+#[cfg(target_os = "macos")]
+fn cpu_core_tooltip_detail(
+    config: CpuWidgetConfig,
+    core_count: usize,
+    language: ResolvedLanguage,
+) -> Option<String> {
+    if !config.enabled || config.style != peterfan_core::config::CpuWidgetStyle::Cores {
+        return None;
+    }
+    Some(if language == ResolvedLanguage::Ko {
+        format!("{core_count}개 논리 코어 · 코어마다 0–100%")
+    } else {
+        format!("{core_count} logical CPUs · 0–100% per CPU")
+    })
+}
+
 fn update(app: &mut App) {
     let now = Instant::now();
     // Re-read the small user config so CLI edits and the detail-window rule
     // editor converge without an app restart. The privileged daemon still
     // validates the same file before applying rules.
-    let config = peterfan_platform::config::load();
-    app.update_channel = config.menubar.update_channel;
-    menu_items_app::reload(app, &config.menubar);
+    let valid_config = peterfan_platform::config::load_valid();
+    menu_metric::apply_valid_config(valid_config.as_ref(), |config| {
+        app.update_channel = config.menubar.update_channel;
+        let old_metric = app.metric.active;
+        app.metric.reload_if_valid(Some(config.menubar.metric));
+        if old_metric != app.metric.active {
+            if let Some(ref tm) = app.tray_menu {
+                for (metric, item) in &tm.metric_items {
+                    item.set_checked(*metric == app.metric.active);
+                }
+            }
+        }
+        menu_items_app::reload(app, &config.menubar);
+    });
+    let config = menu_metric::last_good_config(&mut app.last_good_config, valid_config);
     app.monitor.refresh_quick();
     let detail_visible = app.detail_window.as_ref().is_some_and(Window::is_visible);
     let popover_scheduled = app.popover_show_at.is_some();
@@ -4880,6 +5167,20 @@ fn update(app: &mut App) {
             || app.dashboard_slow_cache.proc_filter != app.process_filter);
     if refresh_slow_metrics {
         app.monitor.refresh_slow();
+        app.next_network_refresh = now + Duration::from_secs(1);
+    }
+    #[cfg(target_os = "macos")]
+    let metric_visible = menu_items_app::visibility(app).metric;
+    #[cfg(not(target_os = "macos"))]
+    let metric_visible = matches!(app.display, MenubarDisplay::Number | MenubarDisplay::Both);
+    if menu_metric::should_refresh_network(
+        app.metric.active,
+        metric_visible,
+        refresh_slow_metrics,
+        now >= app.next_network_refresh,
+    ) {
+        app.monitor.refresh_network();
+        app.next_network_refresh = now + Duration::from_secs(1);
     }
     let cpu = app.monitor.cpu();
     // Gathered unconditionally (cheap — the underlying sysinfo/provider state
@@ -4962,8 +5263,8 @@ fn update(app: &mut App) {
         smooth_runner_cpu(app.runner_cpu_pct, cpu.usage_percent, app.runner_has_sample);
     app.runner_has_sample = true;
 
-    // Menu-bar item: keep it calm and literal. The top bar shows only the CPU
-    // Core Average temperature; richer metrics live inside the popover.
+    // Menu-bar item uses the selected measurement while the runner remains
+    // driven by CPU load, independent of the selected text metric.
     apply_runner_icon(app);
     if let Some(tray) = &app.tray {
         // Fixed-width formatting throughout: a menu-bar item that changes
@@ -4971,14 +5272,33 @@ fn update(app: &mut App) {
         // left back and forth, which reads as the whole menu bar jittering.
         // Padding to a constant character count keeps the item's width
         // (and everything to its left) stable regardless of the value.
-        let title = if let Some(temp) = display_temp.filter(|t| *t > 0.0) {
-            format!("{temp:>3.0}°C")
-        } else {
-            " --°C".to_string()
-        };
+        let title = menu_metric::title(
+            app.metric.active,
+            &menu_metric::MetricReadings {
+                cpu: Some(cpu.usage_percent),
+                memory: Some(mem.used_percent),
+                temperature: display_temp,
+                fan_rpm: (fan_data_ready && !fans.is_empty()).then_some(fastest_rpm),
+                network_bytes_per_sec: (app.monitor.network_rates_ready() && !nets.is_empty())
+                    .then_some(rx + tx),
+            },
+        );
 
-        let show_number = matches!(app.display, MenubarDisplay::Number | MenubarDisplay::Both);
-        let menubar_text = if show_number { &title } else { "" };
+        #[cfg(target_os = "macos")]
+        let group_title = composite_status::title(
+            menu_items_app::visibility(app),
+            app.cpu_widget_config,
+            &cpu_widget::title(app.cpu_widget_config, app.cpu_widget_history.current()),
+            &title,
+        );
+        #[cfg(target_os = "macos")]
+        let menubar_text = group_title.as_str();
+        #[cfg(not(target_os = "macos"))]
+        let menubar_text = if matches!(app.display, MenubarDisplay::Number | MenubarDisplay::Both) {
+            &title
+        } else {
+            ""
+        };
         if app.last_menubar_text.as_deref() != Some(menubar_text) {
             set_menubar_text(tray, menubar_text);
             app.last_menubar_text = Some(menubar_text.to_string());
@@ -4996,6 +5316,14 @@ fn update(app: &mut App) {
             "CPU {:.0}%   {mem_label} {:.0}%",
             cpu.usage_percent, mem.used_percent
         )];
+        #[cfg(target_os = "macos")]
+        if let Some(core_detail) = cpu_core_tooltip_detail(
+            app.cpu_widget_config,
+            app.cpu_widget_history.core_values().len(),
+            app.language.resolve(),
+        ) {
+            tip_parts.push(core_detail);
+        }
         if let Some(temp) = display_temp.filter(|t| *t > 0.0) {
             tip_parts.push(format!("CPU {temp:.0}°C"));
         }
@@ -5124,6 +5452,26 @@ fn update(app: &mut App) {
     // so opening this view only renders cached values and never waits on SMC
     // or a Unix socket.
     let daemon_json = app.daemon_json_cache.clone();
+    // This is the daemon's latest sampled temperature, not an atomic record
+    // of the sample used for the currently reported fan target.
+    let daemon_fan_temperatures = if app.provider.name() == "mock" {
+        None
+    } else {
+        daemon_control_temperature_sample(
+            daemon_json.as_ref(),
+            sample_age(app.daemon_json_sampled_at, now),
+            now_unix_ms(),
+        )
+    };
+    // Unix real hardware must not silently substitute a different sensor
+    // source when the daemon is missing or stale. Windows and the mock
+    // provider have no controlling Unix daemon and use their own samples.
+    let (fan_temperatures, fan_temp_source) = fan_control_temperature_sample(
+        daemon_fan_temperatures,
+        &temps,
+        sample_age(app.temperature_sampled_at, now),
+        !cfg!(unix) || app.provider.name() == "mock",
+    );
     let daemon_st = daemon_json
         .as_ref()
         .map(|v| {
@@ -5143,15 +5491,21 @@ fn update(app: &mut App) {
     let daemon_update_needed = app.provider.name() != "mock" && daemon_running && !daemon_usable;
     // Without a daemon to ask, fall back to the local shadow state that
     // `apply_local` maintains for its one-shot direct writes.
-    let fan_overrides = if daemon_usable {
-        daemon_json
-            .as_ref()
-            .and_then(|v| v.get("fan_overrides").cloned())
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default()
+    let known_fan_overrides = if daemon_usable {
+        parse_daemon_fan_overrides(daemon_json.as_ref())
     } else {
-        local_fan_overrides()
+        // Local shadow pins are not a hardware readback. With no trustworthy
+        // daemon snapshot, the complete override state remains unknown.
+        None
     };
+    let fan_override_count = known_fan_overrides.as_ref().map(|value| value.len());
+    let fan_overrides = known_fan_overrides.unwrap_or_else(|| {
+        if daemon_running {
+            Default::default()
+        } else {
+            local_fan_overrides()
+        }
+    });
     let fan_targets: std::collections::HashMap<String, u8> = daemon_json
         .as_ref()
         .and_then(|value| value.get("fan_targets").cloned())
@@ -5205,13 +5559,11 @@ fn update(app: &mut App) {
     let control_revision = daemon_json
         .as_ref()
         .and_then(|value| value.get("control_revision"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+        .and_then(serde_json::Value::as_u64);
     let applied_control_revision = daemon_json
         .as_ref()
         .and_then(|value| value.get("applied_control_revision"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+        .and_then(serde_json::Value::as_u64);
     let fan_rows: Vec<_> = fans
         .iter()
         .map(|f| {
@@ -5386,6 +5738,7 @@ fn update(app: &mut App) {
         "login_item_supported": login_item_supported(),
         "active_profile": active_profile,
         "active_control_mode": active_control_mode,
+        "fan_override_count": fan_override_count,
         "control_revision": control_revision,
         "applied_control_revision": applied_control_revision,
         "fan_setup_needed": fan_control_supported && !can_control,
@@ -5395,9 +5748,11 @@ fn update(app: &mut App) {
         "fan_control_state_ready": !fan_control_supported || (fan_data_ready && app.daemon_probe_completed),
         "fan_count": fans.len(),
         "controllable_fan_count": fans.iter().filter(|f| f.controllable).count(),
-        "fan_curve_input_temp_c": display_temp,
-        "fan_core_hottest_temp_c": core_hottest,
-        "fan_safety_temp_c": safety_temp,
+        "fan_curve_input_temp_c": fan_temperatures.map(|sample| sample.0),
+        "fan_core_hottest_temp_c": fan_temperatures.and_then(|sample| sample.2),
+        "fan_safety_temp_c": fan_temperatures.map(|sample| sample.1),
+        "fan_temp_age_secs": fan_temperatures.map(|sample| sample.3),
+        "fan_temp_source": fan_temp_source,
         "fan_critical_temp_c": app.critical_temp_c,
         "control_health": control_health,
         "fan_action_log": fan_action_log_snapshot(),
@@ -5417,6 +5772,7 @@ fn update(app: &mut App) {
         "setup_detail": setup_detail(app.language.resolve(), !daemon_st.is_empty(), daemon_update_needed, daemon_version.as_deref()),
         "curve_points": &app.dashboard_slow_cache.curve_points,
         "last_cmd_status": STATUS.lock().expect("status poisoned").clone(),
+        "os_auto_results": OS_AUTO_RESULTS.lock().expect("OS auto results poisoned").clone(),
         "settings_results": SETTINGS_RESULTS.lock().expect("settings results poisoned").clone(),
     });
     payload["config_toml"] = serde_json::json!(config.to_toml());
@@ -5515,6 +5871,18 @@ fn daemon_temps_json() -> Option<serde_json::Value> {
 /// running `peterfand` daemon (so the unprivileged app needs no root); falls
 /// back to controlling fans directly if this process happens to have access.
 /// Returns a short human-readable status for the popover.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn control_fallback_on_daemon_uncertainty(cmd: &str, fallback: impl FnOnce() -> String) -> String {
+    if cmd == "auto" {
+        // A missing socket/version/ack does not prove the privileged daemon
+        // is absent: it may still reassert its previous manual fan policy.
+        // Never bypass it with a competing one-shot direct write.
+        "error: daemon state or communication unavailable; OS fan handoff unconfirmed".into()
+    } else {
+        fallback()
+    }
+}
+
 fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
     if provider.name() == "mock" {
         return apply_local(provider, cmd);
@@ -5524,11 +5892,14 @@ fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
         cached_installed_daemon_version().as_deref(),
         peterfan_platform::running_daemon_version().as_deref(),
     ) {
-        if direct_fan_control_allowed() {
-            return apply_local(provider, cmd);
-        }
-        return "error: fan control requires a verified current daemon; reinstall fan control"
-            .into();
+        return control_fallback_on_daemon_uncertainty(cmd, || {
+            if direct_fan_control_allowed() {
+                apply_local(provider, cmd)
+            } else {
+                "error: fan control requires a verified current daemon; reinstall fan control"
+                    .into()
+            }
+        });
     }
     #[cfg(unix)]
     let line = if let Some(name) = cmd.strip_prefix("profile:") {
@@ -5567,7 +5938,14 @@ fn execute_control(provider: &dyn HardwareProvider, cmd: &str) -> String {
         }
     }
 
-    apply_local(provider, cmd)
+    #[cfg(unix)]
+    {
+        control_fallback_on_daemon_uncertainty(cmd, || apply_local(provider, cmd))
+    }
+    #[cfg(not(unix))]
+    {
+        apply_local(provider, cmd)
+    }
 }
 
 fn execute_control_logged(provider: &dyn HardwareProvider, cmd: &str) -> String {
@@ -5682,6 +6060,12 @@ fn apply_local(provider: &dyn HardwareProvider, cmd: &str) -> String {
         .filter(|f| f.controllable)
         .map(|f| f.id)
         .collect();
+
+    // An empty iterator would otherwise make try_for_each report a false
+    // successful OS handoff even though no controllable fan was touched.
+    if cmd == "auto" && fans.is_empty() {
+        return "error: no controllable fans reported".into();
+    }
 
     let (result, label) = if cmd == "auto" {
         (
@@ -5891,7 +6275,7 @@ fn toggle_login_item() -> String {
                 Err(e) => format!("login item disable failed: {e}"),
             }
         } else {
-            match peterfan_platform::login_item::install(None, "temp") {
+            match peterfan_platform::login_item::install_preserving_metric(None) {
                 Ok((_bin, _plist)) => "startup enabled".to_string(),
                 Err(e) => format!("login item enable failed: {e}"),
             }
@@ -6924,6 +7308,227 @@ fn build_runner_assets(character: RunnerCharacter) -> Result<RunnerAssets, Runne
     RunnerAssets::from_pack(RunnerPack::build(character)?)
 }
 
+#[cfg(target_os = "macos")]
+fn composite_foreground(app: &App) -> Result<[u8; 3], String> {
+    let marker = MainThreadMarker::new().ok_or("Composite item requires the GUI thread")?;
+    let button = app
+        .tray
+        .as_ref()
+        .and_then(TrayIcon::ns_status_item)
+        .and_then(|item| item.button(marker))
+        .ok_or("Primary status button is unavailable")?;
+    let result = Cell::new([0_u8; 3]);
+    let resolve = RcBlock::new(|| {
+        let highlighted = button.cell().is_some_and(|cell| cell.isHighlighted());
+        let foreground = if highlighted {
+            NSColor::selectedMenuItemTextColor()
+        } else {
+            NSColor::labelColor()
+        };
+        if let Some(color) = foreground.colorUsingColorSpace(&NSColorSpace::deviceRGBColorSpace()) {
+            let channel = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+            result.set([
+                channel(color.redComponent()),
+                channel(color.greenComponent()),
+                channel(color.blueComponent()),
+            ]);
+        }
+    });
+    button
+        .effectiveAppearance()
+        .performAsCurrentDrawingAppearance(&resolve);
+    // A shared status image can be replicated onto displays with different
+    // menu-bar appearances. Preserve the prior neutral-ink fallback there;
+    // a single appearance-specific color can disappear on another display.
+    Ok(if NSScreen::screens(marker).len() > 1 {
+        [118; 3]
+    } else {
+        result.get()
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn make_composite_native_image(
+    frame: &composite_status::CompositeFrame,
+) -> Result<NativeRunnerImage, String> {
+    let bitmap = unsafe { NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
+        NSBitmapImageRep::alloc(), std::ptr::null_mut(), frame.width as isize, frame.height as isize,
+        8, 4, true, false, NSDeviceRGBColorSpace, NSBitmapFormat::AlphaNonpremultiplied,
+        (frame.width * 4) as isize, 32) }.ok_or("Composite bitmap allocation failed")?;
+    let pixels = bitmap.bitmapData();
+    if pixels.is_null()
+        || bitmap.bytesPerRow() != (frame.width * 4) as isize
+        || bitmap.pixelsHigh() != frame.height as isize
+    {
+        return Err("Invalid composite bitmap storage".into());
+    }
+    // The bitmap owns checked RGBA8 storage for the complete frame.
+    unsafe { std::ptr::copy_nonoverlapping(frame.rgba.as_ptr(), pixels, frame.rgba.len()) };
+    let size = NSSize::new(f64::from(frame.width) / 2.0, f64::from(frame.height) / 2.0);
+    bitmap.setSize(size);
+    let image = NSImage::initWithSize(NSImage::alloc(), size);
+    image.addRepresentation(&bitmap);
+    image.setCacheMode(NSImageCacheMode::Always);
+    image.setTemplate(false);
+    Ok(image)
+}
+
+#[cfg(target_os = "macos")]
+fn composite_key(
+    app: &App,
+    visibility: peterfan_core::config::MenuItemsVisibility,
+    config: CpuWidgetConfig,
+    history: &cpu_widget::CpuWidgetHistory,
+) -> Result<CompositeKey, String> {
+    let graph = visibility.cpu && config.style != peterfan_core::config::CpuWidgetStyle::Number;
+    Ok(CompositeKey {
+        visibility,
+        metric: visibility.metric.then_some(app.metric.active),
+        style: config.style,
+        cpu_width: if graph {
+            history.pixel_width(config.style)
+        } else {
+            0
+        },
+        cpu_pixels: if graph {
+            history.render_rgba(config.style)
+        } else {
+            Vec::new()
+        },
+        foreground: composite_foreground(app)?,
+        character: app.runner_character,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_composite(app: &App, key: CompositeKey) -> Result<PreparedComposite, String> {
+    let graph = key.visibility.cpu && key.style != peterfan_core::config::CpuWidgetStyle::Number;
+    let images = if !graph {
+        if key.visibility.runner {
+            app.runner_assets.native_images.clone()
+        } else {
+            Vec::new()
+        }
+    } else {
+        let frames = app.runner_assets.pack.frames();
+        let shared_bands = key.visibility.runner
+            && frames
+                .chunks_exact(usize::from(RUNNER_FRAME_COUNT))
+                .all(|band| band == &frames[..usize::from(RUNNER_FRAME_COUNT)]);
+        let poses = if !key.visibility.runner {
+            1
+        } else if shared_bands {
+            usize::from(RUNNER_FRAME_COUNT)
+        } else {
+            frames.len()
+        };
+        let mut rendered = (0..poses)
+            .map(|index| {
+                let runner = if key.visibility.runner {
+                    app.runner_assets.pack.frames()[index].as_slice()
+                } else {
+                    &[]
+                };
+                let frame = composite_status::compose(
+                    key.visibility,
+                    key.style,
+                    key.cpu_width,
+                    &key.cpu_pixels,
+                    runner,
+                    app.runner_assets.pack.is_color(),
+                    key.foreground,
+                )
+                .ok_or("Composite frame invalid")?;
+                make_composite_native_image(&frame)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if shared_bands {
+            let one_band = rendered.clone();
+            for _ in 1..runner::LOAD_BANDS {
+                rendered.extend(one_band.iter().cloned());
+            }
+        }
+        rendered
+    };
+    Ok(PreparedComposite { key, images })
+}
+
+#[cfg(target_os = "macos")]
+fn configure_composite_status(app: &App, primary: &native_cpu_widget::PreparedPrimaryItem) {
+    let v = menu_items_app::visibility(app);
+    let images = app.composite_images.borrow();
+    let image_width = images.first().map_or(0.0, |image| image.size().width);
+    let cpu_text_width = if v.cpu {
+        if app.cpu_widget_config.style == peterfan_core::config::CpuWidgetStyle::Number {
+            68.0
+        } else if app.cpu_widget_config.show_percentage {
+            38.0
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+    let metric_width = if v.metric {
+        menu_metric::reserved_width(app.metric.active)
+    } else {
+        0.0
+    };
+    primary.configure_composite(
+        image_width,
+        !images.is_empty(),
+        cpu_text_width,
+        metric_width,
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn sync_composite_images(app: &mut App) {
+    let key = match composite_key(
+        app,
+        menu_items_app::visibility(app),
+        app.cpu_widget_config,
+        &app.cpu_widget_history,
+    ) {
+        Ok(key) => key,
+        Err(error) => {
+            app.cpu_widget_error = Some(error);
+            return;
+        }
+    };
+    if app.composite_key.as_ref() == Some(&key) {
+        return;
+    }
+    match prepare_composite(app, key) {
+        Ok(prepared) => {
+            let old_size = app
+                .composite_images
+                .borrow()
+                .first()
+                .map(|image| image.size());
+            let new_size = prepared.images.first().map(|image| image.size());
+            app.runner_native_painter
+                .borrow_mut()
+                .image_size_changed(old_size, new_size);
+            *app.composite_images.borrow_mut() = prepared.images;
+            app.composite_key = Some(prepared.key);
+            app.runner_native_applied_icon
+                .store(usize::MAX - 1, Ordering::Relaxed);
+            if let Some(primary) = app
+                .tray
+                .as_ref()
+                .and_then(|tray| native_cpu_widget::PreparedPrimaryItem::new(tray).ok())
+            {
+                configure_composite_status(app, &primary);
+            }
+            app.cpu_widget_error = None;
+        }
+        Err(error) => {
+            app.cpu_widget_error = Some(error);
+        }
+    }
+}
+
 #[cfg(test)]
 fn build_runner_assets_with<FP, FI, FN>(
     character: RunnerCharacter,
@@ -7029,7 +7634,7 @@ fn runner_icon_from_rgba(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn make_runner_native_image_from_rgba(
     character: RunnerCharacter,
     frame_index: usize,
@@ -7174,7 +7779,7 @@ fn configure_native_status_item(tray: &TrayIcon, display: MenubarDisplay) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn native_status_item_image_position(display: MenubarDisplay) -> NSCellImagePosition {
     native_cpu_widget::primary_image_position(display)
 }
@@ -7244,7 +7849,7 @@ fn sync_native_runner_timer(app: &mut App) {
     }
 
     let character = app.runner_character;
-    let images = app.runner_assets.native_images.clone();
+    let images = Rc::clone(&app.composite_images);
     let frame = Arc::clone(&app.runner_native_frame);
     let cpu_bits = Arc::clone(&app.runner_native_cpu_bits);
     let motion_cpu_bits = Arc::clone(&app.runner_native_motion_cpu_bits);
@@ -7280,7 +7885,7 @@ fn sync_native_runner_timer(app: &mut App) {
             band.store(next_band, Ordering::Relaxed);
             frame.store(u64::from(next_frame), Ordering::Relaxed);
             let index = next_band * usize::from(RUNNER_FRAME_COUNT) + usize::from(next_frame);
-            if let Some(image) = images.get(index) {
+            if let Some(image) = images.borrow().get(index) {
                 painter.borrow().paint(image);
                 applied_icon.store(index, Ordering::Relaxed);
             }
@@ -7438,13 +8043,23 @@ fn finish_runner_switch(app: &mut App) {
 
 fn apply_runner_icon(app: &mut App) {
     #[cfg(target_os = "macos")]
+    sync_composite_images(app);
+    #[cfg(target_os = "macos")]
     sync_native_runner_painter(app);
     #[cfg(target_os = "macos")]
-    let desired = (app.primary_visible && runner_enabled(app.display)).then(|| {
-        app.runner_native_band.load(Ordering::Relaxed) * usize::from(RUNNER_FRAME_COUNT)
-            + app.runner_native_frame.load(Ordering::Relaxed) as usize
-                % usize::from(RUNNER_FRAME_COUNT)
-    });
+    let desired = if app.primary_visible && runner_enabled(app.display) {
+        Some({
+            app.runner_native_band.load(Ordering::Relaxed) * usize::from(RUNNER_FRAME_COUNT)
+                + app.runner_native_frame.load(Ordering::Relaxed) as usize
+                    % usize::from(RUNNER_FRAME_COUNT)
+        })
+    } else if app.cpu_widget_config.enabled
+        && app.cpu_widget_config.style != peterfan_core::config::CpuWidgetStyle::Number
+    {
+        Some(0)
+    } else {
+        None
+    };
     #[cfg(not(target_os = "macos"))]
     let desired = (app.primary_visible && runner_enabled(app.display)).then(|| {
         runner_icon_index_with_hysteresis(
@@ -7472,9 +8087,9 @@ fn apply_runner_icon(app: &mut App) {
             let Some(button) = status_item.button(mtm) else {
                 return;
             };
-            button.setImagePosition(native_status_item_image_position(app.display));
+            let images = app.composite_images.borrow();
             let image = desired
-                .and_then(|index| app.runner_assets.native_images.get(index))
+                .and_then(|index| images.get(index))
                 .map(|image| &**image);
             if let Some(image) = image {
                 app.runner_native_painter.borrow().paint(image);
@@ -7506,6 +8121,11 @@ fn sync_native_runner_painter(app: &mut App) {
         return;
     };
     let screens = NSScreen::screens(mtm).len();
+    let placeholder_size = app
+        .composite_images
+        .borrow()
+        .first()
+        .map(|image| image.size());
     let mut painter = app.runner_native_painter.borrow_mut();
     let changed = painter.reconcile(
         &button,
@@ -7513,10 +8133,7 @@ fn sync_native_runner_painter(app: &mut App) {
         app.primary_visible,
         app.reduce_motion,
         screens,
-        || {
-            let transparent = vec![0; (RUNNER_PIXEL_WIDTH * RUNNER_PIXEL_HEIGHT * 4) as usize];
-            make_runner_native_image_from_rgba(app.runner_character, 0, &transparent).ok()
-        },
+        || placeholder_size.map(|size| NSImage::initWithSize(NSImage::alloc(), size)),
     );
     if changed {
         // The timer observes this shared painter on its next tick, so monitor
@@ -7930,14 +8547,14 @@ fn runner_picker_options(lang: ResolvedLanguage) -> String {
         "Random · every minute"
     };
     let random = format!(
-        r#"<button type="button" class="character-option" role="option" aria-selected="false" data-character="random" onclick="chooseRunnerCharacter('random')" onkeydown="handleRunnerOptionKey(event)"><span class="runner-preview random-runner-icon" aria-hidden="true">⇄</span><span class="character-option-label">{label}</span><span class="character-option-check" aria-hidden="true"></span></button>"#
+        r#"<button type="button" class="character-option" role="option" tabindex="-1" aria-selected="false" data-character="random" onclick="chooseRunnerCharacter('random')" onkeydown="handleRunnerOptionKey(event)"><span class="runner-preview random-runner-icon" aria-hidden="true">⇄</span><span class="character-option-label">{label}</span><span class="character-option-check" aria-hidden="true"></span></button>"#
     );
     random + &RunnerCharacter::FEATURED
         .map(|character| {
             let value = character.as_str();
             let label = runner_character_label(lang, character);
             format!(
-                r#"<button type="button" class="character-option" role="option" aria-selected="false" data-character="{value}" onclick="chooseRunnerCharacter('{value}')" onkeydown="handleRunnerOptionKey(event)"><canvas class="runner-preview" width="{RUNNER_PIXEL_WIDTH}" height="{RUNNER_PIXEL_HEIGHT}" data-runner-preview="{value}" aria-hidden="true"></canvas><span class="character-option-label">{label}</span><span class="character-option-check" aria-hidden="true"></span></button>"#
+                r#"<button type="button" class="character-option" role="option" tabindex="-1" aria-selected="false" data-character="{value}" onclick="chooseRunnerCharacter('{value}')" onkeydown="handleRunnerOptionKey(event)"><canvas class="runner-preview" width="{RUNNER_PIXEL_WIDTH}" height="{RUNNER_PIXEL_HEIGHT}" data-runner-preview="{value}" aria-hidden="true"></canvas><span class="character-option-label">{label}</span><span class="character-option-check" aria-hidden="true"></span></button>"#
             )
         })
         .join("")
@@ -8104,11 +8721,15 @@ fn dashboard_html_with_runner_pack(
                 "첫 센서 값을 기다리는 중입니다.",
             )
             .replace(
-                "macOS manages fan speed for the current workload.",
-                "현재 작업에 맞춰 macOS가 팬 속도를 관리합니다.",
+                "Request macOS fan control and clear all per-fan overrides.",
+                "macOS 팬 제어 복귀를 요청하고 개별 팬 설정을 해제합니다.",
             )
+            .replace("Restore OS default fan control", "OS 기본 팬 제어로 복귀 요청")
+            .replace(">OS default<", ">OS 기본 제어<")
+            .replace(">Fan state unknown<", ">팬 상태 확인 불가<")
+            .replace("Fan-control state is unavailable.", "팬 제어 상태를 확인할 수 없습니다.")
             .replace(">Release Notes<", ">릴리즈 노트<")
-            .replace(">Auto<", ">자동<")
+            .replace(">OS Default<", ">OS 기본<")
             .replace(">Silent<", ">저소음<")
             .replace(">Quiet<", ">저소음<")
             .replace(">Balanced<", ">균형<")
@@ -8375,7 +8996,7 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .profile-strip.pending button{cursor:progress;}
 .profile-strip.pending button:not(.active){opacity:.48;}
 .profile-strip.pending button.active{box-shadow:inset 0 -2px 0 var(--accent);}
-.fan-apply-status{min-height:15px;margin:-2px 0 5px;color:var(--dim);font-size:10.5px;line-height:1.45;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fan-apply-status{min-height:15px;margin:-2px 0 5px;color:var(--dim);font-size:10.5px;line-height:1.45;font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere;}
 .fan-apply-status.pending{color:var(--accent);}
 .fan-apply-status.ok{color:var(--g);}
 .fan-apply-status.error{color:var(--r);}
@@ -8441,6 +9062,9 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .rail-panel .panel-action{min-height:30px;background:var(--accent-medium);border:1px solid var(--accent-border);color:var(--accent);font:inherit;font-size:11px;font-weight:700;padding:6px 10px;border-radius:7px;cursor:pointer;}
 .rail-panel .panel-action.secondary{background:var(--chip-bg);border-color:transparent;color:var(--text);}
 .rail-panel .panel-action.danger{background:var(--danger-soft);border-color:var(--danger-border);color:var(--r);}
+.rail-panel .panel-action:not(:disabled){transition:background .15s,border-color .15s,transform .1s;}
+.rail-panel .panel-action:not(:disabled):hover{background:var(--chip-hover);border-color:var(--accent-border);}
+.rail-panel .panel-action:disabled{cursor:not-allowed;opacity:.55;}
 .rail-panel .panel-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .release-notes-card{margin-top:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);}
 .release-notes-title{font-size:11px;font-weight:800;color:var(--text);margin-bottom:5px;}
@@ -8455,24 +9079,29 @@ body.compact[data-rail-view="system"] .foot.compact-extra{display:block!importan
 .display-segment button{min-width:0;min-height:27px;padding:4px 5px;border:0;border-radius:6px;background:transparent;color:var(--dim);font:inherit;font-size:9.5px;font-weight:750;cursor:pointer;white-space:nowrap;}
 .display-segment button:hover{background:var(--track-hover);color:var(--text);}
 .display-segment button.active{background:var(--surface-raised);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.15);}
-.character-picker{position:relative;width:184px;}
-.character-select{display:grid;grid-template-columns:38px minmax(0,1fr) 10px;align-items:center;gap:7px;width:100%;height:40px;padding:3px 8px 3px 5px;border:1px solid var(--line);border-radius:7px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:10px;font-weight:700;text-align:left;cursor:pointer;color-scheme:inherit;}
+.character-picker{position:relative;width:200px;max-width:100%;min-width:0;}
+.character-select{display:grid;grid-template-columns:48px minmax(0,1fr) 10px;align-items:center;gap:9px;width:100%;min-height:48px;padding:6px 10px 6px 7px;border:1px solid var(--line);border-radius:9px;background:var(--chip-bg);color:var(--text);font:inherit;font-size:11px;font-weight:700;text-align:left;cursor:pointer;color-scheme:inherit;transition:background .15s,border-color .15s,transform .1s;}
 .character-select:hover,.character-select[aria-expanded="true"]{border-color:var(--accent-border);background-color:var(--track-hover);}
+.character-select:active{transform:scale(.99);}
 .character-select:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
-.runner-preview{display:block;width:27px;height:18px;opacity:.92;image-rendering:auto;pointer-events:none;}
-.character-select .runner-preview{width:27px;height:18px;}
+.runner-preview{display:block;width:48px;height:32px;opacity:1;image-rendering:auto;pointer-events:none;}
+.character-select .runner-preview{width:48px;height:32px;}
+/* A neutral preview tile separates both dark and light sprites from either theme. */
+canvas.runner-preview{background:#8996a5;border-radius:5px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);}
 .character-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .character-chevron{width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);color:var(--dim);transition:transform .12s ease;}
 .character-select[aria-expanded="true"] .character-chevron{transform:translateY(2px) rotate(225deg);}
-.random-runner-icon{font-size:21px;text-align:center;line-height:18px;color:var(--dim)}
-.character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:260px;overflow-y:auto;padding:5px;border:1px solid var(--panel-border);border-radius:8px;background:var(--surface-raised);box-shadow:var(--shadow);scrollbar-width:thin;overscroll-behavior:contain;}
+.random-runner-icon{font-size:25px;text-align:center;line-height:32px;color:var(--dim)}
+.character-menu{display:none;position:fixed;z-index:1000;width:264px;max-height:320px;overflow-y:auto;padding:6px;border:1px solid var(--panel-border);border-radius:10px;background:var(--surface-raised);box-shadow:var(--shadow);scrollbar-width:thin;overscroll-behavior:contain;}
 .character-menu.show{display:block;}
-.character-option{display:grid;grid-template-columns:38px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:34px;padding:1px 7px 1px 4px;border:0;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-size:10.5px;font-weight:650;text-align:left;cursor:pointer;}
-.character-option:hover,.character-option:focus-visible{background:var(--chip-hover);outline:none;}
+.character-option{display:grid;grid-template-columns:48px minmax(0,1fr) 14px;align-items:center;gap:9px;width:100%;min-height:44px;padding:5px 8px;border:0;border-radius:8px;background:transparent;color:var(--text);font:inherit;font-size:11px;font-weight:650;text-align:left;cursor:pointer;transition:background .15s,color .15s;}
+.character-option:hover{background:var(--chip-hover);}
+.character-option:focus-visible{background:var(--chip-hover);outline:2px solid var(--accent);outline-offset:-2px;}
 .character-option[aria-selected="true"]{background:var(--accent-soft);color:var(--accent);}
 .character-option-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .character-option-check{display:none;width:8px;height:5px;border-left:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-1px) rotate(-45deg);}
 .character-option[aria-selected="true"] .character-option-check{display:block;}
+@media(max-width:340px){#runner-character-setting,#menubar-display-setting{align-items:stretch;flex-direction:column;gap:7px;}.character-picker,#menubar-display-setting .settings-control-stack{width:100%;}}
 .runner-pace{color:var(--dim);font-size:9.5px;font-variant-numeric:tabular-nums;text-align:right;}
 .system-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin:0 0 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);}
 .system-fact{min-width:0;padding:8px 10px;}
@@ -8847,16 +9476,17 @@ __CPU_WIDGET_SETTINGS__
 <div class="fan-input"><span>Safety Hottest</span><b id="fan-safety-hottest">—</b></div>
 <div class="fan-input"><span>Critical Limit</span><b id="fan-critical-limit">—</b></div>
 </div>
+<div id="fan-temperature-source" style="font-size:10px;color:var(--dim);padding:4px 0">Daemon sample unavailable</div>
 <div class="profile-strip" id="profile-strip">
-<button class="active" disabled data-mode="auto" aria-pressed="true" title="Auto" onclick="setAuto()">Auto</button>
+<button disabled data-mode="auto" aria-pressed="false" title="Restore OS default fan control" onclick="setAuto()">OS Default</button>
 <button disabled data-mode="profile" data-profile="silent" aria-pressed="false" title="Silent" onclick="setProfile('silent')">Quiet</button>
 <button disabled data-mode="profile" data-profile="balanced" aria-pressed="false" title="Balanced" onclick="setProfile('balanced')">Balance</button>
 <button disabled data-mode="profile" data-profile="gaming" aria-pressed="false" title="Gaming" onclick="setProfile('gaming')">Game</button>
 <button disabled data-mode="profile" data-profile="performance" aria-pressed="false" title="Performance" onclick="setProfile('performance')">Fast</button>
 <button disabled data-mode="profile" data-profile="maximum" aria-pressed="false" title="Maximum" onclick="setProfile('maximum')">Max</button>
 </div>
-<div class="profile-guide" id="profile-guide" data-mode="auto" role="status" aria-live="polite" aria-atomic="true">
-<div class="profile-guide-copy"><strong class="profile-guide-title" id="profile-guide-title">macOS Auto</strong><span class="profile-guide-detail" id="profile-guide-detail">macOS manages fan speed for the current workload.</span></div>
+<div class="profile-guide" id="profile-guide" data-mode="unknown" role="status" aria-live="polite" aria-atomic="true">
+<div class="profile-guide-copy"><strong class="profile-guide-title" id="profile-guide-title">Fan state unknown</strong><span class="profile-guide-detail" id="profile-guide-detail">Fan-control state is unavailable.</span></div>
 <div class="profile-preview-bars" id="profile-preview-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
 </div>
 <div class="fan-apply-status" id="fan-apply-status" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -9689,7 +10319,9 @@ function renderFanCards(fans,enabled){
         '<div class="fan-rpm-row inactive"><span class="fa-min"></span><input type="range"><input type="number" class="fa-num" inputmode="numeric"><span class="fa-max"></span></div>';
       var btnAuto=card.querySelector('.fa-auto');
       var btnManual=card.querySelector('.fa-manual');
-      btnAuto.textContent=LANG==='ko'?'자동':'Auto';
+      btnAuto.textContent=LANG==='ko'?'전체 설정 따르기':'Follow global';
+      btnAuto.title=LANG==='ko'?'이 팬의 사용자 지정을 해제하고 전체 팬 설정을 따릅니다':'Clear this fan’s override and follow the global fan setting';
+      btnAuto.setAttribute('aria-label',btnAuto.title);
       btnManual.textContent=LANG==='ko'?'사용자 지정…':'Custom…';
       btnAuto.onclick=function(){
         if(!markFanPending(card,'auto'))return;
@@ -9813,9 +10445,17 @@ function renderFanCards(fans,enabled){
       slider.value=editRpm;
       numInput.value=editRpm;
       var shownTarget=appliedTarget==null?targetPct:appliedTarget;
-      card.querySelector('.fv').textContent=appliedTarget!=null
-        ?(Math.round(shownTarget)+'% · '+(stale?(LANG==='ko'?'응답 없음':'not responding'):(ramping?(LANG==='ko'?'조정 중':'adjusting'):(LANG==='ko'?'적용됨':'applied'))))
-        :(displayManual?(useRpm?(editRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%'));
+      var requested=f.override_pct==null?null:Number(f.override_pct);
+      var differs=displayManual&&requested!=null&&Number.isFinite(requested)&&appliedTarget!=null&&Number.isFinite(appliedTarget)&&Math.round(requested)!==Math.round(appliedTarget);
+      var readbackText=stale?(LANG==='ko'?'응답 없음':'not responding'):(ramping?(LANG==='ko'?'조정 중':'adjusting'):(daemonReadback==='settled'?(LANG==='ko'?'적용됨':'applied'):(LANG==='ko'?'확인 중':'checking')));
+      if(differs){
+        var differenceText=stale||ramping?readbackText:(LANG==='ko'?'요청과 다름':'differs from request');
+        card.querySelector('.fv').textContent=(LANG==='ko'?'요청 ':'Requested ')+Math.round(requested)+'% · '+(LANG==='ko'?'현재 목표 ':'current target ')+Math.round(appliedTarget)+'% · '+differenceText;
+      } else {
+        card.querySelector('.fv').textContent=appliedTarget!=null
+          ?(Math.round(shownTarget)+'% · '+readbackText)
+          :(displayManual?(useRpm?(editRpm+' RPM'):(targetPct+'%')):(Math.round(f.pct)+'%'));
+      }
     }
   });
   Array.prototype.slice.call(container.children).forEach(function(c){
@@ -10588,15 +11228,25 @@ function setProfile(profile){
 }
 function setAuto(){
   if(!beginFanControl('auto',''))return;
-  window.ipc.postMessage('cmd:auto');
+  var request=settingsRequest('os_auto','');
+  FAN_CONTROL_PENDING.requestId=request.id;
+  window.ipc.postMessage('osautorequest:'+JSON.stringify({id:request.id}));
+}
+function fanControlRevision(value){
+  return typeof value==='number'&&Number.isSafeInteger(value)&&value>=0?value:null;
 }
 function beginFanControl(mode,profile){
   if(FAN_CONTROL_PENDING)return false;
   var current=window.__pf_pending||{};
   var wantedProfile=profile||'';
-  if(current.active_control_mode===mode&&(mode!=='profile'||current.active_profile===wantedProfile))return false;
+  // OS-default is an explicit restore action, even if the daemon already
+  // reports auto: a per-fan override may still be active or the user may
+  // want to re-request the handoff after an uncertain hardware readback.
+  if(mode==='profile'&&current.active_control_mode===mode&&current.active_profile===wantedProfile)return false;
   FAN_CONTROL_RESULT=null;
-  FAN_CONTROL_PENDING={mode:mode,profile:wantedProfile,startedAt:Date.now(),statusBefore:current.last_cmd_status||'',revisionBefore:Number(current.applied_control_revision||0)};
+  var desired=fanControlRevision(current.control_revision),applied=fanControlRevision(current.applied_control_revision);
+  var revisionBefore=desired===null||applied===null?null:Math.max(desired,applied);
+  FAN_CONTROL_PENDING={mode:mode,profile:wantedProfile,startedAt:Date.now(),statusBefore:current.last_cmd_status||'',revisionBefore:revisionBefore,requestId:null};
   var snapshot=window.__pf_pending||{can_control:true,active_control_mode:'',active_profile:'',last_cmd_status:''};
   updateProfileStrip(snapshot);
   updateFanApplyStatus(snapshot);
@@ -10604,6 +11254,9 @@ function beginFanControl(mode,profile){
 }
 function fanControlStatusFailed(status){
   return /error|failed|invalid|cancel|unavailable|not ready/i.test(status||'');
+}
+function fanOverridesKnown(d){
+  return typeof d.fan_override_count==='number'&&Number.isInteger(d.fan_override_count)&&d.fan_override_count>=0;
 }
 function profileDutyAt(points,temp){
   if(!points||!points.length)return 0;
@@ -10630,14 +11283,17 @@ function renderProfileGuide(mode,profile){
     performance:{en:['Performance','Aggressive cooling for heavy work.'],ko:['고성능','무거운 작업을 위해 적극적으로 냉각합니다.'],curve:[[30,40],[50,60],[75,90],[85,100]]},
     maximum:{en:['Maximum','Fans stay at 100%; loudest and coolest.'],ko:['최대','팬을 100%로 유지합니다. 가장 크고 시원합니다.'],curve:[[0,100],[100,100]]}
   };
-  var isAuto=mode!=='profile'||!guides[profile];
-  var guide=isAuto
-    ?{en:['macOS Auto','macOS manages fan speed for the current workload.'],ko:['macOS 자동','현재 작업에 맞춰 macOS가 팬 속도를 관리합니다.'],curve:null}
-    :guides[profile];
+  var unknown=!mode;
+  var isAuto=mode==='auto';
+  var guide=unknown
+    ?{en:['Fan state unknown','Fan-control state is unavailable.'],ko:['팬 상태 확인 불가','팬 제어 상태를 확인할 수 없습니다.'],curve:null}
+    :isAuto
+    ?{en:['OS default','Request macOS fan control and clear all per-fan overrides.'],ko:['OS 기본 제어','macOS 팬 제어 복귀를 요청하고 개별 팬 설정을 해제합니다.'],curve:null}
+    :(guides[profile]||{en:['Manual','Fan control is active.'],ko:['수동','팬 제어가 활성화되어 있습니다.'],curve:null});
   var copy=LANG==='ko'?guide.ko:guide.en;
   title.textContent=copy[0];
   detail.textContent=copy[1];
-  root.dataset.mode=isAuto?'auto':profile;
+  root.dataset.mode=unknown?'unknown':(isAuto?'auto':profile);
   var temps=[30,50,70,85,90];
   Array.prototype.slice.call(bars).forEach(function(bar,index){
     var duty=isAuto?[18,30,46,68,88][index]:profileDutyAt(guide.curve,temps[index]);
@@ -10653,16 +11309,29 @@ function updateProfileStrip(d){
   var activeMode=d.active_control_mode||'';
   var activeProfile=d.active_profile||'';
   if(FAN_CONTROL_PENDING){
-    var revisionApplied=Number(d.applied_control_revision||0)>FAN_CONTROL_PENDING.revisionBefore;
-    var matches=revisionApplied&&FAN_CONTROL_PENDING.mode===activeMode&&(activeMode!=='profile'||FAN_CONTROL_PENDING.profile===activeProfile);
+    var appliedRevision=fanControlRevision(d.applied_control_revision);
+    var revisionApplied=FAN_CONTROL_PENDING.revisionBefore!==null&&appliedRevision!==null&&appliedRevision>FAN_CONTROL_PENDING.revisionBefore;
+    var autoResult=FAN_CONTROL_PENDING.mode==='auto'&&Array.isArray(d.os_auto_results)
+      ?d.os_auto_results.find(function(result){return result.id===FAN_CONTROL_PENDING.requestId;}):null;
+    var matches=FAN_CONTROL_PENDING.mode==='auto'
+      ?!!autoResult&&autoResult.ok===true&&(autoResult.route==='local'||autoResult.route==='daemon')
+      :revisionApplied&&FAN_CONTROL_PENDING.mode===activeMode&&FAN_CONTROL_PENDING.profile===activeProfile;
     var status=d.last_cmd_status||'';
-    var failed=status!==FAN_CONTROL_PENDING.statusBefore&&status!=='applying…'&&fanControlStatusFailed(status);
+    var failed=FAN_CONTROL_PENDING.mode==='auto'
+      ?!!autoResult&&autoResult.ok===false
+      :status!==FAN_CONTROL_PENDING.statusBefore&&status!=='applying…'&&fanControlStatusFailed(status);
     var expired=Date.now()-FAN_CONTROL_PENDING.startedAt>8000;
-    if(matches){
-      FAN_CONTROL_RESULT={ok:true,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,at:Date.now(),message:''};
+    if(failed){
+      FAN_CONTROL_RESULT={ok:false,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,at:Date.now(),message:FAN_CONTROL_PENDING.mode==='auto'?(autoResult.message||''):status};
       FAN_CONTROL_PENDING=null;
-    } else if(failed||expired){
-      FAN_CONTROL_RESULT={ok:false,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,at:Date.now(),message:failed?status:(LANG==='ko'?'하드웨어 적용 확인 시간 초과':'hardware confirmation timed out')};
+    } else if(matches){
+      FAN_CONTROL_RESULT={ok:true,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,route:autoResult?autoResult.route:'',at:Date.now(),message:''};
+      FAN_CONTROL_PENDING=null;
+    } else if(expired){
+      var timeoutMessage=FAN_CONTROL_PENDING.mode==='auto'
+        ?(LANG==='ko'?'복귀 요청 응답 확인 불가':'restore request acknowledgement unavailable')
+        :(LANG==='ko'?'데몬 적용 확인 시간 초과':'daemon confirmation timed out');
+      FAN_CONTROL_RESULT={ok:false,mode:FAN_CONTROL_PENDING.mode,profile:FAN_CONTROL_PENDING.profile,at:Date.now(),message:timeoutMessage};
       FAN_CONTROL_PENDING=null;
     }
   }
@@ -10670,23 +11339,28 @@ function updateProfileStrip(d){
     activeMode=FAN_CONTROL_PENDING.mode;
     activeProfile=FAN_CONTROL_PENDING.profile;
   }
-  if(!activeMode)activeMode='auto';
   var pending=!!FAN_CONTROL_PENDING;
   strip.classList.toggle('disabled',!enabled);
   strip.classList.toggle('pending',pending);
   strip.setAttribute('aria-busy',pending?'true':'false');
   Array.prototype.slice.call(strip.querySelectorAll('button')).forEach(function(b){
     b.disabled=!enabled||pending;
-    var isAuto=b.dataset.mode==='auto'&&activeMode==='auto';
+    var isAuto=b.dataset.mode==='auto'&&activeMode==='auto'&&fanOverridesKnown(d)&&d.fan_override_count===0;
     var isProfile=b.dataset.mode==='profile'&&activeMode==='profile'&&b.dataset.profile===activeProfile;
     var selected=isAuto||isProfile;
     b.classList.toggle('active',selected);
     b.setAttribute('aria-pressed',selected?'true':'false');
   });
   renderProfileGuide(activeMode,activeProfile);
+  if(!pending&&activeMode==='auto'&&(!fanOverridesKnown(d)||d.fan_override_count>0)){
+    var detail=document.getElementById('profile-guide-detail');
+    if(detail)detail.textContent=!fanOverridesKnown(d)
+      ?(LANG==='ko'?'개별 팬 설정 상태를 확인할 수 없습니다.':'Per-fan override state is unavailable.')
+      :(LANG==='ko'?'개별 팬 설정이 남아 있습니다. OS 기본을 눌러 모두 해제하세요.':'Per-fan overrides remain. Select OS Default to clear them.');
+  }
 }
 function fanModeLabel(mode,profile){
-  if(mode==='auto')return LANG==='ko'?'macOS 자동':'macOS Auto';
+  if(mode==='auto')return LANG==='ko'?'OS 기본 제어':'OS default';
   var labels=LANG==='ko'
     ?{silent:'저소음',balanced:'균형',gaming:'게임',performance:'고성능',maximum:'최대'}
     :{silent:'Silent',balanced:'Balanced',gaming:'Gaming',performance:'Performance',maximum:'Maximum'};
@@ -10698,21 +11372,26 @@ function updateFanApplyStatus(d){
   var mode=d.active_control_mode||'',profile=d.active_profile||'';
   var tone='';
   var recentResult=FAN_CONTROL_RESULT&&Date.now()-FAN_CONTROL_RESULT.at<12000;
+  var daemonAccepted=!!recentResult&&FAN_CONTROL_RESULT.ok&&FAN_CONTROL_RESULT.mode==='auto'&&FAN_CONTROL_RESULT.route==='daemon';
   var strip=document.getElementById('profile-strip');
   if(strip){
-    strip.classList.toggle('confirmed',!!recentResult&&!!FAN_CONTROL_RESULT.ok);
+    strip.classList.toggle('confirmed',!!recentResult&&!!FAN_CONTROL_RESULT.ok&&!daemonAccepted);
     strip.classList.toggle('failed',!!recentResult&&!FAN_CONTROL_RESULT.ok);
   }
   if(FAN_CONTROL_PENDING){
     mode=FAN_CONTROL_PENDING.mode;profile=FAN_CONTROL_PENDING.profile;tone='pending';
   } else if(recentResult){
-    mode=FAN_CONTROL_RESULT.mode;profile=FAN_CONTROL_RESULT.profile;tone=FAN_CONTROL_RESULT.ok?'ok':'error';
+    mode=FAN_CONTROL_RESULT.mode;profile=FAN_CONTROL_RESULT.profile;tone=FAN_CONTROL_RESULT.ok?(daemonAccepted?'':'ok'):'error';
   }
   el.style.display=FAN_CONTROL_PENDING||recentResult?'':'none';
   var parts=[fanModeLabel(mode,profile)];
   if(FAN_CONTROL_PENDING)parts.push(LANG==='ko'?'적용 확인 중…':'confirming…');
   else if(recentResult){
-    parts.push(FAN_CONTROL_RESULT.ok?(LANG==='ko'?'적용 완료':'applied'):(LANG==='ko'?'적용 실패':'failed'));
+    parts.push(FAN_CONTROL_RESULT.ok
+      ?(mode==='auto'
+        ?(daemonAccepted?(LANG==='ko'?'요청 접수됨 · 적용 및 실제 팬 모드 확인 불가':'request accepted · application and hardware mode unverified'):(LANG==='ko'?'복귀 요청 수행됨 · 실제 팬 모드 확인 불가':'restore request executed · hardware mode unverified'))
+        :(LANG==='ko'?'적용 완료':'applied'))
+      :(LANG==='ko'?'적용 실패':'failed'));
     if(!FAN_CONTROL_RESULT.ok&&FAN_CONTROL_RESULT.message)parts.push(FAN_CONTROL_RESULT.message);
   }
   if(mode!=='auto'&&typeof d.fan_curve_input_temp_c==='number')parts.push((LANG==='ko'?'입력 ':'input ')+Math.round(d.fan_curve_input_temp_c)+'°C');
@@ -11014,14 +11693,31 @@ function positionRunnerCharacterMenu(){
   var menu=document.getElementById('runner-character-menu');
   if(!trigger||!menu||menu.hidden)return;
   var rect=trigger.getBoundingClientRect();
-  var width=Math.min(224,window.innerWidth-16);
+  var width=Math.max(0,Math.min(264,window.innerWidth-16));
   menu.style.width=width+'px';
   var left=Math.max(8,Math.min(window.innerWidth-width-8,rect.right-width));
-  var menuHeight=Math.min(260,menu.scrollHeight);
-  var below=window.innerHeight-rect.bottom-8;
-  var top=below>=Math.min(180,menuHeight)?rect.bottom+5:Math.max(8,rect.top-menuHeight-5);
+  var menuHeight=Math.min(320,Math.max(0,window.innerHeight-16),menu.scrollHeight);
+  var below=Math.max(0,window.innerHeight-rect.bottom-13);
+  var above=Math.max(0,rect.top-13);
+  var openBelow=below>=Math.min(180,menuHeight)||below>=above;
+  menuHeight=Math.min(menuHeight,openBelow?below:above);
+  menu.style.maxHeight=Math.round(menuHeight)+'px';
+  var top=openBelow?rect.bottom+5:Math.max(8,rect.top-menuHeight-5);
   menu.style.left=Math.round(left)+'px';
   menu.style.top=Math.round(top)+'px';
+}
+var RUNNER_OPEN_SCROLL_TOP=0;
+function focusRunnerCharacterOption(option,menu){
+  if(!option||!menu)return;
+  option.focus({preventScroll:true});
+  var bounds=menu.getBoundingClientRect(), item=option.getBoundingClientRect();
+  if(item.top<bounds.top)menu.scrollTop+=item.top-bounds.top;
+  else if(item.bottom>bounds.bottom)menu.scrollTop+=item.bottom-bounds.bottom;
+}
+function handleRunnerPaneScroll(){
+  // A queued scroll event from focusing the trigger can arrive just after
+  // opening. Only close for movement after the menu was positioned.
+  if(runnerScrollPane&&runnerScrollPane.scrollTop!==RUNNER_OPEN_SCROLL_TOP)closeRunnerCharacterMenu(false);
 }
 function closeRunnerCharacterMenu(returnFocus){
   var trigger=document.getElementById('runner-character-select');
@@ -11036,13 +11732,14 @@ function openRunnerCharacterMenu(focusSelected){
   var trigger=document.getElementById('runner-character-select');
   var menu=document.getElementById('runner-character-menu');
   if(!trigger||!menu)return;
+  RUNNER_OPEN_SCROLL_TOP=runnerScrollPane?runnerScrollPane.scrollTop:0;
   menu.hidden=false;
   menu.classList.add('show');
   trigger.setAttribute('aria-expanded','true');
   positionRunnerCharacterMenu();
   if(focusSelected){
     var selected=menu.querySelector('[aria-selected="true"]')||menu.querySelector('.character-option');
-    if(selected)selected.focus();
+    focusRunnerCharacterOption(selected,menu);
   }
 }
 function toggleRunnerCharacterMenu(event){
@@ -11053,19 +11750,33 @@ function toggleRunnerCharacterMenu(event){
 function handleRunnerTriggerKey(event){
   if(event.key==='ArrowDown'||event.key==='ArrowUp'||event.key==='Enter'||event.key===' '){
     event.preventDefault();openRunnerCharacterMenu(true);
-  } else if(event.key==='Escape'){
+  } else if(event.key==='Escape'||event.key==='Tab'){
     closeRunnerCharacterMenu(false);
   }
 }
 function handleRunnerOptionKey(event){
+  if(event.key==='Tab'){
+    // The listbox lives at the end of the document; continue in the trigger's
+    // visual tab order rather than jumping to unrelated end-of-page controls.
+    var trigger=document.getElementById('runner-character-select');
+    closeRunnerCharacterMenu(false);
+    var tabbable=Array.prototype.filter.call(document.querySelectorAll('button, [href], input, select, textarea, summary, [tabindex]'),function(el){
+      return !el.disabled&&el.getAttribute('tabindex')!=='-1'&&el.getClientRects().length>0&&!el.closest('[hidden], [inert], [aria-hidden="true"]');
+    });
+    var index=tabbable.indexOf(trigger);
+    var next=tabbable[index+(event.shiftKey?-1:1)];
+    if(index>=0&&next){event.preventDefault();next.focus();}
+    else if(trigger)trigger.focus();
+    return;
+  }
   var options=Array.prototype.slice.call(document.querySelectorAll('.character-option'));
   var index=options.indexOf(event.currentTarget);
   if(event.key==='ArrowDown'||event.key==='ArrowUp'){
     event.preventDefault();
     var next=event.key==='ArrowDown'?Math.min(options.length-1,index+1):Math.max(0,index-1);
-    options[next].focus();
+    focusRunnerCharacterOption(options[next],document.getElementById('runner-character-menu'));
   } else if(event.key==='Home'||event.key==='End'){
-    event.preventDefault();options[event.key==='Home'?0:options.length-1].focus();
+    event.preventDefault();focusRunnerCharacterOption(options[event.key==='Home'?0:options.length-1],document.getElementById('runner-character-menu'));
   } else if(event.key==='Escape'){
     event.preventDefault();closeRunnerCharacterMenu(true);
   } else if(event.key==='Enter'||event.key===' '){
@@ -11154,7 +11865,7 @@ document.addEventListener('keydown',function(event){
 });
 window.addEventListener('resize',function(){closeRunnerCharacterMenu(false);});
 var runnerScrollPane=document.querySelector('.main-pane');
-if(runnerScrollPane)runnerScrollPane.addEventListener('scroll',function(){closeRunnerCharacterMenu(false);},{passive:true});
+if(runnerScrollPane)runnerScrollPane.addEventListener('scroll',handleRunnerPaneScroll,{passive:true});
 function updateSetup(d){
   renderSetupProgress(d.fan_control_install_progress||{phase:'idle',percent:0});
   var setup=document.getElementById('setup-row');
@@ -11246,6 +11957,7 @@ function updateSetup(d){
 }
 var RAIL_NAV_READY=false;
 function updateRail(d){
+  updateFanTemperatures(d);
   if(!RAIL_NAV_READY){
     var detail=document.getElementById('railDetail');
     if(detail){setButtonLabel(detail,LANG==='ko'?'상태':'Status');detail.title=LANG==='ko'?'상태 요약':'Status overview';}
@@ -11318,6 +12030,16 @@ function setHealthValue(id,text,tone){
 function tempValue(value){
   return typeof value==='number'&&isFinite(value)?Math.round(value)+'°C':'—';
 }
+function updateFanTemperatures(d){
+  setText('fan-curve-input',tempValue(d.fan_curve_input_temp_c));
+  setText('fan-safety-hottest',tempValue(d.fan_safety_temp_c));
+  setText('fan-critical-limit',tempValue(d.fan_critical_temp_c));
+  var fanTempAge=d.fan_temp_age_secs;
+  var providerSample=d.fan_temp_source==='provider';
+  setText('fan-temperature-source',typeof fanTempAge==='number'&&isFinite(fanTempAge)
+    ?(LANG==='ko'?(providerSample?'기기 최근 측정':'데몬 최근 측정')+' · '+fanTempAge+'초 전 · 팬 적용 시점과 다를 수 있음':(providerSample?'Latest device sample':'Latest daemon sample')+' · '+fanTempAge+'s ago · may differ from applied fan target')
+    :(LANG==='ko'?(providerSample?'기기 온도 확인 불가':'데몬 온도 확인 불가'):(providerSample?'Device temperature unavailable':'Daemon temperature unavailable')));
+}
 function updateHealthPanel(d){
   var health=d.control_health||{},failsafe=!!health.failsafe_active;
   var tone=failsafe?'warn':(d.daemon_update_needed?'warn':(d.daemon_running?'ok':(d.fan_setup_needed?'warn':'info')));
@@ -11343,7 +12065,7 @@ function updateHealthPanel(d){
   var lastTone=/error|invalid|unknown|failed|needs root|needs at least/i.test(last)?'warn':'info';
   setHealthValue('health-last-command',last||'—',lastTone);
   setHealthValue('health-safety-state',
-    failsafe?(LANG==='ko'?'OS 자동 제어':'OS automatic'):(LANG==='ko'?'정상':'normal'),
+    failsafe?(LANG==='ko'?'OS 복귀 시도':'OS fallback attempted'):(LANG==='ko'?'정상':'normal'),
     failsafe?'warn':'ok');
   setHealthValue('health-fans',(d.controllable_fan_count||0)+' / '+(d.fan_count||0),d.controllable_fan_count?'ok':'info');
   setHealthValue('health-curve-input',tempValue(d.fan_curve_input_temp_c),'info');
@@ -11356,15 +12078,16 @@ function updateHealthPanel(d){
   var staleFans=health.stale_fan_ids||[],readbackFailures=Number(health.fan_readback_failure_count||0);
   var readbackText=staleFans.length
     ?((LANG==='ko'?'응답 없음: ':'not responding: ')+staleFans.join(', '))
-    :(d.active_control_mode==='auto'?(LANG==='ko'?'macOS 자동':'macOS automatic'):(LANG==='ko'?'정상':'verified'));
+    :(d.active_control_mode==='auto'
+      ?(!fanOverridesKnown(d)
+        ?(LANG==='ko'?'개별 팬 설정 상태 확인 불가':'per-fan override state unavailable')
+        :(LANG==='ko'?'OS 제어 요청됨 · 실제 모드 확인 불가':'OS control requested · hardware mode unverified'))
+      :(d.active_control_mode?(LANG==='ko'?'정상':'verified'):(LANG==='ko'?'팬 제어 상태 확인 불가':'fan-control state unavailable')));
   if(readbackFailures&&!staleFans.length)readbackText+=' · '+readbackFailures;
-  setHealthValue('health-readback',readbackText,staleFans.length?'warn':'ok');
+  setHealthValue('health-readback',readbackText,staleFans.length?'warn':(d.active_control_mode==='auto'||!d.active_control_mode?'info':'ok'));
   var retrySeconds=Math.max(0,Number(health.retry_after_unix||0)-Math.floor(Date.now()/1000));
   setHealthValue('health-control-retry',retrySeconds?(retrySeconds+'s'):(LANG==='ko'?'대기 없음':'ready'),retrySeconds?'warn':'info');
   setHealthValue('health-control-error',health.last_error||'—',health.last_error?'warn':'info');
-  setText('fan-curve-input',tempValue(d.fan_curve_input_temp_c));
-  setText('fan-safety-hottest',tempValue(d.fan_safety_temp_c));
-  setText('fan-critical-limit',tempValue(d.fan_critical_temp_c));
   var approval=d.daemon_running&&!d.daemon_update_needed
     ?(LANG==='ko'?'추가 승인 없음':'no extra prompt')
     :(d.daemon_update_needed?(LANG==='ko'?'재설치 때 1회':'one prompt to reinstall'):(d.fan_setup_needed?(LANG==='ko'?'최초 설정 때 1회':'one prompt for setup'):(LANG==='ko'?'필요 없음':'not needed')));
@@ -11554,6 +12277,137 @@ function reportHeight(){
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fan_temperatures_only_fall_back_to_fresh_local_samples_when_allowed() {
+        let temps: Vec<peterfan_core::types::TempSensor> =
+            serde_json::from_value(serde_json::json!([
+                {"id":"cpu.die", "label":"CPU", "kind":"cpu", "value":61.0},
+                {"id":"cpu.die.hot", "label":"CPU hottest", "kind":"cpu", "value":63.0}
+            ]))
+            .unwrap();
+        let age = Some(std::time::Duration::from_secs(2));
+        assert_eq!(
+            super::fan_control_temperature_sample(None, &temps, age, false),
+            (None, "daemon")
+        );
+        assert_eq!(
+            super::fan_control_temperature_sample(None, &temps, age, true),
+            (Some((61.0, 63.0, Some(63.0), 2)), "provider")
+        );
+        assert_eq!(
+            super::fan_control_temperature_sample(
+                None,
+                &temps,
+                Some(std::time::Duration::from_secs(9)),
+                true
+            ),
+            (None, "provider")
+        );
+        assert_eq!(
+            super::fan_control_temperature_sample(
+                Some((88.0, 96.0, Some(96.0), 1)),
+                &temps,
+                age,
+                true
+            ),
+            (Some((88.0, 96.0, Some(96.0), 1)), "daemon")
+        );
+    }
+
+    #[test]
+    fn fan_temperature_refresh_is_not_restricted_to_settings_view() {
+        let source = include_str!("main.rs");
+        let rail = source.split("function updateRail(d){").nth(1).unwrap();
+        let before_settings = rail.split("if(view==='settings'){").next().unwrap();
+        assert!(before_settings.contains("updateFanTemperatures(d);"));
+    }
+
+    #[test]
+    fn fan_control_temperatures_use_fresh_daemon_sample() {
+        let data = serde_json::json!({
+            "temps_stale": false,
+            "temps_sampled_at_unix_ms": 100_000,
+            "temps": [
+                {"id":"cpu.die", "label":"CPU", "kind":"cpu", "value":88.0},
+                {"id":"cpu.die.hot", "label":"CPU hottest", "kind":"cpu", "value":96.0}
+            ]
+        });
+        assert_eq!(
+            super::daemon_control_temperature_sample(
+                Some(&data),
+                Some(std::time::Duration::from_secs(1)),
+                102_000
+            ),
+            Some((88.0, 96.0, Some(96.0), 2))
+        );
+        assert_eq!(
+            super::daemon_control_temperature_sample(
+                Some(&data),
+                Some(std::time::Duration::from_secs(9)),
+                102_000
+            ),
+            None
+        );
+        assert_eq!(
+            super::daemon_control_temperature_sample(
+                Some(&data),
+                Some(std::time::Duration::from_secs(1)),
+                109_000
+            ),
+            None
+        );
+        let mut stale = data.clone();
+        stale["temps_stale"] = true.into();
+        assert_eq!(
+            super::daemon_control_temperature_sample(
+                Some(&stale),
+                Some(std::time::Duration::from_secs(1)),
+                102_000
+            ),
+            None
+        );
+        assert_eq!(
+            super::daemon_control_temperature_sample(Some(&data), None, 102_000),
+            None
+        );
+        assert_eq!(
+            super::daemon_control_temperature_sample(
+                Some(&data),
+                Some(std::time::Duration::from_secs(1)),
+                99_000
+            ),
+            None
+        );
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn grouped_tooltip_preserves_per_core_count_and_scale_only_when_visible() {
+        use super::*;
+        let mut config = CpuWidgetConfig {
+            enabled: true,
+            style: peterfan_core::config::CpuWidgetStyle::Cores,
+            show_percentage: false,
+        };
+        assert_eq!(
+            cpu_core_tooltip_detail(config, 18, ResolvedLanguage::Ko).as_deref(),
+            Some("18개 논리 코어 · 코어마다 0–100%")
+        );
+        assert_eq!(
+            cpu_core_tooltip_detail(config, 18, ResolvedLanguage::En).as_deref(),
+            Some("18 logical CPUs · 0–100% per CPU")
+        );
+        config.enabled = false;
+        assert_eq!(
+            cpu_core_tooltip_detail(config, 18, ResolvedLanguage::En),
+            None
+        );
+        config.enabled = true;
+        config.style = peterfan_core::config::CpuWidgetStyle::Bar;
+        assert_eq!(
+            cpu_core_tooltip_detail(config, 18, ResolvedLanguage::En),
+            None
+        );
+    }
     use super::*;
 
     const RUNNER_QA_SCALE: u32 = 4;
@@ -12530,12 +13384,12 @@ mod tests {
         assert!(ko.contains(">상세 창 열기<"));
         assert!(ko.contains(">코어 상세<"));
         assert!(ko.contains("저장공간, 배터리, 네트워크"));
-        assert!(ko.contains(">자동<"));
+        assert!(ko.contains(">OS 기본<"));
         assert!(ko.contains(">균형<"));
         // Auto/Manual per-fan card labels are rendered by JS at runtime
         // (LANG==='ko' ? ...), not baked into the static markup — both
         // languages ship the same script, just a different LANG value.
-        assert!(ko.contains("'자동':'Auto'"));
+        assert!(ko.contains("'전체 설정 따르기':'Follow global'"));
         assert!(ko.contains("var LANG='ko';"));
         assert!(!ko.contains("__LANG__"));
         assert!(!ko.contains("__SHOWCURVE__"));
@@ -12569,7 +13423,7 @@ mod tests {
             assert!(html.contains("setProfile"));
             assert!(html.contains("setAuto"));
             assert!(html.contains("updateProfileStrip"));
-            assert!(html.contains("cmd:auto"));
+            assert!(html.contains("osautorequest:"));
             assert!(html.contains("cmd:profile:"));
             assert!(html.contains(r#"id="setup-row""#));
             assert!(html.contains(r#"id="setup-more""#));
@@ -12842,7 +13696,7 @@ mod tests {
             "advance_runner_phase(",
             "runner_load_band_with_hysteresis(",
             "let index =",
-            "images.get(index)",
+            "images.borrow().get(index)",
             "painter.borrow().paint(image);",
             "runner_native_next_delay(",
         ] {
@@ -12875,7 +13729,7 @@ mod tests {
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")),
             "fn sync_native_runner_timer(app: &mut App) {",
         );
-        assert!(sync_timer_fn.contains("let images = app.runner_assets.native_images.clone();"));
+        assert!(sync_timer_fn.contains("let images = Rc::clone(&app.composite_images);"));
         assert!(!sync_timer_fn.contains("render_raw_frame("));
         assert!(!sync_timer_fn.contains("RunnerPack::build("));
     }
@@ -13222,7 +14076,7 @@ mod tests {
     }
 
     #[test]
-    fn all_runners_use_a_white_glyph_and_compact_picker_preview() {
+    fn legacy_runners_use_a_white_glyph_and_picker_preview_is_readable() {
         for character in RunnerCharacter::ALL {
             for frame in [0, 3, 7] {
                 let rgba = make_runner_rgba(character, 55.0, frame);
@@ -13233,12 +14087,14 @@ mod tests {
         }
 
         let html = dashboard_html(ResolvedLanguage::En, false);
-        assert!(html.contains(".runner-preview{display:block;width:27px;height:18px"));
-        assert!(html.contains(".character-select .runner-preview{width:27px;height:18px"));
+        assert!(html.contains(".runner-preview{display:block;width:48px;height:32px"));
+        assert!(html.contains(".character-select .runner-preview{width:48px;height:32px"));
+        assert!(html.contains("canvas.runner-preview{background:#8996a5;border-radius:5px"));
         assert!(html.contains(
-            ".character-menu{display:none;position:fixed;z-index:1000;width:224px;max-height:260px"
+            ".character-menu{display:none;position:fixed;z-index:1000;width:264px;max-height:320px"
         ));
-        assert!(html.contains(".character-option{display:grid;grid-template-columns:38px minmax(0,1fr) 14px;align-items:center;gap:7px;width:100%;height:34px"));
+        assert!(html.contains(".character-option{display:grid;grid-template-columns:48px minmax(0,1fr) 14px;align-items:center;gap:9px;width:100%;min-height:44px"));
+        assert!(html.contains(".character-option:focus-visible{background:var(--chip-hover);outline:2px solid var(--accent)"));
         assert!(html.contains("image-rendering:auto"));
         assert!(html
             .contains("image.data[offset]=255;image.data[offset+1]=255;image.data[offset+2]=255;"));
@@ -14498,7 +15354,7 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
         assert!(en.contains("controllableCount>0"));
         assert!(en.contains(r#"id="profile-strip""#));
         assert!(en.contains(
-            r#"disabled data-mode="auto" aria-pressed="true" title="Auto" onclick="setAuto()">"#
+            r#"disabled data-mode="auto" aria-pressed="false" title="Restore OS default fan control" onclick="setAuto()">"#
         ));
 
         assert!(ko.contains(">하드웨어 감지 상태<"));
@@ -15081,10 +15937,10 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
         assert!(en.contains("if(!beginFanControl('profile',profile))return;"));
         assert!(en.contains("if(!beginFanControl('auto',''))return;"));
         assert!(en.contains("updateProfileStrip(snapshot);\n  updateFanApplyStatus(snapshot);"));
-        assert!(en.contains("revisionBefore:Number(current.applied_control_revision||0)"));
-        assert!(en.contains("var revisionApplied=Number(d.applied_control_revision||0)>FAN_CONTROL_PENDING.revisionBefore;"));
+        assert!(en.contains("Math.max(desired,applied)"));
+        assert!(en.contains("appliedRevision>FAN_CONTROL_PENDING.revisionBefore"));
         assert!(en.contains("FAN_CONTROL_RESULT={ok:true"));
-        assert!(en.contains("hardware confirmation timed out"));
+        assert!(en.contains("daemon confirmation timed out"));
         assert!(en.contains("Date.now()-FAN_CONTROL_PENDING.startedAt>8000"));
         assert!(en.contains("if(d.fan_control_supported)"));
         assert!(en.contains("renderFanCards(d.fans,d.can_control)"));
@@ -15328,6 +16184,107 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
     }
 
     #[test]
+    fn daemon_override_state_distinguishes_empty_from_missing_or_invalid() {
+        let empty = serde_json::json!({"fan_overrides": {}});
+        let one = serde_json::json!({"fan_overrides": {"fan.0": 40}});
+        assert_eq!(parse_daemon_fan_overrides(Some(&empty)).unwrap().len(), 0);
+        assert_eq!(parse_daemon_fan_overrides(Some(&one)).unwrap().len(), 1);
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"fan_overrides": null}),
+            serde_json::json!({"fan_overrides": []}),
+            serde_json::json!({"fan_overrides": {"fan.0": "bad"}}),
+        ] {
+            assert!(parse_daemon_fan_overrides(Some(&value)).is_none());
+        }
+        assert!(parse_daemon_fan_overrides(None).is_none());
+    }
+
+    #[test]
+    fn os_auto_request_ids_are_validated_and_results_stay_correlated() {
+        let request = parse_os_auto_request(r#"{"id":"os-auto-test-1"}"#).unwrap();
+        for invalid in [r#"{"id":""}"#, r#"{"id":"bad id"}"#, "not json"] {
+            assert!(parse_os_auto_request(invalid).is_none());
+        }
+        record_os_auto_result(&request, "auto — applied locally");
+        let result = OS_AUTO_RESULTS.lock().unwrap().back().unwrap().clone();
+        assert_eq!(result["id"], "os-auto-test-1");
+        assert_eq!(result["route"], "local");
+        assert_eq!(result["ok"], true);
+        record_os_auto_result(&request, "error: denied");
+        let result = OS_AUTO_RESULTS.lock().unwrap().back().unwrap().clone();
+        assert_eq!(result["id"], "os-auto-test-1");
+        assert_eq!(result["ok"], false);
+        assert_eq!(
+            pending_command_key("osautorequest:{\"id\":\"1\"}"),
+            pending_command_key("auto")
+        );
+    }
+
+    #[test]
+    fn local_os_auto_without_controllable_fans_does_not_report_success() {
+        struct NoFans;
+        impl HardwareProvider for NoFans {
+            fn name(&self) -> &str {
+                "mock"
+            }
+            fn capabilities(&self) -> peterfan_core::Capabilities {
+                peterfan_platform::mock().capabilities()
+            }
+            fn hardware_info(
+                &self,
+            ) -> peterfan_core::error::Result<peterfan_core::types::HardwareInfo> {
+                peterfan_platform::mock().hardware_info()
+            }
+            fn temperatures(
+                &self,
+            ) -> peterfan_core::error::Result<Vec<peterfan_core::types::TempSensor>> {
+                Ok(Vec::new())
+            }
+            fn fans(&self) -> peterfan_core::error::Result<Vec<peterfan_core::types::Fan>> {
+                Ok(Vec::new())
+            }
+        }
+        let result = apply_local(&NoFans, "auto");
+        assert!(result.contains("no controllable fans"));
+        assert!(!control_result_is_ok(&result));
+    }
+
+    #[test]
+    fn os_auto_never_falls_back_to_direct_write_when_daemon_state_is_uncertain() {
+        let invoked = std::cell::Cell::new(false);
+        let result = control_fallback_on_daemon_uncertainty("auto", || {
+            invoked.set(true);
+            "applied locally".into()
+        });
+        assert!(
+            !invoked.get(),
+            "OS handoff must not bypass an uncertain daemon"
+        );
+        assert!(!control_result_is_ok(&result));
+        assert!(result.contains("handoff unconfirmed"));
+
+        let profile = control_fallback_on_daemon_uncertainty("profile:balanced", || {
+            invoked.set(true);
+            "profile — applied locally".into()
+        });
+        assert!(
+            invoked.get(),
+            "unrelated profile fallback remains unchanged"
+        );
+        assert!(control_result_is_ok(&profile));
+    }
+
+    #[test]
+    fn mock_os_auto_still_uses_mock_provider_without_a_daemon() {
+        let _guard = FAN_OVERRIDE_TEST_LOCK.lock().unwrap();
+        let provider = peterfan_platform::mock();
+        let result = execute_control(provider.as_ref(), "auto");
+        assert!(result.contains("applied locally"));
+        assert!(control_result_is_ok(&result));
+    }
+
+    #[test]
     fn daemon_config_capability_requires_an_explicit_success_reply() {
         assert!(daemon_supports_user_config(Some(
             "ok logged-in-user (macos)"
@@ -15339,8 +16296,8 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
     #[test]
     fn default_fan_control_selection_is_auto() {
         assert_eq!(resolved_active_control_mode(Some("auto"), false), "auto");
-        assert_eq!(resolved_active_control_mode(None, false), "auto");
-        assert_eq!(resolved_active_control_mode(Some(""), false), "auto");
+        assert_eq!(resolved_active_control_mode(None, false), "");
+        assert_eq!(resolved_active_control_mode(Some(""), false), "");
         assert_eq!(resolved_active_control_mode(None, true), "hold");
         assert_eq!(
             resolved_active_control_mode(Some("manual:balanced"), false),
@@ -15693,7 +16650,7 @@ setRailView('settings');updateMenubarDisplay(window.__pf_pending);
         assert!(help.contains("--character <name>"));
         assert!(help.contains("CPU runner character (20 choices)"));
         assert!(help.contains("cat also accepts legacy graph"));
-        assert!(!help.contains("--metric"));
+        assert!(help.contains("--metric <cpu|memory|temp|fan|network>"));
     }
 
     #[test]
@@ -16089,6 +17046,38 @@ rules = [{ when = "on_ac", profile = "maximum" }]
         )
         .unwrap();
         assert_eq!(imported.operation, SettingsOperation::ImportConfig);
+    }
+
+    #[test]
+    fn imported_settings_use_the_guarded_refresh_instead_of_default_fallback() {
+        let source = include_str!("main.rs");
+        let branch = source
+            .split("else if let Some(request) = c.strip_prefix(\"settingsrequest:\")")
+            .nth(1)
+            .unwrap()
+            .split("else if let Some(json) = c.strip_prefix(\"rules:\")")
+            .next()
+            .unwrap();
+        assert!(!branch.contains("peterfan_platform::config::load()"));
+        assert!(!branch.contains("menu_items_app::reload"));
+        assert!(branch.contains("refresh_after_pending = true"));
+        assert!(source.contains("if refresh_after_pending {\n                update(&mut app);"));
+        assert!(parse_imported_config("[invalid").is_err());
+        let mut kept = Config::default();
+        kept.menubar.primary_visible = false;
+        kept.menubar.metric = MenubarMetric::Fan;
+        let invalid_disk = Config::from_toml("[invalid").ok();
+        let mut applied = false;
+        menu_metric::apply_valid_config(invalid_disk.as_ref(), |_| applied = true);
+        assert!(!applied);
+        let result = menu_metric::last_good_config(&mut kept, invalid_disk);
+        assert!(!result.menubar.primary_visible);
+        assert_eq!(result.menubar.metric, MenubarMetric::Fan);
+        let valid = parse_imported_config("[menubar]\nmetric = 'memory'\nprimary_visible = true\n")
+            .unwrap();
+        let mut active = result.menubar.metric;
+        menu_metric::apply_valid_config(Some(&valid), |config| active = config.menubar.metric);
+        assert_eq!(active, MenubarMetric::Memory);
     }
 
     #[test]

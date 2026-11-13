@@ -4934,6 +4934,36 @@ fn cmd_alert_agent(action: AlertAction) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn sampled_cli_monitor_reports_real_network_traffic() {
+        use std::net::UdpSocket;
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let destination = receiver.local_addr().unwrap();
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let running = Arc::new(AtomicBool::new(true));
+        let keep_running = Arc::clone(&running);
+        let traffic = std::thread::spawn(move || {
+            while keep_running.load(Ordering::Relaxed) {
+                sender.send_to(&[0u8; 4096], destination).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        let monitor = super::sampled_monitor(false);
+        running.store(false, Ordering::Relaxed);
+        traffic.join().unwrap();
+        assert!(
+            monitor
+                .networks()
+                .iter()
+                .any(|network| network.rx_rate > 0.0 || network.tx_rate > 0.0),
+            "CLI sampled monitor must report real network traffic"
+        );
+    }
     #[cfg(target_os = "macos")]
     #[test]
     fn unverified_daemon_installation_is_a_cli_failure() {

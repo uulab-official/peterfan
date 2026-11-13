@@ -525,14 +525,22 @@ fn run(cli: Cli) -> Result<()> {
     // `spawn_ipc_server`) — on Windows the daemon still runs and applies its
     // curve, it just isn't remotely controllable yet.
     #[cfg(unix)]
-    if !cli.once && !cli.no_ipc {
+    let ipc_stopping = Arc::new(AtomicBool::new(false));
+    #[cfg(unix)]
+    let ipc_request_gate = Arc::new(Mutex::new(()));
+    #[cfg(unix)]
+    let ipc_server = if !cli.once && !cli.no_ipc {
         spawn_ipc_server(
             Arc::clone(&shared),
             Arc::clone(&provider),
             fan_ids.clone(),
             cli.mock,
-        );
-    }
+            Arc::clone(&ipc_stopping),
+            Arc::clone(&ipc_request_gate),
+        )
+    } else {
+        None
+    };
 
     println!(
         "peterfand: profile={} interval={interval}s critical={critical:.0}°C rules={} fans={} backend={} restored={}",
@@ -545,15 +553,32 @@ fn run(cli: Cli) -> Result<()> {
 
     // Run the control loop, then ALWAYS restore automatic control — even on a
     // panic — so we never leave the fans forced.
-    let loop_result = run_with_auto_restore(provider.as_ref(), &fan_ids, || {
-        control_loop(
-            provider.as_ref(),
-            monitor.as_mut(),
-            &fan_ids,
-            cli.once,
-            &shared,
-        )
-    });
+    let loop_result = run_with_auto_restore_and_shutdown(
+        provider.as_ref(),
+        &fan_ids,
+        || {
+            control_loop(
+                provider.as_ref(),
+                monitor.as_mut(),
+                &fan_ids,
+                cli.once,
+                &shared,
+            )
+        },
+        || {
+            #[cfg(unix)]
+            {
+                let _request_guard = ipc_request_gate.lock().unwrap_or_else(|e| e.into_inner());
+                ipc_stopping.store(true, Ordering::Release);
+            }
+        },
+    );
+    #[cfg(unix)]
+    if let Some(server) = ipc_server {
+        if server.join().is_err() {
+            eprintln!("peterfand: IPC server stopped unexpectedly");
+        }
+    }
     #[cfg(unix)]
     if !cli.no_ipc {
         for p in peterfan_platform::ipc::PATHS {
@@ -563,6 +588,7 @@ fn run(cli: Cli) -> Result<()> {
     loop_result
 }
 
+#[cfg(test)]
 fn run_with_auto_restore<F>(
     provider: &dyn HardwareProvider,
     fan_ids: &[String],
@@ -571,7 +597,25 @@ fn run_with_auto_restore<F>(
 where
     F: FnOnce() -> Result<()>,
 {
+    run_with_auto_restore_and_shutdown(provider, fan_ids, operation, || {})
+}
+
+fn run_with_auto_restore_and_shutdown<F, S>(
+    provider: &dyn HardwareProvider,
+    fan_ids: &[String],
+    operation: F,
+    shutdown: S,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+    S: FnOnce(),
+{
     let operation_result = std::panic::catch_unwind(AssertUnwindSafe(operation));
+    // Stop new cached work before waiting for any in-flight write. A worker
+    // already holding the lock completes first; queued workers recheck the
+    // shutdown flag after acquiring it and cannot write after this restore.
+    shutdown();
+    let _write_guard = FAN_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let restore_errors = restore_fans_to_auto(provider, fan_ids);
     if restore_errors.is_empty() {
         println!(
@@ -1267,14 +1311,28 @@ fn control_loop_while(
 }
 
 #[cfg(unix)]
+#[cfg(test)]
 fn apply_cached_control_request(
     provider: &dyn HardwareProvider,
     fan_ids: &[String],
     shared: &Arc<Mutex<State>>,
 ) {
+    apply_cached_control_request_guarded(provider, fan_ids, shared, &AtomicBool::new(false));
+}
+
+#[cfg(unix)]
+fn apply_cached_control_request_guarded(
+    provider: &dyn HardwareProvider,
+    fan_ids: &[String],
+    shared: &Arc<Mutex<State>>,
+    stopping: &AtomicBool,
+) {
     // A queued wakeup represents the latest intent, not a saved State clone.
     // Taking this lock first also observes any intervening fail-safe restore.
     let _write_guard = FAN_WRITE_LOCK.lock().expect("fan write lock poisoned");
+    if stopping.load(Ordering::Acquire) {
+        return;
+    }
     let state = shared.lock().expect("state poisoned").clone();
     if !state.auto && !state.manual {
         return;
@@ -1298,12 +1356,18 @@ fn apply_cached_control_request(
         (0.0, 0.0)
     };
     let critical_now = needs_temperature && safety_temp >= state.config.critical_temp_c;
-    let duty = state.held_duty.unwrap_or_else(|| {
-        state
-            .config
-            .curve_for(state.profile)
-            .duty_at(representative_temp)
-    });
+    let duty = if critical_now {
+        // Match the main control loop: cached requests must never bypass the
+        // critical-temperature override, even for a low manual hold.
+        100
+    } else {
+        state.held_duty.unwrap_or_else(|| {
+            state
+                .config
+                .curve_for(state.profile)
+                .duty_at(representative_temp)
+        })
+    };
 
     if shared.lock().expect("state poisoned").control_revision != state.control_revision {
         return;
@@ -1582,23 +1646,55 @@ fn spawn_ipc_server(
     provider: Arc<dyn HardwareProvider>,
     fan_ids: Vec<String>,
     mock: bool,
-) {
-    use std::io::Write;
-
+    stopping: Arc<AtomicBool>,
+    request_gate: Arc<Mutex<()>>,
+) -> Option<thread::JoinHandle<()>> {
     let (listener, path) = match peterfan_platform::ipc::bind_listener() {
         Ok(x) => x,
         Err(e) => {
             eprintln!("peterfand: IPC disabled ({e})");
-            return;
+            return None;
         }
     };
+    if let Err(error) = listener.set_nonblocking(true) {
+        eprintln!("peterfand: IPC disabled: {error}");
+        return None;
+    }
     println!("peterfand: listening on {}", path.display());
 
+    Some(spawn_ipc_listener(
+        listener,
+        shared,
+        provider,
+        fan_ids,
+        mock,
+        stopping,
+        request_gate,
+    ))
+}
+
+#[cfg(unix)]
+fn spawn_ipc_listener(
+    listener: std::os::unix::net::UnixListener,
+    shared: Arc<Mutex<State>>,
+    provider: Arc<dyn HardwareProvider>,
+    fan_ids: Vec<String>,
+    mock: bool,
+    stopping: Arc<AtomicBool>,
+    request_gate: Arc<Mutex<()>>,
+) -> thread::JoinHandle<()> {
+    use std::io::Write;
     std::thread::spawn(move || {
         let worker_provider = Arc::clone(&provider);
         let worker_shared = Arc::clone(&shared);
+        let worker_stopping = Arc::clone(&stopping);
         let worker = match ControlApplyWorker::spawn(move || {
-            apply_cached_control_request(worker_provider.as_ref(), &fan_ids, &worker_shared)
+            apply_cached_control_request_guarded(
+                worker_provider.as_ref(),
+                &fan_ids,
+                &worker_shared,
+                &worker_stopping,
+            )
         }) {
             Ok(worker) => Some(worker),
             Err(error) => {
@@ -1607,8 +1703,24 @@ fn spawn_ipc_server(
                 None
             }
         };
-        for conn in listener.incoming() {
-            let Ok(mut stream) = conn else { continue };
+        while !stopping.load(Ordering::Acquire) {
+            let mut stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    eprintln!("peterfand: IPC listener failed: {error}");
+                    break;
+                }
+            };
+            // Accepted sockets may inherit the listener's nonblocking flag on
+            // some platforms. Keep the existing bounded blocking IPC protocol.
+            if stream.set_nonblocking(false).is_err() {
+                continue;
+            }
             let Ok(peer_uid) = ipc_peer_uid(&stream) else {
                 continue;
             };
@@ -1627,6 +1739,11 @@ fn spawn_ipc_server(
             let Ok(line) = read_ipc_request(&mut stream, IPC_IO_TIMEOUT) else {
                 continue;
             };
+            let _request_guard = request_gate.lock().unwrap_or_else(|e| e.into_inner());
+            if stopping.load(Ordering::Acquire) {
+                let _ = writeln!(stream, "error: daemon is shutting down");
+                break;
+            }
             let revision_before = shared.lock().expect("state poisoned").control_revision;
             let reply = handle_command(line.trim(), &shared);
             let changed =
@@ -1635,13 +1752,13 @@ fn spawn_ipc_server(
             // Acknowledge the accepted command first, then perform the SMC write
             // in a worker while clients confirm it through the apply revision.
             let _ = writeln!(stream, "{reply}");
-            if changed {
+            if changed && !stopping.load(Ordering::Acquire) {
                 if let Some(worker) = &worker {
                     worker.request();
                 }
             }
         }
-    });
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -2550,6 +2667,137 @@ mod tests {
         assert_eq!(provider.auto_calls.load(Ordering::Relaxed), 2);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn ipc_listener_accepts_delayed_request_and_terminates_on_shutdown() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::{UnixListener, UnixStream};
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/pf-ipc-shutdown-{}-{}.sock",
+            std::process::id(),
+            unix_now_ms()
+        ));
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let gate = Arc::new(Mutex::new(()));
+        let provider: Arc<dyn HardwareProvider> = Arc::new(FaultProvider::new(false, false));
+        let server = spawn_ipc_listener(
+            listener,
+            test_state(),
+            provider,
+            vec!["fan.test".into()],
+            true,
+            Arc::clone(&stopping),
+            Arc::clone(&gate),
+        );
+        let mut stream = UnixStream::connect(&path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        // Exercise a connected client whose first bytes arrive after accept.
+        thread::sleep(Duration::from_millis(100));
+        stream.write_all(b"ping\n").unwrap();
+        let mut reply = String::new();
+        BufReader::new(stream).read_line(&mut reply).unwrap();
+        assert_eq!(reply, "ok peterfand (mock)\n");
+        {
+            let _guard = gate.lock().unwrap();
+            stopping.store(true, Ordering::Release);
+        }
+        server.join().unwrap();
+        assert!(UnixStream::connect(&path).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_finishes_pending_cached_write_before_final_auto_restore() {
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+        let mut provider = FaultProvider::new(false, false);
+        provider.first_duty_gate = Some((started_tx, Mutex::new(resume_rx)));
+        let provider = Arc::new(provider);
+        let shared = prepared_cached_state();
+        let worker_provider = Arc::clone(&provider);
+        let worker_state = Arc::clone(&shared);
+        let worker = ControlApplyWorker::spawn(move || {
+            apply_cached_control_request(
+                worker_provider.as_ref(),
+                &["fan.test".into()],
+                &worker_state,
+            );
+        })
+        .unwrap();
+        worker.request();
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let final_provider = Arc::clone(&provider);
+        let finalizer = thread::spawn(move || {
+            run_with_auto_restore(final_provider.as_ref(), &["fan.test".into()], || Ok(()))
+        });
+        // Let the worker finish before asserting the last physical action.
+        // On the unfixed implementation, the unprotected restore races ahead.
+        thread::sleep(Duration::from_millis(50));
+        resume_tx.send(()).unwrap();
+        finalizer.join().unwrap().unwrap();
+        drop(worker);
+        assert_eq!(
+            provider
+                .write_events
+                .lock()
+                .unwrap()
+                .last()
+                .map(String::as_str),
+            Some("auto")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_discards_queued_cached_write_before_final_auto_restore() {
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::sync_channel(1);
+        let mut provider = FaultProvider::new(false, false);
+        provider.first_duty_gate = Some((started_tx, Mutex::new(resume_rx)));
+        let provider = Arc::new(provider);
+        let shared = prepared_cached_state();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_provider = Arc::clone(&provider);
+        let worker_state = Arc::clone(&shared);
+        let worker_stopping = Arc::clone(&stopping);
+        let worker = ControlApplyWorker::spawn(move || {
+            apply_cached_control_request_guarded(
+                worker_provider.as_ref(),
+                &["fan.test".into()],
+                &worker_state,
+                &worker_stopping,
+            );
+        })
+        .unwrap();
+        worker.request();
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.request();
+        let final_provider = Arc::clone(&provider);
+        let final_stopping = Arc::clone(&stopping);
+        let finalizer = thread::spawn(move || {
+            run_with_auto_restore_and_shutdown(
+                final_provider.as_ref(),
+                &["fan.test".into()],
+                || Ok(()),
+                || {
+                    final_stopping.store(true, Ordering::Release);
+                    shutdown_tx.send(()).unwrap();
+                },
+            )
+        });
+        shutdown_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        resume_tx.send(()).unwrap();
+        finalizer.join().unwrap().unwrap();
+        drop(worker);
+        assert_eq!(*provider.write_events.lock().unwrap(), ["duty:30", "auto"]);
+    }
+
     #[test]
     fn automatic_restore_failure_is_never_reported_as_success() {
         let provider = FaultProvider::new(false, false).with_auto_failure();
@@ -3188,6 +3436,35 @@ mod tests {
             state.last_temps_sampled_at_unix_ms = Some(unix_now_ms());
         }
         shared
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_critical_temperature_forces_max_even_for_low_manual_requests() {
+        for per_fan_override in [false, true] {
+            let provider = FaultProvider::new(false, false);
+            let shared = prepared_cached_state();
+            {
+                let mut state = shared.lock().unwrap();
+                state.last_temps[0].value = peterfan_core::types::Celsius(95.0);
+                state.last_temps_sampled_at_unix_ms = Some(unix_now_ms());
+                state.last_control_apply_unix_ms = Some(unix_now_ms());
+                state.fan_targets.insert("fan.test".into(), 20);
+                if per_fan_override {
+                    state.auto = true;
+                    state.fan_overrides.insert("fan.test".into(), 8);
+                } else {
+                    state.auto = false;
+                    state.held_duty = Some(5);
+                }
+            }
+            apply_cached_control_request(&provider, &["fan.test".into()], &shared);
+            assert_eq!(*provider.write_events.lock().unwrap(), ["duty:100"]);
+            assert_eq!(
+                shared.lock().unwrap().fan_targets.get("fan.test"),
+                Some(&100)
+            );
+        }
     }
 
     #[cfg(unix)]

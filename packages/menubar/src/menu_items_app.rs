@@ -152,13 +152,12 @@ fn commit_staged<T>(
 #[cfg(target_os = "macos")]
 struct PreparedItems {
     primary: crate::native_cpu_widget::PreparedPrimaryItem,
-    cpu_update: Option<crate::native_cpu_widget::PreparedCpuWidgetUpdate>,
-    cpu: Option<crate::native_cpu_widget::NativeCpuWidget>,
+    composite: super::PreparedComposite,
 }
 
 #[cfg(target_os = "macos")]
 fn prepare(app: &App, requested: ItemState) -> Result<PreparedItems, String> {
-    use crate::native_cpu_widget::{NativeCpuWidget, PreparedPrimaryItem};
+    use crate::native_cpu_widget::PreparedPrimaryItem;
     let primary =
         PreparedPrimaryItem::new(app.tray.as_ref().ok_or("Primary tray is unavailable")?)?;
     let empty_history = Default::default();
@@ -167,26 +166,9 @@ fn prepare(app: &App, requested: ItemState) -> Result<PreparedItems, String> {
     } else {
         &app.cpu_widget_history
     };
-    let mut cpu_update = None;
-    let cpu = if requested.cpu.enabled {
-        if let Some(widget) = &app.cpu_widget_native {
-            cpu_update =
-                Some(widget.prepare_update(requested.cpu, app.language.resolve(), history)?);
-            None
-        } else {
-            let mut candidate = NativeCpuWidget::new(requested.cpu, app.language.resolve())?;
-            candidate.update(requested.cpu, app.language.resolve(), history)?;
-            candidate.set_item_visibility(requested.visibility(), app.language.resolve());
-            Some(candidate)
-        }
-    } else {
-        None
-    };
-    Ok(PreparedItems {
-        primary,
-        cpu,
-        cpu_update,
-    })
+    let key = super::composite_key(app, requested.visibility(), requested.cpu, history)?;
+    let composite = super::prepare_composite(app, key)?;
+    Ok(PreparedItems { primary, composite })
 }
 
 fn apply_state(app: &mut App, edit: ItemEdit, persist: bool) -> Result<(), String> {
@@ -219,17 +201,22 @@ fn apply_state(app: &mut App, edit: ItemEdit, persist: bool) -> Result<(), Strin
     #[cfg(target_os = "macos")]
     {
         super::stop_native_runner_timer(app);
-        if let Some(candidate) = staged.cpu {
-            candidate.set_visible(true);
-            app.cpu_widget_native = Some(candidate);
+        let old_size = app
+            .composite_images
+            .borrow()
+            .first()
+            .map(|image| image.size());
+        let new_size = staged.composite.images.first().map(|image| image.size());
+        app.runner_native_painter
+            .borrow_mut()
+            .image_size_changed(old_size, new_size);
+        if let Some(widget) = app.cpu_widget_native.take() {
+            widget.set_visible(false);
         }
-        if let Some(widget) = &mut app.cpu_widget_native {
-            if let Some(update) = staged.cpu_update {
-                widget.commit_update(update);
-            }
-            widget.set_item_visibility(requested.visibility(), app.language.resolve());
-            widget.set_visible(requested.cpu.enabled);
-        }
+        *app.composite_images.borrow_mut() = staged.composite.images;
+        app.composite_key = Some(staged.composite.key);
+        app.runner_native_applied_icon
+            .store(usize::MAX - 1, std::sync::atomic::Ordering::Relaxed);
     }
     if app.cpu_widget_config.enabled != requested.cpu.enabled {
         app.cpu_widget_history = Default::default();
@@ -242,15 +229,15 @@ fn apply_state(app: &mut App, edit: ItemEdit, persist: bool) -> Result<(), Strin
     super::invalidate_runner_icon(&mut app.last_runner_icon);
     #[cfg(target_os = "macos")]
     {
-        if let Some(tray) = &app.tray {
-            staged.primary.configure(tray, app.display);
-        }
+        super::configure_composite_status(app, &staged.primary);
         super::apply_runner_icon(app);
-        staged.primary.set_visible(app.primary_visible);
+        staged.primary.set_visible(requested.visibility().any());
         super::sync_native_runner_timer(app);
         if let Some(menu) = &app.tray_menu {
             menu.menu_items
                 .update(visibility(app), app.language.resolve());
+            menu.cpu_appearance
+                .update(app.cpu_widget_config, app.language.resolve());
         }
     }
     if let Some(menu) = &app.tray_menu {

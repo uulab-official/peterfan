@@ -30,7 +30,7 @@ function dashboard(language = 'en') {
     document: { getElementById: id => nodes[id] || null },
     window: {}, railView: () => 'settings',
     setText: (id, text) => { if (nodes[id]) nodes[id].textContent = text; },
-    setPanelPill() {}, setButtonLabel() {}, updateHealthPanel() {},
+    setPanelPill() {}, setButtonLabel() {}, updateHealthPanel() {}, updateFanTemperatures() {},
     rememberUpdateStatus: value => remembered.push(value),
   });
   vm.runInContext(script, context);

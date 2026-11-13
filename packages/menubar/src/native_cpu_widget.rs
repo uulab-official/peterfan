@@ -44,6 +44,21 @@ impl PreparedPrimaryItem {
         }));
     }
 
+    /// Reserve one status-item slot for the composite artwork and the
+    /// independently visible CPU/metric titles, without touching either title.
+    pub(crate) fn configure_composite(
+        &self,
+        point_image_width: f64,
+        has_image: bool,
+        cpu_text_width: f64,
+        metric_width: f64,
+    ) {
+        let (width, position) =
+            composite_layout(point_image_width, has_image, cpu_text_width, metric_width);
+        self.item.setLength(width);
+        self.button.setImagePosition(position);
+    }
+
     pub(crate) fn set_visible(&self, visible: bool) {
         self.item.setVisible(visible);
     }
@@ -70,6 +85,35 @@ pub(crate) fn primary_image_position(display: MenubarDisplay) -> NSCellImagePosi
     }
 }
 
+fn composite_layout(
+    point_image_width: f64,
+    has_image: bool,
+    cpu_text_width: f64,
+    metric_width: f64,
+) -> (f64, NSCellImagePosition) {
+    let positive = |width: f64| {
+        if width.is_finite() {
+            width.max(0.)
+        } else {
+            0.
+        }
+    };
+    let image_width = if has_image {
+        positive(point_image_width)
+    } else {
+        0.
+    };
+    let text_width = positive(cpu_text_width) + positive(metric_width);
+    let position = if !has_image {
+        NSCellImagePosition::NoImage
+    } else if text_width > 0. {
+        NSCellImagePosition::ImageLeft
+    } else {
+        NSCellImagePosition::ImageOnly
+    };
+    ((image_width + text_width + 6.).max(18.), position)
+}
+
 pub(crate) struct PreparedCpuWidgetUpdate {
     button: Retained<NSStatusBarButton>,
     config: CpuWidgetConfig,
@@ -88,6 +132,91 @@ pub(crate) enum CpuWidgetAction {
     Visibility(MenuItemsVisibility),
     Style(CpuWidgetStyle),
     Percentage(bool),
+}
+
+/// CPU appearance controls for the primary status item's context menu.
+/// These have their own native menu entries: AppKit menu items cannot be
+/// attached to both the legacy CPU menu and the primary menu simultaneously.
+pub(crate) struct CpuAppearanceMenu {
+    submenu: Submenu,
+    styles: Vec<(CpuWidgetStyle, CheckMenuItem)>,
+    percentage: CheckMenuItem,
+}
+
+fn percentage_menu_state(config: CpuWidgetConfig) -> (bool, bool) {
+    let number_only = config.style == CpuWidgetStyle::Number;
+    (config.show_percentage || number_only, !number_only)
+}
+
+impl CpuAppearanceMenu {
+    pub(crate) fn new(config: CpuWidgetConfig, language: ResolvedLanguage) -> Self {
+        let name = if language == ResolvedLanguage::Ko {
+            "CPU 위젯 스타일"
+        } else {
+            "CPU widget style"
+        };
+        let submenu = Submenu::new(name, true);
+        let names = labels(language);
+        let styles = [
+            CpuWidgetStyle::Bar,
+            CpuWidgetStyle::History,
+            CpuWidgetStyle::Number,
+            CpuWidgetStyle::Cores,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, style)| {
+            let entry = CheckMenuItem::new(names[index + 1], true, config.style == style, None);
+            let _ = submenu.append(&entry);
+            (style, entry)
+        })
+        .collect();
+        let (checked, enabled) = percentage_menu_state(config);
+        let percentage = CheckMenuItem::new(names[5], enabled, checked, None);
+        let _ = submenu.append(&PredefinedMenuItem::separator());
+        let _ = submenu.append(&percentage);
+        let result = Self {
+            submenu,
+            styles,
+            percentage,
+        };
+        result.update(config, language);
+        result
+    }
+
+    pub(crate) fn submenu(&self) -> &Submenu {
+        &self.submenu
+    }
+
+    /// Refresh after settings changes or language changes, including failed
+    /// saves, so a click never leaves a checkmark ahead of persisted state.
+    pub(crate) fn update(&self, config: CpuWidgetConfig, language: ResolvedLanguage) {
+        self.submenu.set_text(if language == ResolvedLanguage::Ko {
+            "CPU 위젯 스타일"
+        } else {
+            "CPU widget style"
+        });
+        let names = labels(language);
+        for (index, (style, entry)) in self.styles.iter().enumerate() {
+            entry.set_text(names[index + 1]);
+            entry.set_checked(config.style == *style);
+        }
+        self.percentage.set_text(names[5]);
+        let (checked, enabled) = percentage_menu_state(config);
+        self.percentage.set_checked(checked);
+        self.percentage.set_enabled(enabled);
+    }
+
+    pub(crate) fn action(&self, id: &MenuId, config: CpuWidgetConfig) -> Option<CpuWidgetAction> {
+        if self.percentage.id() == id {
+            return (config.style != CpuWidgetStyle::Number)
+                .then_some(CpuWidgetAction::Percentage(!config.show_percentage));
+        }
+        self.styles
+            .iter()
+            .find(|(_, entry)| entry.id() == id)
+            .map(|(style, _)| CpuWidgetAction::Style(*style))
+    }
 }
 
 pub(crate) struct NativeCpuWidget {
@@ -193,6 +322,8 @@ impl MenuItemsMenu {
 }
 
 impl NativeCpuWidget {
+    // The standalone native CPU QA harness still exercises this legacy item.
+    #[allow(dead_code)]
     pub(crate) fn new(config: CpuWidgetConfig, language: ResolvedLanguage) -> Result<Self, String> {
         let marker =
             MainThreadMarker::new().ok_or("CPU status item must be created on the main thread")?;
@@ -276,6 +407,7 @@ impl NativeCpuWidget {
             self.tray.set_title(self.last_title.as_deref());
         }
     }
+    #[allow(dead_code)]
     pub(crate) fn set_item_visibility(
         &self,
         visibility: MenuItemsVisibility,
@@ -473,6 +605,70 @@ fn image_from_rgba(rgba: &[u8], width: u32) -> Result<Retained<NSImage>, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn composite_layout_reserves_the_visible_image_and_text_without_gaps() {
+        let (w, pos) = composite_layout(50., true, 0., 0.);
+        assert_eq!(w, 56.);
+        assert_eq!(pos, NSCellImagePosition::ImageOnly);
+        let (w, pos) = composite_layout(50., true, 32., 50.);
+        assert_eq!(w, 138.);
+        assert_eq!(pos, NSCellImagePosition::ImageLeft);
+        let (w, pos) = composite_layout(0., false, 32., 50.);
+        assert_eq!(w, 88.);
+        assert_eq!(pos, NSCellImagePosition::NoImage);
+        let (w, pos) = composite_layout(0., false, 0., 0.);
+        assert_eq!(w, 18.);
+        assert_eq!(pos, NSCellImagePosition::NoImage);
+    }
+    #[test]
+    fn seven_visibility_combinations_reserve_only_visible_metric_width() {
+        for bits in 1..8 {
+            let cpu = bits & 1 != 0;
+            let runner = bits & 2 != 0;
+            let metric = bits & 4 != 0;
+            let cpu_width = if cpu { 32.0 } else { 0.0 };
+            let image_width = if runner { 36.0 } else { 0.0 };
+            let expected_base = (image_width + cpu_width + 6.0_f64).max(18.0);
+            let (no_metric, _) = composite_layout(image_width, runner, cpu_width, 0.0);
+            assert_eq!(no_metric, expected_base);
+            let (actual, _) = composite_layout(
+                image_width,
+                runner,
+                cpu_width,
+                if metric { 80.0 } else { 0.0 },
+            );
+            assert_eq!(
+                actual,
+                (image_width + cpu_width + if metric { 80.0 } else { 0.0 } + 6.0).max(18.0)
+            );
+        }
+    }
+    #[test]
+    fn percentage_menu_tracks_each_style_without_losing_the_stored_preference() {
+        for style in [
+            CpuWidgetStyle::Bar,
+            CpuWidgetStyle::History,
+            CpuWidgetStyle::Cores,
+        ] {
+            for show_percentage in [false, true] {
+                let config = CpuWidgetConfig {
+                    enabled: true,
+                    style,
+                    show_percentage,
+                };
+                assert_eq!(percentage_menu_state(config), (show_percentage, true));
+            }
+        }
+        for show_percentage in [false, true] {
+            let config = CpuWidgetConfig {
+                enabled: true,
+                style: CpuWidgetStyle::Number,
+                show_percentage,
+            };
+            assert_eq!(percentage_menu_state(config), (true, false));
+            assert_eq!(config.show_percentage, show_percentage);
+        }
+    }
     #[test]
     fn cpu_layout_preserves_a_visible_graph_and_number_only_has_no_image() {
         let mut config = CpuWidgetConfig::default();
